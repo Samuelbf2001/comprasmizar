@@ -1,0 +1,17 @@
+import type { KapsoEventStore, KapsoClaim, KapsoProcessingStore } from "./kapso";
+import type { KapsoWebhookEvent } from "../services";
+import { runtimeEnv } from "../security/env";
+import { sharedPostgres } from "./postgres-repositories";
+
+export function createPostgresKapsoEventStore(databaseUrl = runtimeEnv().DATABASE_URL): KapsoEventStore {
+  const sql = sharedPostgres(databaseUrl);
+  return { seen: async (eventId) => (await sql`select 1 from whatsapp_eventos where kapso_message_id=${eventId} limit 1`).length > 0, record: async (event: KapsoWebhookEvent) => { await sql.begin(async (tx) => { await tx`select pg_advisory_xact_lock(hashtextextended(${event.eventId}, 0))`; if ((await tx`select 1 from whatsapp_eventos where kapso_message_id=${event.eventId} limit 1`).length) return; const phone = event.submission?.phone ?? "unknown"; await tx`insert into whatsapp_eventos (direccion, telefono, tipo, payload_json, kapso_message_id, estado_entrega, fecha) values ('entrada', ${phone}, ${event.type === "flow_submission" ? "flow" : "mensaje"}, ${JSON.stringify(event)}::jsonb, ${event.eventId}, ${event.deliveryStatus ?? null}, ${event.receivedAt})`; }); } };
+}
+/**
+ * A five-minute lease recovers a process killed after its claim. The advisory lock avoids
+ * two live claims; `requisiciones.kapso_event_id` is the durable idempotency backstop.
+ */
+export function createPostgresKapsoProcessingStore(databaseUrl = runtimeEnv().DATABASE_URL, leaseMs = 300_000): KapsoProcessingStore {
+  const sql = sharedPostgres(databaseUrl);
+  return { claim: async (event) => sql.begin(async (tx) => { await tx`select pg_advisory_xact_lock(hashtextextended(${event.eventId}, 0))`; const rows = await tx<{ estado: string; stale: boolean }[]>`select estado, updated_at <= now() - (${leaseMs} * interval '1 millisecond') as stale from kapso_procesamiento where event_id=${event.eventId} for update`; const row = rows[0]; if (row?.estado === "completed") return "completed" as KapsoClaim; if (row?.estado === "processing" && !row.stale) return "in_progress" as KapsoClaim; await tx`insert into kapso_procesamiento (event_id, tipo_evento, estado, payload, updated_at) values (${event.eventId}, ${event.type}, 'processing', ${JSON.stringify(event)}::jsonb, now()) on conflict (event_id) do update set tipo_evento=excluded.tipo_evento, estado='processing', payload=excluded.payload, updated_at=now()`; const phone = event.submission?.phone ?? "unknown"; await tx`insert into whatsapp_eventos (direccion, telefono, tipo, payload_json, kapso_message_id, estado_entrega, fecha) values ('entrada', ${phone}, ${event.type === "flow_submission" ? "flow" : "mensaje"}, ${JSON.stringify(event)}::jsonb, ${event.eventId}, ${event.deliveryStatus ?? null}, ${event.receivedAt}) on conflict (kapso_message_id) where kapso_message_id is not null do nothing`; return "claimed" as KapsoClaim; }), complete: async (eventId, requisitionId) => { await sql.begin(async (tx) => { await tx`update kapso_procesamiento set estado='completed', requisicion_id=${requisitionId ?? null}, updated_at=now() where event_id=${eventId}`; if (requisitionId) await tx`update whatsapp_eventos set requisicion_id=${requisitionId} where kapso_message_id=${eventId}`; }); }, release: async (eventId) => { await sql`update kapso_procesamiento set estado='retryable', updated_at=now() where event_id=${eventId}`; }, findRequisitionId: async (eventId) => { const rows = await sql<{ id: string }[]>`select id from requisiciones where kapso_event_id=${eventId} limit 1`; return rows[0]?.id ?? null; } };
+}

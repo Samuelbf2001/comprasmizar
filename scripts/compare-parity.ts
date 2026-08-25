@@ -1,0 +1,3 @@
+type Expense = { id: string; total: number };
+export function compareExactCop(expected: readonly Expense[], actual: readonly Expense[]): { equal: boolean; differences: string[] } { const values = (entries: readonly Expense[]) => new Map(entries.map((entry) => [entry.id, entry.total])); const left = values(expected), right = values(actual), keys = new Set([...left.keys(), ...right.keys()]), differences = [...keys].flatMap((key) => left.get(key) === right.get(key) ? [] : [`${key}: esperado ${left.get(key) ?? 0}, obtenido ${right.get(key) ?? 0}`]); return { equal: differences.length === 0, differences }; }
+if (process.argv[1]?.endsWith("compare-parity.ts")) console.error("Use compareExactCop from a validated import/export pipeline; no Helisa format is asserted yet.");
