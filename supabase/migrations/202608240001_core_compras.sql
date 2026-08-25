@@ -268,7 +268,10 @@ create table if not exists public.gastos (
   valor_base numeric(16,2) not null default 0 check (valor_base >= 0 and valor_base = trunc(valor_base)),
   iva numeric(16,2) not null default 0 check (iva >= 0 and iva = trunc(iva)),
   valor_total numeric(16,2) generated always as (round(valor_base + iva, 2)) stored,
-  periodo date generated always as (date_trunc('month', fecha)::date) stored,
+  -- El cast a timestamp NO es opcional: para un argumento date, Postgres resuelve
+  -- date_trunc hacia la sobrecarga timestamptz (tipo preferido de la categoria),
+  -- que es STABLE y una columna generada exige IMMUTABLE.
+  periodo date generated always as (date_trunc('month', fecha::timestamp)::date) stored,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint gastos_origen_referencia_unico unique (origen, referencia_id)
