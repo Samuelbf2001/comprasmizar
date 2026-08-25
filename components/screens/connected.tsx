@@ -11,6 +11,7 @@ import {
 import {
   ArrowRight,
   BarChart3,
+  CheckCircle2,
   Inbox,
   Plus,
   RefreshCw,
@@ -794,25 +795,29 @@ export function ConnectedDashboard({
         description="Métricas calculadas por el servicio para tu rol y el periodo actual."
       />
       <div className="stats-grid">
-        <article className="stat-card">
-          <span>En revisión</span>
+        <article className="stat-card stat-amber">
+          <span className="stat-icon"><Inbox size={17} /></span>
+          <span className="stat-label">En revisión</span>
           <strong>{metrics.byStatus?.en_revision ?? 0}</strong>
-          <small>requisiciones visibles</small>
+          <span className="stat-meta">requisiciones visibles</span>
         </article>
-        <article className="stat-card">
-          <span>En aprobación</span>
+        <article className="stat-card stat-blue">
+          <span className="stat-icon"><CheckCircle2 size={17} /></span>
+          <span className="stat-label">En aprobación</span>
           <strong>{metrics.byStatus?.en_aprobacion ?? 0}</strong>
-          <small>{money.format(metrics.inProcessValue ?? 0)}</small>
+          <span className="stat-meta">{money.format(metrics.inProcessValue ?? 0)}</span>
         </article>
-        <article className="stat-card">
-          <span>Compras pendientes</span>
+        <article className="stat-card stat-orange">
+          <span className="stat-icon"><Truck size={17} /></span>
+          <span className="stat-label">Compras pendientes</span>
           <strong>{metrics.pendingOrders ?? 0}</strong>
-          <small>generadas o no cumplidas</small>
+          <span className="stat-meta">generadas o no cumplidas</span>
         </article>
-        <article className="stat-card">
-          <span>Gasto del periodo</span>
+        <article className="stat-card stat-forest">
+          <span className="stat-icon"><BarChart3 size={17} /></span>
+          <span className="stat-label">Gasto del periodo</span>
           <strong>{money.format(metrics.periodExpense ?? 0)}</strong>
-          <small>según alcance del rol</small>
+          <span className="stat-meta">según alcance del rol</span>
         </article>
       </div>
       <div className="dashboard-grid">
