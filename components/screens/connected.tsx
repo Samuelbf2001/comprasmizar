@@ -37,11 +37,15 @@ import {
   uploadSignedAttachment,
   type AttachmentMetadata,
 } from "./attachment-upload";
+import { RouteSkeleton, type RouteKind } from "./skeletons";
 
+// RF-1105 (percepción de carga): mientras carga se distingue el esqueleto de ESA ruta
+// (`kind`) de un error o de datos ya listos; en "ready" `revalidating` marca que hay
+// datos previos visibles mientras se refresca en segundo plano (stale-while-revalidate).
 type LoadState =
-  | { state: "loading" }
+  | { state: "loading"; kind: RouteKind }
   | { state: "error"; message: string }
-  | { state: "ready"; data: unknown };
+  | { state: "ready"; data: unknown; revalidating: boolean };
 type ConnectedProps = {
   pathname: string;
   role: Role;
@@ -247,17 +251,7 @@ export function groupExpensesByWorkAndTag(
     .sort((a, b) => a.workName.localeCompare(b.workName, "es"));
 }
 
-function routeKind(
-  pathname: string,
-):
-  | "dashboard"
-  | "new"
-  | "detail"
-  | "requisitions"
-  | "orders"
-  | "expenses"
-  | "catalogs"
-  | undefined {
+function routeKind(pathname: string): RouteKind | undefined {
   if (pathname === "/" || pathname === "/inicio") return "dashboard";
   if (pathname === "/requisiciones/nueva") return "new";
   if (pathname.startsWith("/aprobaciones/") && pathname !== "/aprobaciones/")
@@ -433,6 +427,36 @@ async function loadRoute(pathname: string, role: Role): Promise<unknown> {
   throw new Error("Ruta operativa no soportada.");
 }
 
+// RF-1105 (percepción de carga): cache en memoria por ruta (pathname) para que volver a
+// una pantalla ya visitada pinte contenido de inmediato mientras se revalida en segundo
+// plano. Límite razonable de entradas (LRU simple) para no crecer sin control en una
+// sesión larga. Vive a nivel de módulo (no de componente) para sobrevivir a la
+// navegación entre rutas dentro de la misma sesión de la SPA.
+const ROUTE_CACHE_LIMIT = 24;
+const routeCache = new Map<string, { kind: RouteKind; data: unknown }>();
+
+function getCachedRoute(pathname: string) {
+  return routeCache.get(pathname);
+}
+
+function setCachedRoute(pathname: string, kind: RouteKind, data: unknown): void {
+  routeCache.delete(pathname);
+  routeCache.set(pathname, { kind, data });
+  if (routeCache.size > ROUTE_CACHE_LIMIT) {
+    const oldestKey = routeCache.keys().next().value;
+    if (oldestKey !== undefined) routeCache.delete(oldestKey);
+  }
+}
+
+// Se exporta para que las pruebas puedan partir de un estado limpio (el cache es un
+// singleton de módulo) y porque `mutate` la usa aquí mismo: tras aprobar, declinar,
+// crear una requisición, actualizar una orden, repartir un gasto o registrar caja menor,
+// TODA la caché se limpia. Es dinero y estados de aprobación: más vale refrescar de más
+// que arrastrar una cifra vieja a una bandeja o un dashboard ya visitados.
+export function clearRouteCache(): void {
+  routeCache.clear();
+}
+
 async function mutate(
   url: string,
   method: "POST" | "PATCH" | "PUT",
@@ -454,6 +478,7 @@ async function mutate(
           ? "No tienes permiso para esta acción."
           : "La operación no pudo completarse."),
     );
+  clearRouteCache();
   return value;
 }
 
@@ -461,48 +486,89 @@ export function isConnectedReadRoute(pathname: string): boolean {
   return Boolean(routeKind(pathname));
 }
 
+// RF-1105: primera carga de `pathname` (sin datos en cache) -> esqueleto de esa ruta.
+// Con datos en cache -> los muestra de inmediato y arranca revalidando en segundo plano
+// (así "volver a una pantalla ya visitada" no vuelve a mostrar el esqueleto).
+function initialLoadState(
+  pathname: string,
+  kind: RouteKind | undefined,
+): LoadState {
+  if (!kind) return { state: "loading", kind: "dashboard" };
+  const cached = getCachedRoute(pathname);
+  if (cached) return { state: "ready", data: cached.data, revalidating: true };
+  return { state: "loading", kind };
+}
+
 export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
   const kind = useMemo(() => routeKind(pathname), [pathname]);
-  const [version, setVersion] = useState(0),
-    [load, setLoad] = useState<LoadState>({ state: "loading" });
+  const [version, setVersion] = useState(0);
+  const [routeState, setRouteState] = useState(() => ({
+    pathname,
+    load: initialLoadState(pathname, kind),
+  }));
+  // Cambio de ruta: adopta de inmediato el cache (o el esqueleto) de la ruta nueva en
+  // lugar de esperar al efecto de abajo. Sin esto habría un cuadro mostrando el
+  // contenido de la ruta ANTERIOR bajo el `kind` de la ruta nueva. Es el patrón
+  // documentado de React para "ajustar estado cuando cambia una prop".
+  if (routeState.pathname !== pathname) {
+    setRouteState({ pathname, load: initialLoadState(pathname, kind) });
+  }
+  const load =
+    routeState.pathname === pathname
+      ? routeState.load
+      : initialLoadState(pathname, kind);
+  const setLoad = (updater: LoadState | ((current: LoadState) => LoadState)) => {
+    setRouteState((current) => ({
+      pathname: current.pathname,
+      load:
+        typeof updater === "function"
+          ? (updater as (value: LoadState) => LoadState)(current.load)
+          : updater,
+    }));
+  };
+  // RF-1105: refrescar (manual o tras aprobar/declinar/crear, ver `mutate`) NUNCA borra
+  // datos ya visibles: si hay datos previos se marcan `revalidating` (stale-while-
+  // revalidate); solo si no hay nada que mostrar cae al esqueleto de carga.
   const refresh = () => {
-    setLoad({ state: "loading" });
+    setLoad((current) =>
+      current.state === "ready"
+        ? { ...current, revalidating: true }
+        : kind
+          ? { state: "loading", kind }
+          : current,
+    );
     setVersion((value) => value + 1);
   };
   useEffect(() => {
+    if (!kind) return;
     let active = true;
     void loadRoute(pathname, role)
       .then((data) => {
-        if (active) setLoad({ state: "ready", data });
+        if (!active) return;
+        setCachedRoute(pathname, kind, data);
+        setLoad({ state: "ready", data, revalidating: false });
       })
       .catch((error) => {
-        if (active)
-          setLoad({
-            state: "error",
-            message:
-              error instanceof Error ? error.message : "Fallo de consulta.",
-          });
+        if (!active) return;
+        setLoad((current) =>
+          // Si ya había datos visibles (revalidación fallida), se conservan tal cual:
+          // no se tapa un dashboard de dinero con un error por un fallo de red pasajero.
+          current.state === "ready"
+            ? { ...current, revalidating: false }
+            : {
+                state: "error",
+                message:
+                  error instanceof Error ? error.message : "Fallo de consulta.",
+              },
+        );
       });
     return () => {
       active = false;
     };
-  }, [pathname, role, version]);
+  }, [pathname, role, version, kind]);
   if (!kind) return null;
   if (load.state === "loading")
-    return (
-      <>
-        <SectionTitle
-          eyebrow="Sesión autenticada"
-          title="Cargando operación"
-          description="Consultando datos dentro del alcance de tu rol."
-        />
-        <div className="panel state-panel" role="status">
-          <span className="state-spinner" />
-          <h3>Conectando con el servicio</h3>
-          <p>No se muestran datos sintéticos mientras esperas.</p>
-        </div>
-      </>
-    );
+    return <RouteSkeleton kind={load.kind} pathname={pathname} />;
   if (
     load.state === "error" &&
     kind === "catalogs" &&
@@ -537,52 +603,64 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
         </div>
       </>
     );
-  if (kind === "dashboard")
-    return <ConnectedDashboard data={load.data} go={go} />;
-  if (kind === "new")
-    return (
-      <ConnectedNewRequisition catalogs={load.data as CatalogData} go={go} />
-    );
-  if (kind === "detail")
-    return (
-      <ConnectedRequisitionDetail
-        data={load.data as DetailBundle}
-        role={role}
-        go={go}
-        refresh={refresh}
-      />
-    );
-  if (kind === "requisitions")
-    return (
-      <ConnectedRequisitions
-        data={load.data as RequisitionsBundle}
-        pathname={pathname}
-        go={go}
-      />
-    );
-  if (kind === "orders")
-    return (
-      <ConnectedOrders
-        data={load.data as OrdersBundle}
-        role={role}
-        refresh={refresh}
-      />
-    );
-  if (kind === "catalogs")
-    return (
-      <ConnectedCatalogAdmin
-        pathname={pathname}
-        role={role}
-        initialData={load.data as CatalogData}
-      />
-    );
+  const revalidating = load.revalidating;
   return (
-    <ConnectedExpenses
-      data={load.data as ExpenseBundle}
-      pathname={pathname}
-      role={role}
-      refresh={refresh}
-    />
+    <div
+      aria-busy={revalidating}
+      className={revalidating ? "is-revalidating" : undefined}
+    >
+      {revalidating && (
+        <>
+          <div className="revalidating-bar" aria-hidden="true" />
+          <span className="sr-only" role="status">
+            Actualizando información…
+          </span>
+        </>
+      )}
+      {kind === "dashboard" && (
+        <ConnectedDashboard data={load.data} go={go} />
+      )}
+      {kind === "new" && (
+        <ConnectedNewRequisition catalogs={load.data as CatalogData} go={go} />
+      )}
+      {kind === "detail" && (
+        <ConnectedRequisitionDetail
+          data={load.data as DetailBundle}
+          role={role}
+          go={go}
+          refresh={refresh}
+        />
+      )}
+      {kind === "requisitions" && (
+        <ConnectedRequisitions
+          data={load.data as RequisitionsBundle}
+          pathname={pathname}
+          go={go}
+        />
+      )}
+      {kind === "orders" && (
+        <ConnectedOrders
+          data={load.data as OrdersBundle}
+          role={role}
+          refresh={refresh}
+        />
+      )}
+      {kind === "catalogs" && (
+        <ConnectedCatalogAdmin
+          pathname={pathname}
+          role={role}
+          initialData={load.data as CatalogData}
+        />
+      )}
+      {kind === "expenses" && (
+        <ConnectedExpenses
+          data={load.data as ExpenseBundle}
+          pathname={pathname}
+          role={role}
+          refresh={refresh}
+        />
+      )}
+    </div>
   );
 }
 
@@ -1753,6 +1831,11 @@ export function ConnectedRequisitionDetail({
     setFeedback("");
     try {
       await mutate(`/api/requisitions/${requisition.id}/actions`, "POST", body);
+      // RF-1105: sin esto, tras aprobar/declinar/devolver esta misma pantalla seguía
+      // mostrando el estado anterior de la requisición hasta que el usuario navegara
+      // fuera y volviera. `refresh` ya no vacía la vista (stale-while-revalidate): sigue
+      // mostrando lo que había mientras trae el estado real.
+      refresh();
     } catch (error) {
       setFeedback(
         error instanceof Error ? error.message : "Acción no completada.",
