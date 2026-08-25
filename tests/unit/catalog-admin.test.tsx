@@ -13,6 +13,7 @@ import { ConnectedCatalogAdmin } from "../../components/screens/catalog-admin";
 
 const societyId = "11111111-1111-4111-8111-111111111111";
 const approverId = "22222222-2222-4222-8222-222222222222";
+const authUserId = "33333333-3333-4333-8333-333333333333";
 
 function catalogData(overrides: Record<string, unknown> = {}) {
   return {
@@ -41,7 +42,17 @@ describe("ConnectedCatalogAdmin", () => {
         role="Administrador Mizar"
         initialData={catalogData({
           features: { catalogos_admin_mizar: false },
-          access: { works: false, tags: false, items: false, suppliers: false },
+          // RF-002/RF-004: sociedades/usuarios también deben excluirse explícitamente aquí; de lo
+          // contrario "societies" cae al valor por defecto de canManageKind (admin_mizar siempre
+          // puede) y la pestaña seleccionada automáticamente deja de ser la que este caso prueba.
+          access: {
+            works: false,
+            tags: false,
+            items: false,
+            suppliers: false,
+            societies: false,
+            users: false,
+          },
         })}
       />,
     );
@@ -223,5 +234,189 @@ describe("ConnectedCatalogAdmin", () => {
         }),
       }),
     );
+  });
+
+  describe("RF-002: pestaña de Sociedades", () => {
+    it("lets Administrador Mizar manage sociedades unconditionally, even with catalogos_admin_mizar disabled", () => {
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/sociedades"
+          role="Administrador Mizar"
+          initialData={catalogData({
+            features: { catalogos_admin_mizar: false },
+            societyRecords: [
+              { id: societyId, name: "Sociedad Norte", nit: "900123456", active: true },
+            ],
+          })}
+        />,
+      );
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(
+        screen.getByRole("button", { name: /Nuevo registro/i }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Sociedad Norte")).toBeInTheDocument();
+    });
+
+    it("creates a society with an optional NIT", async () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({ id: "society-1", name: "Sociedad Sur", nit: "900999888", active: true }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/sociedades"
+          role="Administrador Sixteam"
+          initialData={catalogData({ societyRecords: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), {
+        target: { value: "Sociedad Sur" },
+      });
+      fireEvent.change(screen.getByRole("textbox", { name: /^NIT/i }), {
+        target: { value: "900999888" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            kind: "societies",
+            data: { name: "Sociedad Sur", nit: "900999888" },
+          }),
+        }),
+      );
+    });
+  });
+
+  describe("RF-004: pestaña de Usuarios", () => {
+    it("blocks the tab entirely for a role with neither read nor manage access", () => {
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/items"
+          role="Revisor"
+          initialData={catalogData({ access: { items: true } })}
+        />,
+      );
+      expect(
+        screen.getByRole("tab", { name: /Usuarios/ }),
+      ).toBeDisabled();
+    });
+
+    it("shows Administrador Mizar a read-only Usuarios table: no create button and no edit/toggle actions", () => {
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/usuarios"
+          role="Administrador Mizar"
+          initialData={catalogData({
+            canReadUsers: true,
+            userRecords: [
+              {
+                id: authUserId,
+                name: "Nelson Aprobador",
+                email: "nelson@mizar.test",
+                active: true,
+                roles: ["aprobador"],
+              },
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByText("Nelson Aprobador")).toBeInTheDocument();
+      expect(screen.getByText("Aprobador")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /Nuevo registro/i }),
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: /Editar Nelson Aprobador/i }),
+      ).toBeNull();
+      expect(screen.getByText("Solo lectura")).toBeInTheDocument();
+      expect(screen.getByRole("note")).toHaveTextContent(
+        "administración de usuarios es exclusiva",
+      );
+    });
+
+    it("creates a user with an existing Supabase Auth id, email and at least one role", async () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: authUserId,
+            name: "Nueva Revisora",
+            email: "revisora@mizar.test",
+            active: true,
+            roles: ["revisor"],
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/usuarios"
+          role="Administrador Sixteam"
+          initialData={catalogData({ canReadUsers: true, userRecords: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), {
+        target: { value: "Nueva Revisora" },
+      });
+      fireEvent.change(
+        screen.getByRole("textbox", { name: /Id de usuario/i }),
+        { target: { value: authUserId } },
+      );
+      fireEvent.change(screen.getByRole("textbox", { name: /^Correo/i }), {
+        target: { value: "revisora@mizar.test" },
+      });
+      fireEvent.click(screen.getByRole("checkbox", { name: "Revisor" }));
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            kind: "users",
+            data: {
+              name: "Nueva Revisora",
+              id: authUserId,
+              email: "revisora@mizar.test",
+              roles: ["revisor"],
+            },
+          }),
+        }),
+      );
+    });
+
+    it("requires selecting at least one role before creating a user", () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/usuarios"
+          role="Administrador Sixteam"
+          initialData={catalogData({ canReadUsers: true, userRecords: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), {
+        target: { value: "Sin Rol" },
+      });
+      fireEvent.change(
+        screen.getByRole("textbox", { name: /Id de usuario/i }),
+        { target: { value: authUserId } },
+      );
+      fireEvent.change(screen.getByRole("textbox", { name: /^Correo/i }), {
+        target: { value: "sinrol@mizar.test" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Selecciona al menos un rol",
+      );
+    });
   });
 });

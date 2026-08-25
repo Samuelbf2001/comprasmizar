@@ -12,18 +12,30 @@ type NamedRow = { id: string; name: string };
 const uuid = z.string().uuid();
 const name = z.string().trim().min(2).max(160);
 const active = z.boolean().optional();
+// Debe coincidir exactamente con el tipo Role de lib/domain (lib/domain/model.ts).
+const roleLiteral = z.enum(["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"]);
+const phone = z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/);
+const nit = z.string().trim().min(3).max(32);
 const tagCreateData = z.object({ name, approverId: uuid.optional(), active }).strict().superRefine((value, context) => { if (value.active !== false && !value.approverId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["approverId"], message: "Active tags require an approver" }); });
 const createCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("works"), data: z.object({ name, societyId: uuid, active }).strict() }),
   z.object({ kind: z.literal("tags"), data: tagCreateData }),
   z.object({ kind: z.literal("items"), data: z.object({ name, specification: z.string().trim().min(1).max(1_000).optional(), unit: z.string().trim().min(1).max(40), category: z.string().trim().min(1).max(100).optional(), active }).strict() }),
-  z.object({ kind: z.literal("suppliers"), data: z.object({ name, nit: z.string().trim().min(3).max(32).optional(), phone: z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/).optional(), email: z.string().trim().email().max(254).optional(), address: z.string().trim().min(1).max(300).optional(), active }).strict() }),
+  z.object({ kind: z.literal("suppliers"), data: z.object({ name, nit: nit.optional(), phone: phone.optional(), email: z.string().trim().email().max(254).optional(), address: z.string().trim().min(1).max(300).optional(), active }).strict() }),
+  z.object({ kind: z.literal("societies"), data: z.object({ name, nit: nit.optional(), active }).strict() }),
+  // RF-004: `id` es obligatorio y debe ser el id ya existente en Supabase Auth (auth.users) del usuario a
+  // vincular; esta plataforma nunca crea la cuenta de Auth. Al menos un rol es obligatorio en el alta.
+  z.object({ kind: z.literal("users"), data: z.object({ id: uuid, name, email: z.string().trim().email().max(254), phone: phone.optional(), roles: z.array(roleLiteral).min(1).max(6), active }).strict() }),
 ]);
 const patchCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("works"), id: uuid, data: z.object({ name: name.optional(), societyId: uuid.optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("tags"), id: uuid, data: z.object({ name: name.optional(), approverId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("items"), id: uuid, data: z.object({ name: name.optional(), specification: z.string().trim().min(1).max(1_000).nullable().optional(), unit: z.string().trim().min(1).max(40).optional(), category: z.string().trim().min(1).max(100).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
-  z.object({ kind: z.literal("suppliers"), id: uuid, data: z.object({ name: name.optional(), nit: z.string().trim().min(3).max(32).nullable().optional(), phone: z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/).nullable().optional(), email: z.string().trim().email().max(254).nullable().optional(), address: z.string().trim().min(1).max(300).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  z.object({ kind: z.literal("suppliers"), id: uuid, data: z.object({ name: name.optional(), nit: nit.nullable().optional(), phone: phone.nullable().optional(), email: z.string().trim().email().max(254).nullable().optional(), address: z.string().trim().min(1).max(300).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  z.object({ kind: z.literal("societies"), id: uuid, data: z.object({ name: name.optional(), nit: nit.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  // Sin "email": el correo se vincula a la cuenta de Auth y no se edita desde este catálogo.
+  // "roles" es el conjunto final deseado (reemplaza, no incrementa) y puede quedar vacío.
+  z.object({ kind: z.literal("users"), id: uuid, data: z.object({ name: name.optional(), phone: phone.nullable().optional(), roles: z.array(roleLiteral).max(6).optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
 ]);
 
 /**

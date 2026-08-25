@@ -6,14 +6,21 @@ const reviewer = { id: "daniel", roles: ["revisor"] as const };
 const mizarAdmin = { id: "mizar", roles: ["admin_mizar"] as const };
 const sixteam = { id: "sixteam", roles: ["admin_sixteam"] as const };
 
-function deps(options: { feature?: boolean; transactionFeature?: boolean; eligibleApprover?: boolean; failAudit?: boolean; uniqueViolation?: boolean } = {}) {
+function deps(options: { feature?: boolean; transactionFeature?: boolean; eligibleApprover?: boolean; failAudit?: boolean; uniqueViolation?: boolean; authUserExists?: boolean; triggerViolation?: "estado" | "rol" } = {}) {
   const records = new Map<string, CatalogRecord>(), audits: AuditEvent[] = [];
   const catalog = {
-    create: async (kind: CatalogKind, value: Omit<CatalogRecord, "id">) => { if (options.uniqueViolation) throw Object.assign(new Error("duplicate"), { code: "23505" }); const id = `id-${records.size + 1}`, created = { ...value, id } as CatalogRecord; records.set(`${kind}:${id}`, structuredClone(created)); return created; },
+    create: async (kind: CatalogKind, value: Omit<CatalogRecord, "id">) => { if (options.uniqueViolation) throw Object.assign(new Error("duplicate"), { code: "23505" }); const id = kind === "users" ? (value as unknown as { id: string }).id : `id-${records.size + 1}`, created = { ...value, id } as CatalogRecord; records.set(`${kind}:${id}`, structuredClone(created)); return created; },
     get: async (kind: CatalogKind, id: string) => records.get(`${kind}:${id}`) ? structuredClone(records.get(`${kind}:${id}`)!) : null,
-    update: async (kind: CatalogKind, id: string, value: Partial<Omit<CatalogRecord, "id">>) => { const prior = records.get(`${kind}:${id}`); if (!prior) throw new Error("CATALOG_NOT_FOUND"); const next = { ...prior, ...value } as CatalogRecord; records.set(`${kind}:${id}`, structuredClone(next)); return next; },
+    update: async (kind: CatalogKind, id: string, value: Partial<Omit<CatalogRecord, "id">>) => {
+      const prior = records.get(`${kind}:${id}`); if (!prior) throw new Error("CATALOG_NOT_FOUND");
+      // Simula los triggers de BD validar_baja_usuario_con_etiquetas_activas / validar_retiro_ultimo_rol_aprobador.
+      if (kind === "users" && options.triggerViolation === "estado" && "active" in value) throw Object.assign(new Error("No se puede desactivar un aprobador con etiquetas activas; desactive o reasigne las etiquetas primero"), { code: "23514" });
+      if (kind === "users" && options.triggerViolation === "rol" && "roles" in value) throw Object.assign(new Error("No se puede retirar el último rol elegible de un aprobador con etiquetas activas"), { code: "23514" });
+      const next = { ...prior, ...value } as CatalogRecord; records.set(`${kind}:${id}`, structuredClone(next)); return next;
+    },
     findSupplierDuplicate: async (value: { name: string; nit?: string }, exceptId?: string) => [...records.entries()].find(([key, record]) => key.startsWith("suppliers:") && record.id !== exceptId && (record.name.toLowerCase() === value.name.toLowerCase() || ("nit" in record && Boolean(value.nit) && record.nit === value.nit)))?.[1].id ?? null,
     isEligibleApprover: async () => options.eligibleApprover ?? true,
+    authUserExists: async () => options.authUserExists ?? true,
   };
   const audit = { append: async (event: AuditEvent) => { if (options.failAudit) throw new Error("audit failed"); audits.push(event); }, list: async () => [] as AuditEvent[] };
   const transaction = async <T>(_lock: string | undefined, work: (repositories: Parameters<ServiceDependencies["transactions"]["transaction"]>[1] extends (repositories: infer R) => Promise<unknown> ? R : never) => Promise<T>) => { const snapshot = structuredClone([...records.entries()]), auditSnapshot = structuredClone(audits); try { return await work({ catalogs: catalog, audit, requisitions: {} as never, orders: {} as never, expenses: {} as never, pettyCash: {} as never, consecutives: {} as never, tags: {} as never, features: { isEnabled: async () => options.transactionFeature ?? options.feature ?? false }, items: {} as never, notifications: {} as never }); } catch (error) { records.clear(); for (const [key, value] of snapshot) records.set(key, value); audits.splice(0, audits.length, ...auditSnapshot); throw error; } };
@@ -30,4 +37,49 @@ describe("CatalogService", () => {
   it("requires an active eligible approver for active tags", async () => { const invalid = deps({ eligibleApprover: false }).service; await expect(invalid.create("tags", { name: "Sin aprobador", active: true }, sixteam)).rejects.toMatchObject({ code: "INVALID_INPUT" }); await expect(invalid.create("tags", { name: "Aprobador inactivo", approverId: "approver", active: true }, sixteam)).rejects.toMatchObject({ code: "INVALID_INPUT" }); const fixture = deps(), tag = await fixture.service.create("tags", { name: "Temporal", active: false }, sixteam); await expect(fixture.service.patch("tags", tag.id, { active: true }, sixteam)).rejects.toMatchObject({ code: "INVALID_INPUT" }); });
   it("deactivates reversibly and audits redacted before/after inside the UoW", async () => { const fixture = deps(), supplier = await fixture.service.create("suppliers", { name: "Proveedor Seguro", nit: "900123", phone: "+573001234567", email: "contacto@example.test", active: true }, reviewer); const patched = await fixture.service.patch("suppliers", supplier.id, { active: false }, reviewer); expect(patched).toMatchObject({ active: false }); expect(fixture.audits.at(-1)).toMatchObject({ event: "actualizada", data: { before: { nitConfigured: true, contactConfigured: true, active: true }, after: { active: false } } }); expect(JSON.stringify(fixture.audits)).not.toContain("300123"); expect(JSON.stringify(fixture.audits)).not.toContain("example.test"); const failing = deps({ failAudit: true }); await expect(failing.service.create("suppliers", { name: "Debe revertirse", active: true }, reviewer)).rejects.toThrow("audit failed"); expect(failing.records.size).toBe(0); });
   it("clears optional data durably and permits clearing an approver only while inactive", async () => { const fixture = deps(), supplier = await fixture.service.create("suppliers", { name: "Proveedor editable", nit: "900123", phone: "+573001234567", email: "contacto@example.test", address: "Calle 1", active: true }, reviewer); await fixture.service.patch("suppliers", supplier.id, { nit: null, phone: null, email: null, address: null }, reviewer); const reloadedSupplier = fixture.records.get(`suppliers:${supplier.id}`) as Extract<CatalogRecord, { nit?: string | null }>; expect(reloadedSupplier).toMatchObject({ nit: null, phone: null, email: null, address: null }); const item = await fixture.service.create("items", { name: "Ítem editable", unit: "und", specification: "detalle", category: "obra", active: true }, reviewer); await fixture.service.patch("items", item.id, { specification: null, category: null }, reviewer); expect(fixture.records.get(`items:${item.id}`)).toMatchObject({ specification: null, category: null }); const tag = await fixture.service.create("tags", { name: "Tag editable", approverId: "eligible", active: true }, sixteam); await expect(fixture.service.patch("tags", tag.id, { approverId: null }, sixteam)).rejects.toMatchObject({ code: "INVALID_INPUT" }); await expect(fixture.service.patch("tags", tag.id, { approverId: null, active: false }, sixteam)).resolves.toMatchObject({ approverId: null, active: false }); });
+
+  // RF-002: sociedades — solo admin_sixteam y admin_mizar, sin depender del autoservicio de catálogos.
+  it("permite administrar sociedades a admin_sixteam y admin_mizar, y bloquea a los demás roles", async () => {
+    expect(canManageCatalog(mizarAdmin, "societies", false)).toBe(true);
+    expect(canManageCatalog(sixteam, "societies", false)).toBe(true);
+    expect(canManageCatalog(reviewer, "societies", true)).toBe(false);
+    const disabledFeature = deps({ feature: false });
+    await expect(disabledFeature.service.create("societies", { name: "Sociedad Norte", nit: "900-1", active: true }, mizarAdmin)).resolves.toMatchObject({ name: "Sociedad Norte" });
+    await expect(disabledFeature.service.create("societies", { name: "Otra", active: true }, reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(disabledFeature.service.create("societies", { name: "Otra", active: true }, { id: "solicitante", roles: ["solicitante"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("traduce el choque de nombre/NIT de sociedades a un conflicto claro", async () => { const race = deps({ uniqueViolation: true }); await expect(race.service.create("societies", { name: "Sociedad duplicada", active: true }, sixteam)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringMatching(/sociedad/i) }); });
+
+  // RF-004: usuarios — exclusivo de admin_sixteam; nunca crea la cuenta en auth.users.
+  it("bloquea por completo a admin_mizar en usuarios, incluido el intento de crear otro admin_sixteam", async () => {
+    expect(canManageCatalog(mizarAdmin, "users", true)).toBe(false);
+    const fixture = deps();
+    await expect(fixture.service.create("users", { id: "auth-1", name: "Usuario común", email: "comun@example.test", roles: ["solicitante"], active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // Requisito de seguridad explícito: ni siquiera intentando asignarse el rol admin_sixteam.
+    await expect(fixture.service.create("users", { id: "auth-2", name: "Intento admin", email: "intento@example.test", roles: ["admin_sixteam"], active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(fixture.records.size).toBe(0);
+  });
+  it("exige que el id ya exista en Supabase Auth y nunca crea la cuenta desde aquí", async () => {
+    const missing = deps({ authUserExists: false });
+    await expect(missing.service.create("users", { id: "no-existe-en-auth", name: "Fantasma", email: "fantasma@example.test", roles: ["solicitante"], active: true }, sixteam)).rejects.toMatchObject({ code: "AUTH_ACCOUNT_NOT_FOUND" });
+    expect(missing.records.size).toBe(0);
+    const ok = deps({ authUserExists: true });
+    await expect(ok.service.create("users", { id: "auth-real", name: "Real", email: "real@example.test", roles: ["solicitante"], active: true }, sixteam)).resolves.toMatchObject({ id: "auth-real", roles: ["solicitante"] });
+  });
+  it("audita usuarios sin nombre/correo/teléfono (PII) pero sí con roles y estado", async () => {
+    const fixture = deps(), user = await fixture.service.create("users", { id: "auth-3", name: "Ana Pérez", email: "ana.perez@example.test", phone: "+573001112233", roles: ["revisor", "aprobador"], active: true }, sixteam);
+    expect(fixture.audits.at(-1)).toMatchObject({ event: "creada", data: { after: { active: true, roles: ["aprobador", "revisor"] } } });
+    const dump = JSON.stringify(fixture.audits);
+    expect(dump).not.toContain("Ana Pérez"); expect(dump).not.toContain("ana.perez@example.test"); expect(dump).not.toContain("3001112233");
+    const patched = await fixture.service.patch("users", user.id, { roles: ["contabilidad"], active: false }, sixteam);
+    expect(patched).toMatchObject({ roles: ["contabilidad"], active: false });
+    expect(fixture.audits.at(-1)).toMatchObject({ event: "actualizada", data: { before: { active: true, roles: ["aprobador", "revisor"] }, after: { active: false, roles: ["contabilidad"] } } });
+  });
+  it("traduce a mensajes claros los triggers que protegen a un aprobador con etiquetas activas", async () => {
+    const withActiveTags = deps({ triggerViolation: "estado" }), approver = await withActiveTags.service.create("users", { id: "auth-4", name: "Aprobador", email: "aprobador@example.test", roles: ["aprobador"], active: true }, sixteam);
+    await expect(withActiveTags.service.patch("users", approver.id, { active: false }, sixteam)).rejects.toMatchObject({ code: "APPROVER_HAS_ACTIVE_TAGS" });
+    const withLastRole = deps({ triggerViolation: "rol" }), approver2 = await withLastRole.service.create("users", { id: "auth-5", name: "Aprobador 2", email: "aprobador2@example.test", roles: ["aprobador"], active: true }, sixteam);
+    await expect(withLastRole.service.patch("users", approver2.id, { roles: ["contabilidad"] }, sixteam)).rejects.toMatchObject({ code: "LAST_APPROVER_ROLE" });
+  });
+  it("traduce el correo duplicado de usuarios a un conflicto claro", async () => { const race = deps({ uniqueViolation: true }); await expect(race.service.create("users", { id: "auth-6", name: "Duplicado", email: "duplicado@example.test", roles: ["solicitante"], active: true }, sixteam)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringMatching(/usuario/i) }); });
 });

@@ -8,7 +8,7 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   const orders = { save: async (o: Order) => { const i = ordersData.findIndex((x) => x.id === o.id); if (i >= 0) ordersData[i] = o; else ordersData.push(o); }, list: async () => ordersData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return actor.id === "daniel" ? ordersData : ordersData.filter((o) => o.requisitionId.includes(actor.id)); }, listByRequisition: async (id: string) => ordersData.filter((o) => o.requisitionId === id), get: async (id: string) => ordersData.find((o) => o.id === id) ?? null };
   const expenses = { get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e), saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); }, list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return actor.id === "daniel" ? expensesData : []; }, listByReference: async (id: string) => expensesData.filter((e) => e.referenceId === id || ordersData.some((o) => o.id === e.referenceId && o.requisitionId === id)) };
   const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, tags = { getApproverId: async (tag: string) => tag === "tag" ? "nelson" : null }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
-  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty }, catalogs = { create: async (_kind: string, value: never) => value, get: async () => null, update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, isEligibleApprover: async () => true };
+  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty }, catalogs = { create: async (_kind: string, value: never) => value, get: async () => null, update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, isEligibleApprover: async () => true, authUserExists: async () => true };
   const transactions = { transaction: async <T>(_id: string | undefined, work: (repositories: Parameters<ServiceDependencies["transactions"]["transaction"]>[1] extends (repositories: infer R) => Promise<unknown> ? R : never) => Promise<T>) => {
     const snapshot = { req: structuredClone([...req.entries()]), orders: structuredClone(ordersData), expenses: structuredClone(expensesData), petty: structuredClone(petty), audits: structuredClone(audits), shares: structuredClone(shares), proposed: structuredClone([...proposed.entries()]), notifications: structuredClone(notificationData) };
     try { return await work({ requisitions, orders, expenses, pettyCash, audit, consecutives, tags, features, items: itemCatalog, catalogs, notifications }); }
@@ -77,5 +77,47 @@ describe("ProcurementService", () => {
     expect(approvalDeps.expensesData).toHaveLength(0);
     expect(approvalDeps.notificationData).toHaveLength(1);
     expect(approvalDeps.audits.some((entry) => entry.event === "aprobada")).toBe(false);
+  });
+  it("blocks returnForCorrection and decline/review at the service level for an MCP-origin actor, not just hasPermission", async () => {
+    // Hallazgo de auditoría adversarial (ver AGENTS.md): mcpForbidden en lib/domain/rules.ts ya bloquea
+    // "requisition:approve", "requisition:return" y "requisition:review" dentro de hasPermission (ver
+    // tests/unit/domain.test.ts), y procurement-service.test.ts ya ejercita approve() de punta a punta con
+    // origin "mcp". Pero returnForCorrection y decline/review nunca se habían ejercitado end-to-end contra
+    // ProcurementService con un actor origin "mcp": esta prueba cierra ese hueco a nivel de servicio real.
+    const returnDeps = fakeDeps(), returnService = new ProcurementService(returnDeps), toReturn = await reviewed(returnService);
+    await expect(returnService.returnForCorrection(toReturn.id, "corrige esto", { ...approver, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await returnService.getRequisition(toReturn.id, reviewer)).status).toBe("en_aprobacion"); // sin cambios: nunca llegó a la transacción
+
+    const declineDeps = fakeDeps(), declineService = new ProcurementService(declineDeps);
+    const toDecline = await declineService.create({ type: "compra", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await declineService.startReview(toDecline.id, reviewer);
+    await expect(declineService.decline(toDecline.id, "motivo", { ...reviewer, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(declineService.review(toDecline.id, { tagId: "tag", items }, { ...reviewer, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await declineService.getRequisition(toDecline.id, reviewer)).status).toBe("en_revision"); // ni declinada ni enrutada
+    expect(declineDeps.audits.map((a) => a.event)).not.toContain("declinada");
+    expect(declineDeps.audits.map((a) => a.event)).not.toContain("revisada");
+  });
+  it("RF-1102/RF-706/RF-1103: dashboard() adds an attention queue, recent activity and expense breakdowns scoped to the actor", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const inReview = await service.create({ type: "compra", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(inReview.id, reviewer);
+    const forApproval = await reviewed(service);
+    const approved = await service.approve(forApproval.id, approver, true);
+    const dashboard = await service.dashboard("2026-08", reviewer);
+    // "daniel" (revisor) debe ver la requisición todavía en revisión y las dos órdenes recién generadas
+    // esperando confirmación de cumplimiento, pero no la que ya quedó aprobada (no requiere su acción).
+    expect(dashboard.attentionQueue).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "requisicion", id: inReview.id, status: "en_revision", action: "Revisar" }),
+      expect.objectContaining({ kind: "orden", id: approved.orders[0].id, status: "generada", action: "Confirmar cumplimiento" }),
+      expect.objectContaining({ kind: "orden", id: approved.orders[1].id, status: "generada", action: "Confirmar cumplimiento" }),
+    ]));
+    expect(dashboard.attentionQueue?.some((item) => item.id === forApproval.id)).toBe(false);
+    // El doble de prueba nunca puebla updatedAt (solo lo hace el adaptador Postgres real): la actividad
+    // reciente solo puede traer los gastos, que sí llevan fecha en el dominio.
+    expect(dashboard.recentActivity).toHaveLength(2);
+    expect(dashboard.recentActivity?.every((item) => item.kind === "gasto")).toBe(true);
+    expect(dashboard.expenseByWork).toEqual([{ key: "work", total: 476 }]);
+    expect(dashboard.expenseByTag).toEqual([{ key: "tag", total: 476 }]);
+    expect(dashboard.expenseByPeriod).toEqual([{ key: "2026-08", total: 476 }]);
   });
 });

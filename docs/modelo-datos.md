@@ -1,6 +1,6 @@
 # Modelo de datos y controles — Plataforma Mizar
 
-La fuente de verdad versionada está formada por la migración núcleo [`202608240001_core_compras.sql`](../supabase/migrations/202608240001_core_compras.sql), el expediente privado de proveedor [`202608240002_proveedores_expediente_privado.sql`](../supabase/migrations/202608240002_proveedores_expediente_privado.sql) y los adjuntos operativos privados [`202608240003_adjuntos_genericos_privados.sql`](../supabase/migrations/202608240003_adjuntos_genericos_privados.sql). No se ha aplicado ni desplegado ningún proyecto Supabase desde este repositorio.
+La fuente de verdad versionada está formada por la migración núcleo [`202608240001_core_compras.sql`](../supabase/migrations/202608240001_core_compras.sql), el expediente privado de proveedor [`202608240002_proveedor_expediente_privado.sql`](../supabase/migrations/202608240002_proveedor_expediente_privado.sql) y los adjuntos operativos privados [`202608240003_adjuntos_genericos_privados.sql`](../supabase/migrations/202608240003_adjuntos_genericos_privados.sql). No se ha aplicado ni desplegado ningún proyecto Supabase desde este repositorio.
 
 ## Límites del modelo
 

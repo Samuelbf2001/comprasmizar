@@ -1,0 +1,118 @@
+name: Respaldo Postgres
+
+# RF-1004: respaldo automático diario de la base de datos real, cifrado en reposo,
+# con verificación mínima de integridad para que un dump corrupto haga fallar el
+# workflow (y GitHub notifique) en lugar de descubrirse el día de una restauración.
+#
+# Por qué bash y no los .ps1 de ops/: ops/backup-postgres.ps1 y ops/restore-verify.ps1
+# están pensados para la copia fría persistente en el VPS del operador (con purga por
+# antigüedad de un directorio que sobrevive entre ejecuciones). Un runner de GitHub
+# Actions es efímero y no tiene ese directorio; reutilizar los .ps1 con pwsh exigiría
+# parametrizarlos para saltarse esa purga sin aportar nada. Ver docs/runbook-operacion.md.
+#
+# Secretos de GitHub Actions que hay que crear antes de que este workflow funcione
+# (Settings → Secrets and variables → Actions):
+#   DATABASE_URL                  Cadena de conexión DIRECTA a Postgres (puerto 5432,
+#                                  no el pooler transaccional de pgbouncer: pg_dump
+#                                  necesita sesión completa). Rol con lectura de todo
+#                                  el esquema `public` (el de Supabase sirve).
+#   BACKUP_ENCRYPTION_PASSPHRASE   Frase de cifrado simétrico del dump. Guardarla en el
+#                                  gestor de secretos del equipo: sin ella el backup
+#                                  cifrado es irrecuperable.
+
+on:
+  schedule:
+    # 03:00 hora Colombia (America/Bogota, UTC-5 todo el año, sin horario de verano).
+    - cron: "0 8 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: respaldo-postgres
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Verificar que los secretos requeridos existen
+        run: |
+          set -euo pipefail
+          faltan=()
+          [ -z "${DATABASE_URL:-}" ] && faltan+=("DATABASE_URL")
+          [ -z "${BACKUP_ENCRYPTION_PASSPHRASE:-}" ] && faltan+=("BACKUP_ENCRYPTION_PASSPHRASE")
+          if [ "${#faltan[@]}" -gt 0 ]; then
+            echo "::error::Faltan secretos de Actions: ${faltan[*]}. Ver comentario al inicio de backup.yml."
+            exit 1
+          fi
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+
+      # Ubuntu 24.04 (ubuntu-latest) trae postgresql-client 16 por defecto. La base
+      # real es Postgres 17: un pg_dump más viejo que el servidor puede no reconocer
+      # objetos nuevos del formato custom, así que se instala el 17 del repositorio
+      # oficial de PGDG en lugar de confiar en el paquete de la distro.
+      - name: Instalar pg_dump/pg_restore 17 (coincide con la base real)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl ca-certificates gnupg lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          pg_dump --version
+
+      - name: Generar el dump (pg_dump, formato custom)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          dump="mizar-${stamp}.dump"
+          pg_dump --format=custom --no-owner --no-acl --file="$dump" "$DATABASE_URL"
+          sha256sum "$dump" > "$dump.sha256"
+          echo "DUMP_PATH=$dump" >> "$GITHUB_ENV"
+          echo "DUMP_SHA_PATH=$dump.sha256" >> "$GITHUB_ENV"
+
+      # Verificación mínima, no una restauración real: lee el catálogo (TOC) del
+      # archivo. Un dump truncado o corrupto hace fallar pg_restore --list, y con
+      # eso falla el step y el workflow entero (GitHub avisa por correo/Actions).
+      # La restauración de prueba de verdad sigue siendo manual y obligatoria antes
+      # de producción: ver docs/runbook-operacion.md.
+      - name: Verificar integridad del dump (pg_restore --list)
+        run: |
+          set -euo pipefail
+          pg_restore --list "$DUMP_PATH" > /dev/null
+          echo "Dump legible: $(du -h "$DUMP_PATH" | cut -f1)."
+
+      - name: Cifrar el dump antes de subirlo
+        env:
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          gpg --batch --yes --symmetric --cipher-algo AES256 \
+            --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" \
+            --output "$DUMP_PATH.gpg" "$DUMP_PATH"
+          rm -f "$DUMP_PATH"
+          echo "DUMP_ENC_PATH=$DUMP_PATH.gpg" >> "$GITHUB_ENV"
+
+      # El respaldo automatizado real es este artifact cifrado (retención corta:
+      # es una red de seguridad adicional, no el archivo histórico). La retención
+      # de 35 días de la copia fría en el VPS y los 30 días contractuales de
+      # Supabase siguen siendo la fuente de retención larga documentada en el runbook.
+      - name: Subir el dump cifrado como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mizar-backup-postgres
+          path: |
+            ${{ env.DUMP_ENC_PATH }}
+            ${{ env.DUMP_SHA_PATH }}
+          retention-days: 14
+          if-no-files-found: error

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, assertPermission, assertTransition, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canTransition, groupOrderItems, hasPermission, nextConsecutive, normalizeItemName, orderTypeFor, sumLines, validateShares } from "../../lib/domain";
+import { DomainError, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canTransition, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeItemName, orderTypeFor, sumLines, validateShares, type Order, type Requisition } from "../../lib/domain";
 
 const line = { id: "i1", quantity: 2, unit: "und", unitBase: 100, unitIva: 19, unitTotal: 119 };
 describe("domain permissions", () => {
@@ -69,5 +69,58 @@ describe("domain calculations", () => {
   it("returns period metrics", () => {
     const result = calculateDashboard([{ id: "e", workId: "w", origin: "requisicion", referenceId: "r", date: "2026-08-02", base: 10, iva: 2, total: 12, period: "2026-08" }], [{ id: "o", consecutive: "OC", type: "OC", requisitionId: "r", itemIds: [], status: "no_cumplida" }, { id: "o2", consecutive: "OC2", type: "OC", requisitionId: "r", itemIds: [], status: "generada" }], ["en_revision"], "2026-08");
     expect(result.periodExpense).toBe(12); expect(result.pendingOrders).toBe(2); expect(result.byStatus.en_revision).toBe(1);
+  });
+});
+describe("RF-1102 dashboard queue and recent activity", () => {
+  const req = (overrides: Partial<Requisition>): Requisition => ({ id: "r1", consecutive: "REQ-2026-0001", type: "compra", workId: "work-a", channel: "web", requiredDate: "2026-08-30", status: "enviada", items: [], ...overrides });
+  const ord = (overrides: Partial<Order>): Order => ({ id: "o1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "r1", itemIds: [], status: "generada", ...overrides });
+  it("gives a revisor only requisitions awaiting review plus orders awaiting fulfillment confirmation, sorted by consecutive desc", () => {
+    const requisitions = [req({ id: "r1", consecutive: "REQ-2026-0001", status: "aprobada" }), req({ id: "r2", consecutive: "REQ-2026-0002", status: "enviada" }), req({ id: "r3", consecutive: "REQ-2026-0003", status: "en_revision" })];
+    const orders = [ord({ id: "o1", consecutive: "OC-2026-0001", status: "generada" }), ord({ id: "o2", consecutive: "OC-2026-0002", status: "cumplida" })];
+    const queue = buildAttentionQueue(requisitions, orders, { id: "daniel", roles: ["revisor"] });
+    expect(queue.map((item) => item.id)).toEqual(["r3", "r2", "o1"]);
+    expect(queue.every((item) => item.action === (item.kind === "orden" ? "Confirmar cumplimiento" : "Revisar"))).toBe(true);
+  });
+  it("gives an approver only requisitions in en_aprobacion assigned to them, never someone else's", () => {
+    const requisitions = [req({ id: "r1", consecutive: "REQ-2026-0001", status: "en_aprobacion", approverId: "nelson" }), req({ id: "r2", consecutive: "REQ-2026-0002", status: "en_aprobacion", approverId: "other" })];
+    const queue = buildAttentionQueue(requisitions, [], { id: "nelson", roles: ["aprobador"] });
+    expect(queue).toEqual([{ kind: "requisicion", id: "r1", consecutive: "REQ-2026-0001", workId: "work-a", status: "en_aprobacion", action: "Aprobar" }]);
+  });
+  it("gives a solicitante only their own returned requisitions, needing correction", () => {
+    const requisitions = [req({ id: "r1", consecutive: "REQ-2026-0001", status: "devuelta", requesterId: "sol" }), req({ id: "r2", consecutive: "REQ-2026-0002", status: "devuelta", requesterId: "other" })];
+    const queue = buildAttentionQueue(requisitions, [], { id: "sol", roles: ["solicitante"] });
+    expect(queue).toEqual([{ kind: "requisicion", id: "r1", consecutive: "REQ-2026-0001", workId: "work-a", status: "devuelta", action: "Corregir" }]);
+  });
+  it("gives admin_sixteam the union across review, approval (any approver) and order confirmation", () => {
+    const requisitions = [req({ id: "r1", consecutive: "REQ-2026-0001", status: "enviada" }), req({ id: "r2", consecutive: "REQ-2026-0002", status: "en_aprobacion", approverId: "someone-else" })];
+    const orders = [ord({ id: "o1", consecutive: "OC-2026-0001", status: "generada" })];
+    const queue = buildAttentionQueue(requisitions, orders, { id: "daniel", roles: ["admin_sixteam"] });
+    expect(queue.map((item) => item.id).sort()).toEqual(["o1", "r1", "r2"]);
+  });
+  it("leaves contabilidad with an empty queue: it has no review/approve/order-update permission", () => {
+    const requisitions = [req({ status: "enviada" }), req({ status: "en_aprobacion", approverId: "x" })];
+    expect(buildAttentionQueue(requisitions, [ord({ status: "generada" })], { id: "c", roles: ["contabilidad"] })).toEqual([]);
+  });
+  it("orders recent activity by timestamp desc across requisitions, orders and expenses, and caps to the limit", () => {
+    const requisitions = [req({ id: "r1", updatedAt: "2026-08-20T10:00:00.000Z" }), req({ id: "r2", updatedAt: "2026-08-22T10:00:00.000Z" })];
+    const orders = [ord({ id: "o1", updatedAt: "2026-08-21T10:00:00.000Z" })];
+    const expenses = [{ id: "e1", workId: "work-a", origin: "requisicion" as const, referenceId: "r1", date: "2026-08-23", base: 100, iva: 19, total: 119, period: "2026-08" }];
+    const activity = buildRecentActivity(requisitions, orders, expenses, 3);
+    expect(activity.map((item) => item.id)).toEqual(["e1", "r2", "o1"]);
+  });
+  it("omits requisitions/orders without a populated updatedAt (in-memory objects that never round-tripped through Postgres)", () => {
+    const activity = buildRecentActivity([req({ id: "r1" })], [ord({ id: "o1" })], []);
+    expect(activity).toEqual([]);
+  });
+  it("groups expenses by work, tag (using '' for missing tagId) and period, most recent months last", () => {
+    const expenses = [
+      { id: "e1", workId: "a", origin: "requisicion" as const, referenceId: "r1", tagId: "t1", date: "2026-07-01", base: 100, iva: 0, total: 100, period: "2026-07" },
+      { id: "e2", workId: "a", origin: "requisicion" as const, referenceId: "r2", date: "2026-08-01", base: 50, iva: 0, total: 50, period: "2026-08" },
+      { id: "e3", workId: "b", origin: "requisicion" as const, referenceId: "r3", tagId: "t1", date: "2026-08-02", base: 30, iva: 0, total: 30, period: "2026-08" },
+    ];
+    expect(groupExpenseByWork(expenses)).toEqual([{ key: "a", total: 150 }, { key: "b", total: 30 }]);
+    expect(groupExpenseByTag(expenses)).toEqual([{ key: "t1", total: 130 }, { key: "", total: 50 }]);
+    expect(groupExpenseByPeriod(expenses)).toEqual([{ key: "2026-07", total: 100 }, { key: "2026-08", total: 80 }]);
+    expect(groupExpenseByPeriod(expenses, 1)).toEqual([{ key: "2026-08", total: 80 }]);
   });
 });

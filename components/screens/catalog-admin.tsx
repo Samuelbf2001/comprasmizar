@@ -13,7 +13,13 @@ import {
 import type { Role } from "../../lib/demo-data";
 import { SectionTitle } from "./screen-primitives";
 
-type CatalogKind = "works" | "tags" | "items" | "suppliers";
+type CatalogKind =
+  | "works"
+  | "tags"
+  | "items"
+  | "suppliers"
+  | "societies"
+  | "users";
 type CatalogRecord = {
   id: string;
   name: string;
@@ -30,6 +36,8 @@ type CatalogRecord = {
   address?: string;
   societyName?: string;
   approverName?: string;
+  // RF-004: roles asignados a un usuario del catálogo (no confundir con el rol de sesión `role: Role`).
+  roles?: string[];
 };
 type CatalogData = {
   works: CatalogRecord[];
@@ -40,15 +48,40 @@ type CatalogData = {
   societies?: Array<{ id: string; name: string }>;
   approvers?: Array<{ id: string; name: string }>;
   access?: Partial<Record<CatalogKind, boolean>>;
+  // RF-002/RF-004: listados completos (incluyen inactivos) que sirve /api/catalogs/manage para las
+  // pestañas de administración; distintos de `societies` (activas, para el selector de obras).
+  societyRecords?: CatalogRecord[];
+  userRecords?: CatalogRecord[];
+  // RF-004: admin_mizar puede leer usuarios aunque `access.users` sea false (solo escribe admin_sixteam).
+  canReadUsers?: boolean;
 };
-type FormValues = Record<string, string | boolean>;
+type FormValues = Record<string, string | boolean | string[]>;
 
 const labels: Record<CatalogKind, string> = {
   works: "Obras",
   tags: "Etiquetas",
   items: "Ítems",
   suppliers: "Proveedores",
+  societies: "Sociedades",
+  users: "Usuarios",
 };
+// El título "Nuevo X" por defecto solo quita la "s" final de labels[kind] (falla en géneros y en
+// plurales irregulares como "Sociedades"); para las dos pestañas nuevas se declara explícito en vez
+// de heredar ese atajo.
+const NEW_RECORD_LABEL: Partial<Record<CatalogKind, string>> = {
+  societies: "Nueva sociedad",
+  users: "Nuevo usuario",
+};
+// RF-004: debe coincidir exactamente con el tipo Role de lib/domain (lib/domain/model.ts) y con
+// `roleLiteral` en app/api/catalogs/route.ts.
+const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "solicitante", label: "Solicitante" },
+  { value: "revisor", label: "Revisor" },
+  { value: "aprobador", label: "Aprobador" },
+  { value: "contabilidad", label: "Contabilidad" },
+  { value: "admin_mizar", label: "Administrador Mizar" },
+  { value: "admin_sixteam", label: "Administrador Sixteam" },
+];
 const emptyForm: FormValues = {
   name: "",
   societyId: "",
@@ -60,10 +93,23 @@ const emptyForm: FormValues = {
   phone: "",
   email: "",
   address: "",
+  id: "",
+  roles: [],
 };
+function rolesFromForm(values: FormValues): string[] {
+  return Array.isArray(values.roles) ? values.roles : [];
+}
 
+// RF-002/RF-004: la clave de estado real difiere del `kind` para sociedades/usuarios (ver CatalogData);
+// rowsFor y las actualizaciones optimistas de save/toggle comparten este único mapeo para no divergir.
+function fieldFor(kind: CatalogKind): "societyRecords" | "userRecords" | Exclude<CatalogKind, "societies" | "users"> {
+  if (kind === "societies") return "societyRecords";
+  if (kind === "users") return "userRecords";
+  return kind;
+}
 function rowsFor(data: CatalogData, kind: CatalogKind) {
-  return Array.isArray(data[kind]) ? data[kind] : [];
+  const rows = data[fieldFor(kind)];
+  return Array.isArray(rows) ? rows : [];
 }
 function isActive(row: CatalogRecord) {
   return (
@@ -99,11 +145,40 @@ function canManageKind(
         ? role === "Administrador Sixteam" ||
           role === "Revisor" ||
           (role === "Administrador Mizar" && featureEnabled)
-        : role === "Administrador Sixteam" ||
-          (role === "Administrador Mizar" && featureEnabled);
+        : // RF-004: administrar usuarios es exclusivo de Administrador Sixteam, sin depender del
+          // autoservicio de catálogos (igual que sociedades, ver más abajo).
+          kind === "users"
+          ? role === "Administrador Sixteam"
+          : // RF-002: sociedades se comparte entre Sixteam y Mizar de forma incondicional.
+            kind === "societies"
+            ? role === "Administrador Sixteam" || role === "Administrador Mizar"
+            : role === "Administrador Sixteam" ||
+              (role === "Administrador Mizar" && featureEnabled);
   return data.access && kind in data.access
     ? data.access[kind] === true
     : roleAllowed;
+}
+/**
+ * RF-004: a diferencia de los demás catálogos, "users" tiene un nivel de acceso intermedio:
+ * Administrador Mizar puede CONSULTAR (nunca escribir) mientras que canManageKind sigue siendo la
+ * única puerta para crear/editar/activar. `data.canReadUsers` es la señal autoritativa que calcula el
+ * backend (app/api/catalogs/manage/route.ts, `access.users || actor.roles.includes("admin_mizar")`);
+ * deliberadamente NO se adivina un valor por rol cuando falta (p. ej. el estado de error inicial de
+ * ConnectedScreen con `emptyCatalogs`, o un doble de prueba incompleto): cierra en falso, igual que el
+ * resto de la autorización de esta plataforma.
+ */
+function canViewKind(
+  kind: CatalogKind,
+  role: Role,
+  data: CatalogData,
+  featureEnabled = dataFeatureEnabled(data),
+) {
+  if (kind === "users")
+    return (
+      canManageKind(kind, role, data, featureEnabled) ||
+      data.canReadUsers === true
+    );
+  return canManageKind(kind, role, data, featureEnabled);
 }
 function readError(value: unknown, fallback: string) {
   return value &&
@@ -160,6 +235,23 @@ function payloadFor(
       if (editing || String(values[key] || "").trim())
         data[key] = String(values[key] || "").trim() || null;
   }
+  if (kind === "societies") {
+    const nit = String(values.nit || "").trim();
+    if (editing || nit) data.nit = nit || null;
+  }
+  if (kind === "users") {
+    // RF-004: id/correo son inmutables tras el alta (el correo vive en Supabase Auth, no en este
+    // catálogo); el esquema de PATCH ni siquiera acepta esas claves, así que solo se envían al crear.
+    if (!editing) {
+      data.id = String(values.id || "").trim();
+      data.email = String(values.email || "").trim();
+    }
+    const phone = String(values.phone || "").trim();
+    if (editing || phone) data.phone = phone || null;
+    // "roles" en un PATCH es el conjunto final deseado (reemplaza, no incrementa), igual que en el
+    // servicio (ver CatalogService.patch / RF-004); por eso siempre se envía el array completo.
+    data.roles = rolesFromForm(values);
+  }
   if (
     kind === "tags" &&
     editing &&
@@ -189,14 +281,18 @@ export function ConnectedCatalogAdmin({
         ? "tags"
         : pathname.startsWith("/catalogos/items")
           ? "items"
-          : undefined;
+          : pathname.startsWith("/catalogos/sociedades")
+            ? "societies"
+            : pathname.startsWith("/catalogos/usuarios")
+              ? "users"
+              : undefined;
   const initialFeatureEnabled = dataFeatureEnabled(initialData);
   const firstAllowed = (Object.keys(labels) as CatalogKind[]).find((option) =>
-    canManageKind(option, role, initialData, initialFeatureEnabled),
+    canViewKind(option, role, initialData, initialFeatureEnabled),
   );
   const initialKind: CatalogKind =
     (requestedKind &&
-      canManageKind(requestedKind, role, initialData, initialFeatureEnabled) &&
+      canViewKind(requestedKind, role, initialData, initialFeatureEnabled) &&
       requestedKind) ||
     firstAllowed ||
     requestedKind ||
@@ -211,6 +307,7 @@ export function ConnectedCatalogAdmin({
   const [success, setSuccess] = useState("");
 
   const featureEnabled = dataFeatureEnabled(data);
+  const canView = canViewKind(kind, role, data, featureEnabled);
   const canManage = canManageKind(kind, role, data, featureEnabled);
   const rows = useMemo(() => rowsFor(data, kind), [data, kind]);
   const openCreate = () => {
@@ -235,7 +332,7 @@ export function ConnectedCatalogAdmin({
     setForm(emptyForm);
     setFormOpen(false);
   };
-  const update = (key: string, value: string | boolean) =>
+  const update = (key: string, value: string | boolean | string[]) =>
     setForm((current) => ({ ...current, [key]: value }));
   const validate = () => {
     const name = String(form.name || "").trim();
@@ -266,13 +363,13 @@ export function ConnectedCatalogAdmin({
     )
       return "La especificación admite 1000 caracteres y la categoría 100.";
     if (
-      kind === "suppliers" &&
+      (kind === "suppliers" || kind === "societies") &&
       String(form.nit || "").trim() &&
       (String(form.nit).length < 3 || String(form.nit).length > 32)
     )
       return "El NIT debe tener entre 3 y 32 caracteres.";
     if (
-      kind === "suppliers" &&
+      (kind === "suppliers" || kind === "users") &&
       String(form.phone || "").trim() &&
       !/^\+?[0-9 ()-]{7,20}$/.test(String(form.phone))
     )
@@ -283,6 +380,17 @@ export function ConnectedCatalogAdmin({
       !/^\S+@\S+\.\S+$/.test(String(form.email))
     )
       return "Ingresa un correo válido o deja el campo vacío.";
+    if (kind === "users" && !editing) {
+      // RF-004: el id debe ser el de una cuenta que ya existe en Supabase Auth; esta plataforma nunca
+      // la crea. El servicio vuelve a validarlo (AUTH_ACCOUNT_NOT_FOUND) — esto solo evita un viaje
+      // redondo con un valor que ni siquiera tiene forma de UUID.
+      if (!UUID_RE.test(String(form.id || "").trim()))
+        return "El id de usuario debe ser el UUID de una cuenta existente en Supabase Auth.";
+      if (!/^\S+@\S+\.\S+$/.test(String(form.email || "")))
+        return "Ingresa un correo válido.";
+    }
+    if (kind === "users" && rolesFromForm(form).length === 0)
+      return "Selecciona al menos un rol.";
     return "";
   };
   const save = async (event: FormEvent) => {
@@ -314,7 +422,7 @@ export function ConnectedCatalogAdmin({
       } as CatalogRecord;
       setData((current) => ({
         ...current,
-        [kind]: editing
+        [fieldFor(kind)]: editing
           ? rowsFor(current, kind).map((item) =>
               item.id === row.id ? row : item,
             )
@@ -349,7 +457,7 @@ export function ConnectedCatalogAdmin({
       });
       setData((current) => ({
         ...current,
-        [kind]: rowsFor(current, kind).map((item) =>
+        [fieldFor(kind)]: rowsFor(current, kind).map((item) =>
           item.id === row.id
             ? {
                 ...item,
@@ -380,11 +488,15 @@ export function ConnectedCatalogAdmin({
   const blockedReason =
     kind === "items"
       ? "Los ítems solo pueden administrarse con item:manage (Revisor o Administrador Sixteam)."
-      : role === "Administrador Mizar" && !featureEnabled
-        ? "El autoservicio de Administrador Mizar está bloqueado hasta habilitar el módulo catalogos_admin_mizar."
-        : kind === "suppliers"
-          ? "Necesitas supplier:manage para administrar proveedores."
-          : "Necesitas catalog:manage para administrar este catálogo.";
+      : kind === "users"
+        ? "La administración de usuarios es exclusiva de Administrador Sixteam. Administrador Mizar puede consultarla en modo lectura; el resto de roles no tiene acceso."
+        : kind === "societies"
+          ? "Las sociedades solo pueden administrarse desde Administrador Mizar o Administrador Sixteam."
+          : role === "Administrador Mizar" && !featureEnabled
+            ? "El autoservicio de Administrador Mizar está bloqueado hasta habilitar el módulo catalogos_admin_mizar."
+            : kind === "suppliers"
+              ? "Necesitas supplier:manage para administrar proveedores."
+              : "Necesitas catalog:manage para administrar este catálogo.";
   return (
     <>
       <SectionTitle
@@ -399,7 +511,7 @@ export function ConnectedCatalogAdmin({
         aria-label="Catálogos administrables"
       >
         {(Object.keys(labels) as CatalogKind[]).map((option) => {
-          const allowed = canManageKind(option, role, data, featureEnabled);
+          const allowed = canViewKind(option, role, data, featureEnabled);
           return (
             <button
               key={option}
@@ -424,7 +536,7 @@ export function ConnectedCatalogAdmin({
           );
         })}
       </div>
-      {!canManage ? (
+      {!canView ? (
         <section
           className="panel catalog-access-gate"
           id="catalog-admin-panel"
@@ -458,14 +570,22 @@ export function ConnectedCatalogAdmin({
                   : "No hay registros en este catálogo."}
               </p>
             </div>
-            <button
-              className="button button-dark"
-              type="button"
-              onClick={openCreate}
-            >
-              <Plus size={15} /> Nuevo registro
-            </button>
+            {canManage && (
+              <button
+                className="button button-dark"
+                type="button"
+                onClick={openCreate}
+              >
+                <Plus size={15} /> Nuevo registro
+              </button>
+            )}
           </div>
+          {!canManage && (
+            <p className="catalog-readonly-note" role="note">
+              Modo lectura: la administración de usuarios es exclusiva de
+              Administrador Sixteam.
+            </p>
+          )}
           {feedback && (
             <p className="field-error catalog-feedback" role="alert">
               {feedback}
@@ -476,7 +596,7 @@ export function ConnectedCatalogAdmin({
               {success}
             </p>
           )}
-          {formOpen ? (
+          {formOpen && canManage ? (
             <CatalogForm
               kind={kind}
               values={form}
@@ -521,6 +641,13 @@ export function ConnectedCatalogAdmin({
                       <>
                         <th>NIT</th>
                         <th>Contacto</th>
+                      </>
+                    )}
+                    {kind === "societies" && <th>NIT</th>}
+                    {kind === "users" && (
+                      <>
+                        <th>Correo</th>
+                        <th>Roles</th>
                       </>
                     )}
                     <th>Estado</th>
@@ -573,6 +700,22 @@ export function ConnectedCatalogAdmin({
                           <td>{row.email || row.phone || "—"}</td>
                         </>
                       )}
+                      {kind === "societies" && <td>{row.nit || "—"}</td>}
+                      {kind === "users" && (
+                        <>
+                          <td>{row.email || "—"}</td>
+                          <td>
+                            {(row.roles ?? [])
+                              .map(
+                                (value) =>
+                                  ROLE_OPTIONS.find(
+                                    (option) => option.value === value,
+                                  )?.label ?? value,
+                              )
+                              .join(", ") || "—"}
+                          </td>
+                        </>
+                      )}
                       <td>
                         <span
                           className={`badge ${isActive(row) ? "badge-success" : "badge-muted"}`}
@@ -581,28 +724,34 @@ export function ConnectedCatalogAdmin({
                         </span>
                       </td>
                       <td className="align-right">
-                        <button
-                          className="icon-button"
-                          type="button"
-                          aria-label={`Editar ${row.name}`}
-                          disabled={saving}
-                          onClick={() => openEdit(row)}
-                        >
-                          <Edit3 size={15} />
-                        </button>
-                        <button
-                          className="icon-button"
-                          type="button"
-                          aria-label={`${actionLabel(row)} ${row.name}`}
-                          disabled={saving}
-                          onClick={() => void toggle(row)}
-                        >
-                          {isActive(row) ? (
-                            <ToggleRight size={17} />
-                          ) : (
-                            <ToggleLeft size={17} />
-                          )}
-                        </button>
+                        {canManage ? (
+                          <>
+                            <button
+                              className="icon-button"
+                              type="button"
+                              aria-label={`Editar ${row.name}`}
+                              disabled={saving}
+                              onClick={() => openEdit(row)}
+                            >
+                              <Edit3 size={15} />
+                            </button>
+                            <button
+                              className="icon-button"
+                              type="button"
+                              aria-label={`${actionLabel(row)} ${row.name}`}
+                              disabled={saving}
+                              onClick={() => void toggle(row)}
+                            >
+                              {isActive(row) ? (
+                                <ToggleRight size={17} />
+                              ) : (
+                                <ToggleLeft size={17} />
+                              )}
+                            </button>
+                          </>
+                        ) : (
+                          <span className="table-sub">Solo lectura</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -635,7 +784,7 @@ function CatalogForm({
   approverRequired: boolean;
   saving: boolean;
   feedback: string;
-  update: (key: string, value: string | boolean) => void;
+  update: (key: string, value: string | boolean | string[]) => void;
   onSubmit: (event: FormEvent) => void;
   onCancel: () => void;
   societies: Array<{ id: string; name: string }>;
@@ -651,7 +800,8 @@ function CatalogForm({
           <h3>
             {editing
               ? "Editar registro"
-              : `Nuevo ${labels[kind].toLowerCase().slice(0, -1)}`}
+              : (NEW_RECORD_LABEL[kind] ??
+                `Nuevo ${labels[kind].toLowerCase().slice(0, -1)}`)}
           </h3>
           <p className="panel-sub">
             La API valida duplicados y permisos antes de guardar.
@@ -855,6 +1005,104 @@ function CatalogForm({
                 onChange={(event) => update("address", event.target.value)}
               />
             </label>
+          </>
+        )}
+        {kind === "societies" && (
+          <label className="field">
+            <span>
+              NIT <small>opcional</small>
+            </span>
+            <input
+              value={String(values.nit || "")}
+              maxLength={32}
+              onChange={(event) => update("nit", event.target.value)}
+            />
+          </label>
+        )}
+        {kind === "users" && (
+          <>
+            {!editing && (
+              <label className="field field-wide">
+                <span>
+                  Id de usuario (Supabase Auth) <em>*</em>
+                </span>
+                <input
+                  value={String(values.id || "")}
+                  maxLength={36}
+                  required
+                  placeholder="00000000-0000-4000-8000-000000000000"
+                  aria-invalid={Boolean(
+                    feedback && !UUID_RE.test(String(values.id || "").trim()),
+                  )}
+                  onChange={(event) => update("id", event.target.value)}
+                />
+                <small>
+                  Debe existir previamente en Supabase Auth; esta plataforma
+                  nunca crea la cuenta, solo la vincula.
+                </small>
+              </label>
+            )}
+            {!editing && (
+              <label className="field">
+                <span>
+                  Correo <em>*</em>
+                </span>
+                <input
+                  type="email"
+                  required
+                  value={String(values.email || "")}
+                  aria-invalid={Boolean(
+                    feedback &&
+                      !/^\S+@\S+\.\S+$/.test(String(values.email || "")),
+                  )}
+                  onChange={(event) => update("email", event.target.value)}
+                />
+              </label>
+            )}
+            <label className="field">
+              <span>
+                Teléfono <small>opcional</small>
+              </span>
+              <input
+                value={String(values.phone || "")}
+                maxLength={20}
+                inputMode="tel"
+                onChange={(event) => update("phone", event.target.value)}
+              />
+            </label>
+            <fieldset className="field field-wide catalog-roles">
+              <legend>
+                Roles <em>*</em>
+              </legend>
+              <div className="catalog-roles-grid">
+                {ROLE_OPTIONS.map((option) => {
+                  const selected = rolesFromForm(values);
+                  const checked = selected.includes(option.value);
+                  return (
+                    <label key={option.value} className="checkbox-field">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) =>
+                          update(
+                            "roles",
+                            event.target.checked
+                              ? [...selected, option.value]
+                              : selected.filter((value) => value !== option.value),
+                          )
+                        }
+                      />
+                      {option.label}
+                    </label>
+                  );
+                })}
+              </div>
+              {feedback && rolesFromForm(values).length === 0 && (
+                <small className="field-error">
+                  Selecciona al menos un rol.
+                </small>
+              )}
+            </fieldset>
           </>
         )}
       </div>

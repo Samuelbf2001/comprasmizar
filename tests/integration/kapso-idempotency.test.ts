@@ -10,3 +10,36 @@ describe("Kapso idempotency coordinator", () => {
   it("recovers a crash after creation without creating a duplicate requisition", async () => { const durable = store({ failCompleteOnce: true }); let created = false, creates = 0; const requisition = { id: "req", consecutive: "REQ", type: "compra" as const, workId: "work", channel: "whatsapp" as const, requiredDate: "2026-08-30", status: "enviada" as const, items: [] }; const creator = { findExisting: async () => created ? requisition : null, create: async () => { creates++; created = true; return requisition; } }; await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("duplicate"); await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("duplicate"); expect(creates).toBe(1); });
   it("allows a lease-expired processing claim to be recovered while a live one stays in progress", async () => { let claimCalls = 0, creates = 0; const durable: KapsoProcessingStore = { claim: async () => ++claimCalls === 1 ? "in_progress" : "claimed", complete: async () => {}, release: async () => {}, findRequisitionId: async () => null }; const creator = { findExisting: async () => null, create: async () => { creates++; return { id: "recovered", consecutive: "REQ", type: "compra" as const, workId: "work", channel: "whatsapp" as const, requiredDate: "2026-08-30", status: "enviada" as const, items: [] }; } }; await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("in_progress"); await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("created"); expect(creates).toBe(1); });
 });
+
+describe("Kapso attachment hook (attachEvidence)", () => {
+  const requisition = { id: "req", consecutive: "REQ", type: "compra" as const, workId: "work", channel: "whatsapp" as const, requiredDate: "2026-08-30", status: "enviada" as const, items: [] };
+  it("calls attachEvidence exactly once after a fresh create, with the created requisition", async () => {
+    const durable = store();
+    const calls: Array<[unknown, unknown]> = [];
+    const creator = { findExisting: async () => null, create: async () => requisition, attachEvidence: async (inputEvent: unknown, inputRequisition: unknown) => { calls.push([inputEvent, inputRequisition]); } };
+    await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("created");
+    expect(calls).toEqual([[event, requisition]]);
+  });
+  it("still completes as created when attachEvidence rejects — a lost attachment must never block the requisition", async () => {
+    const durable = store();
+    let attachCalls = 0;
+    const creator = { findExisting: async () => null, create: async () => requisition, attachEvidence: async () => { attachCalls++; throw new Error("copy failed"); } };
+    await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("created");
+    expect(attachCalls).toBe(1);
+    await expect(durable.findRequisitionId(event.eventId)).resolves.toBe("req");
+  });
+  it("never invokes attachEvidence once the event is found already created (duplicate path)", async () => {
+    let calls = 0, created = false;
+    const durable: KapsoProcessingStore = { claim: async () => "claimed", complete: async () => {}, release: async () => {}, findRequisitionId: async () => null };
+    const creator = { findExisting: async () => (created ? requisition : null), create: async () => { created = true; return requisition; }, attachEvidence: async () => { calls++; } };
+    await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("created");
+    expect(calls).toBe(1);
+    await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("duplicate");
+    expect(calls).toBe(1);
+  });
+  it("does not require attachEvidence to be implemented", async () => {
+    const durable = store();
+    const creator = { findExisting: async () => null, create: async () => requisition };
+    await expect(processKapsoEvent(durable, creator, event)).resolves.toBe("created");
+  });
+});

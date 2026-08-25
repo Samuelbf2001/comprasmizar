@@ -683,4 +683,23 @@ td:nth-child(3),th:nth-child(3){display:none}
 .public-header .demo-notice{font-size:9px;padding:4px 6px}.public-header .demo-notice span{display:inline}
 }
 .catalog-admin-tabs{display:flex;gap:7px;overflow:auto;margin-bottom:16px;padding-bottom:2px}.catalog-admin-tabs button{display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:0 12px;border:1px solid var(--line);border-radius:7px;background:#fff;color:#627168;font-size:11px;font-weight:700;white-space:nowrap}.catalog-admin-tabs button:hover:not(:disabled){border-color:#9cac9e;background:#fafbf9}.catalog-admin-tabs button.is-active{border-color:#b8cdbb;background:var(--forest-soft);color:var(--forest)}.catalog-admin-tabs button:disabled{cursor:not-allowed;opacity:.55}.catalog-lock{font-size:9px;font-weight:600;color:#9b6d2b}.catalog-admin-panel{overflow:hidden}.catalog-edit-form{margin:0 20px 18px;border:1px solid #cad8cc;border-radius:8px;background:#fbfdfb}.catalog-edit-form .panel-head{padding:16px 18px 12px;border-bottom:1px solid var(--line)}.catalog-edit-form .field-grid{padding:17px 18px 4px}.catalog-edit-form .form-footer{border-top:1px solid var(--line)}.catalog-feedback,.catalog-success{margin:12px 20px;padding:10px 12px;border-radius:6px}.catalog-feedback{background:var(--red-soft)}.catalog-success{background:var(--forest-soft);color:#3d7354;font-size:11px}.catalog-access-gate{display:flex;align-items:flex-start;gap:13px;padding:28px;color:var(--forest)}.catalog-access-gate h2{font:600 19px Georgia,serif;margin:0 0 6px}.catalog-access-gate p{margin:0 0 6px;color:var(--ink);font-size:12px}.catalog-access-gate small{color:var(--muted);font-size:10px}.catalog-row-inactive{background:#faf9f6;color:#929c95}.catalog-row-inactive b{color:#77847c}.catalog-check{grid-column:1 / -1}.catalog-admin-panel .table-wrap{margin-bottom:0}.catalog-admin-panel .panel-head+.empty-state{padding:48px 20px}
+/* RF-002/RF-004: pestañas de Sociedades y Usuarios (roles multi-selección y nota de solo lectura). */
+.catalog-roles{border:0;padding:0;margin:0}.catalog-roles legend{padding:0;margin-bottom:6px;font:inherit;color:inherit}.catalog-roles-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 14px}.checkbox-field{display:flex;align-items:center;gap:7px;font-size:12px;color:#425048}.checkbox-field input{width:15px;height:15px;flex:none}.catalog-readonly-note{margin:0 20px 14px;padding:9px 12px;border-radius:6px;background:var(--blue-soft);color:#1f4d68;font-size:11px}
+@media(max-width:530px){.catalog-roles-grid{grid-template-columns:1fr}}
+/* RF-1102: lista de actividad reciente del dashboard conectado (cola de atención reutiliza .alert-item). */
+.activity-list{list-style:none;margin:0;padding:0 20px 8px}
+.activity-list li{border-bottom:1px solid #edf0ec}
+.activity-list li:last-child{border-bottom:0}
+.activity-list button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 2px;text-align:left}
+.activity-list button:hover{background:#fafbf9}
+.activity-list strong{display:block;font-size:12px;color:#2d4036}
+.activity-list small{display:block;font-size:10px;color:#88948d;margin-top:1px}
+.activity-list time{font-size:10px;color:#9aa59d;white-space:nowrap;flex:none}
+/* RF-706/RF-1103: gráficos ejecutivos de gasto (recharts) con su tabla equivalente como alternativa textual. */
+.chart-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:18px}
+.chart-panel .panel-head{padding-bottom:6px}
+.chart-visual{padding:2px 12px 0}
+.chart-table{margin:8px 20px 18px}
+.chart-table th,.chart-table td{padding:8px 12px;font-size:10px}
+@media(max-width:1080px){.chart-grid{grid-template-columns:1fr}}
 @media(max-width:530px){.catalog-admin-tabs{margin-right:-14px;padding-right:14px}.catalog-edit-form{margin:0 12px 14px}.catalog-edit-form .form-footer{align-items:stretch}.catalog-edit-form .title-actions{width:100%;flex-direction:column}.catalog-edit-form .title-actions .button{width:100%}.catalog-access-gate{padding:22px 17px}}

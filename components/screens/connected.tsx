@@ -8,7 +8,25 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { ArrowRight, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import {
+  ArrowRight,
+  BarChart3,
+  Inbox,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+  Truck,
+} from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import type { Role } from "../../lib/demo-data";
 import { SectionTitle, Tone } from "./screen-primitives";
 import { ConnectedCatalogAdmin } from "./catalog-admin";
@@ -105,7 +123,14 @@ type PettyRow = {
   tagId: string;
   amount: number;
 };
-type AuditRow = { event: string; at: string; data?: Record<string, unknown> };
+// RF-405: `actorId` ya viaja en el JSON de /api/requisitions/:id/history (AuditEvent.actorId
+// en lib/domain/model.ts); faltaba en este tipo de cliente y por eso nunca se mostraba.
+type AuditRow = {
+  event: string;
+  at: string;
+  actorId?: string;
+  data?: Record<string, unknown>;
+};
 type DetailBundle = {
   requisition: RequisitionRow;
   catalogs: CatalogData;
@@ -120,6 +145,45 @@ type ExpenseBundle = {
   pettyCash: PettyRow[];
   pettyAttachments: Record<string, AttachmentRow[]>;
 };
+type RequisitionsBundle = { rows: RequisitionRow[]; catalogs: CatalogData };
+type OrdersBundle = {
+  rows: OrderRow[];
+  requisitions: RequisitionRow[];
+  catalogs: CatalogData;
+};
+// RF-1102: elemento de la cola de "qué espera algo de mí"; producido por
+// lib/domain/rules.ts#buildAttentionQueue y expuesto tal cual por /api/dashboard.
+type DashboardQueueItem = {
+  kind: "requisicion" | "orden";
+  id: string;
+  consecutive: string;
+  workId?: string;
+  status: string;
+  action: string;
+};
+// RF-1102: evento de la actividad reciente; ver lib/domain/rules.ts#buildRecentActivity.
+type DashboardActivityItem = {
+  kind: "requisicion" | "orden" | "gasto";
+  id: string;
+  consecutive: string;
+  workId: string;
+  status: string;
+  at: string;
+};
+// RF-706/RF-1103: punto agregado de gasto (por obra, etiqueta o periodo).
+type DashboardAmountByKey = { key: string; total: number };
+type DashboardMetricsPayload = {
+  byStatus?: Record<string, number>;
+  inProcessValue?: number;
+  periodExpense?: number;
+  pendingOrders?: number;
+  attentionQueue?: DashboardQueueItem[];
+  recentActivity?: DashboardActivityItem[];
+  expenseByWork?: DashboardAmountByKey[];
+  expenseByTag?: DashboardAmountByKey[];
+  expenseByPeriod?: DashboardAmountByKey[];
+};
+type DashboardBundle = { metrics: DashboardMetricsPayload; catalogs: CatalogData };
 
 const money = new Intl.NumberFormat("es-CO", {
   style: "currency",
@@ -133,6 +197,54 @@ const emptyCatalogs: CatalogData = {
   items: [],
   features: {},
 };
+
+const SIN_ETIQUETA = "__sin_etiqueta__";
+export type ExpenseWorkGroup = {
+  workId: string;
+  workName: string;
+  subtotal: number;
+  tags: Array<{ tagId: string; tagName: string; subtotal: number }>;
+};
+// RF-702: el Excel de Mizar solo trae un total general; aquí se agrega el subtotal por
+// etiqueta (tipo de gasto) dentro de cada obra, que es justo lo que el cliente pidió ver.
+// Se agrupa en cliente sobre las filas ya autorizadas por /api/expenses (mismo criterio
+// que los demás filtros de esta pantalla: cabe en memoria y evita otra ruta de servicio).
+export function groupExpensesByWorkAndTag(
+  rows: ExpenseRow[],
+  catalogs: CatalogData,
+): ExpenseWorkGroup[] {
+  const workName = (id: string) =>
+    catalogs.works.find((work) => work.id === id)?.name ?? id;
+  const tagName = (id: string) =>
+    id === SIN_ETIQUETA
+      ? "Sin etiqueta"
+      : (catalogs.tags.find((tag) => tag.id === id)?.name ?? id);
+  const workOrder: string[] = [];
+  const byWork = new Map<string, Map<string, number>>();
+  for (const row of rows) {
+    if (!byWork.has(row.workId)) {
+      byWork.set(row.workId, new Map());
+      workOrder.push(row.workId);
+    }
+    const tagKey = row.tagId ?? SIN_ETIQUETA;
+    const tagMap = byWork.get(row.workId) as Map<string, number>;
+    tagMap.set(tagKey, (tagMap.get(tagKey) ?? 0) + Number(row.total || 0));
+  }
+  return workOrder
+    .map((workId) => {
+      const tagMap = byWork.get(workId) as Map<string, number>;
+      const tags = Array.from(tagMap.entries())
+        .map(([tagId, subtotal]) => ({ tagId, tagName: tagName(tagId), subtotal }))
+        .sort((a, b) => a.tagName.localeCompare(b.tagName, "es"));
+      return {
+        workId,
+        workName: workName(workId),
+        subtotal: tags.reduce((sum, tag) => sum + tag.subtotal, 0),
+        tags,
+      };
+    })
+    .sort((a, b) => a.workName.localeCompare(b.workName, "es"));
+}
 
 function routeKind(
   pathname: string,
@@ -185,10 +297,20 @@ async function readJson(url: string): Promise<unknown> {
 
 async function loadRoute(pathname: string, role: Role): Promise<unknown> {
   const kind = routeKind(pathname);
-  if (kind === "dashboard")
-    return readJson(
-      `/api/dashboard?period=${new Date().toISOString().slice(0, 7)}`,
-    );
+  if (kind === "dashboard") {
+    // RF-1102/RF-706/RF-1103: se agrega /api/catalogs (ya accesible para cualquier rol autenticado,
+    // ver GET en app/api/catalogs/route.ts) solo para resolver nombres de obra/etiqueta en la cola de
+    // atención, la actividad reciente y los gráficos; /api/dashboard sigue siendo la única fuente de
+    // autorización y cifras.
+    const [metrics, catalogs] = await Promise.all([
+      readJson(`/api/dashboard?period=${new Date().toISOString().slice(0, 7)}`),
+      readJson("/api/catalogs"),
+    ]);
+    return {
+      metrics: metrics as DashboardMetricsPayload,
+      catalogs: catalogs as CatalogData,
+    } satisfies DashboardBundle;
+  }
   if (kind === "new") return readJson("/api/catalogs");
   if (kind === "detail") {
     const id = encodeURIComponent(pathname.split("/").pop() ?? "");
@@ -248,8 +370,28 @@ async function loadRoute(pathname: string, role: Role): Promise<unknown> {
       attachments,
     } satisfies DetailBundle;
   }
-  if (kind === "requisitions") return readJson("/api/requisitions");
-  if (kind === "orders") return readJson("/api/orders");
+  if (kind === "requisitions") {
+    const [rows, catalogs] = await Promise.all([
+      readJson("/api/requisitions"),
+      readJson("/api/catalogs"),
+    ]);
+    return {
+      rows: rows as RequisitionRow[],
+      catalogs: catalogs as CatalogData,
+    } satisfies RequisitionsBundle;
+  }
+  if (kind === "orders") {
+    const [rows, requisitions, catalogs] = await Promise.all([
+      readJson("/api/orders"),
+      readJson("/api/requisitions"),
+      readJson("/api/catalogs"),
+    ]);
+    return {
+      rows: rows as OrderRow[],
+      requisitions: requisitions as RequisitionRow[],
+      catalogs: catalogs as CatalogData,
+    } satisfies OrdersBundle;
+  }
   if (kind === "expenses") {
     const canReadPettyCash = [
       "Revisor",
@@ -394,7 +536,8 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
         </div>
       </>
     );
-  if (kind === "dashboard") return <ConnectedDashboard data={load.data} />;
+  if (kind === "dashboard")
+    return <ConnectedDashboard data={load.data} go={go} />;
   if (kind === "new")
     return (
       <ConnectedNewRequisition catalogs={load.data as CatalogData} go={go} />
@@ -411,7 +554,7 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
   if (kind === "requisitions")
     return (
       <ConnectedRequisitions
-        data={load.data as RequisitionRow[]}
+        data={load.data as RequisitionsBundle}
         pathname={pathname}
         go={go}
       />
@@ -419,7 +562,7 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
   if (kind === "orders")
     return (
       <ConnectedOrders
-        data={load.data as OrderRow[]}
+        data={load.data as OrdersBundle}
         role={role}
         refresh={refresh}
       />
@@ -442,13 +585,199 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
   );
 }
 
-function ConnectedDashboard({ data }: { data: unknown }) {
-  const metrics = data as {
-    byStatus?: Record<string, number>;
-    inProcessValue?: number;
-    periodExpense?: number;
-    pendingOrders?: number;
-  };
+const shortDate = new Intl.DateTimeFormat("es-CO", {
+  day: "2-digit",
+  month: "short",
+});
+function formatShortDate(value: string): string {
+  const date = new Date(value.length <= 10 ? `${value}T00:00:00` : value);
+  return Number.isNaN(date.getTime()) ? value : shortDate.format(date);
+}
+function queueDestination(item: DashboardQueueItem): string {
+  return item.kind === "requisicion" ? `/requisiciones/${item.id}` : "/ordenes";
+}
+function activityDestination(item: DashboardActivityItem): string {
+  if (item.kind === "requisicion") return `/requisiciones/${item.id}`;
+  return item.kind === "orden" ? "/ordenes" : "/gastos";
+}
+// RF-706/RF-1103: gráfico ejecutivo horizontal (recharts) con su tabla equivalente como alternativa
+// textual accesible; `role="img"` + `aria-label` en el contenedor visual describe el mismo resumen
+// para lectores de pantalla, y la tabla queda siempre visible con las cifras exactas.
+function DashboardBarChart({
+  title,
+  emptyHint,
+  rows,
+}: {
+  title: string;
+  emptyHint: string;
+  rows: Array<{ label: string; total: number }>;
+}) {
+  const total = rows.reduce((sum, row) => sum + row.total, 0);
+  return (
+    <section className="panel chart-panel">
+      <div className="panel-head">
+        <div>
+          <div className="eyebrow">Gráfico ejecutivo</div>
+          <h2>{title}</h2>
+        </div>
+        {rows.length > 0 && <Tone tone="muted">{money.format(total)}</Tone>}
+      </div>
+      {rows.length === 0 ? (
+        <div className="empty-state">
+          <span className="empty-icon">
+            <BarChart3 size={20} />
+          </span>
+          <h3>Sin datos</h3>
+          <p>{emptyHint}</p>
+        </div>
+      ) : (
+        <>
+          <div
+            className="chart-visual"
+            role="img"
+            aria-label={`${title}: ${rows.map((row) => `${row.label}, ${money.format(row.total)}`).join("; ")}`}
+          >
+            <ResponsiveContainer
+              width="100%"
+              height={Math.max(150, rows.length * 36)}
+            >
+              <BarChart
+                data={rows}
+                layout="vertical"
+                margin={{ top: 4, right: 24, left: 4, bottom: 4 }}
+              >
+                <XAxis type="number" hide />
+                <YAxis
+                  type="category"
+                  dataKey="label"
+                  width={116}
+                  tick={{ fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <Tooltip formatter={(value) => money.format(Number(value ?? 0))} />
+                <Bar dataKey="total" fill="#245645" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="table-wrap chart-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Concepto</th>
+                  <th className="align-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.label}>
+                    <td>{row.label}</td>
+                    <td className="align-right money">
+                      {money.format(row.total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+function DashboardPeriodChart({ rows }: { rows: DashboardAmountByKey[] }) {
+  const points = rows.map((row) => ({ period: row.key, total: row.total }));
+  return (
+    <section className="panel chart-panel">
+      <div className="panel-head">
+        <div>
+          <div className="eyebrow">Gráfico ejecutivo</div>
+          <h2>Gasto por periodo</h2>
+        </div>
+      </div>
+      {points.length === 0 ? (
+        <div className="empty-state">
+          <span className="empty-icon">
+            <BarChart3 size={20} />
+          </span>
+          <h3>Sin datos</h3>
+          <p>No hay gastos registrados en los últimos periodos.</p>
+        </div>
+      ) : (
+        <>
+          <div
+            className="chart-visual"
+            role="img"
+            aria-label={`Gasto por periodo: ${points.map((point) => `${point.period}, ${money.format(point.total)}`).join("; ")}`}
+          >
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart
+                data={points}
+                margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  vertical={false}
+                  stroke="#e3e6df"
+                />
+                <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                <YAxis hide />
+                <Tooltip formatter={(value) => money.format(Number(value ?? 0))} />
+                <Bar dataKey="total" fill="#235e83" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="table-wrap chart-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Periodo</th>
+                  <th className="align-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {points.map((point) => (
+                  <tr key={point.period}>
+                    <td>{point.period}</td>
+                    <td className="align-right money">
+                      {money.format(point.total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+export function ConnectedDashboard({
+  data,
+  go,
+}: {
+  data: unknown;
+  go: (path: string) => void;
+}) {
+  const bundle = data as Partial<DashboardBundle>;
+  const metrics = bundle.metrics ?? {};
+  const catalogs = bundle.catalogs ?? emptyCatalogs;
+  const workName = (id?: string) =>
+    (id && catalogs.works.find((work) => work.id === id)?.name) || id || "—";
+  const tagName = (key: string) =>
+    key
+      ? (catalogs.tags.find((tag) => tag.id === key)?.name ?? key)
+      : "Sin etiqueta";
+  const queue = metrics.attentionQueue ?? [];
+  const activity = metrics.recentActivity ?? [];
+  const byWork = (metrics.expenseByWork ?? []).map((row) => ({
+    label: workName(row.key),
+    total: row.total,
+  }));
+  const byTag = (metrics.expenseByTag ?? []).map((row) => ({
+    label: tagName(row.key),
+    total: row.total,
+  }));
   return (
     <>
       <SectionTitle
@@ -477,6 +806,113 @@ function ConnectedDashboard({ data }: { data: unknown }) {
           <strong>{money.format(metrics.periodExpense ?? 0)}</strong>
           <small>según alcance del rol</small>
         </article>
+      </div>
+      <div className="dashboard-grid">
+        {/* RF-1102: cola de "qué espera algo de mí", calculada en el servicio (buildAttentionQueue)
+            sobre las mismas colecciones ya filtradas por rol; esta vista solo la renderiza. */}
+        <section className="panel panel-alerts">
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">Atención requerida</div>
+              <h2>Qué espera algo de ti</h2>
+            </div>
+            <Tone tone={queue.length ? "warning" : "muted"}>
+              {queue.length} pendientes
+            </Tone>
+          </div>
+          {queue.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">
+                <Inbox size={20} />
+              </span>
+              <h3>Sin pendientes</h3>
+              <p>
+                No hay requisiciones ni órdenes esperando una acción tuya en
+                este momento.
+              </p>
+            </div>
+          ) : (
+            queue.map((item) => (
+              <button
+                key={`${item.kind}-${item.id}`}
+                className="alert-item"
+                type="button"
+                onClick={() => go(queueDestination(item))}
+              >
+                <span className="alert-icon amber">
+                  {item.kind === "orden" ? (
+                    <Truck size={16} />
+                  ) : (
+                    <Inbox size={16} />
+                  )}
+                </span>
+                <span>
+                  <strong>
+                    {item.consecutive} · {item.action}
+                  </strong>
+                  <small>
+                    {workName(item.workId)} ·{" "}
+                    {item.status.replaceAll("_", " ")}
+                  </small>
+                </span>
+                <ArrowRight size={15} />
+              </button>
+            ))
+          )}
+        </section>
+        {/* RF-1102: actividad reciente (buildRecentActivity); combina requisiciones, órdenes y gastos
+            visibles por el actor, ordenados por su marca de tiempo real más reciente. */}
+        <section className="panel recent-panel">
+          <div className="panel-head">
+            <div>
+              <div className="eyebrow">Actividad reciente</div>
+              <h2>Últimos movimientos</h2>
+            </div>
+          </div>
+          {activity.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">
+                <RefreshCw size={20} />
+              </span>
+              <h3>Sin movimientos</h3>
+              <p>Todavía no hay actividad reciente visible para tu rol.</p>
+            </div>
+          ) : (
+            <ul className="activity-list">
+              {activity.map((item) => (
+                <li key={`${item.kind}-${item.id}`}>
+                  <button
+                    type="button"
+                    onClick={() => go(activityDestination(item))}
+                  >
+                    <span>
+                      <strong>{item.consecutive}</strong>
+                      <small>
+                        {workName(item.workId)} ·{" "}
+                        {item.status.replaceAll("_", " ")}
+                      </small>
+                    </span>
+                    <time dateTime={item.at}>{formatShortDate(item.at)}</time>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+      {/* RF-706/RF-1103: gráficos ejecutivos de gasto por obra, por etiqueta y por periodo. */}
+      <div className="chart-grid">
+        <DashboardBarChart
+          title="Gasto por obra"
+          emptyHint="No hay gastos registrados en el periodo visible para tu rol."
+          rows={byWork}
+        />
+        <DashboardBarChart
+          title="Gasto por etiqueta"
+          emptyHint="No hay gastos con etiqueta asignada en el periodo visible."
+          rows={byTag}
+        />
+        <DashboardPeriodChart rows={metrics.expenseByPeriod ?? []} />
       </div>
       <div className="panel integration-evidence">
         <ShieldCheck size={18} />
@@ -1026,17 +1462,18 @@ export function DemoRequisitionScreen() {
   );
 }
 
-function ConnectedRequisitions({
+export function ConnectedRequisitions({
   data,
   pathname,
   go,
 }: {
-  data: RequisitionRow[];
+  data: RequisitionsBundle;
   pathname: string;
   go: (path: string) => void;
 }) {
-  const rows = Array.isArray(data)
-    ? data.filter((row) =>
+  const catalogs = data?.catalogs ?? emptyCatalogs;
+  const rows = Array.isArray(data?.rows)
+    ? data.rows.filter((row) =>
         pathname.startsWith("/revision")
           ? ["enviada", "en_revision", "devuelta"].includes(row.status)
           : pathname.startsWith("/aprobaciones")
@@ -1049,6 +1486,40 @@ function ConnectedRequisitions({
     : pathname.startsWith("/aprobaciones")
       ? "Mis aprobaciones"
       : "Mis requisiciones";
+  // RF-302: los datos ya llegan autorizados desde /api/requisitions y /api/catalogs;
+  // filtrar en cliente sobre ese payload evita otra ruta/servicio para algo que cabe
+  // en memoria (una bandeja rara vez supera unos cientos de filas).
+  const [workFilter, setWorkFilter] = useState(""),
+    [statusFilter, setStatusFilter] = useState(""),
+    [channelFilter, setChannelFilter] = useState(""),
+    [tagFilter, setTagFilter] = useState(""),
+    [dateFrom, setDateFrom] = useState(""),
+    [dateTo, setDateTo] = useState("");
+  const statusOptions = Array.from(
+    new Set(rows.map((row) => row.status)),
+  ).sort();
+  const channelOptions = Array.from(
+    new Set(rows.map((row) => row.channel)),
+  ).sort();
+  const filteredRows = rows.filter((row) => {
+    if (workFilter && row.workId !== workFilter) return false;
+    if (statusFilter && row.status !== statusFilter) return false;
+    if (channelFilter && row.channel !== channelFilter) return false;
+    if (tagFilter && row.tagId !== tagFilter) return false;
+    if (dateFrom && !(row.requiredDate && row.requiredDate >= dateFrom))
+      return false;
+    if (dateTo && !(row.requiredDate && row.requiredDate <= dateTo))
+      return false;
+    return true;
+  });
+  const clearFilters = () => {
+    setWorkFilter("");
+    setStatusFilter("");
+    setChannelFilter("");
+    setTagFilter("");
+    setDateFrom("");
+    setDateTo("");
+  };
   return (
     <>
       <SectionTitle
@@ -1056,31 +1527,128 @@ function ConnectedRequisitions({
         title={title}
         description="La API aplica alcance por actor antes de devolver cada fila."
       />
+      {rows.length > 0 && (
+        <div className="filter-bar">
+          <label className="field">
+            <span>Obra</span>
+            <select
+              value={workFilter}
+              onChange={(event) => setWorkFilter(event.target.value)}
+            >
+              <option value="">Todas</option>
+              {catalogs.works.map((work) => (
+                <option key={work.id} value={work.id}>
+                  {work.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Estado</span>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="">Todos</option>
+              {statusOptions.map((status) => (
+                <option key={status} value={status}>
+                  {status.replaceAll("_", " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Canal</span>
+            <select
+              value={channelFilter}
+              onChange={(event) => setChannelFilter(event.target.value)}
+            >
+              <option value="">Todos</option>
+              {channelOptions.map((channel) => (
+                <option key={channel} value={channel}>
+                  {channel}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Etiqueta</span>
+            <select
+              value={tagFilter}
+              onChange={(event) => setTagFilter(event.target.value)}
+            >
+              <option value="">Todas</option>
+              {catalogs.tags.map((tag) => (
+                <option key={tag.id} value={tag.id}>
+                  {tag.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Desde</span>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(event) => setDateFrom(event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>Hasta</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(event) => setDateTo(event.target.value)}
+            />
+          </label>
+        </div>
+      )}
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2>{rows.length} visibles</h2>
+            <h2>{filteredRows.length} visibles</h2>
             <p className="panel-sub">
               Sin datos sintéticos ni mezcla entre roles.
             </p>
           </div>
           <Tone tone="muted">Orden cronológico</Tone>
         </div>
-        {rows.length ? (
+        {rows.length === 0 ? (
+          <div className="empty-state">
+            <span className="empty-icon">—</span>
+            <h3>Sin requisiciones en esta vista</h3>
+            <p>El resultado proviene del backend autenticado.</p>
+          </div>
+        ) : filteredRows.length === 0 ? (
+          <div className="empty-state">
+            <span className="empty-icon">—</span>
+            <h3>Sin resultados para estos filtros</h3>
+            <p>Ajusta o limpia los filtros para ver más requisiciones.</p>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={clearFilters}
+            >
+              Limpiar filtros
+            </button>
+          </div>
+        ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Requisición</th>
+                  <th>Obra</th>
                   <th>Tipo</th>
                   <th>Canal</th>
+                  <th>Etiqueta</th>
                   <th>Fecha requerida</th>
                   <th>Estado</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {filteredRows.map((row) => (
                   <tr
                     key={row.id}
                     data-testid={
@@ -1092,8 +1660,18 @@ function ConnectedRequisitions({
                     <td>
                       <b>{row.consecutive}</b>
                     </td>
+                    <td>
+                      {catalogs.works.find((work) => work.id === row.workId)
+                        ?.name ?? row.workId}
+                    </td>
                     <td>{row.type}</td>
                     <td>{row.channel}</td>
+                    <td>
+                      {row.tagId
+                        ? (catalogs.tags.find((tag) => tag.id === row.tagId)
+                            ?.name ?? row.tagId)
+                        : "—"}
+                    </td>
                     <td>{row.requiredDate || "—"}</td>
                     <td>{row.status.replaceAll("_", " ")}</td>
                     <td>
@@ -1109,12 +1687,6 @@ function ConnectedRequisitions({
                 ))}
               </tbody>
             </table>
-          </div>
-        ) : (
-          <div className="empty-state">
-            <span className="empty-icon">—</span>
-            <h3>Sin requisiciones en esta vista</h3>
-            <p>El resultado proviene del backend autenticado.</p>
           </div>
         )}
       </section>
@@ -1548,6 +2120,22 @@ export function ConnectedRequisitionDetail({
                 <dd>{requisition.status.replaceAll("_", " ")}</dd>
               </div>
               <div>
+                {/* RF-404: requesterId/externalRequester ya viajaban en el payload de
+                    /api/requisitions/:id; solo faltaba mostrarlos en el detalle. */}
+                <dt>Solicitante</dt>
+                <dd data-testid="requisition-requester">
+                  {requisition.externalRequester
+                    ? `${requisition.externalRequester.name}${
+                        requisition.externalRequester.phone
+                          ? ` · ${requisition.externalRequester.phone}`
+                          : ""
+                      }`
+                    : requisition.requesterId
+                      ? `Usuario ${requisition.requesterId}`
+                      : "—"}
+                </dd>
+              </div>
+              <div>
                 <dt>Destino</dt>
                 <dd>{requisition.destination || "—"}</dd>
               </div>
@@ -1730,7 +2318,12 @@ export function ConnectedRequisitionDetail({
               history.map((entry, index) => (
                 <p key={`${entry.at}-${index}`} data-testid="audit-event">
                   <b>{entry.event.replaceAll("_", " ")}</b> ·{" "}
-                  {new Date(entry.at).toLocaleString("es-CO")}
+                  {new Date(entry.at).toLocaleString("es-CO")} ·{" "}
+                  {/* RF-405: AuditEvent.actorId ya viajaba en el JSON del historial; sin
+                      esto la trazabilidad no decía qué usuario ejecutó cada transición. */}
+                  <span data-testid="audit-actor">
+                    {entry.actorId ? `Usuario ${entry.actorId}` : "Usuario automático"}
+                  </span>
                   {typeof entry.data?.comment === "string"
                     ? ` · ${entry.data.comment}`
                     : ""}
@@ -1828,18 +2421,52 @@ export function ConnectedRequisitionDetail({
   );
 }
 
-function ConnectedOrders({
+export function ConnectedOrders({
   data,
   role,
   refresh,
 }: {
-  data: OrderRow[];
+  data: OrdersBundle;
   role: Role;
   refresh: () => void;
 }) {
-  const rows = Array.isArray(data) ? data : [],
+  const rows = Array.isArray(data?.rows) ? data.rows : [],
+    requisitions = Array.isArray(data?.requisitions) ? data.requisitions : [],
+    catalogs = data?.catalogs ?? emptyCatalogs,
     [feedback, setFeedback] = useState(""),
     canUpdate = role === "Revisor" || role === "Administrador Sixteam";
+  // La orden no guarda obra ni fecha propias (solo requisicion_id): se derivan
+  // uniendo con /api/requisitions, que ya llega autorizado para todo rol que
+  // puede leer órdenes. Evita tocar el dominio/infraestructura solo por un filtro.
+  const requisitionById = new Map(
+    requisitions.map((requisition) => [requisition.id, requisition]),
+  );
+  const [workFilter, setWorkFilter] = useState(""),
+    [statusFilter, setStatusFilter] = useState(""),
+    [supplierFilter, setSupplierFilter] = useState(""),
+    [dateFrom, setDateFrom] = useState(""),
+    [dateTo, setDateTo] = useState("");
+  const statusOptions = Array.from(
+    new Set(rows.map((row) => row.status)),
+  ).sort();
+  const filteredRows = rows.filter((row) => {
+    const linked = requisitionById.get(row.requisitionId);
+    if (workFilter && linked?.workId !== workFilter) return false;
+    if (statusFilter && row.status !== statusFilter) return false;
+    if (supplierFilter && row.supplierId !== supplierFilter) return false;
+    if (dateFrom && !(linked?.requiredDate && linked.requiredDate >= dateFrom))
+      return false;
+    if (dateTo && !(linked?.requiredDate && linked.requiredDate <= dateTo))
+      return false;
+    return true;
+  });
+  const clearFilters = () => {
+    setWorkFilter("");
+    setStatusFilter("");
+    setSupplierFilter("");
+    setDateFrom("");
+    setDateTo("");
+  };
   const setStatus = async (id: string, status: string) => {
     setFeedback("");
     try {
@@ -1860,64 +2487,170 @@ function ConnectedOrders({
         title="Órdenes"
         description="OC y OP visibles según el rol autenticado; cada estado pertenece a su propia orden."
       />
+      {rows.length > 0 && (
+        <div className="filter-bar">
+          <label className="field">
+            <span>Obra</span>
+            <select
+              value={workFilter}
+              onChange={(event) => setWorkFilter(event.target.value)}
+            >
+              <option value="">Todas</option>
+              {catalogs.works.map((work) => (
+                <option key={work.id} value={work.id}>
+                  {work.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Estado</span>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="">Todos</option>
+              {statusOptions.map((status) => (
+                <option key={status} value={status}>
+                  {status.replaceAll("_", " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Proveedor</span>
+            <select
+              value={supplierFilter}
+              onChange={(event) => setSupplierFilter(event.target.value)}
+            >
+              <option value="">Todos</option>
+              {catalogs.suppliers.map((supplier) => (
+                <option key={supplier.id} value={supplier.id}>
+                  {supplier.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Desde</span>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(event) => setDateFrom(event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>Hasta</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(event) => setDateTo(event.target.value)}
+            />
+          </label>
+          {/* RF-505: acceso directo a las compras no_cumplida para que ninguna
+              quede fuera de la vista aunque cambien otros filtros. */}
+          <label className="filter-button">
+            <input
+              type="checkbox"
+              checked={statusFilter === "no_cumplida"}
+              onChange={(event) =>
+                setStatusFilter(event.target.checked ? "no_cumplida" : "")
+              }
+            />
+            Solo pendientes (no cumplida)
+          </label>
+        </div>
+      )}
       <section className="panel">
         {feedback && (
           <p className="field-error connected-feedback" role="alert">
             {feedback}
           </p>
         )}
-        {rows.length ? (
+        {rows.length === 0 ? (
+          <div className="empty-state">
+            <span className="empty-icon">—</span>
+            <h3>Sin órdenes visibles</h3>
+            <p>El servicio no devolvió órdenes para tu alcance.</p>
+          </div>
+        ) : filteredRows.length === 0 ? (
+          <div className="empty-state">
+            <span className="empty-icon">—</span>
+            <h3>Sin resultados para estos filtros</h3>
+            <p>Ajusta o limpia los filtros para ver más órdenes.</p>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={clearFilters}
+            >
+              Limpiar filtros
+            </button>
+          </div>
+        ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Orden</th>
                   <th>Tipo</th>
+                  <th>Obra</th>
                   <th>Requisición</th>
+                  <th>Fecha requerida</th>
                   <th>Proveedor</th>
                   <th>Estado</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr key={row.id}>
-                    <td>
-                      <b>{row.consecutive}</b>
-                    </td>
-                    <td>{row.type}</td>
-                    <td>{row.requisitionId}</td>
-                    <td>{row.supplierId || "Por definir"}</td>
-                    <td>{row.status.replaceAll("_", " ")}</td>
-                    <td>
-                      {canUpdate && row.status === "generada" ? (
-                        <select
-                          aria-label={`Cumplimiento de ${row.consecutive}`}
-                          defaultValue=""
-                          onChange={(event) =>
-                            event.target.value &&
-                            void setStatus(row.id, event.target.value)
-                          }
-                        >
-                          <option value="">Actualizar…</option>
-                          <option value="cumplida">Cumplida</option>
-                          <option value="no_cumplida">No cumplida</option>
-                          <option value="no_necesario">No necesaria</option>
-                        </select>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {filteredRows.map((row) => {
+                  const linked = requisitionById.get(row.requisitionId);
+                  return (
+                    <tr key={row.id}>
+                      <td>
+                        <b>{row.consecutive}</b>
+                      </td>
+                      <td>{row.type}</td>
+                      <td>
+                        {linked
+                          ? (catalogs.works.find(
+                              (work) => work.id === linked.workId,
+                            )?.name ?? linked.workId)
+                          : "—"}
+                      </td>
+                      <td>{linked?.consecutive ?? row.requisitionId}</td>
+                      <td>{linked?.requiredDate || "—"}</td>
+                      <td>
+                        {row.supplierId
+                          ? (catalogs.suppliers.find(
+                              (supplier) => supplier.id === row.supplierId,
+                            )?.name ?? row.supplierId)
+                          : "Por definir"}
+                      </td>
+                      <td>{row.status.replaceAll("_", " ")}</td>
+                      <td>
+                        {canUpdate && row.status === "generada" ? (
+                          <select
+                            aria-label={`Cumplimiento de ${row.consecutive}`}
+                            defaultValue=""
+                            onChange={(event) =>
+                              event.target.value &&
+                              void setStatus(row.id, event.target.value)
+                            }
+                          >
+                            <option value="">Actualizar…</option>
+                            <option value="cumplida">Cumplida</option>
+                            <option value="no_cumplida">No cumplida</option>
+                            <option value="no_necesario">No necesaria</option>
+                          </select>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
-          </div>
-        ) : (
-          <div className="empty-state">
-            <span className="empty-icon">—</span>
-            <h3>Sin órdenes visibles</h3>
-            <p>El servicio no devolvió órdenes para tu alcance.</p>
           </div>
         )}
       </section>
@@ -1939,7 +2672,6 @@ export function ConnectedExpenses({
   const rows = Array.isArray(data.expenses) ? data.expenses : [],
     sourcePettyRows = Array.isArray(data.pettyCash) ? data.pettyCash : [],
     pettyAttachments = data.pettyAttachments ?? {},
-    total = rows.reduce((sum, row) => sum + Number(row.total || 0), 0),
     canCreate = role === "Revisor" || role === "Administrador Sixteam",
     canReadPettyCash = canCreate || role === "Contabilidad";
   const [workId, setWorkId] = useState(data.catalogs.works[0]?.id ?? ""),
@@ -1958,10 +2690,117 @@ export function ConnectedExpenses({
     ...sourcePettyRows,
     ...localPettyRows.filter((local) => !sourcePettyRows.some((row) => row.id === local.id)),
   ];
-  const pettyTotal = pettyRows.reduce(
+  // RF-703: obra y periodo (corte mensual, del 1 al 30) ya llegan en el payload
+  // autorizado de /api/expenses; caja menor no trae "period" propio, así que se
+  // deriva del mismo modo (mes de la fecha). Filtrar en cliente sobre lo ya
+  // recibido evita otra ruta para un cruce que cabe en memoria.
+  const [expenseWorkFilter, setExpenseWorkFilter] = useState(""),
+    [periodFilter, setPeriodFilter] = useState("");
+  const filteredRows = rows.filter(
+    (row) =>
+      (!expenseWorkFilter || row.workId === expenseWorkFilter) &&
+      (!periodFilter || row.period === periodFilter),
+  );
+  const filteredPettyRows = pettyRows.filter(
+    (row) =>
+      (!expenseWorkFilter || row.workId === expenseWorkFilter) &&
+      (!periodFilter || row.date.slice(0, 7) === periodFilter),
+  );
+  const total = filteredRows.reduce(
+    (sum, row) => sum + Number(row.total || 0),
+    0,
+  );
+  const pettyTotal = filteredPettyRows.reduce(
     (sum, row) => sum + Number(row.amount || 0),
     0,
   );
+  const clearExpenseFilters = () => {
+    setExpenseWorkFilter("");
+    setPeriodFilter("");
+  };
+  // RF-702: subtotal por etiqueta dentro de cada obra sobre las mismas filas ya
+  // filtradas por obra/periodo, para que cuadre con el total mostrado arriba.
+  const expenseGroups = groupExpensesByWorkAndTag(filteredRows, data.catalogs);
+  // RF-305: el backend (validateShares en lib/domain/rules.ts, invocado por
+  // ProcurementService.redistribute vía PUT /api/expenses/:id/shares) ya exige que la
+  // suma cuadre al peso, sin obra repetida; esta UI solo faltaba para poder invocarlo.
+  type ShareLine = { key: string; workId: string; amount: string };
+  const newShareLine = (workId = "", amount = ""): ShareLine => ({
+    key: crypto.randomUUID(),
+    workId,
+    amount,
+  });
+  const [shareExpenseId, setShareExpenseId] = useState<string | null>(null),
+    [shareLines, setShareLines] = useState<ShareLine[]>([]),
+    [shareBusy, setShareBusy] = useState(false),
+    [shareFeedback, setShareFeedback] = useState(""),
+    [shareSuccess, setShareSuccess] = useState("");
+  const shareExpense = shareExpenseId
+    ? rows.find((row) => row.id === shareExpenseId)
+    : undefined;
+  const openShareForm = (row: ExpenseRow) => {
+    setShareExpenseId(row.id);
+    setShareLines([newShareLine(row.workId, String(row.total)), newShareLine()]);
+    setShareFeedback("");
+    setShareSuccess("");
+  };
+  const closeShareForm = () => {
+    setShareExpenseId(null);
+    setShareLines([]);
+    setShareFeedback("");
+    setShareSuccess("");
+  };
+  const updateShareLine = (key: string, patch: Partial<ShareLine>) =>
+    setShareLines((current) =>
+      current.map((line) => (line.key === key ? { ...line, ...patch } : line)),
+    );
+  const shareWorkIds = shareLines
+    .map((line) => line.workId)
+    .filter((value) => value);
+  const shareHasDuplicateWork =
+    new Set(shareWorkIds).size !== shareWorkIds.length;
+  const shareTotal = shareLines.reduce(
+    (sum, line) => sum + (Number(line.amount) || 0),
+    0,
+  );
+  const shareAllFilled = shareLines.every(
+    (line) =>
+      line.workId &&
+      Number.isInteger(Number(line.amount)) &&
+      Number(line.amount) > 0,
+  );
+  const shareBalanced = shareExpense ? shareTotal === shareExpense.total : false;
+  const shareValid = Boolean(
+    shareExpense &&
+      shareLines.length > 0 &&
+      shareAllFilled &&
+      !shareHasDuplicateWork &&
+      shareBalanced,
+  );
+  const submitShares = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!shareExpense || !shareValid || shareBusy) return;
+    setShareBusy(true);
+    setShareFeedback("");
+    setShareSuccess("");
+    try {
+      await mutate(`/api/expenses/${shareExpense.id}/shares`, "PUT", {
+        total: shareExpense.total,
+        shares: shareLines.map((line) => ({
+          workId: line.workId,
+          amount: Number(line.amount),
+        })),
+      });
+      setShareSuccess("El gasto quedó repartido entre las obras seleccionadas.");
+      refresh();
+    } catch (error) {
+      setShareFeedback(
+        error instanceof Error ? error.message : "No fue posible repartir el gasto.",
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  };
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (createdId) {
@@ -2046,13 +2885,39 @@ export function ConnectedExpenses({
           ].includes(role) ? (
             <a
               className="button button-dark"
-              href={`/api/reports/expenses?period=${new Date().toISOString().slice(0, 7)}`}
+              href={`/api/reports/expenses?period=${periodFilter || new Date().toISOString().slice(0, 7)}`}
             >
               Descargar XLSX provisional
             </a>
           ) : undefined
         }
       />
+      {(rows.length > 0 || pettyRows.length > 0) && (
+        <div className="filter-bar">
+          <label className="field">
+            <span>Filtrar por obra</span>
+            <select
+              value={expenseWorkFilter}
+              onChange={(event) => setExpenseWorkFilter(event.target.value)}
+            >
+              <option value="">Todas</option>
+              {data.catalogs.works.map((work) => (
+                <option key={work.id} value={work.id}>
+                  {work.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Periodo</span>
+            <input
+              type="month"
+              value={periodFilter}
+              onChange={(event) => setPeriodFilter(event.target.value)}
+            />
+          </label>
+        </div>
+      )}
       <div className="connected-detail-grid">
         <section className="panel">
           <div className="panel-head">
@@ -2062,9 +2927,28 @@ export function ConnectedExpenses({
                 Total de las filas visibles para tu rol.
               </p>
             </div>
-            <Tone tone="muted">{rows.length} movimientos</Tone>
+            <Tone tone="muted">{filteredRows.length} movimientos</Tone>
           </div>
-          {rows.length ? (
+          {rows.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">—</span>
+              <h3>Sin gastos visibles</h3>
+              <p>El servicio no devolvió movimientos para tu alcance.</p>
+            </div>
+          ) : filteredRows.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">—</span>
+              <h3>Sin resultados para estos filtros</h3>
+              <p>Ajusta o limpia los filtros para ver más gastos.</p>
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={clearExpenseFilters}
+              >
+                Limpiar filtros
+              </button>
+            </div>
+          ) : (
             <div className="table-wrap">
               <table>
                 <thead>
@@ -2074,10 +2958,11 @@ export function ConnectedExpenses({
                     <th>Origen</th>
                     <th>Periodo</th>
                     <th>Total</th>
+                    {canCreate && <th>Acciones</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row) => (
+                  {filteredRows.map((row) => (
                     <tr key={row.id}>
                       <td>{row.date}</td>
                       <td>
@@ -2088,19 +2973,190 @@ export function ConnectedExpenses({
                       <td>{row.origin.replaceAll("_", " ")}</td>
                       <td>{row.period}</td>
                       <td>{money.format(row.total)}</td>
+                      {canCreate && (
+                        <td>
+                          <button
+                            className="text-link"
+                            type="button"
+                            data-testid="expense-share-trigger"
+                            aria-label={`Repartir gasto del ${row.date} por ${money.format(row.total)}`}
+                            onClick={() => openShareForm(row)}
+                          >
+                            Repartir <ArrowRight size={13} />
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          ) : (
-            <div className="empty-state">
-              <span className="empty-icon">—</span>
-              <h3>Sin gastos visibles</h3>
-              <p>El servicio no devolvió movimientos para tu alcance.</p>
-            </div>
           )}
         </section>
+        {filteredRows.length > 0 && (
+          <section className="panel connected-summary" data-testid="expense-subtotals">
+            <div className="panel-head">
+              <div>
+                <h3>Subtotales por obra y etiqueta</h3>
+                <p className="panel-sub">
+                  Desglose por tipo de gasto dentro de cada obra, con el total general al final.
+                </p>
+              </div>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Obra</th>
+                    <th>Etiqueta</th>
+                    <th>Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {expenseGroups.flatMap((group) => [
+                    ...group.tags.map((tag, index) => (
+                      <tr
+                        key={`${group.workId}-${tag.tagId}`}
+                        data-testid="expense-subtotal-tag"
+                      >
+                        <td>{index === 0 ? group.workName : ""}</td>
+                        <td>{tag.tagName}</td>
+                        <td>{money.format(tag.subtotal)}</td>
+                      </tr>
+                    )),
+                    <tr key={`${group.workId}-subtotal`} data-testid="expense-subtotal-work">
+                      <td colSpan={2}>
+                        <b>Subtotal {group.workName}</b>
+                      </td>
+                      <td>
+                        <b>{money.format(group.subtotal)}</b>
+                      </td>
+                    </tr>,
+                  ])}
+                  <tr data-testid="expense-grand-total">
+                    <td colSpan={2}>
+                      <b>Total general</b>
+                    </td>
+                    <td>
+                      <b>{money.format(total)}</b>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+        {canCreate && shareExpenseId && shareExpense && (
+          <form
+            className="panel connected-summary"
+            onSubmit={submitShares}
+            noValidate
+            data-testid="expense-share-form"
+          >
+            <div className="panel-head">
+              <div>
+                <h3>Repartir gasto entre obras</h3>
+                <p className="panel-sub">
+                  Gasto del {shareExpense.date} por {money.format(shareExpense.total)}.
+                  La suma de las líneas debe ser idéntica al total, sin obra repetida.
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="Cerrar reparto"
+                onClick={closeShareForm}
+                disabled={shareBusy}
+              >
+                ×
+              </button>
+            </div>
+            {shareLines.map((line, index) => (
+              <div className="field-grid" key={line.key}>
+                <label className="field">
+                  <span>Obra {index + 1}</span>
+                  <select
+                    value={line.workId}
+                    onChange={(event) =>
+                      updateShareLine(line.key, { workId: event.target.value })
+                    }
+                  >
+                    <option value="">Selecciona una obra</option>
+                    {data.catalogs.works.map((work) => (
+                      <option key={work.id} value={work.id}>
+                        {work.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Valor COP</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={line.amount}
+                    onChange={(event) =>
+                      updateShareLine(line.key, { amount: event.target.value })
+                    }
+                  />
+                </label>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label={`Quitar obra ${index + 1} del reparto`}
+                  disabled={shareLines.length === 1}
+                  onClick={() =>
+                    setShareLines((current) =>
+                      current.filter((item) => item.key !== line.key),
+                    )
+                  }
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => setShareLines((current) => [...current, newShareLine()])}
+            >
+              <Plus size={14} /> Agregar obra
+            </button>
+            <p data-testid="expense-share-summary">
+              Repartido {money.format(shareTotal)} de {money.format(shareExpense.total)}
+              {shareExpense.total !== shareTotal
+                ? shareExpense.total > shareTotal
+                  ? ` · faltan ${money.format(shareExpense.total - shareTotal)}`
+                  : ` · sobran ${money.format(shareTotal - shareExpense.total)}`
+                : ""}
+            </p>
+            {shareHasDuplicateWork && (
+              <p className="field-error" role="alert">
+                Cada obra debe aparecer una sola vez en el reparto.
+              </p>
+            )}
+            {shareFeedback && (
+              <p className="field-error" role="alert">
+                {shareFeedback}
+              </p>
+            )}
+            {shareSuccess && (
+              <p className="field-success" role="status">
+                {shareSuccess}
+              </p>
+            )}
+            <div className="form-footer">
+              <button
+                className="button button-dark"
+                type="submit"
+                disabled={!shareValid || shareBusy}
+              >
+                {shareBusy ? "Guardando…" : "Confirmar reparto"}
+              </button>
+            </div>
+          </form>
+        )}
         {canReadPettyCash && (
           <section className="panel connected-summary petty-cash-list">
             <div className="panel-head">
@@ -2112,7 +3168,29 @@ export function ConnectedExpenses({
               </div>
               <Tone tone="muted">{money.format(pettyTotal)}</Tone>
             </div>
-            {pettyRows.length ? (
+            {pettyRows.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-icon">—</span>
+                <h3>Sin movimientos de caja menor</h3>
+                <p>
+                  Los registros aparecerán aquí después de una captura
+                  autorizada.
+                </p>
+              </div>
+            ) : filteredPettyRows.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-icon">—</span>
+                <h3>Sin resultados para estos filtros</h3>
+                <p>Ajusta o limpia los filtros para ver más movimientos.</p>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  onClick={clearExpenseFilters}
+                >
+                  Limpiar filtros
+                </button>
+              </div>
+            ) : (
               <div className="table-wrap">
                 <table>
                   <thead>
@@ -2125,7 +3203,7 @@ export function ConnectedExpenses({
                     </tr>
                   </thead>
                   <tbody>
-                    {pettyRows.map((row) => (
+                    {filteredPettyRows.map((row) => (
                       <tr key={row.id}>
                         <td>{row.date}</td>
                         <td>{row.concept}</td>
@@ -2152,15 +3230,6 @@ export function ConnectedExpenses({
                     ))}
                   </tbody>
                 </table>
-              </div>
-            ) : (
-              <div className="empty-state">
-                <span className="empty-icon">—</span>
-                <h3>Sin movimientos de caja menor</h3>
-                <p>
-                  Los registros aparecerán aquí después de una captura
-                  autorizada.
-                </p>
               </div>
             )}
           </section>

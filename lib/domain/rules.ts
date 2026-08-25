@@ -1,4 +1,4 @@
-import type { DashboardMetrics, Expense, ExpenseShare, ItemLine, Money, Order, OrderType, RequisitionStatus, Role } from "./model";
+import type { Actor, DashboardActivityItem, DashboardAmountByKey, DashboardMetrics, DashboardQueueItem, Expense, ExpenseShare, ItemLine, Money, Order, OrderType, Requisition, RequisitionStatus, Role } from "./model";
 import { DomainError } from "./model";
 
 export const ALL_ROLES: readonly Role[] = ["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"];
@@ -86,4 +86,48 @@ export function calculateDashboard(expenses: readonly Expense[], orders: readonl
   const byStatus = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
   for (const status of statuses) byStatus[status]++;
   return { byStatus, inProcessValue: 0, periodExpense: expenses.filter((expense) => expense.period === period).reduce((sum, expense) => sum + expense.total, 0), pendingOrders: orders.filter((order) => order.status === "generada" || order.status === "no_cumplida").length };
+}
+/**
+ * RF-1102: cola de "qué espera algo de mí" en el dashboard conectado. Se calcula en el dominio sobre
+ * las mismas colecciones que ya filtró `listVisibleTo(actor)` (procurement-service.dashboard): nunca
+ * expone un documento que ese alcance no hubiera autorizado ya. Determinística: ordena por consecutivo
+ * descendente (el formato PREFIJO-AÑO-NNNN es monótono) y limita a 20 elementos para el panel.
+ */
+export function buildAttentionQueue(requisitions: readonly Requisition[], orders: readonly Order[], actor: Actor): DashboardQueueItem[] {
+  const workByRequisition = new Map(requisitions.map((requisition) => [requisition.id, requisition.workId]));
+  const canReview = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam");
+  const canApprove = actor.roles.includes("aprobador") || actor.roles.includes("admin_sixteam");
+  const items: DashboardQueueItem[] = [];
+  if (canReview) for (const requisition of requisitions) if (requisition.status === "enviada" || requisition.status === "en_revision") items.push({ kind: "requisicion", id: requisition.id, consecutive: requisition.consecutive, workId: requisition.workId, status: requisition.status, action: "Revisar" });
+  if (canApprove) for (const requisition of requisitions) if (requisition.status === "en_aprobacion" && (actor.roles.includes("admin_sixteam") || requisition.approverId === actor.id)) items.push({ kind: "requisicion", id: requisition.id, consecutive: requisition.consecutive, workId: requisition.workId, status: requisition.status, action: "Aprobar" });
+  for (const requisition of requisitions) if (requisition.status === "devuelta" && requisition.requesterId === actor.id) items.push({ kind: "requisicion", id: requisition.id, consecutive: requisition.consecutive, workId: requisition.workId, status: requisition.status, action: "Corregir" });
+  if (canReview) for (const order of orders) if (order.status === "generada") items.push({ kind: "orden", id: order.id, consecutive: order.consecutive, workId: workByRequisition.get(order.requisitionId), status: order.status, action: "Confirmar cumplimiento" });
+  return items.sort((a, b) => b.consecutive.localeCompare(a.consecutive)).slice(0, 20);
+}
+/**
+ * RF-1102: actividad reciente combinando requisiciones, órdenes y gastos visibles para el actor.
+ * Requisiciones/órdenes ordenan por su `updatedAt` real (poblado solo por el adaptador Postgres); los
+ * gastos del dominio solo llevan fecha (sin hora), así que dos eventos del mismo día ordenan por esa
+ * fecha. Es una aproximación explícita, no un registro de auditoría con hora exacta.
+ */
+export function buildRecentActivity(requisitions: readonly Requisition[], orders: readonly Order[], expenses: readonly Expense[], limit = 8): DashboardActivityItem[] {
+  const workByRequisition = new Map(requisitions.map((requisition) => [requisition.id, requisition.workId]));
+  const items: DashboardActivityItem[] = [];
+  for (const requisition of requisitions) if (requisition.updatedAt) items.push({ kind: "requisicion", id: requisition.id, consecutive: requisition.consecutive, workId: requisition.workId, status: requisition.status, at: requisition.updatedAt });
+  for (const order of orders) if (order.updatedAt) items.push({ kind: "orden", id: order.id, consecutive: order.consecutive, workId: workByRequisition.get(order.requisitionId) ?? "", status: order.status, at: order.updatedAt });
+  for (const expense of expenses) items.push({ kind: "gasto", id: expense.id, consecutive: expense.id.slice(0, 8), workId: expense.workId, status: expense.origin, at: expense.date });
+  return items.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+}
+function amountByKey(rows: Iterable<readonly [string, Money]>): DashboardAmountByKey[] {
+  const totals = new Map<string, number>();
+  for (const [key, amount] of rows) totals.set(key, (totals.get(key) ?? 0) + amount);
+  return [...totals.entries()].map(([key, total]) => ({ key, total })).sort((a, b) => b.total - a.total);
+}
+/** RF-706/RF-1103: gasto agrupado por obra, mayor a menor, para el gráfico ejecutivo correspondiente. */
+export function groupExpenseByWork(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.map((expense) => [expense.workId, expense.total] as const)); }
+/** RF-706/RF-1103: gasto agrupado por etiqueta; clave "" representa gastos sin etiqueta asignada. */
+export function groupExpenseByTag(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.map((expense) => [expense.tagId ?? "", expense.total] as const)); }
+/** RF-706/RF-1103: tendencia de gasto por periodo (YYYY-MM), cronológica, limitada a los últimos `monthsBack`. */
+export function groupExpenseByPeriod(expenses: readonly Expense[], monthsBack = 6): DashboardAmountByKey[] {
+  return amountByKey(expenses.map((expense) => [expense.period, expense.total] as const)).sort((a, b) => a.key.localeCompare(b.key)).slice(-monthsBack);
 }

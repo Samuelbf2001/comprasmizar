@@ -19,12 +19,25 @@ export interface Requisition {
   externalRequester?: { name: string; phone?: string }; channel: RequisitionChannel; requiredDate: string;
   destination?: string; observations?: string; tagId?: string; approverId?: string; status: RequisitionStatus;
   declineReason?: string; returnReason?: string; /** Trusted Kapso event ID only; DB enforces uniqueness. */ kapsoEventId?: string; items: ItemLine[];
+  /** RF-1102: última modificación (ISO), poblada solo por el adaptador Postgres; ausente en objetos construidos en memoria. */
+  updatedAt?: string;
 }
-export interface Order { id: string; consecutive: string; type: OrderType; requisitionId: string; supplierId?: string; itemIds: string[]; status: OrderStatus; }
+export interface Order { id: string; consecutive: string; type: OrderType; requisitionId: string; supplierId?: string; itemIds: string[]; status: OrderStatus; /** RF-1102: ver Requisition.updatedAt. */ updatedAt?: string; }
 export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; date: string; base: Money; iva: Money; total: Money; period: string; }
 export interface ExpenseShare { expenseId: string; workId: string; amount: Money; }
 export interface PettyCash { id: string; workId: string; date: string; concept: string; tagId: string; amount: Money; registeredBy: string; attachmentUrl?: string; }
-export interface DashboardMetrics { byStatus: Record<RequisitionStatus, number>; inProcessValue: Money; periodExpense: Money; pendingOrders: number; }
+/** RF-1102: un elemento de la cola de "qué espera algo de mí" en el dashboard conectado. */
+export interface DashboardQueueItem { kind: "requisicion" | "orden"; id: string; consecutive: string; workId?: string; status: string; action: string; }
+/** RF-1102: un evento de la lista de actividad reciente del dashboard conectado. */
+export interface DashboardActivityItem { kind: "requisicion" | "orden" | "gasto"; id: string; consecutive: string; workId: string; status: string; at: string; }
+/** RF-706/RF-1103: un punto agregado (obra, etiqueta o periodo) para los gráficos ejecutivos de gasto. */
+export interface DashboardAmountByKey { key: string; total: Money; }
+export interface DashboardMetrics {
+  byStatus: Record<RequisitionStatus, number>; inProcessValue: Money; periodExpense: Money; pendingOrders: number;
+  /** RF-1102/RF-706/RF-1103: agregados por el servicio después de calculateDashboard(); opcionales para no romper llamadas existentes. */
+  attentionQueue?: DashboardQueueItem[]; recentActivity?: DashboardActivityItem[];
+  expenseByWork?: DashboardAmountByKey[]; expenseByTag?: DashboardAmountByKey[]; expenseByPeriod?: DashboardAmountByKey[];
+}
 
 /** Supplier records are deliberately separate from the generic catalogue shape: bank data must never leak through catalogue/bootstrap responses. */
 export interface SupplierContact { name?: string; phone?: string; email?: string; address?: string; }

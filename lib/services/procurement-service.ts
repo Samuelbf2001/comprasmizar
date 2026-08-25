@@ -1,4 +1,4 @@
-import { DomainError, assertCop, assertPermission, assertTransition, calculateDashboard, calculateTax, calculateLineAmounts, calculateLineTotal, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, assertCop, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateTax, calculateLineAmounts, calculateLineTotal, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 
 export interface CreateRequisitionInput { type: RequisitionType; workId: string; requiredDate: string; channel: RequisitionChannel; requesterId?: string; externalRequester?: { name: string; phone?: string }; destination?: string; observations?: string; items: ItemLine[]; publicCode?: string; publicLinkToken?: string; kapsoEventId?: string; }
@@ -68,7 +68,20 @@ export class ProcurementService {
   async listOrders(context: RequestContext): Promise<Order[]> { const actor = this.actor(context); assertPermission(actor.roles, "order:read", this.authOrigin(context)); return this.deps.orders.listVisibleTo(actor); }
   async listExpenses(context: RequestContext): Promise<Expense[]> { const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context)); return this.deps.expenses.listVisibleTo(actor); }
   async listPettyCash(context: RequestContext): Promise<PettyCash[]> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:read", this.authOrigin(context)); return this.deps.pettyCash.list(); }
-  async dashboard(period: string, context: RequestContext) { const actor = this.actor(context); assertPermission(actor.roles, "dashboard:read", this.authOrigin(context)); if (!/^\d{4}-\d{2}$/.test(period)) throw new DomainError("INVALID_INPUT", "Periodo inválido"); const [requisitions, expenses, orders] = await Promise.all([this.deps.requisitions.listVisibleTo(actor), this.deps.expenses.listVisibleTo(actor), this.deps.orders.listVisibleTo(actor)]); const metrics = calculateDashboard(expenses, orders, requisitions.map((r) => r.status), period); metrics.inProcessValue = requisitions.filter((r) => r.status === "en_revision" || r.status === "en_aprobacion").reduce((sum, r) => sum + sumLines(r.items), 0); return metrics; }
+  async dashboard(period: string, context: RequestContext) {
+    const actor = this.actor(context); assertPermission(actor.roles, "dashboard:read", this.authOrigin(context)); if (!/^\d{4}-\d{2}$/.test(period)) throw new DomainError("INVALID_INPUT", "Periodo inválido");
+    const [requisitions, expenses, orders] = await Promise.all([this.deps.requisitions.listVisibleTo(actor), this.deps.expenses.listVisibleTo(actor), this.deps.orders.listVisibleTo(actor)]);
+    const metrics = calculateDashboard(expenses, orders, requisitions.map((r) => r.status), period);
+    metrics.inProcessValue = requisitions.filter((r) => r.status === "en_revision" || r.status === "en_aprobacion").reduce((sum, r) => sum + sumLines(r.items), 0);
+    // RF-1102/RF-706/RF-1103: agregados adicionales sobre las mismas colecciones ya autorizadas por listVisibleTo,
+    // igual que inProcessValue arriba; calculateDashboard no los produce para no romper su firma existente.
+    metrics.attentionQueue = buildAttentionQueue(requisitions, orders, actor);
+    metrics.recentActivity = buildRecentActivity(requisitions, orders, expenses);
+    metrics.expenseByWork = groupExpenseByWork(expenses);
+    metrics.expenseByTag = groupExpenseByTag(expenses);
+    metrics.expenseByPeriod = groupExpenseByPeriod(expenses);
+    return metrics;
+  }
   calculateQuotedValue(base: number, ivaRate: number) { return calculateTax(base, ivaRate); }
   lineTotal(line: ItemLine) { return calculateLineTotal(line); }
 }

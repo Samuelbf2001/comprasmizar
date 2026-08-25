@@ -37,5 +37,12 @@ export async function POST(request: Request) {
   // agregado por workId (sin IP) acota el total de intentos contra una obra sin importar el origen.
   if (!publicWorkRateLimiter.consume(`${ip}:${parsed.data.workId}`) || !publicWorkAggregateRateLimiter.consume(parsed.data.workId)) return neutral();
   const phone = normalizePublicPhone(parsed.data.phone);
-  try { if (!(await isAuthorizedPublicRequester(parsed.data.workId, phone))) return neutral(); const service = new ProcurementService(createPostgresDependencies()); await service.create({ type: parsed.data.type, workId: parsed.data.workId, requiredDate: parsed.data.requiredDate, channel: "publico", publicCode: parsed.data.code, publicLinkToken: linkToken, externalRequester: { name: parsed.data.name, phone }, destination: parsed.data.destination, observations: parsed.data.observations, items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, {}); return neutral(); } catch { return neutral(); }
+  // Orden deliberado (hallazgo de auditoría adversarial): la verificación criptográfica del enlace (HMAC
+  // en memoria, dentro de publicAccess.verify) y del código secreto de la obra debe evaluarse ANTES que la
+  // lista blanca de teléfonos (isAuthorizedPublicRequester), que también consulta la BD. Invertido, un
+  // atacante sin token válido podía (a) forzar consultas a BD gratis con solo mandar cualquier cadena como
+  // x-public-link-token, y (b) usar el timing de esa consulta de teléfonos para enumerar solicitantes
+  // autorizados en una obra sin siquiera poseer un enlace válido. Con HMAC inválido, verify() nunca toca
+  // la BD, así que ese primer filtro es efectivamente gratis para nosotros y costoso de eludir.
+  try { const dependencies = createPostgresDependencies(); if (!(await dependencies.publicAccess.verify(parsed.data.workId, linkToken, parsed.data.code))) return neutral(); if (!(await isAuthorizedPublicRequester(parsed.data.workId, phone))) return neutral(); const service = new ProcurementService(dependencies); await service.create({ type: parsed.data.type, workId: parsed.data.workId, requiredDate: parsed.data.requiredDate, channel: "publico", publicCode: parsed.data.code, publicLinkToken: linkToken, externalRequester: { name: parsed.data.name, phone }, destination: parsed.data.destination, observations: parsed.data.observations, items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, {}); return neutral(); } catch { return neutral(); }
 }
