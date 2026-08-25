@@ -10,6 +10,18 @@ RUN npm ci
 FROM base AS builder
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
+# Next.js incrusta las variables NEXT_PUBLIC_* en el bundle del navegador
+# durante el build, no las lee en ejecucion: si no llegan aqui, quedan
+# undefined en el cliente. Solo se declaran las que consume codigo de
+# cliente. Los secretos (service role, peppers, DATABASE_URL) NO van aqui:
+# se leen en ejecucion y no deben quedar en capas de la imagen.
+ARG NEXT_PUBLIC_KAPSO_INBOX_URL=""
+ARG NEXT_PUBLIC_APP_URL=""
+# Sin valor explicito queda apagado: el modo demo falla cerrado hacia Auth.
+ARG NEXT_PUBLIC_DEMO_MODE="false"
+ENV NEXT_PUBLIC_KAPSO_INBOX_URL=$NEXT_PUBLIC_KAPSO_INBOX_URL \
+    NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
+    NEXT_PUBLIC_DEMO_MODE=$NEXT_PUBLIC_DEMO_MODE
 RUN npm run build
 
 FROM node:24-alpine AS runner
