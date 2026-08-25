@@ -1,7 +1,10 @@
 import { FlaskConical } from 'lucide-react';
 
 export function DemoNotice({ compact = false }: { compact?: boolean }) {
-  return <div className={`demo-notice${compact ? ' demo-notice-compact' : ''}`} role="status" aria-label="Modo demostración, sin persistencia" title="Modo demostración · sin persistencia"><FlaskConical aria-hidden="true" size={14} /><span><b>Modo demostración</b> · sin persistencia</span></div>;
+  // role="note", no "status": este aviso es permanente, no una actualización dinámica.
+  // Una live region lo haría anunciarse en cada carga y colisiona con el role="status"
+  // que sí usan los mensajes de resultado de cada acción.
+  return <div className={`demo-notice${compact ? ' demo-notice-compact' : ''}`} role="note" aria-label="Modo demostración, sin persistencia" title="Modo demostración · sin persistencia"><FlaskConical aria-hidden="true" size={14} /><span><b>Modo demostración</b> · sin persistencia</span></div>;
 }
 
 export function ScreenState({ state, onRetry, onClear }: { state: 'loading' | 'error' | 'empty'; onRetry?: () => void; onClear?: () => void }) {

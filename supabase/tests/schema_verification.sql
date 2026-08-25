@@ -43,7 +43,9 @@ do $$ begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
       values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web');
     raise exception 'RLS dejó crear requisición a usuario inactivo';
-  exception when sqlstate '42501' then null;
+  exception
+    when sqlstate '42501' then null;
+    when sqlstate '23514' then null; -- el trigger BEFORE INSERT de catálogos activos (validar_catalogos_activos_requisicion, SECURITY DEFINER) corre antes que el WITH CHECK de RLS y ya bloquea al mismo usuario inactivo
   end;
   execute 'reset role';
   update public.usuarios set estado = 'activo' where id = '10000000-0000-0000-0000-000000000001';
@@ -329,16 +331,19 @@ do $$ begin
     where schemaname = 'public' and tablename = 'adjuntos' and policyname = 'adjuntos_lectura_operativa'
       and coalesce(qual, '') like '%puede_leer_adjunto_generico_finalizado%'
   ) then raise exception 'Adjuntos legacy genéricos pueden escapar por la policy de lectura'; end if;
+  -- has_table_privilege(...,'storage.objects',...) NO se verifica para
+  -- authenticated/anon: storage.objects es propiedad de supabase_storage_admin
+  -- y el rol postgres (con el que corren las migraciones) no puede revocar
+  -- ese grant de plataforma (confirmado empíricamente: el REVOKE ejecutado
+  -- como postgres es un no-op silencioso). El control real es la ausencia
+  -- de policies RLS de escritura para esos roles, ya verificada arriba y
+  -- ejercitada con ataques simulados en generic_attachments_verification.sql.
   if has_table_privilege('authenticated', 'public.adjuntos', 'INSERT')
     or has_table_privilege('authenticated', 'public.adjuntos', 'UPDATE')
-    or has_table_privilege('authenticated', 'public.adjuntos', 'DELETE')
-    or has_table_privilege('authenticated', 'storage.objects', 'INSERT')
-    or has_table_privilege('authenticated', 'storage.objects', 'UPDATE')
-    or has_table_privilege('authenticated', 'storage.objects', 'DELETE') then
+    or has_table_privilege('authenticated', 'public.adjuntos', 'DELETE') then
     raise exception 'authenticated conserva una escritura directa de adjuntos o Storage';
   end if;
-  if has_table_privilege('anon', 'public.adjuntos', 'INSERT')
-    or has_table_privilege('anon', 'storage.objects', 'INSERT') then
+  if has_table_privilege('anon', 'public.adjuntos', 'INSERT') then
     raise exception 'anon conserva una escritura directa de adjuntos o Storage';
   end if;
   if not has_table_privilege('service_role', 'public.adjuntos', 'INSERT')

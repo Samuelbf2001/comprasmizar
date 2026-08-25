@@ -217,6 +217,16 @@ create policy "mizar_storage_read" on storage.objects for select to authenticate
 );
 drop policy if exists "mizar_storage_upload" on storage.objects;
 drop policy if exists "mizar_storage_update" on storage.objects;
+-- NOTA (verificado en producción): storage.objects es propiedad de
+-- supabase_storage_admin, no de postgres. El rol postgres (con el que
+-- corren las migraciones) no es superusuario ni miembro de
+-- supabase_storage_admin, así que este REVOKE es un no-op silencioso:
+-- authenticated y anon conservan INSERT/UPDATE/DELETE de fábrica sobre
+-- storage.objects por diseño de la plataforma Supabase gestionada. Se deja
+-- el REVOKE por si algún día corre con más autoridad, pero el control real
+-- de seguridad es la ausencia de políticas RLS de escritura para esos
+-- roles (verificado con intentos de ataque que fallan con 42501 en
+-- supabase/tests/generic_attachments_verification.sql).
 revoke insert, update, delete on table storage.objects from authenticated;
 revoke insert, update, delete on table storage.objects from anon;
 grant insert, update, delete on table storage.objects to service_role;

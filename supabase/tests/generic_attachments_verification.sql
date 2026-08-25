@@ -24,6 +24,7 @@ declare
   v_qual text;
   v_check text;
   v_check_expr text;
+  v_filas int;
 begin
   if not exists (select 1 from storage.buckets where id = 'requisicion-adjuntos' and public = false
     and file_size_limit = 20971520
@@ -65,10 +66,17 @@ begin
     or exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and cmd in ('INSERT', 'UPDATE', 'DELETE')
       and (coalesce(qual, '') like '%requisicion-adjuntos%' or coalesce(with_check, '') like '%requisicion-adjuntos%'))
     or exists (select 1 from pg_policies where schemaname = 'storage' and policyname in ('mizar_storage_upload', 'mizar_storage_update'))
-    or has_table_privilege('authenticated', 'public.adjuntos', 'INSERT')
-    or has_table_privilege('authenticated', 'storage.objects', 'INSERT') then
+    or has_table_privilege('authenticated', 'public.adjuntos', 'INSERT') then
     raise exception 'Adjuntos genéricos conserva una escritura JWT directa';
   end if;
+  -- has_table_privilege('authenticated','storage.objects','INSERT') NO se
+  -- verifica aquí: ese grant es infraestructura de Supabase (storage.objects
+  -- es propiedad de supabase_storage_admin) que el rol postgres de las
+  -- migraciones no puede revocar (confirmado empíricamente: el REVOKE
+  -- ejecutado como postgres es un no-op). El invariante real ("ningún JWT
+  -- autenticado escribe directo") ya se ejercita como ataque simulado más
+  -- abajo contra storage.objects y depende de RLS, no de este grant de
+  -- plataforma.
   select qual into v_qual from pg_policies where schemaname = 'public' and tablename = 'adjuntos'
     and policyname = 'adjuntos_lectura_operativa' and cmd = 'SELECT';
   if v_qual is null or v_qual not like '%puede_leer_adjunto_generico_finalizado%' then
@@ -230,7 +238,18 @@ begin
   begin
     update storage.objects set metadata = '{"intento":"solicitante"}'::jsonb
       where bucket_id = 'requisicion-adjuntos' and name = v_path;
-    raise exception 'Solicitante actualizó Storage directamente';
+    get diagnostics v_filas = row_count;
+    -- storage.objects no tiene ninguna policy UPDATE ni ALL (sólo las dos
+    -- SELECT ya verificadas arriba), así que un UPDATE de 'authenticated'
+    -- no dispara 42501 (ese código sólo aparece cuando falla un WITH CHECK
+    -- de INSERT/UPDATE; para UPDATE sin policy aplicable, Postgres filtra
+    -- las filas visibles a 0 y el comando simplemente no afecta ninguna,
+    -- de forma silenciosa: comportamiento estándar documentado de RLS).
+    -- El invariante real ("el solicitante no logra modificar Storage") se
+    -- verifica exigiendo 0 filas afectadas, no un código de error concreto.
+    if v_filas > 0 then
+      raise exception 'Solicitante actualizó Storage directamente';
+    end if;
   exception when sqlstate '42501' then null;
   end;
   execute 'reset role';
@@ -288,7 +307,13 @@ begin
   begin
     update storage.objects set metadata = '{"intento":"revisor"}'::jsonb
       where bucket_id = 'requisicion-adjuntos' and name = v_path;
-    raise exception 'Revisor actualizó Storage directamente';
+    get diagnostics v_filas = row_count;
+    -- Mismo motivo que el intento del solicitante más arriba: sin policy
+    -- UPDATE/ALL en storage.objects, Postgres no lanza 42501, sólo afecta
+    -- 0 filas. Se exige 0 filas afectadas como evidencia del bloqueo real.
+    if v_filas > 0 then
+      raise exception 'Revisor actualizó Storage directamente';
+    end if;
   exception when sqlstate '42501' then null;
   end;
   execute 'reset role';
