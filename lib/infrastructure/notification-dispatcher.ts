@@ -1,6 +1,7 @@
 import type { KapsoAdapter } from "../services";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
+import { asJsonb } from "./jsonb";
 
 /** Only `sendTemplate` is needed to dispatch; no webhook secret or event store required. */
 export type NotificationSendAdapter = Pick<KapsoAdapter, "sendTemplate">;
@@ -152,7 +153,7 @@ export function createPostgresNotificationDispatchStore(databaseUrl = runtimeEnv
       await sql.begin(async (tx) => {
         await tx`update notificaciones set estado_envio='enviado', enviado_at=${sentAt}, ultimo_error=null, bloqueada_hasta=null where id=${id}`;
         await tx`insert into whatsapp_eventos (direccion, telefono, requisicion_id, tipo, payload_json, estado_entrega, kapso_message_id, fecha)
-          values ('salida', ${sent.phone}, ${extractRequisitionId(sent.payload)}, 'plantilla', ${JSON.stringify({ template: sent.template, payload: sent.payload })}::jsonb, 'enviado', ${sent.messageId}, ${sentAt})
+          values ('salida', ${sent.phone}, ${extractRequisitionId(sent.payload)}, 'plantilla', ${asJsonb(tx, { template: sent.template, payload: sent.payload })}, 'enviado', ${sent.messageId}, ${sentAt})
           on conflict (kapso_message_id) where kapso_message_id is not null do nothing`;
       });
     },

@@ -164,21 +164,31 @@ responsabilidad de quien reciba el `data_exchange`/`complete` — no hay forma
 de que llegue ya como una URL HTTPS simple como la que espera
 `kapsoItemSchema.attachmentUrl`.
 
-Hoy el webhook (`app/api/kapso/route.ts`) ya rechaza con `503
-attachment_storage_not_configured` cualquier evento con `attachmentUrl`,
-precisamente porque el storage privado todavía no existe (ver
-`docs/manuales/whatsapp-kapso.md`, punto 4). Mientras ese gate siga cerrado:
-**no envíes el campo `evidencia` al webhook existente.** Si Kapso llega a
-entregar el `evidencia` crudo, quien construya el adaptador debe:
+El webhook (`app/api/kapso/route.ts`) ya no rechaza los eventos con
+`attachmentUrl`: cuando un ítem la trae, el servidor descarga el binario desde
+Kapso (bearer `KAPSO_API_KEY`), valida su firma binaria real (pdf/jpeg/png/webp)
+y su tamaño, y lo copia al bucket privado `requisicion-adjuntos` como adjunto
+del `requisicion_item` (`lib/infrastructure/kapso-store.ts`,
+`createKapsoAttachmentCopier`). Si la descarga o la copia falla, la requisición
+se crea igual y el fallo queda registrado en `whatsapp_eventos` y `auditoria`
+(evento `ADJUNTO_KAPSO_FALLIDO`) para reintento manual.
+
+Eso resuelve el destino del archivo, no su origen: `attachmentUrl` debe llegar
+ya como una URL HTTPS simple descargable con el token de Kapso, y el `evidencia`
+crudo del Flow **no lo es** (es el arreglo cifrado descrito arriba). Ese
+descifrado del lado Meta/Kapso sigue sin resolverse y es responsabilidad de
+quien construya el adaptador Kapso↔Flow:
 
 1. Descargar cada `cdn_url` y descifrarlo (algoritmo arriba) antes de que
    expire.
-2. Copiarlo al bucket privado de Supabase con control por rol.
-3. Solo entonces producir una URL HTTPS propia y pasarla como `attachmentUrl`.
+2. Alojar el archivo descifrado detrás de una URL HTTPS descargable con el
+   bearer de Kapso.
+3. Solo entonces pasarla como `attachmentUrl` al webhook, que se encarga de la
+   copia al bucket propio.
 
-Hasta que eso exista, una requisición enviada por WhatsApp con adjunto debe
-tratarse igual que hoy: se registra sin el adjunto, o se rechaza explícitamente,
-nunca se descarta en silencio.
+Mientras ese descifrado no exista, **no envíes el campo `evidencia` al
+webhook**: la requisición se registra sin el adjunto, nunca se descarta en
+silencio.
 
 ## Publicar el borrador
 

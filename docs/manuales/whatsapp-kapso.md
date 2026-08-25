@@ -9,7 +9,7 @@ Kapso es la capa de infraestructura para el número de WhatsApp Business, Flows,
 1. El solicitante inicia el WhatsApp Flow con tipo de solicitud, obra, ítems, cantidad, posible proveedor, enlace y foto.
 2. Kapso entrega el evento al endpoint configurado.
 3. La solicitud cae en la misma bandeja de Daniel con canal `whatsapp`.
-4. Cuando el gate de Storage esté habilitado, los adjuntos se copiarán al storage propio con control por rol; hoy un Flow con adjunto es rechazado sin crear una requisición incompleta.
+4. La requisición se crea siempre; los adjuntos se copian server-side al storage propio con control por rol (el servidor descarga el archivo desde Kapso, valida tipo y tamaño, y lo guarda en el bucket privado). Si la copia de un adjunto falla, no bloquea la solicitud: el fallo queda registrado en `whatsapp_eventos` y en auditoría para reintento manual.
 
 Los cambios de estado ya crean una notificación `pendiente` en el outbox dentro de la misma transacción. Eso no significa que el mensaje haya salido: el envío y sus reintentos solo se habilitan después de configurar la cuenta, los destinos y las plantillas aprobadas de Kapso.
 5. El solicitante y los aprobadores reciben plantillas de estado cuando estén aprobadas y activas.

@@ -78,7 +78,7 @@ Una vez el dominio esté en pie:
 2. Registrar el **mismo** `KAPSO_WEBHOOK_SECRET`. Si no coincide, la firma no valida y todo evento se rechaza — que es el comportamiento correcto, pero parecerá que "no llega nada".
 3. Verificar la entrega con el MCP de Kapso (`https://api.kapso.ai/mcp`) antes de dar por buena la integración.
 
-Nota: los adjuntos del Flow **fallan cerrado** con 503 (`attachment_storage_not_configured`) hasta que se codifique la copia al bucket propio. Es una brecha conocida, no un error de configuración.
+Nota: los adjuntos del Flow ya se copian server-side: el webhook descarga cada `attachmentUrl` desde Kapso (bearer `KAPSO_API_KEY`), valida la firma binaria real (pdf/jpeg/png/webp) y el tamaño, y guarda el archivo en el bucket privado `requisicion-adjuntos`. Si la descarga o la copia falla, la requisición se crea igual y el fallo queda registrado en `whatsapp_eventos` y `auditoria` (evento `ADJUNTO_KAPSO_FALLIDO`) para reintento manual — no hay reintento automático vía webhook.
 
 ## 5. Verificación posterior al despliegue
 

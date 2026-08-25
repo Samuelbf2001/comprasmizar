@@ -593,6 +593,14 @@ function formatShortDate(value: string): string {
   const date = new Date(value.length <= 10 ? `${value}T00:00:00` : value);
   return Number.isNaN(date.getTime()) ? value : shortDate.format(date);
 }
+// DD/MM/AAAA, el formato que usa Mizar. El sufijo T00:00:00 fuerza interpretacion
+// local: sin el, "2026-08-26" se lee como medianoche UTC y en Colombia (GMT-5) se
+// muestra el dia anterior.
+const isoDate = new Intl.DateTimeFormat("es-CO", { day: "2-digit", month: "2-digit", year: "numeric" });
+function formatIsoDate(value: string): string {
+  const date = new Date(value.length <= 10 ? `${value}T00:00:00` : value);
+  return Number.isNaN(date.getTime()) ? value : isoDate.format(date);
+}
 function queueDestination(item: DashboardQueueItem): string {
   return item.kind === "requisicion" ? `/requisiciones/${item.id}` : "/ordenes";
 }
@@ -1672,7 +1680,7 @@ export function ConnectedRequisitions({
                             ?.name ?? row.tagId)
                         : "—"}
                     </td>
-                    <td>{row.requiredDate || "—"}</td>
+                    <td>{row.requiredDate ? formatIsoDate(row.requiredDate) : "—"}</td>
                     <td>{row.status.replaceAll("_", " ")}</td>
                     <td>
                       <button

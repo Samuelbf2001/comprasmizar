@@ -2,6 +2,7 @@ import type { Sql } from "postgres";
 import type { ScreenSessionRecord, ScreenSessionRepository, ScreenSessionServiceDependencies } from "../services/screen-session-service";
 import { mcpEnv, runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
+import { asJsonb } from "./jsonb";
 
 type Row = Record<string, unknown>;
 function toRecord(row: Row): ScreenSessionRecord {
@@ -54,7 +55,7 @@ export function createScreenSessionServiceDependencies(databaseUrl = runtimeEnv(
   const sql = sharedPostgres(databaseUrl);
   return {
     repository: new PostgresScreenSessionRepository(sql),
-    audit: { append: async (event) => { await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event}, ${event.origin}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${JSON.stringify(event.data ?? {})}::jsonb)`; } },
+    audit: { append: async (event) => { await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event}, ${event.origin}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(sql, event.data ?? {})})`; } },
     clock: { now: () => new Date() },
     ids: { next: () => crypto.randomUUID() },
     pepper: mcpEnv().MCP_KEY_PEPPER,

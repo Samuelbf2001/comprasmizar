@@ -5,6 +5,7 @@ import { PRIVATE_ATTACHMENT_BUCKET } from "../services/attachment-service";
 import { createSupabaseServiceClient } from "./supabase";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
+import { asJsonb } from "./jsonb";
 
 type Row = Record<string, unknown>;
 const number = (value: unknown) => Number(value ?? 0);
@@ -29,7 +30,7 @@ class PostgresAttachmentRepository implements PrivateAttachmentRepository {
 }
 class PostgresAttachmentTransactions implements PrivateAttachmentTransactionManager {
   constructor(private readonly sql: Sql) {}
-  async transaction<T>(entity: AttachmentEntity, entityId: string, work: (tx: PrivateAttachmentTransaction) => Promise<T>): Promise<T> { return this.sql.begin(async (sql) => { await sql.unsafe(attachmentLockStatement(entity), [entityId]); const repository = new PostgresAttachmentRepository(sql as unknown as Sql); return work({ attachments: repository, audit: { append: async (event) => { await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${JSON.stringify(event.data ?? {})}::jsonb)`; } } }); }) as Promise<T>; }
+  async transaction<T>(entity: AttachmentEntity, entityId: string, work: (tx: PrivateAttachmentTransaction) => Promise<T>): Promise<T> { return this.sql.begin(async (sql) => { await sql.unsafe(attachmentLockStatement(entity), [entityId]); const repository = new PostgresAttachmentRepository(sql as unknown as Sql); return work({ attachments: repository, audit: { append: async (event) => { await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(sql, event.data ?? {})})`; } } }); }) as Promise<T>; }
 }
 class SupabaseAttachmentStorage {
   private readonly client = createSupabaseServiceClient();
