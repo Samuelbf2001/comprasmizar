@@ -703,3 +703,30 @@ td:nth-child(3),th:nth-child(3){display:none}
 .chart-table th,.chart-table td{padding:8px 12px;font-size:10px}
 @media(max-width:1080px){.chart-grid{grid-template-columns:1fr}}
 @media(max-width:530px){.catalog-admin-tabs{margin-right:-14px;padding-right:14px}.catalog-edit-form{margin:0 12px 14px}.catalog-edit-form .form-footer{align-items:stretch}.catalog-edit-form .title-actions{width:100%;flex-direction:column}.catalog-edit-form .title-actions .button{width:100%}.catalog-access-gate{padding:22px 17px}}
+/* RF-1104: modo pantalla (app/pantalla) — kiosco de solo lectura para un monitor/TV de oficina. Fondo
+   oscuro y tipografía grande a propósito: se lee de pie, a distancia, nunca de cerca. */
+.pantalla-page{min-height:100vh;background:var(--forest-deep);color:#f3f6f2;display:flex;flex-direction:column;gap:34px;padding:38px 48px 56px}
+.pantalla-page-empty{align-items:center;justify-content:center}
+.pantalla-header{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.pantalla-brand{display:flex;align-items:center;gap:10px;color:#cfe3d5}
+.pantalla-brand b{font-size:16px;letter-spacing:.2em}
+.pantalla-brand small{color:#8fab98;font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-left:2px}
+.pantalla-meta{display:flex;align-items:center;gap:18px;color:#bfd3c6;font-size:13px}
+.pantalla-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:18px}
+.pantalla-grid-money{grid-template-columns:repeat(3,1fr)}
+.pantalla-tile{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:26px 20px;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.pantalla-tile strong{font:700 52px/1 Georgia,"Times New Roman",serif;letter-spacing:-.02em;color:#fff}
+.pantalla-tile span{font-size:13px;color:#b9cec0;letter-spacing:.02em}
+.pantalla-tile-money strong{font-size:38px;color:#f6d9a8}
+.pantalla-breakdown{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:22px 26px}
+.pantalla-breakdown h2{margin:0 0 14px;font:600 16px Georgia,serif;color:#dcebe1}
+.pantalla-breakdown ul{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.pantalla-breakdown li{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:15px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:9px}
+.pantalla-breakdown li:last-child{border-bottom:0;padding-bottom:0}
+.pantalla-breakdown b{color:#f6d9a8;font-weight:700}
+.pantalla-empty{background:transparent;box-shadow:none}
+.pantalla-empty .empty-icon{background:rgba(255,255,255,.08);color:#dcebe1}
+.pantalla-empty h1{font:600 26px Georgia,serif;margin:14px 0 6px;color:#fff}
+.pantalla-empty p{color:#b9cec0;font-size:13px}
+@media(max-width:1100px){.pantalla-grid{grid-template-columns:repeat(3,1fr)}.pantalla-grid-money{grid-template-columns:1fr}}
+@media(max-width:640px){.pantalla-page{padding:26px 18px 40px}.pantalla-grid{grid-template-columns:repeat(2,1fr)}.pantalla-tile strong{font-size:38px}}
