@@ -11,4 +11,10 @@ export class FixedWindowRateLimiter {
 }
 export const publicFormRateLimiter = new FixedWindowRateLimiter(20, 60_000);
 export const publicWorkRateLimiter = new FixedWindowRateLimiter(10, 60_000);
+/**
+ * Keyed by workId alone (no IP): publicWorkRateLimiter (ip:workId) grants every distinct origin IP its own
+ * budget, so an attacker spreading guesses across many IPs/proxies faces no aggregate ceiling per obra. This
+ * caps total attempts against one obra regardless of how many IPs are used, closing that evasion gap.
+ */
+export const publicWorkAggregateRateLimiter = new FixedWindowRateLimiter(30, 60_000);
 export const mcpRateLimiter = new FixedWindowRateLimiter(120, 60_000);

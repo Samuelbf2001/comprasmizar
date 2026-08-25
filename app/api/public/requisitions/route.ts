@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { ProcurementService } from "../../../../lib/services";
 import { createPostgresDependencies } from "../../../../lib/infrastructure/postgres-repositories";
 import { isPublicConfigured } from "../../../../lib/security/env";
-import { publicFormRateLimiter, publicWorkRateLimiter } from "../../../../lib/security/rate-limit";
+import { publicFormRateLimiter, publicWorkAggregateRateLimiter, publicWorkRateLimiter } from "../../../../lib/security/rate-limit";
 import { isAuthorizedPublicRequester } from "../../../../lib/infrastructure/public-access";
 
 export const runtime = "nodejs";
@@ -32,7 +32,10 @@ export async function POST(request: Request) {
   const declaredLength = Number(request.headers.get("content-length") ?? 0); if (Number.isFinite(declaredLength) && declaredLength > 100_000) return neutral();
   const raw = await request.text(); if (Buffer.byteLength(raw, "utf8") > 100_000) return neutral();
   let payload: unknown; try { payload = JSON.parse(raw); } catch { payload = null; }
-  const parsed = publicRequisitionSchema.safeParse(payload), linkToken = request.headers.get("x-public-link-token"); if (!parsed.success || !linkToken) return neutral(); if (!publicWorkRateLimiter.consume(`${ip}:${parsed.data.workId}`)) return neutral();
+  const parsed = publicRequisitionSchema.safeParse(payload), linkToken = request.headers.get("x-public-link-token"); if (!parsed.success || !linkToken) return neutral();
+  // publicWorkRateLimiter (ip:workId) por sí solo es evadible repartiendo intentos entre muchas IPs; el
+  // agregado por workId (sin IP) acota el total de intentos contra una obra sin importar el origen.
+  if (!publicWorkRateLimiter.consume(`${ip}:${parsed.data.workId}`) || !publicWorkAggregateRateLimiter.consume(parsed.data.workId)) return neutral();
   const phone = normalizePublicPhone(parsed.data.phone);
   try { if (!(await isAuthorizedPublicRequester(parsed.data.workId, phone))) return neutral(); const service = new ProcurementService(createPostgresDependencies()); await service.create({ type: parsed.data.type, workId: parsed.data.workId, requiredDate: parsed.data.requiredDate, channel: "publico", publicCode: parsed.data.code, publicLinkToken: linkToken, externalRequester: { name: parsed.data.name, phone }, destination: parsed.data.destination, observations: parsed.data.observations, items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, {}); return neutral(); } catch { return neutral(); }
 }

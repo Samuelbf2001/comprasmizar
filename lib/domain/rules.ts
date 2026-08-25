@@ -10,7 +10,9 @@ const permissions: Record<Role, readonly string[]> = {
   admin_mizar: ["requisition:create", "catalog:manage", "dashboard:read", "expense:read", "report:export"],
   admin_sixteam: ["*"],
 };
-const mcpForbidden = new Set(["requisition:approve", "requisition:return"]);
+// "requisition:review" protege decline/review/startReview/sendForApproval (procurement-service.ts):
+// bloquearlo también estructuralmente cierra la denegación permanente (RF-1205), no solo aprobar/devolver.
+const mcpForbidden = new Set(["requisition:approve", "requisition:return", "requisition:review"]);
 
 export function hasPermission(roles: readonly Role[], permission: string, origin: "web" | "mcp" = "web"): boolean {
   if (origin === "mcp" && mcpForbidden.has(permission)) return false;
@@ -47,7 +49,10 @@ export function calculateLineAmounts(line: ItemLine): { base: Money; iva: Money;
   const unitBase = line.unitBase ?? 0, unitIva = line.unitIva ?? 0, derivedUnitTotal = unitBase + unitIva;
   assertCop(unitBase, "Base unitaria"); assertCop(unitIva, "IVA unitario");
   if (line.unitTotal !== undefined && line.unitTotal !== derivedUnitTotal) throw new DomainError("INCONSISTENT_TOTAL", "El total unitario no cuadra con base e IVA");
-  const base = line.quantity * unitBase, iva = line.quantity * unitIva, total = line.quantity * (line.unitTotal ?? derivedUnitTotal);
+  // Cantidades fraccionarias (m3, metros, litros) casi nunca caen en un peso exacto: se redondea base e IVA
+  // por separado (igual que calculateTax) y el total se deriva de esa suma, nunca de una tercera multiplicación,
+  // para que base + iva === total siempre cuadre al peso.
+  const base = Math.round(line.quantity * unitBase), iva = Math.round(line.quantity * unitIva), total = base + iva;
   assertCop(base, "Base de línea"); assertCop(iva, "IVA de línea"); assertCop(total, "Total de línea"); return { base, iva, total };
 }
 export function calculateLineTotal(line: ItemLine): Money { return calculateLineAmounts(line).total; }
