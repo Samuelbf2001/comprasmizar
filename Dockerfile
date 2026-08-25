@@ -15,12 +15,12 @@ COPY . .
 # undefined en el cliente. Solo se declaran las que consume codigo de
 # cliente. Los secretos (service role, peppers, DATABASE_URL) NO van aqui:
 # se leen en ejecucion y no deben quedar en capas de la imagen.
-ARG NEXT_PUBLIC_KAPSO_INBOX_URL=""
 ARG NEXT_PUBLIC_APP_URL=""
 # Sin valor explicito queda apagado: el modo demo falla cerrado hacia Auth.
 ARG NEXT_PUBLIC_DEMO_MODE="false"
-ENV NEXT_PUBLIC_KAPSO_INBOX_URL=$NEXT_PUBLIC_KAPSO_INBOX_URL \
-    NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
+# La URL del inbox de Kapso NO va aqui: es una credencial portadora y se sirve
+# en ejecucion desde /api/kapso-embed solo a sesiones autorizadas (KAPSO_EMBED_URL).
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
     NEXT_PUBLIC_DEMO_MODE=$NEXT_PUBLIC_DEMO_MODE
 RUN npm run build
 

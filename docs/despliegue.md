@@ -25,9 +25,10 @@ Distinción crítica de Next.js. Las `NEXT_PUBLIC_*` se **incrustan en el bundle
 
 | Variable | Valor | Efecto si falta |
 |---|---|---|
-| `NEXT_PUBLIC_APP_URL` | `https://<dominio>` | Enlaces de recuperación de contraseña rotos |
-| `NEXT_PUBLIC_KAPSO_INBOX_URL` | URL del inbox embebido de Kapso | La pantalla Mensajes no monta el iframe |
+| `NEXT_PUBLIC_APP_URL` | `https://compras.grupomizar.com.co` | Enlaces de recuperación de contraseña rotos |
 | `NEXT_PUBLIC_DEMO_MODE` | `false` (fijo en CI) | Falla cerrado hacia Auth — es el default seguro |
+
+> La URL del inbox de Kapso **no** es build-arg a propósito: es una credencial portadora (abre las conversaciones de la línea sin login, verificado contra el servicio real). Va como `KAPSO_EMBED_URL` en el entorno de ejecución y la sirve `/api/kapso-embed` solo a sesiones autenticadas con rol Revisor o Administrador.
 
 **Se definen en EasyPanel como entorno del servicio** (secretos reales, nunca en la imagen ni en el repo):
 
@@ -42,6 +43,7 @@ Distinción crítica de Next.js. Las `NEXT_PUBLIC_*` se **incrustan en el bundle
 | `KAPSO_API_KEY` | Clave del proyecto Kapso |
 | `KAPSO_WEBHOOK_SECRET` | ≥32 caracteres. **Debe coincidir** con el registrado en Kapso |
 | `KAPSO_PHONE_NUMBER_ID` | `1221974497672719` (línea MIZAR) |
+| `KAPSO_EMBED_URL` | URL del inbox embebido (embed `fab3fa49…`, alcance: solo línea MIZAR, orígenes: compras.grupomizar.com.co y localhost). Credencial portadora: tratar como secreto; para rotarla, DELETE del embed y crear otro |
 
 El validador ([lib/security/env.ts](../lib/security/env.ts)) exige estas formas y **falla cerrado**: sin variables completas, `/api/health` responde `unconfigured` y los endpoints rechazan sin filtrar secretos.
 
@@ -49,7 +51,7 @@ El validador ([lib/security/env.ts](../lib/security/env.ts)) exige estas formas 
 
 Ya automatizado: cada push a `main` que pase calidad y E2E publica `ghcr.io/samuelbf2001/comprasmizar` con dos etiquetas — `:<sha>` (inmutable, para revertir) y `:main` (móvil).
 
-Antes del primer despliegue, en GitHub → Settings → Secrets and variables → Actions → **Variables**, definir `NEXT_PUBLIC_APP_URL` y `NEXT_PUBLIC_KAPSO_INBOX_URL`.
+Antes del primer despliegue, en GitHub → Settings → Secrets and variables → Actions → **Variables**, definir `NEXT_PUBLIC_APP_URL`.
 
 El paquete de GHCR nace privado: hay que dar acceso de lectura al VPS con un token, o marcarlo público si no hay inconveniente (la imagen no contiene secretos, pero sí todo el código).
 
@@ -71,7 +73,7 @@ El VPS aloja otros proyectos (`postgres`, `whatsfull`, `whatsful`). **Crear un p
 
 Una vez el dominio esté en pie:
 
-1. En Kapso, apuntar el webhook de la línea MIZAR a `https://<dominio>/api/kapso`.
+1. En Kapso, apuntar el webhook de la línea MIZAR a `https://compras.grupomizar.com.co/api/kapso`.
 2. Registrar el **mismo** `KAPSO_WEBHOOK_SECRET`. Si no coincide, la firma no valida y todo evento se rechaza — que es el comportamiento correcto, pero parecerá que "no llega nada".
 3. Verificar la entrega con el MCP de Kapso (`https://api.kapso.ai/mcp`) antes de dar por buena la integración.
 
