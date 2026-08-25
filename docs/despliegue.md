@@ -44,6 +44,7 @@ Distinción crítica de Next.js. Las `NEXT_PUBLIC_*` se **incrustan en el bundle
 | `KAPSO_WEBHOOK_SECRET` | ≥32 caracteres. **Debe coincidir** con el registrado en Kapso |
 | `KAPSO_PHONE_NUMBER_ID` | `1221974497672719` (línea MIZAR) |
 | `KAPSO_EMBED_URL` | URL del inbox embebido (embed `fab3fa49…`, alcance: solo línea MIZAR, orígenes: compras.grupomizar.com.co y localhost). Credencial portadora: tratar como secreto; para rotarla, DELETE del embed y crear otro |
+| `NOTIFICATION_DISPATCH_SECRET` | ≥32 caracteres. Candado del endpoint interno que envía las notificaciones pendientes; el cron del VPS lo pasa en `x-dispatch-secret`. Sin él, el endpoint responde 503 |
 
 El validador ([lib/security/env.ts](../lib/security/env.ts)) exige estas formas y **falla cerrado**: sin variables completas, `/api/health` responde `unconfigured` y los endpoints rechazan sin filtrar secretos.
 
