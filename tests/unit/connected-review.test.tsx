@@ -110,7 +110,13 @@ describe("alta rápida de proveedor desde revisión", () => {
     renderDetail();
     fireEvent.click(screen.getByRole("button", { name: /Crear proveedor para/ }));
     const close = screen.getByRole("button", { name: "Cerrar alta de proveedor" });
+    // El envío solo se habilita con razón social; deshabilitado quedaría fuera
+    // de la trampa de foco y nunca sería el último elemento enfocable.
+    fireEvent.change(screen.getByLabelText("Razón social *"), {
+      target: { value: "Canteras Norte" },
+    });
     const submit = screen.getByRole("button", { name: "Crear y asignar" });
+    expect(submit).toBeEnabled();
     submit.focus();
     fireEvent.keyDown(submit, { key: "Tab" });
     expect(document.activeElement).toBe(close);

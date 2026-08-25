@@ -47,7 +47,7 @@ npm run test:e2e
 
 ## Estado verificable de este checkout
 
-- `lint`, tipos, 77 pruebas unitarias/integración, cobertura de `lib/domain` (97,72 % líneas/sentencias, 93,58 % ramas y 100 % funciones) y build de producción pasan.
+- `lint`, tipos, 83 pruebas unitarias/integración, cobertura de `lib/domain` (97,72 % líneas/sentencias, 93,58 % ramas y 100 % funciones) y build de producción pasan.
 - El E2E demo pasa 22 recorridos en escritorio/móvil; 14 casos de Auth/backend real quedan omitidos explícitamente por falta de entorno y fixtures.
 - Proveedores y adjuntos operativos tienen contratos locales de extremo a extremo: expediente privado, carga firmada multipart, verificación server-side de tamaño/MIME, listado y descarga autorizada. Esto no equivale a un E2E contra Supabase.
 - El build con demo desactivado redirige `/` y `/revision` a login y `/api/health` responde `unconfigured` sin revelar secretos.
