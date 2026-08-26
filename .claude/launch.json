@@ -4,14 +4,22 @@
     {
       "name": "mizar-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 3000
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 3000,
+      "autoPort": true
     },
     {
       "name": "mizar-demo",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:demo"],
-      "port": 3000
+      "runtimeArgs": [
+        "run",
+        "dev:demo"
+      ],
+      "port": 3000,
+      "autoPort": true
     }
   ]
 }

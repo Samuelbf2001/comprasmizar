@@ -137,7 +137,7 @@ describe("RF-1105: stale-while-revalidate", () => {
 
     await screen.findByText("RQ-001");
     expect(screen.getByTestId("requisition-status").textContent).toBe(
-      "en revision",
+      "En revisión",
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
@@ -149,7 +149,7 @@ describe("RF-1105: stale-while-revalidate", () => {
     expect(screen.queryByTestId("detail-skeleton")).toBeNull();
     expect(screen.getByText("RQ-001")).toBeInTheDocument();
     expect(screen.getByTestId("requisition-status").textContent).toBe(
-      "en revision",
+      "En revisión",
     );
     // ...pero queda marcado como revalidando mientras llega la respuesta fresca.
     expect(container).toHaveClass("is-revalidating");
@@ -157,7 +157,7 @@ describe("RF-1105: stale-while-revalidate", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("requisition-status").textContent).toBe(
-        "en aprobacion",
+        "En aprobación",
       ),
     );
     expect(screen.getByText("RQ-001")).toBeInTheDocument();

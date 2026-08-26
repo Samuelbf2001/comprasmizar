@@ -4,7 +4,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["tests/e2e/**", "node_modules/**"],
+    // tests/visual/** lo corre Playwright (playwright.visual.config.ts), no vitest.
+    exclude: ["tests/e2e/**", "tests/visual/**", "node_modules/**"],
     coverage: {
       provider: "v8",
       include: ["lib/domain/**/*.ts"],

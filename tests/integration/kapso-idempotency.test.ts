@@ -52,6 +52,7 @@ describe("Kapso attachment hook (attachEvidence)", () => {
 // la ruta completa vía POST /api/kapso está en tests/integration/nfm-reply.test.ts.
 describe("Adaptador de WhatsApp Flow (nfm_reply) + coordinador de idempotencia", () => {
   const secret = "secreto-de-prueba-para-flow-token";
+  const okRequester = async () => ({ name: "Maestro de obra" });
   const phone = "573005550001";
   const now = new Date("2026-08-24T12:00:00.000Z");
   function rawNfmReply(wamid: string): RawKapsoWebhookPayload {
@@ -70,14 +71,14 @@ describe("Adaptador de WhatsApp Flow (nfm_reply) + coordinador de idempotencia",
     let creates = 0;
     const creator = { findExisting: async () => null, create: async () => { creates++; return { id: "req-flow", consecutive: "REQ", type: "compra" as const, workId: "22222222-2222-4222-8222-222222222222", channel: "whatsapp" as const, requiredDate: "2026-08-30", status: "enviada" as const, items: [] }; } };
 
-    const adapted = await adaptNfmReply(rawNfmReply("wamid.flow-1"), { secret, now });
+    const adapted = await adaptNfmReply(rawNfmReply("wamid.flow-1"), { secret, resolveRequester: okRequester, now });
     expect(adapted.ok).toBe(true);
     if (!adapted.ok) return;
 
     await expect(processKapsoEvent(durable, creator, adapted.event)).resolves.toBe("created");
     // Mismo wamid llega de nuevo (reintento de Meta/Kapso): se vuelve a traducir igual, pero el
     // coordinador de idempotencia ya lo tiene completado.
-    const adaptedAgain = await adaptNfmReply(rawNfmReply("wamid.flow-1"), { secret, now });
+    const adaptedAgain = await adaptNfmReply(rawNfmReply("wamid.flow-1"), { secret, resolveRequester: okRequester, now });
     expect(adaptedAgain.ok).toBe(true);
     if (!adaptedAgain.ok) return;
     await expect(processKapsoEvent(durable, creator, adaptedAgain.event)).resolves.toBe("duplicate");
@@ -91,8 +92,8 @@ describe("Adaptador de WhatsApp Flow (nfm_reply) + coordinador de idempotencia",
     let creates = 0;
     const creator = { findExisting: async () => null, create: async () => { creates++; return { id: `req-flow-${creates}`, consecutive: "REQ", type: "compra" as const, workId: "22222222-2222-4222-8222-222222222222", channel: "whatsapp" as const, requiredDate: "2026-08-30", status: "enviada" as const, items: [] }; } };
 
-    const first = await adaptNfmReply(rawNfmReply("wamid.flow-a"), { secret, now });
-    const second = await adaptNfmReply(rawNfmReply("wamid.flow-b"), { secret, now });
+    const first = await adaptNfmReply(rawNfmReply("wamid.flow-a"), { secret, resolveRequester: okRequester, now });
+    const second = await adaptNfmReply(rawNfmReply("wamid.flow-b"), { secret, resolveRequester: okRequester, now });
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
 

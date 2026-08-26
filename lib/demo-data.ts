@@ -19,7 +19,7 @@ export const navigation = [
   { label: 'Inicio', href: '/', icon: 'LayoutDashboard' },
   { label: 'Nueva requisición', href: '/requisiciones/nueva', icon: 'PlusCircle' },
   { label: 'Mis requisiciones', href: '/requisiciones/mis', icon: 'ClipboardList' },
-  { label: 'Revisión de Daniel', href: '/revision', icon: 'Inbox', badge: '12' },
+  { label: 'Revisión de Daniel', genericLabel: 'Revisión', href: '/revision', icon: 'Inbox', badge: '12' },
   { label: 'Aprobaciones', href: '/aprobaciones', icon: 'CheckCircle2', badge: '4' },
   { label: 'Órdenes', href: '/ordenes', icon: 'FileCheck2' },
   { label: 'Gastos y caja menor', href: '/gastos', icon: 'Receipt' },

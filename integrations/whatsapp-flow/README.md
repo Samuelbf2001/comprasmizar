@@ -16,59 +16,46 @@ proxy de Kapso. Antes de este cambio solo existía el receptor del webhook
 
 ## Diseño del Flow
 
-4 pantallas, **sin Data Endpoint** (sin `endpoint_uri`/`data_channel_uri`, sin
+6 pantallas, **sin Data Endpoint** (sin `endpoint_uri`/`data_channel_uri`, sin
 cifrado, sin health checks). Toda la navegación es `navigate`/`complete` en el
-cliente:
+cliente. **Un artículo por pantalla** para que cada ítem se distinga con claridad
+del anterior (feedback de la prueba real):
 
-1. **TIPO_Y_OBRA** (pantalla de entrada) — tipo de solicitud (`compra`/`pago`,
-   `RadioButtonsGroup`) y obra (`Dropdown`). El listado de obras **no está quemado
-   en el JSON**: llega dinámico mediante `data.obras` — ver "Cómo se llenan los
-   dropdowns dinámicos" abajo.
-2. **ITEMS** — 3 franjas fijas de ítem (`item_1_*`, `item_2_*`, `item_3_*`):
-   descripción, cantidad, unidad, proveedor posible y link de producto. **Solo el
-   ítem 1 es obligatorio**; los ítems 2 y 3 son opcionales. Cada franja también
-   ofrece un `Dropdown` opcional contra el catálogo (`data.catalogo`, mismo
-   mecanismo dinámico que `obras`) para elegir en vez de describir.
-3. **DATOS_SOLICITANTE** — nombre, teléfono (precargado con el remitente de
-   WhatsApp vía `init-value`, editable), fecha requerida (`DatePicker`, formato
-   `YYYY-MM-DD` nativo desde Flow JSON 5.0+), destino/frente y observaciones
-   opcionales, y un `DocumentPicker` opcional para evidencia.
-4. **RESUMEN** (terminal, `success: true`) — resumen de lectura y botón
-   "Enviar solicitud" que dispara `complete` con el payload plano descrito abajo.
+1. **TIPO_Y_OBRA** (entrada) — tipo (`compra`/`pago`) y obra (`Dropdown`). El
+   listado de obras **no está quemado**: llega dinámico por `data.obras`.
+2. **ARTICULO_UNO** — artículo obligatorio: catálogo (opcional), descripción,
+   cantidad, unidad, posible proveedor y link. Es el único obligatorio.
+3. **ARTICULO_DOS** — segundo artículo, todo opcional (se omite con Continuar).
+4. **ARTICULO_TRES** — tercer artículo, todo opcional.
+5. **DETALLES** — fecha requerida (`DatePicker`), destino/frente, observaciones,
+   y un **`PhotoPicker` con `photo-source: camera_gallery`**: el solicitante puede
+   **tomar una foto con la cámara** o elegirla de la galería.
+6. **RESUMEN** (terminal, `success: true`) — dispara `complete` con el payload
+   plano. Las claves item_N_* se conservan aunque cada ítem venga de su pantalla.
 
-Versión de Flow JSON: `7.3` (recomendada tanto para publicar como para enviar,
-según `changelogs.md` del corpus de Meta).
+Los `id` de pantalla solo usan letras y guion bajo (Meta rechaza dígitos: por eso
+`ARTICULO_UNO`, no `ARTICULO_1`). Versión de Flow JSON: `7.3`.
 
-### Por qué 3 ítems fijos y no una pantalla repetible
+### Identidad del solicitante: por número de WhatsApp, no por formulario
 
-Meta no soporta listas dinámicas de longitud ilimitada dentro de un Flow sin
-Data Endpoint. La documentación (`flows/guides/flowjson.md`) recomienda dos
-patrones: **N franjas fijas** o **pantalla que se repite navegando hacia sí
-misma**. Se eligió N=3 franjas fijas porque:
+El Flow **no pide nombre ni teléfono**. La identidad es el número de WhatsApp del
+remitente, que el adaptador (`nfm-reply-adapter.ts`) resuelve contra la lista
+blanca `obra_solicitantes_autorizados` vía `resolveAuthorizedRequesterName`
+(`lib/infrastructure/public-access.ts`). Si el número no está autorizado para la
+obra elegida, la requisición se rechaza como `unauthorized_requester`. Esto
+implementa el pedido de "relacionar una BBDD de los números permitidos".
 
-- Evita lógica de visibilidad condicional (`visible` con expresiones), que es
-  una fuente común de errores de validación de Meta y añade riesgo a un
-  borrador que todavía no se ha probado con la app real.
-- Cubre el caso típico de una requisición de obra sin obligar a más de un envío.
+### Límite de 20 caracteres en labels (restricción dura de Meta)
 
-**Limitación conocida:** una requisición con más de 3 ítems no cabe en un solo
-envío del Flow. Hoy no hay lógica de "enviar y continuar"; el solicitante debe
-usar el portal público (`components/screens/public-request.tsx` → futuro,
-soporta 1 ítem) o enviar el Flow más de una vez. Si RF-902 necesita más
-franjas, subir el límite es un cambio mecánico en `requisicion.flow.json`
-(duplicar el bloque `item_N_*`) — no requiere Data Endpoint.
+Meta limita el `label` de `TextInput`, `TextArea` y `Dropdown` a **20 caracteres**
+(`flows/reference/components.md`). Todos los labels del Flow respetan ese tope; la
+prueba `tests/unit/whatsapp-flow.test.ts` lo verifica y falla si alguno se pasa.
 
-### Por qué `DocumentPicker` y no `PhotoPicker`
+### Por qué 3 artículos y no una lista ilimitada
 
-Meta prohíbe combinar `PhotoPicker` y `DocumentPicker` en la misma pantalla, y
-solo permite una instancia de cualquiera de los dos por pantalla
-(`flows/guides/media_upload.md`). Se eligió `DocumentPicker` con
-`allowed-mime-types: ["application/pdf", "image/jpeg", "image/png"]` porque
-cubre "foto **o** documento de soporte" (foto desde galería + PDF) en un solo
-componente. La contrapartida: no permite tomar una foto con la cámara en el
-momento (eso solo lo da `PhotoPicker`). Si la captura en vivo se vuelve un
-requisito, cambiar a `PhotoPicker` es un cambio de un componente, pero entonces
-se pierde la opción de adjuntar PDF en esa misma pantalla.
+Meta no soporta listas dinámicas sin Data Endpoint. Se usan 3 pantallas fijas
+(1 obligatoria + 2 opcionales). Una requisición con más de 3 ítems requiere otro
+envío; subir el límite es duplicar una pantalla `ARTICULO_*`.
 
 ## Cómo se llenan los dropdowns dinámicos (obra y catálogo)
 
@@ -99,8 +86,7 @@ un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
           "screen": "TIPO_Y_OBRA",
           "data": {
             "obras": [{ "id": "<uuid-obra>", "title": "Obra La Pradera" }],
-            "catalogo": [{ "id": "<uuid-item>", "title": "Cemento gris 50kg" }],
-            "telefono_remitente": "573000000000"
+            "catalogo": [{ "id": "<uuid-item>", "title": "Cemento gris 50kg" }]
           }
         }
       }

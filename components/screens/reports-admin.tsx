@@ -18,10 +18,22 @@ export function ReportsScreen({ go }: { go: (href: string) => void }) {
         description="Una vista confiable para decidir y presentar a socios."
         action={
           <div className="title-actions">
-            <button className="button button-secondary" type="button">
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled
+              aria-disabled="true"
+              title="Disponible al conectar el servicio"
+            >
               <Download size={15} /> Descargar PDF
             </button>
-            <button className="button button-dark" type="button">
+            <button
+              className="button button-dark"
+              type="button"
+              disabled
+              aria-disabled="true"
+              title="Disponible al conectar el servicio"
+            >
               <ArrowDownToLine size={15} /> Exportar Excel
             </button>
           </div>
@@ -60,6 +72,9 @@ export function ReportsScreen({ go }: { go: (href: string) => void }) {
               className="icon-button"
               type="button"
               aria-label="Más opciones de gasto"
+              disabled
+              aria-disabled="true"
+              title="Disponible al conectar el servicio"
             >
               <MoreHorizontal size={17} />
             </button>
@@ -160,11 +175,17 @@ export function AdminScreen({
         action={<span className="badge badge-warning">Gate: solo Sixteam</span>}
       />
       <div className="catalog-layout">
-        <aside className="catalog-nav">
+        <aside
+          className="catalog-nav"
+          role="tablist"
+          aria-label="Catálogos administrables"
+        >
           {["Ítems", "Obras", "Etiquetas", "Usuarios"].map((label) => (
             <button
               className={tab === label ? "is-active" : ""}
               type="button"
+              role="tab"
+              aria-selected={tab === label}
               key={label}
               onClick={() => setTab(label)}
             >
@@ -193,6 +214,9 @@ export function AdminScreen({
               className="icon-button"
               type="button"
               aria-label="Más opciones de catálogo"
+              disabled
+              aria-disabled="true"
+              title="Disponible al conectar el servicio"
             >
               <MoreHorizontal size={16} />
             </button>

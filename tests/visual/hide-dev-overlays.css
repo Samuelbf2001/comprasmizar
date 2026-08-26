@@ -1,0 +1,16 @@
+/*
+ * CSS que se inyecta solo al tomar la captura (expect.toHaveScreenshot.stylePath).
+ *
+ * El indicador de desarrollo de Next se monta en <nextjs-portal> y queda flotando encima de
+ * la esquina inferior izquierda — justo sobre el pie del sidebar. Cambia de estado solo
+ * (compilando, listo, con errores), así que si entra a la línea base cada corrida produce un
+ * diff que no corresponde a ningún cambio de diseño.
+ */
+nextjs-portal {
+  display: none !important;
+}
+
+/* El cursor de texto parpadeando en un input enfocado es otra fuente de diff intermitente. */
+* {
+  caret-color: transparent !important;
+}

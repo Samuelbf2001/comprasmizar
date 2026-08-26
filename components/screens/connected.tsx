@@ -203,6 +203,29 @@ const emptyCatalogs: CatalogData = {
   features: {},
 };
 
+// Etiquetas legibles de estado. Los valores internos (RequisitionStatus/OrderStatus en
+// lib/domain/model.ts) viajan en snake_case; aquí solo se traducen para PRESENTACIÓN,
+// alineadas con el lenguaje del demo ("En revisión", "En aprobación", …). No cambia el
+// valor interno; si falta una clave, cae a un formato capitalizado legible.
+const ESTADO_LABELS: Record<string, string> = {
+  enviada: "Enviada",
+  en_revision: "En revisión",
+  en_aprobacion: "En aprobación",
+  aprobada: "Aprobada",
+  devuelta: "Devuelta",
+  declinada: "Declinada",
+  generada: "Generada",
+  cumplida: "Cumplida",
+  no_cumplida: "No cumplida",
+  no_necesario: "No necesario",
+};
+function estadoLabel(status: string): string {
+  const known = ESTADO_LABELS[status];
+  if (known) return known;
+  const text = status.replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 const SIN_ETIQUETA = "__sin_etiqueta__";
 export type ExpenseWorkGroup = {
   workId: string;
@@ -743,7 +766,7 @@ function DashboardBarChart({
                   axisLine={false}
                 />
                 <Tooltip formatter={(value) => money.format(Number(value ?? 0))} />
-                <Bar dataKey="total" fill="#245645" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="total" fill="var(--green)" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -805,12 +828,12 @@ function DashboardPeriodChart({ rows }: { rows: DashboardAmountByKey[] }) {
                 <CartesianGrid
                   strokeDasharray="3 3"
                   vertical={false}
-                  stroke="#e3e6df"
+                  stroke="var(--line)"
                 />
                 <XAxis dataKey="period" tick={{ fontSize: 11 }} />
                 <YAxis hide />
                 <Tooltip formatter={(value) => money.format(Number(value ?? 0))} />
-                <Bar dataKey="total" fill="#235e83" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="total" fill="var(--blue)" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -943,7 +966,7 @@ export function ConnectedDashboard({
                   </strong>
                   <small>
                     {workName(item.workId)} ·{" "}
-                    {item.status.replaceAll("_", " ")}
+                    {estadoLabel(item.status)}
                   </small>
                 </span>
                 <ArrowRight size={15} />
@@ -980,7 +1003,7 @@ export function ConnectedDashboard({
                       <strong>{item.consecutive}</strong>
                       <small>
                         {workName(item.workId)} ·{" "}
-                        {item.status.replaceAll("_", " ")}
+                        {estadoLabel(item.status)}
                       </small>
                     </span>
                     <time dateTime={item.at}>{formatShortDate(item.at)}</time>
@@ -1096,6 +1119,9 @@ export function ConnectedNewRequisition({
     [uploadProgress, setUploadProgress] = useState<AttachmentProgress | null>(null),
     [success, setSuccess] = useState(""),
     [createdId, setCreatedId] = useState("");
+  // Hoy en formato YYYY-MM-DD: sirve como `min` del campo de fecha y para rechazar
+  // fechas pasadas (comparación léxica válida por el formato ISO).
+  const today = new Date().toISOString().slice(0, 10);
   const updateLine = (key: string, patch: Partial<DraftLine>) =>
     setLines((current) =>
       current.map((line) => (line.key === key ? { ...line, ...patch } : line)),
@@ -1115,11 +1141,13 @@ export function ConnectedNewRequisition({
         (line.productLink.trim() &&
           !/^https:\/\//i.test(line.productLink.trim())),
     );
-    if (!workId || !requiredDate || invalidLine) {
+    if (!workId || !requiredDate || requiredDate < today || invalidLine) {
       setFeedback(
         !workId || !requiredDate
           ? "Selecciona la obra y la fecha requerida."
-          : "Completa cada ítem con descripción o catálogo, cantidad, unidad y un link HTTPS válido.",
+          : requiredDate < today
+            ? "La fecha requerida no puede ser anterior a hoy."
+            : "Completa cada ítem con descripción o catálogo, cantidad, unidad y un link HTTPS válido.",
       );
       return;
     }
@@ -1253,6 +1281,7 @@ export function ConnectedNewRequisition({
                 required
                 value={workId}
                 aria-invalid={Boolean(feedback && !workId)}
+                aria-describedby="requisition-form-error"
                 onChange={(event) => setWorkId(event.target.value)}
               >
                 <option value="">Selecciona una obra</option>
@@ -1268,7 +1297,12 @@ export function ConnectedNewRequisition({
               <input
                 required
                 type="date"
+                min={today}
                 value={requiredDate}
+                aria-invalid={Boolean(
+                  feedback && (!requiredDate || requiredDate < today),
+                )}
+                aria-describedby="requisition-form-error"
                 onChange={(event) => setRequiredDate(event.target.value)}
               />
             </label>
@@ -1353,6 +1387,7 @@ export function ConnectedNewRequisition({
                       aria-invalid={Boolean(
                         feedback && !line.description.trim(),
                       )}
+                      aria-describedby="requisition-form-error"
                       onChange={(event) =>
                         updateLine(line.key, {
                           description: event.target.value,
@@ -1375,6 +1410,7 @@ export function ConnectedNewRequisition({
                         (!Number.isFinite(Number(line.quantity)) ||
                           Number(line.quantity) <= 0),
                     )}
+                    aria-describedby="requisition-form-error"
                     onChange={(event) =>
                       updateLine(line.key, { quantity: event.target.value })
                     }
@@ -1397,6 +1433,7 @@ export function ConnectedNewRequisition({
                     maxLength={40}
                     value={line.unit}
                     aria-invalid={Boolean(feedback && !line.unit.trim())}
+                    aria-describedby="requisition-form-error"
                     onChange={(event) =>
                       updateLine(line.key, { unit: event.target.value })
                     }
@@ -1427,6 +1464,7 @@ export function ConnectedNewRequisition({
                         line.productLink.trim() &&
                         !/^https:\/\//i.test(line.productLink.trim()),
                     )}
+                    aria-describedby="requisition-form-error"
                     onChange={(event) =>
                       updateLine(line.key, { productLink: event.target.value })
                     }
@@ -1451,7 +1489,7 @@ export function ConnectedNewRequisition({
         </div>
         <div className="form-footer">
           {feedback ? (
-            <p className="field-error" role="alert">
+            <p className="field-error" role="alert" id="requisition-form-error">
               {feedback}
             </p>
           ) : success ? (
@@ -1643,7 +1681,7 @@ export function ConnectedRequisitions({
               <option value="">Todos</option>
               {statusOptions.map((status) => (
                 <option key={status} value={status}>
-                  {status.replaceAll("_", " ")}
+                  {estadoLabel(status)}
                 </option>
               ))}
             </select>
@@ -1764,7 +1802,7 @@ export function ConnectedRequisitions({
                         : "—"}
                     </td>
                     <td>{row.requiredDate ? formatIsoDate(row.requiredDate) : "—"}</td>
-                    <td>{row.status.replaceAll("_", " ")}</td>
+                    <td>{estadoLabel(row.status)}</td>
                     <td>
                       <button
                         className="text-link"
@@ -1999,7 +2037,7 @@ export function ConnectedRequisitionDetail({
             </div>
             <Tone tone="muted">
               <span data-testid="requisition-status">
-                {requisition.status.replaceAll("_", " ")}
+                {estadoLabel(requisition.status)}
               </span>
             </Tone>
           </div>
@@ -2213,7 +2251,7 @@ export function ConnectedRequisitionDetail({
             <dl>
               <div>
                 <dt>Estado</dt>
-                <dd>{requisition.status.replaceAll("_", " ")}</dd>
+                <dd>{estadoLabel(requisition.status)}</dd>
               </div>
               <div>
                 {/* RF-404: requesterId/externalRequester ya viajaban en el payload de
@@ -2274,9 +2312,15 @@ export function ConnectedRequisitionDetail({
                     className="button button-danger"
                     disabled={busy || !comment.trim()}
                     type="button"
-                    onClick={() =>
-                      void run({ action: "decline", reason: comment })
-                    }
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          `La requisición ${requisition.consecutive} quedará DECLINADA de forma definitiva y no se podrá reactivar. ¿Confirmas que deseas declinarla?`,
+                        )
+                      )
+                        return;
+                      void run({ action: "decline", reason: comment });
+                    }}
                   >
                     Declinar
                   </button>
@@ -2300,12 +2344,39 @@ export function ConnectedRequisitionDetail({
                   className="button button-dark"
                   disabled={busy}
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    const docType =
+                      requisition.type === "compra"
+                        ? "orden de compra (OC)"
+                        : "orden de pago (OP)";
+                    const supplierNames = supplierGroups.map(
+                      (id) =>
+                        (supplierOptions.find((s) => s.id === id) ??
+                          catalogs.suppliers.find((s) => s.id === id))?.name ??
+                        id,
+                    );
+                    const total = (requisition.items ?? []).reduce(
+                      (sum, item) =>
+                        sum +
+                        (Number(item.quantity) || 0) *
+                          ((Number(item.unitBase) || 0) +
+                            (Number(item.unitIva) || 0)),
+                      0,
+                    );
+                    if (
+                      !window.confirm(
+                        `Vas a aprobar ${requisition.consecutive} y generar la ${docType}.\n` +
+                          `Proveedor: ${supplierNames.length ? supplierNames.join(", ") : "por asignar"}\n` +
+                          `Total estimado: ${money.format(total)}\n\n` +
+                          `Esta acción no se puede deshacer. ¿Continuar?`,
+                      )
+                    )
+                      return;
                     void run({
                       action: "approve",
                       multiSupplier: multiSupplierEnabled && multiSupplier,
-                    })
-                  }
+                    });
+                  }}
                 >
                   Aprobar y generar orden
                 </button>
@@ -2530,6 +2601,7 @@ export function ConnectedOrders({
     requisitions = Array.isArray(data?.requisitions) ? data.requisitions : [],
     catalogs = data?.catalogs ?? emptyCatalogs,
     [feedback, setFeedback] = useState(""),
+    [success, setSuccess] = useState(""),
     canUpdate = role === "Revisor" || role === "Administrador Sixteam";
   // La orden no guarda obra ni fecha propias (solo requisicion_id): se derivan
   // uniendo con /api/requisitions, que ya llega autorizado para todo rol que
@@ -2563,10 +2635,20 @@ export function ConnectedOrders({
     setDateFrom("");
     setDateTo("");
   };
-  const setStatus = async (id: string, status: string) => {
+  const setStatus = async (id: string, status: string, consecutive?: string) => {
+    const ref = consecutive ?? id;
+    // Cambio irreversible y sin deshacer: se confirma explícitamente antes de aplicar.
+    if (
+      !window.confirm(
+        `La orden ${ref} quedará marcada como "${estadoLabel(status)}". Esta acción es irreversible y no se puede deshacer. ¿Continuar?`,
+      )
+    )
+      return;
     setFeedback("");
+    setSuccess("");
     try {
       await mutate(`/api/orders/${id}/status`, "PATCH", { status });
+      setSuccess(`La orden ${ref} quedó como "${estadoLabel(status)}".`);
       refresh();
     } catch (error) {
       setFeedback(
@@ -2608,7 +2690,7 @@ export function ConnectedOrders({
               <option value="">Todos</option>
               {statusOptions.map((status) => (
                 <option key={status} value={status}>
-                  {status.replaceAll("_", " ")}
+                  {estadoLabel(status)}
                 </option>
               ))}
             </select>
@@ -2661,6 +2743,11 @@ export function ConnectedOrders({
         {feedback && (
           <p className="field-error connected-feedback" role="alert">
             {feedback}
+          </p>
+        )}
+        {success && (
+          <p className="field-success connected-feedback" role="status">
+            {success}
           </p>
         )}
         {rows.length === 0 ? (
@@ -2722,16 +2809,21 @@ export function ConnectedOrders({
                             )?.name ?? row.supplierId)
                           : "Por definir"}
                       </td>
-                      <td>{row.status.replaceAll("_", " ")}</td>
+                      <td>{estadoLabel(row.status)}</td>
                       <td>
                         {canUpdate && row.status === "generada" ? (
                           <select
                             aria-label={`Cumplimiento de ${row.consecutive}`}
                             defaultValue=""
-                            onChange={(event) =>
-                              event.target.value &&
-                              void setStatus(row.id, event.target.value)
-                            }
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              // Se reinicia el selector a "Actualizar…" para que, si el
+                              // usuario cancela la confirmación, no quede mostrando un
+                              // estado que en realidad no se aplicó.
+                              event.target.value = "";
+                              if (value)
+                                void setStatus(row.id, value, row.consecutive);
+                            }}
                           >
                             <option value="">Actualizar…</option>
                             <option value="cumplida">Cumplida</option>
@@ -3343,6 +3435,7 @@ export function ConnectedExpenses({
                 required
                 value={workId}
                 aria-invalid={Boolean(feedback && !workId)}
+                aria-describedby="petty-cash-error"
                 onChange={(event) => setWorkId(event.target.value)}
               >
                 {data.catalogs.works.map((work) => (
@@ -3358,6 +3451,7 @@ export function ConnectedExpenses({
                 required
                 value={tagId}
                 aria-invalid={Boolean(feedback && !tagId)}
+                aria-describedby="petty-cash-error"
                 onChange={(event) => setTagId(event.target.value)}
               >
                 {data.catalogs.tags.map((tag) => (
@@ -3374,6 +3468,7 @@ export function ConnectedExpenses({
                 type="date"
                 value={date}
                 aria-invalid={Boolean(feedback && !date)}
+                aria-describedby="petty-cash-error"
                 onChange={(event) => setDate(event.target.value)}
               />
             </label>
@@ -3384,6 +3479,7 @@ export function ConnectedExpenses({
                 maxLength={500}
                 value={concept}
                 aria-invalid={Boolean(feedback && !concept.trim())}
+                aria-describedby="petty-cash-error"
                 onChange={(event) => setConcept(event.target.value)}
               />
             </label>
@@ -3399,6 +3495,7 @@ export function ConnectedExpenses({
                   feedback &&
                     (!Number.isFinite(Number(amount)) || Number(amount) <= 0),
                 )}
+                aria-describedby="petty-cash-error"
                 onChange={(event) => setAmount(event.target.value)}
               />
             </label>
@@ -3430,7 +3527,7 @@ export function ConnectedExpenses({
               </p>
             )}
             {feedback && (
-              <div className="attachment-error" role="alert">
+              <div className="attachment-error" role="alert" id="petty-cash-error">
                 <p className="field-error">{feedback}</p>
                 {createdId && (
                   <button className="button button-secondary" type="button" onClick={refresh}>

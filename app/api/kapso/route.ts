@@ -7,6 +7,7 @@ import { ProcurementService, type KapsoWebhookEvent } from "../../../lib/service
 import { verifyKapsoSignature } from "../../../lib/security/crypto";
 import { isKapsoConfigured, kapsoEnv } from "../../../lib/security/env";
 import { adaptNfmReply, createPostgresNfmReplyRejectionRecorder, isNfmReplyWebhookPayload, resolveKapsoMediaDownloadUrl } from "../../../lib/infrastructure/nfm-reply-adapter";
+import { resolveAuthorizedRequesterName } from "../../../lib/infrastructure/public-access";
 
 export const runtime = "nodejs";
 const MAX_BODY_BYTES = 100_000;
@@ -65,7 +66,7 @@ export async function POST(request: Request) {
   // seguir; cualquier otro payload (incluido el shape ya normalizado que usan los fixtures/pruebas
   // existentes) sigue el camino de siempre sin cambios.
   if (isNfmReplyWebhookPayload(payload)) {
-    const adapted = await adaptNfmReply(payload, { secret: kapsoEnv().KAPSO_WEBHOOK_SECRET, resolveAttachmentUrl: resolveKapsoMediaDownloadUrl });
+    const adapted = await adaptNfmReply(payload, { secret: kapsoEnv().KAPSO_WEBHOOK_SECRET, resolveAttachmentUrl: resolveKapsoMediaDownloadUrl, resolveRequester: resolveAuthorizedRequesterName });
     if (!adapted.ok) {
       try {
         await createPostgresNfmReplyRejectionRecorder().record({ wamid: adapted.wamid, phone: adapted.phone, reason: adapted.reason, rawPayload: payload });

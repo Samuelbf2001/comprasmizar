@@ -14,6 +14,6 @@ tmp/
 supabase/.branches/
 supabase/.temp/
 
-# Regresion visual: la linea base SI se commitea, lo demas es efimero
-.lostpixel/current/
-.lostpixel/difference/
+
+# Regresion visual: la linea base SI se commitea, el reporte y los diffs no
+playwright-report-visual/

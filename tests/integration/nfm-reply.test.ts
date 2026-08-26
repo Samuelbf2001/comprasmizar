@@ -80,6 +80,9 @@ vi.mock("../../lib/infrastructure/kapso-store", async (importOriginal) => {
   return { ...actual, createPostgresKapsoProcessingStore: () => hoisted.fakeStore, createKapsoAttachmentCopier: () => hoisted.fakeCopier };
 });
 vi.mock("../../lib/infrastructure/postgres-repositories", () => ({ createPostgresDependencies: () => hoisted.getDependencies() }));
+// La ruta resuelve la identidad del solicitante contra la lista blanca (Postgres real); aquí se
+// autoriza el número de prueba con un nombre fijo para ejercitar el camino feliz sin BD.
+vi.mock("../../lib/infrastructure/public-access", () => ({ resolveAuthorizedRequesterName: async () => ({ name: "Maestro de obra" }) }));
 // Solo se reemplazan las dos piezas con efectos externos (resolver de media real, escritura en
 // Postgres del rechazo); toda la traducción/validación pura (adaptNfmReply, validateFlowToken,
 // isNfmReplyWebhookPayload) es la implementación real — es lo que este archivo prueba.
@@ -191,8 +194,11 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
 
   describe("adaptNfmReply", () => {
     const secret = ENV.KAPSO_WEBHOOK_SECRET;
+    // El Flow ya no envia nombre: la identidad la resuelve la lista blanca por telefono. Stub que
+    // autoriza con el mismo nombre que el fixture esperaba, para conservar las aserciones previas.
+    const okRequester = async () => ({ name: "Maestro de obra" });
     it("traduce el fixture válido: 1 ítem (franjas 2 y 3 vacías se ignoran, no invalidan el evento)", async () => {
-      const result = await adaptNfmReply(fixture, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.event.eventId).toBe(fixture.message.id);
@@ -208,7 +214,7 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
 
     it("usa el remitente verificado (message.from) como identidad, no el 'phone' editable del Flow", async () => {
       const tampered = withResponseFields(fixture, { phone: "+570000000000" });
-      const result = await adaptNfmReply(tampered, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(tampered, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.event.submission?.phone).toBe("+573001234567");
     });
@@ -218,70 +224,82 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
         item_2_descripcion: "Varilla 1/2\" x 6m", item_2_cantidad: "20", item_2_unidad: "unidad",
         item_3_descripcion: "Arena de peña", item_3_cantidad: "2.5", item_3_unidad: "m3",
       });
-      const result = await adaptNfmReply(withThreeItems, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(withThreeItems, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.event.submission?.items).toHaveLength(3);
     });
 
     it("rechaza (invalid_item) cuando una franja presente trae cantidad <= 0", async () => {
       const invalidQuantity = withResponseFields(fixture, { item_1_cantidad: "0" });
-      const result = await adaptNfmReply(invalidQuantity, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(invalidQuantity, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "invalid_item" });
     });
 
     it("rechaza (invalid_item) cuando la cantidad no es numérica", async () => {
       const invalidQuantity = withResponseFields(fixture, { item_1_cantidad: "no-es-un-numero" });
-      const result = await adaptNfmReply(invalidQuantity, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(invalidQuantity, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "invalid_item" });
     });
 
     it("rechaza (no_items) cuando ninguna franja tiene descripción ni catálogo", async () => {
       const noItems = withResponseFields(fixture, { item_1_catalogo: "", item_1_descripcion: "" });
-      const result = await adaptNfmReply(noItems, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(noItems, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "no_items" });
     });
 
     it("rechaza (invalid_fields) un workId que no es un UUID", async () => {
       const badWorkId = withResponseFields(fixture, { workId: "no-es-un-uuid" });
-      const result = await adaptNfmReply(badWorkId, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(badWorkId, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "invalid_fields" });
     });
 
     it("rechaza (invalid_flow_token_signature) cuando el hex del token no calza con el teléfono", async () => {
       const tampered = withResponseFields(fixture, { flow_token: `2026-08-24T12:00:00.000Z.${"0".repeat(64)}` });
-      const result = await adaptNfmReply(tampered, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(tampered, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "invalid_flow_token_signature" });
     });
 
     it("rechaza (flow_token_expired) cuando ya pasaron más de 24h desde la emisión", async () => {
       const later = new Date(FIXTURE_TOKEN_ISSUED_AT.getTime() + 25 * 60 * 60 * 1000);
-      const result = await adaptNfmReply(fixture, { secret, now: later });
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: okRequester, now: later });
       expect(result).toMatchObject({ ok: false, reason: "flow_token_expired" });
     });
 
     it("rechaza (invalid_response_json) cuando response_json no es JSON válido", async () => {
       const broken = structuredClone(fixture);
       broken.message.interactive!.nfm_reply!.response_json = "{ esto no es json";
-      const result = await adaptNfmReply(broken, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(broken, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "invalid_response_json" });
     });
 
     it("resuelve la evidencia del primer ítem cuando se inyecta un resolver", async () => {
-      const result = await adaptNfmReply(fixture, { secret, now: FIXTURE_TOKEN_ISSUED_AT, resolveAttachmentUrl: async (mediaId) => (mediaId === "3631120727156756" ? FAKE_ATTACHMENT_URL : null) });
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT, resolveAttachmentUrl: async (mediaId) => (mediaId === "3631120727156756" ? FAKE_ATTACHMENT_URL : null) });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.event.submission?.items[0].attachmentUrl).toBe(FAKE_ATTACHMENT_URL);
     });
 
     it("nunca bloquea la traducción si el resolver de evidencia lanza", async () => {
-      const result = await adaptNfmReply(fixture, { secret, now: FIXTURE_TOKEN_ISSUED_AT, resolveAttachmentUrl: async () => { throw new Error("kapso caído"); } });
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT, resolveAttachmentUrl: async () => { throw new Error("kapso caído"); } });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.event.submission?.items[0].attachmentUrl).toBeUndefined();
     });
 
     it("sin resolver inyectado, no intenta adjuntar evidencia", async () => {
-      const result = await adaptNfmReply(fixture, { secret, now: FIXTURE_TOKEN_ISSUED_AT });
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.event.submission?.items[0].attachmentUrl).toBeUndefined();
+    });
+
+    it("rechaza como no autorizado si el número no está en la lista blanca de la obra", async () => {
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: async () => null, now: FIXTURE_TOKEN_ISSUED_AT });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("unauthorized_requester");
+    });
+
+    it("usa el nombre resuelto de la lista blanca, no un campo del formulario", async () => {
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: async () => ({ name: "Nelson Materiales" }), now: FIXTURE_TOKEN_ISSUED_AT });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.event.submission?.requesterName).toBe("Nelson Materiales");
     });
   });
 

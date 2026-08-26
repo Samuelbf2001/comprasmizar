@@ -16,8 +16,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "visual:baseline": "cross-env LOST_PIXEL_DISABLE_TELEMETRY=1 lost-pixel update",
-    "visual:check": "cross-env LOST_PIXEL_DISABLE_TELEMETRY=1 lost-pixel"
+    "visual:baseline": "playwright test --config playwright.visual.config.ts --update-snapshots",
+    "visual:check": "playwright test --config playwright.visual.config.ts",
+    "visual:report": "playwright show-report playwright-report-visual"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
@@ -34,7 +35,6 @@
     "zod": "^4.1.5"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^9.35.0",
     "@playwright/test": "^1.55.0",
     "@testing-library/jest-dom": "^6.8.0",
@@ -43,12 +43,10 @@
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
     "@vitest/coverage-v8": "^3.2.4",
-    "axe-core": "^4.13.0",
     "cross-env": "^10.1.0",
     "eslint": "^9.35.0",
     "eslint-config-next": "16.3.2",
     "jsdom": "^26.1.0",
-    "lost-pixel": "^3.22.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   },

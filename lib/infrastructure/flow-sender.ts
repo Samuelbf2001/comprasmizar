@@ -126,7 +126,6 @@ export interface FlowMessagePayload {
           data: {
             obras: FlowOption[];
             catalogo: FlowOption[];
-            telefono_remitente: string;
           };
         };
       };
@@ -149,7 +148,6 @@ export function buildFlowSendPayload(input: {
   bodyText: string;
   obras: FlowOption[];
   catalogo: FlowOption[];
-  telefonoRemitente: string;
 }): FlowMessagePayload {
   return {
     messaging_product: "whatsapp",
@@ -173,7 +171,6 @@ export function buildFlowSendPayload(input: {
             data: {
               obras: input.obras,
               catalogo: input.catalogo,
-              telefono_remitente: input.telefonoRemitente,
             },
           },
         },
@@ -268,7 +265,6 @@ export async function sendRequisitionFlow(to: string, deps: FlowSenderDeps = {})
     bodyText: config.bodyText,
     obras,
     catalogo,
-    telefonoRemitente: normalizedPhone,
   });
 
   const controller = new AbortController();

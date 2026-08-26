@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   Truck,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { DemoNotice } from "../ui/demo-notice";
 import { navigation, type Role } from "../../lib/demo-data";
 import { logout } from "../../app/auth-actions";
@@ -115,6 +116,48 @@ export function AppShell({
   const identity = demoMode
     ? roleNames[role]
     : actorName || "Usuario autenticado";
+
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileButtonRef = useRef<HTMLButtonElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+
+  // Cierra el menú de perfil con click afuera y con Escape (devolviendo el foco al botón).
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    const handlePointer = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        profileMenuRef.current?.contains(target) ||
+        profileButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setProfileMenuOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setProfileMenuOpen(false);
+        profileButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", handlePointer);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointer);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [profileMenuOpen]);
+
+  // Cierra el sidebar móvil con Escape mientras está abierto (además del scrim).
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSidebarOpen(false);
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [sidebarOpen, setSidebarOpen]);
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`}>
@@ -165,6 +208,9 @@ export function AppShell({
             .filter((item) => isAllowed(item.href))
             .map((item) => {
               const Icon = navIcons[item.icon] || LayoutDashboard;
+              const label = demoMode
+                ? item.label
+                : item.genericLabel ?? item.label;
               return (
                 <button
                   key={item.href}
@@ -173,8 +219,10 @@ export function AppShell({
                   type="button"
                 >
                   <Icon size={17} />
-                  <span>{item.label}</span>
-                  {item.badge && <i className="nav-badge">{item.badge}</i>}
+                  <span>{label}</span>
+                  {demoMode && item.badge && (
+                    <i className="nav-badge">{item.badge}</i>
+                  )}
                 </button>
               );
             })}
@@ -222,6 +270,15 @@ export function AppShell({
       <div
         className={`sidebar-scrim ${sidebarOpen ? "is-visible" : ""}`}
         onClick={() => setSidebarOpen(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setSidebarOpen(false);
+          }
+        }}
+        role="button"
+        aria-label="Cerrar menú"
+        tabIndex={sidebarOpen ? 0 : -1}
       />
       <main className="main-area">
         <header className="topbar">
@@ -234,7 +291,14 @@ export function AppShell({
             <Menu size={20} />
           </button>
           <div className="breadcrumbs">
-            <span>Plataforma</span>
+            <button
+              type="button"
+              className="breadcrumb-root"
+              onClick={() => onNavigate("/")}
+              title="Ir al inicio"
+            >
+              <span>Plataforma</span>
+            </button>
             <ArrowRight size={13} />
             <b>{currentLabel}</b>
           </div>
@@ -242,21 +306,57 @@ export function AppShell({
             {demoMode && <DemoNotice compact />}
             <button
               className="icon-button notification"
-              aria-label="Ver notificaciones"
+              aria-label="Notificaciones"
+              aria-disabled="true"
+              title="Notificaciones · próximamente"
               type="button"
             >
               <Bell size={18} />
-              <i />
+              {demoMode && <i />}
             </button>
-            <button
-              className="profile-button"
-              type="button"
-              aria-label={`Perfil de ${identity}`}
-            >
-              <span className="avatar">{roleInitials[role]}</span>
-              <span>{identity}</span>
-              <ChevronDown size={14} />
-            </button>
+            <div className="profile-menu-wrap">
+              <button
+                ref={profileButtonRef}
+                className="profile-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={profileMenuOpen}
+                aria-label={`Perfil de ${identity}`}
+                onClick={() => setProfileMenuOpen((value) => !value)}
+              >
+                <span className="avatar">{roleInitials[role]}</span>
+                <span>{identity}</span>
+                <ChevronDown size={14} />
+              </button>
+              {profileMenuOpen && (
+                <div
+                  ref={profileMenuRef}
+                  role="menu"
+                  aria-label="Menú de perfil"
+                  className="profile-menu"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled
+                    title="Próximamente"
+                    className="profile-menu-item"
+                  >
+                    <span>Mi perfil</span>
+                  </button>
+                  <form action={logout} role="none">
+                    <button
+                      type="submit"
+                      role="menuitem"
+                      className="profile-menu-item"
+                    >
+                      <LogOut size={15} />
+                      <span>Cerrar sesión</span>
+                    </button>
+                  </form>
+                </div>
+              )}
+            </div>
           </div>
         </header>
         <div className="content-wrap">{children}</div>

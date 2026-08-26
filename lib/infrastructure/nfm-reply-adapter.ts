@@ -123,7 +123,7 @@ export function validateFlowToken(flowToken: string, verifiedPhone: string, secr
 // Traducción pura del `response_json` plano hacia KapsoFlowSubmission
 // ---------------------------------------------------------------------------------------------
 
-export type NfmReplyRejectionReason = "invalid_response_json" | FlowTokenRejectionReason | "invalid_fields" | "invalid_item" | "no_items";
+export type NfmReplyRejectionReason = "invalid_response_json" | FlowTokenRejectionReason | "invalid_fields" | "invalid_item" | "no_items" | "unauthorized_requester";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -166,7 +166,7 @@ function compactItems(fields: Record<string, unknown>): { ok: true; items: Compa
   return { ok: true, items };
 }
 
-interface TopLevelFields { type: "compra" | "pago"; workId: string; requiredDate: string; requesterName: string; destination?: string; observations?: string; }
+interface TopLevelFields { type: "compra" | "pago"; workId: string; requiredDate: string; destination?: string; observations?: string; }
 
 function extractTopLevelFields(fields: Record<string, unknown>): { ok: true; value: TopLevelFields } | { ok: false; reason: "invalid_fields" } {
   const type = asString(fields.type);
@@ -175,14 +175,12 @@ function extractTopLevelFields(fields: Record<string, unknown>): { ok: true; val
   if (!UUID_RE.test(workId)) return { ok: false, reason: "invalid_fields" };
   const requiredDate = asString(fields.requiredDate);
   if (!DATE_RE.test(requiredDate)) return { ok: false, reason: "invalid_fields" };
-  const requesterName = asString(fields.requesterName);
-  if (requesterName.length < 2 || requesterName.length > 160) return { ok: false, reason: "invalid_fields" };
   // Nota: las claves del payload `complete` del Flow son "destination"/"observations" (inglés),
   // aunque el campo de formulario subyacente se llama "destino"/"observaciones" — ver
   // integrations/whatsapp-flow/requisicion.flow.json, pantalla RESUMEN.
   const destination = asString(fields.destination);
   const observations = asString(fields.observations);
-  return { ok: true, value: { type, workId, requiredDate, requesterName, destination: destination || undefined, observations: observations || undefined } };
+  return { ok: true, value: { type, workId, requiredDate, destination: destination || undefined, observations: observations || undefined } };
 }
 
 /**
@@ -211,6 +209,13 @@ export interface AdaptNfmReplyConfig {
   /** Resuelve un media id de WhatsApp (evidencia) a una URL HTTPS descargable. Ausente en pruebas
    * unitarias puras: en ese caso la evidencia simplemente no se adjunta. Nunca debe lanzar. */
   resolveAttachmentUrl?: (mediaId: string) => Promise<string | null>;
+  /**
+   * Identifica al solicitante por su número de WhatsApp contra la lista blanca por obra
+   * (`obra_solicitantes_autorizados`). El Flow ya NO pide nombre ni teléfono: la identidad es el
+   * remitente verificado. Devuelve el nombre autorizado, o `null` si el número no está permitido
+   * para esa obra → la requisición se rechaza como `unauthorized_requester`. Nunca debe lanzar.
+   */
+  resolveRequester: (workId: string, phone: string) => Promise<{ name: string } | null>;
 }
 
 export type AdaptNfmReplyResult = { ok: true; event: KapsoWebhookEvent } | { ok: false; reason: NfmReplyRejectionReason; wamid?: string; phone?: string };
@@ -243,6 +248,17 @@ export async function adaptNfmReply(payload: RawKapsoWebhookPayload, config: Ada
   const topLevel = extractTopLevelFields(fields);
   if (!topLevel.ok) return { ok: false, reason: topLevel.reason, wamid, phone: verifiedPhone };
 
+  // Identidad por lista blanca: el número de WhatsApp debe estar autorizado para la obra. Sin esto
+  // cualquiera que consiga la línea podría crear requisiciones a nombre de una obra ajena.
+  let requester: { name: string } | null = null;
+  try {
+    requester = await config.resolveRequester(topLevel.value.workId, verifiedPhone);
+  } catch {
+    // Un fallo de la consulta no debe convertirse en 500: se trata como no autorizado (fail-closed).
+    requester = null;
+  }
+  if (!requester) return { ok: false, reason: "unauthorized_requester", wamid, phone: verifiedPhone };
+
   const compacted = compactItems(fields);
   if (!compacted.ok) return { ok: false, reason: compacted.reason, wamid, phone: verifiedPhone };
   const items = compacted.items;
@@ -269,7 +285,7 @@ export async function adaptNfmReply(payload: RawKapsoWebhookPayload, config: Ada
     receivedAt: now.toISOString(),
     submission: {
       eventId: wamid, phone, workId: topLevel.value.workId, requiredDate: topLevel.value.requiredDate,
-      type: topLevel.value.type, requesterName: topLevel.value.requesterName,
+      type: topLevel.value.type, requesterName: requester.name,
       destination: topLevel.value.destination, observations: topLevel.value.observations,
       items,
     },

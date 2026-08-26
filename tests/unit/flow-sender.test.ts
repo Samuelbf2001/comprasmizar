@@ -64,7 +64,7 @@ describe("buildFlowSendPayload — shape exacto del mensaje interactive.type=flo
   const catalogo: FlowOption[] = [{ id: "item-1", title: "Cemento gris 50kg" }];
 
   it("arma flow_message_version 3, flow_action navigate y flow_action_payload.screen TIPO_Y_OBRA", () => {
-    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "1972861836748301", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", obras, catalogo, telefonoRemitente: "573000000000" });
+    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "1972861836748301", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", obras, catalogo });
     expect(payload).toEqual({
       messaging_product: "whatsapp",
       recipient_type: "individual",
@@ -83,7 +83,7 @@ describe("buildFlowSendPayload — shape exacto del mensaje interactive.type=flo
             flow_token: "tok",
             flow_action_payload: {
               screen: "TIPO_Y_OBRA",
-              data: { obras, catalogo, telefono_remitente: "573000000000" },
+              data: { obras, catalogo },
             },
           },
         },
@@ -92,14 +92,14 @@ describe("buildFlowSendPayload — shape exacto del mensaje interactive.type=flo
   });
 
   it("incluye mode solo cuando se pasa explícitamente (el Flow real hoy es DRAFT)", () => {
-    const conModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", mode: "draft", bodyText: "Texto", obras, catalogo, telefonoRemitente: "573000000000" });
+    const conModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", mode: "draft", bodyText: "Texto", obras, catalogo });
     expect(conModo.interactive.action.parameters.mode).toBe("draft");
-    const sinModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Texto", obras, catalogo, telefonoRemitente: "573000000000" });
+    const sinModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Texto", obras, catalogo });
     expect(sinModo.interactive.action.parameters.mode).toBeUndefined();
   });
 
   it("siempre incluye interactive.body.text: Meta lo exige para todo tipo interactivo salvo location_request_message", () => {
-    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", obras, catalogo, telefonoRemitente: "573000000000" });
+    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", obras, catalogo });
     expect(payload.interactive.body).toEqual({ text: "Solicita materiales o pagos." });
   });
 });
@@ -169,7 +169,7 @@ describe("sendRequisitionFlow — envío real (fetch mockeado, BD mockeada)", ()
     expect(body.interactive.action.parameters.flow_id).toBe("1972861836748301");
     expect(body.interactive.action.parameters.flow_action_payload.data.obras).toEqual(obras);
     expect(body.interactive.action.parameters.flow_action_payload.data.catalogo).toEqual(catalogo);
-    expect(body.interactive.action.parameters.flow_action_payload.data.telefono_remitente).toBe("573000000000");
+    expect(body.interactive.action.parameters.flow_action_payload.data).not.toHaveProperty("telefono_remitente");
 
     const esperadoToken = issueFlowToken("573000000000", SECRETO, now());
     expect(body.interactive.action.parameters.flow_token).toBe(esperadoToken);
