@@ -135,7 +135,7 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0}
    Estructura de la aplicación
    ========================================================================= */
 .app-shell{min-height:100vh;display:flex}
-.sidebar{width:264px;flex:none;background:var(--navy);color:#d6d9de;display:flex;flex-direction:column;padding:var(--space-6) var(--space-3) var(--space-5);position:fixed;inset:0 auto 0 0;z-index:20}
+.sidebar{width:264px;flex:none;background:linear-gradient(135deg,var(--navy) 0%,var(--navy-light) 100%);color:#d6d9de;display:flex;flex-direction:column;padding:var(--space-6) var(--space-3) var(--space-5);position:fixed;inset:0 auto 0 0;z-index:20}
 .brand{display:flex;align-items:center;gap:var(--space-3);padding:0 var(--space-2) var(--space-7)}
 .brand-mark{height:36px;width:36px;border-radius:var(--radius-md);background:linear-gradient(155deg,#e7ecf3,#ccd6e5);color:var(--navy-deep);font:700 1.15rem var(--font-display);display:grid;place-items:center;box-shadow:var(--shadow-xs)}
 .brand b{font-size:var(--text-sm);letter-spacing:.16em;color:#eef1f5;display:block}
@@ -184,14 +184,14 @@ h1,h2,h3,h4{font-family:var(--font-display);margin:0}
 .section-title{display:flex;justify-content:space-between;align-items:flex-end;gap:var(--space-5);margin-bottom:var(--space-7)}
 .section-title h1{font:600 var(--text-4xl)/var(--leading-tight) var(--font-display);letter-spacing:-.02em;margin:var(--space-1) 0;color:#1a1e26}
 .section-title p{margin:0;color:var(--muted);font-size:var(--text-sm)}
-.eyebrow{text-transform:uppercase;letter-spacing:.13em;color:#767c86;font-size:var(--text-3xs);font-weight:700}
+.eyebrow{text-transform:uppercase;letter-spacing:.13em;color:#8a6423;font-size:var(--text-3xs);font-weight:700}
 .title-actions{display:flex;align-items:center;gap:var(--space-2)}
 
 /* =========================================================================
    Botones, insignias y microcomponentes
    ========================================================================= */
-.button{height:42px;border-radius:var(--radius-sm);padding:0 var(--space-5);display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);font-size:var(--text-xs);font-weight:700;letter-spacing:.01em;white-space:nowrap;transition:background var(--duration-fast) var(--ease),border-color var(--duration-fast) var(--ease),box-shadow var(--duration-base) var(--ease),transform var(--duration-base) var(--ease)}
-.button-dark{background:var(--rojo);color:#fff;box-shadow:0 1px 2px rgba(161,27,52,.16),0 8px 18px rgba(161,27,52,.24)}
+.button{height:42px;border-radius:var(--radius-full);padding:0 var(--space-5);display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);font-size:var(--text-xs);font-weight:700;letter-spacing:.01em;white-space:nowrap;transition:background var(--duration-fast) var(--ease),border-color var(--duration-fast) var(--ease),box-shadow var(--duration-base) var(--ease),transform var(--duration-base) var(--ease)}
+.button-dark{background:var(--rojo);color:#fff;box-shadow:0 4px 16px rgba(10,35,66,.10)}
 .button-dark:hover{background:var(--rojo-dark);box-shadow:0 2px 4px rgba(161,27,52,.2),0 12px 26px rgba(161,27,52,.3);transform:translateY(-1px)}
 .button-dark:active{transform:translateY(0)}
 .button-secondary{border:1px solid var(--line-strong);background:var(--paper);color:#424750}
@@ -1246,3 +1246,8 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
     opacity:.45;
   }
 }
+
+/* Sobre navy el dorado exacto del home si cumple contraste; sobre claro usa el tono AA de .eyebrow. */
+.sidebar .eyebrow,.pantalla-shell .eyebrow{color:var(--dorado)}
+/* Ajustes de titular del home de Mizar: Fraunces con optical sizing y tracking apretado. */
+h1,h2,h3,.panel-head h2,.section-title h1{font-optical-sizing:auto;letter-spacing:-.01em}
