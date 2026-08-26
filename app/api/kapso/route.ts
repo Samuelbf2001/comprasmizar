@@ -6,6 +6,7 @@ import { createPostgresDependencies } from "../../../lib/infrastructure/postgres
 import { ProcurementService, type KapsoWebhookEvent } from "../../../lib/services";
 import { verifyKapsoSignature } from "../../../lib/security/crypto";
 import { isKapsoConfigured, kapsoEnv } from "../../../lib/security/env";
+import { adaptNfmReply, createPostgresNfmReplyRejectionRecorder, isNfmReplyWebhookPayload, resolveKapsoMediaDownloadUrl } from "../../../lib/infrastructure/nfm-reply-adapter";
 
 export const runtime = "nodejs";
 const MAX_BODY_BYTES = 100_000;
@@ -41,7 +42,7 @@ const kapsoItemSchema = z.object({
 export const kapsoWebhookSchema = z.object({
   eventId: z.string().trim().min(1).max(200), type: z.enum(["flow_submission", "message_status"]), receivedAt: z.string().datetime(),
   messageId: z.string().trim().min(1).max(200).optional(), deliveryStatus: z.enum(["sent", "delivered", "failed"]).optional(),
-  submission: z.object({ eventId: z.string().trim().min(1).max(200), phone: z.string().trim().min(7).max(20), workId: z.string().uuid(), requiredDate: z.string().date(), type: z.enum(["compra", "pago"]), requesterName: z.string().trim().min(2).max(160), items: z.array(kapsoItemSchema).min(1).max(100) }).strict().optional(),
+  submission: z.object({ eventId: z.string().trim().min(1).max(200), phone: z.string().trim().min(7).max(20), workId: z.string().uuid(), requiredDate: z.string().date(), type: z.enum(["compra", "pago"]), requesterName: z.string().trim().min(2).max(160), destination: z.string().trim().min(1).max(500).optional(), observations: z.string().trim().min(1).max(1024).optional(), items: z.array(kapsoItemSchema).min(1).max(100) }).strict().optional(),
 }).strict().superRefine((event, context) => {
   if (event.type === "flow_submission" && !event.submission) context.addIssue({ code: z.ZodIssueCode.custom, message: "submission required" });
   if (event.submission && event.submission.eventId !== event.eventId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["submission", "eventId"], message: "event IDs must match" });
@@ -56,6 +57,26 @@ export async function POST(request: Request) {
 
   let payload: unknown;
   try { payload = JSON.parse(raw); } catch { return Response.json({ error: "invalid_event" }, { status: 400 }); }
+
+  // Un envío real de Kapso para un WhatsApp Flow llega como `{ message: { interactive: { type:
+  // "nfm_reply", ... } } }` (ver lib/infrastructure/nfm-reply-adapter.ts), no como el contrato ya
+  // normalizado `{eventId, type, receivedAt, submission}` que valida kapsoWebhookSchema más abajo.
+  // Este bloque traduce ese caso concreto y reescribe `payload` con el evento normalizado antes de
+  // seguir; cualquier otro payload (incluido el shape ya normalizado que usan los fixtures/pruebas
+  // existentes) sigue el camino de siempre sin cambios.
+  if (isNfmReplyWebhookPayload(payload)) {
+    const adapted = await adaptNfmReply(payload, { secret: kapsoEnv().KAPSO_WEBHOOK_SECRET, resolveAttachmentUrl: resolveKapsoMediaDownloadUrl });
+    if (!adapted.ok) {
+      try {
+        await createPostgresNfmReplyRejectionRecorder().record({ wamid: adapted.wamid, phone: adapted.phone, reason: adapted.reason, rawPayload: payload });
+      } catch {
+        // El registro de auditoría es best-effort: un rechazo neutro nunca debe convertirse en 500.
+      }
+      return Response.json({ received: true, status: "rejected", reason: adapted.reason });
+    }
+    payload = adapted.event;
+  }
+
   const parsed = kapsoWebhookSchema.safeParse(payload);
   if (!parsed.success) return Response.json({ error: "invalid_event" }, { status: 400 });
   const event = parsed.data as KapsoWebhookEvent;
@@ -78,6 +99,8 @@ export async function POST(request: Request) {
         requiredDate: submission.requiredDate,
         channel: "whatsapp",
         kapsoEventId: inputEvent.eventId,
+        destination: submission.destination,
+        observations: submission.observations,
         externalRequester: { name: submission.requesterName, phone: submission.phone },
         items: submission.items.map((item) => ({
           id: randomUUID(),

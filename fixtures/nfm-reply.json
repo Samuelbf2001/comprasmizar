@@ -1,0 +1,65 @@
+{
+  "message": {
+    "id": "wamid.HBgLNTczMDAxMjM0NTY3FQIAERgSNzhCM0Y4RUY5RDdBQzc4RTk3AA==",
+    "from": "573001234567",
+    "timestamp": "1787654400",
+    "type": "interactive",
+    "interactive": {
+      "type": "nfm_reply",
+      "nfm_reply": {
+        "name": "flow",
+        "body": "Sent",
+        "response_json": "{\"flow_token\":\"2026-08-24T12:00:00.000Z.538b871704a37e2018ba7fd57ace6cbfd86abf9dfd5bdba05171a0012699f713\",\"type\":\"compra\",\"workId\":\"11111111-1111-4111-8111-111111111111\",\"requiredDate\":\"2026-08-30\",\"requesterName\":\"Maestro de obra\",\"phone\":\"+573001234567\",\"destination\":\"Frente 2 - Torre B\",\"observations\":\"Urgente para la fundida del viernes\",\"item_1_catalogo\":\"33333333-3333-4333-8333-333333333333\",\"item_1_descripcion\":\"\",\"item_1_cantidad\":\"10\",\"item_1_unidad\":\"bulto\",\"item_1_proveedor\":\"Ferretería El Roble\",\"item_1_link\":\"\",\"item_2_catalogo\":\"\",\"item_2_descripcion\":\"\",\"item_2_cantidad\":\"\",\"item_2_unidad\":\"\",\"item_2_proveedor\":\"\",\"item_2_link\":\"\",\"item_3_catalogo\":\"\",\"item_3_descripcion\":\"\",\"item_3_cantidad\":\"\",\"item_3_unidad\":\"\",\"item_3_proveedor\":\"\",\"item_3_link\":\"\",\"evidencia\":[{\"file_name\":\"remision.jpg\",\"mime_type\":\"image/jpeg\",\"sha256\":\"PqHgadp8cJ/N6mvAYGNMxhs9Ra5hbZFcctCtCClXsMU=\",\"id\":\"3631120727156756\"}]}"
+      }
+    },
+    "kapso": {
+      "flow_response": {
+        "flow_token": "2026-08-24T12:00:00.000Z.538b871704a37e2018ba7fd57ace6cbfd86abf9dfd5bdba05171a0012699f713",
+        "type": "compra",
+        "workId": "11111111-1111-4111-8111-111111111111",
+        "requiredDate": "2026-08-30",
+        "requesterName": "Maestro de obra",
+        "phone": "+573001234567",
+        "destination": "Frente 2 - Torre B",
+        "observations": "Urgente para la fundida del viernes",
+        "item_1_catalogo": "33333333-3333-4333-8333-333333333333",
+        "item_1_descripcion": "",
+        "item_1_cantidad": "10",
+        "item_1_unidad": "bulto",
+        "item_1_proveedor": "Ferretería El Roble",
+        "item_1_link": "",
+        "item_2_catalogo": "",
+        "item_2_descripcion": "",
+        "item_2_cantidad": "",
+        "item_2_unidad": "",
+        "item_2_proveedor": "",
+        "item_2_link": "",
+        "item_3_catalogo": "",
+        "item_3_descripcion": "",
+        "item_3_cantidad": "",
+        "item_3_unidad": "",
+        "item_3_proveedor": "",
+        "item_3_link": "",
+        "evidencia": [
+          {
+            "file_name": "remision.jpg",
+            "mime_type": "image/jpeg",
+            "sha256": "PqHgadp8cJ/N6mvAYGNMxhs9Ra5hbZFcctCtCClXsMU=",
+            "id": "3631120727156756"
+          }
+        ]
+      },
+      "flow_token": "2026-08-24T12:00:00.000Z.538b871704a37e2018ba7fd57ace6cbfd86abf9dfd5bdba05171a0012699f713",
+      "flow_name": "flow"
+    }
+  },
+  "conversation": {
+    "id": "conv_9f2c1d7b",
+    "contact_name": "Maestro de obra",
+    "phone_number": "573001234567",
+    "phone_number_id": "1221974497672719",
+    "status": "active"
+  },
+  "is_new_conversation": false,
+  "phone_number_id": "1221974497672719"
+}

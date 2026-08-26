@@ -13,3 +13,7 @@ tmp/
 .DS_Store
 supabase/.branches/
 supabase/.temp/
+
+# Regresion visual: la linea base SI se commitea, lo demas es efimero
+.lostpixel/current/
+.lostpixel/difference/

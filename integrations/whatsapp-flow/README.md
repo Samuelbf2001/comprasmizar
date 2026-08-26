@@ -80,9 +80,13 @@ un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
 
 ```json
 {
+  "messaging_product": "whatsapp",
+  "recipient_type": "individual",
+  "to": "573000000000",
   "type": "interactive",
   "interactive": {
     "type": "flow",
+    "body": { "text": "Solicita materiales o pagos para tu obra directamente desde WhatsApp." },
     "action": {
       "name": "flow",
       "parameters": {
@@ -90,6 +94,7 @@ un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
         "flow_id": "<FLOW-ID>",
         "flow_cta": "Solicitar",
         "flow_action": "navigate",
+        "flow_token": "<timestampISO>.<hex>",
         "flow_action_payload": {
           "screen": "TIPO_Y_OBRA",
           "data": {
@@ -104,14 +109,92 @@ un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
 }
 ```
 
-**Esto todavía no existe en el repo.** Ninguna ruta ni servicio arma y envía
-este mensaje hoy — es la pieza que falta para que alguien reciba el Flow por
-WhatsApp. Para completar RF-902 hace falta un pequeño emisor (análogo a
-`sendKapsoTemplate` en `lib/infrastructure/kapso.ts`, pero para
-`interactive.type=flow`) que lea las obras activas y el catálogo desde
-Supabase y arme `flow_action_payload.data` antes de llamar al proxy de envío
-de Kapso. Ese emisor no toca los archivos protegidos de este ticket y puede
-construirse como un servicio nuevo en `lib/services/`.
+### El emisor: `lib/infrastructure/flow-sender.ts` + `POST /api/internal/send-flow`
+
+Esto **ya existe en el repo**. `sendRequisitionFlow(to)` arma y envía
+exactamente el mensaje de arriba contra el proxy de Kapso
+(`POST {KAPSO_META_PROXY_URL}/{KAPSO_PHONE_NUMBER_ID}/messages`, header
+`X-API-Key`), y `POST /api/internal/send-flow` lo dispara con el mismo patrón
+de candado que `POST /api/internal/dispatch-notifications` (secreto compartido
+en el header `x-dispatch-secret`, comparado en tiempo constante; 503 sin
+secreto configurado, 401 si no coincide). Usa un secreto propio,
+`SEND_FLOW_SECRET`, distinto de `NOTIFICATION_DISPATCH_SECRET`: ese otro
+autoriza drenar una cola interna ya validada, este autoriza empujar un mensaje
+real a cualquier número que decida el llamador. Body: `{ "to": "57..." }`.
+Respuesta: solo `{ ok, messageId }` — nunca teléfonos ni el cuerpo de Kapso.
+
+**Configuración** (`.env.example`):
+
+- `WHATSAPP_FLOW_ID` — id del Flow a enviar (hoy, el borrador real:
+  `1972861836748301`).
+- `WHATSAPP_FLOW_CTA` — opcional, texto del botón (por defecto `"Solicitar"`).
+- `WHATSAPP_FLOW_BODY` — opcional, texto de `interactive.body.text`. **No es
+  cosmético**: Meta exige `body.text` en todo mensaje interactivo salvo
+  `location_request_message` (`InteractiveMessage` en
+  `api/meta/whatsapp/openapi-whatsapp.yaml`, corpus de Kapso) — sin él, Meta
+  rechaza el envío real con 400 aunque el ejemplo de más arriba (centrado solo
+  en el mecanismo de `flow_action_payload.data`) no lo mostrara.
+- `WHATSAPP_FLOW_MODE` — opcional, `"draft"` o `"published"`. La Graph API
+  asume `"published"` si se omite (`flows/guides/sendingaflow.md`), y el Flow
+  de arriba **hoy es un borrador**: para probarlo de verdad hace falta
+  `WHATSAPP_FLOW_MODE=draft` explícito. El día que se publique, quitar la
+  variable (o ponerla en `"published"`) sin tocar código.
+- `SEND_FLOW_SECRET` — candado del endpoint disparador.
+- Reutiliza `KAPSO_API_KEY`, `KAPSO_PHONE_NUMBER_ID`, `KAPSO_META_PROXY_URL` y
+  `KAPSO_WEBHOOK_SECRET` (este último para firmar `flow_token`, ver abajo) ya
+  documentados arriba.
+
+**Fallo cerrado:** sin `KAPSO_API_KEY`, `WHATSAPP_FLOW_ID`,
+`KAPSO_PHONE_NUMBER_ID` o `KAPSO_WEBHOOK_SECRET`, `sendRequisitionFlow` lanza
+`FLOW_SEND_NOT_CONFIGURED` **antes** de consultar obras/catálogo — nunca toca
+la BD a medias.
+
+**Origen de `obras` y `catalogo`:** `createPostgresFlowCatalogSource` (misma
+`sharedPostgres()` que usan los demás adaptadores) consulta obras con
+`estado = 'activa'` e items con `estado = 'activo'` — los mismos filtros que ya
+usa `GET /api/catalogs`. Orden: obras alfabético por nombre; items por uso más
+reciente primero cuando hay señal (`max(requisicion_items.created_at)` por
+`item_id`), alfabético para lo nunca usado.
+
+**Tope de opciones — 200:** `flows/reference/components.md` (tabla "Limits and
+restrictions" de `Dropdown`) fija el máximo de opciones de un `data-source`
+dinámico en **200 si ninguna opción trae imagen, 100 si alguna la trae**.
+Ninguna opción de `obras`/`catalogo` lleva imagen, así que el tope aplicado es
+`MAX_DROPDOWN_OPTIONS = 200` (constante exportada de `flow-sender.ts`), pasado
+explícito a cada consulta — nunca "lo que devuelva la BD". La misma tabla fija
+en 30 caracteres el máximo de `title`; nombres más largos se recortan con
+elipsis solo para el dropdown (el nombre completo se sigue usando en cualquier
+otra pantalla).
+
+### Contrato de `flow_token` (para quien construya el adaptador del webhook)
+
+`flow_token` liga el envío al teléfono destino y a una marca de tiempo, para
+que el receptor del webhook pueda validar que una respuesta corresponde a un
+Flow que este backend realmente envió:
+
+```
+flow_token = "<timestampISO>.<hex>"
+hex        = HMAC-SHA256(telefono + "." + timestampISO, KAPSO_WEBHOOK_SECRET)  // hex, 64 caracteres
+```
+
+- `telefono` es el número normalizado (solo dígitos, sin `+` ni separadores)
+  al que se envió el Flow.
+- `timestampISO` es `Date#toISOString()` en el momento del envío (incluye
+  milisegundos) — **ese timestamp ya trae un punto propio** (el separador de
+  milisegundos), así que partir el token por el *primer* punto es incorrecto.
+  Para separarlo de vuelta: `hex` son siempre los últimos 64 caracteres del
+  token (sha256 en hex tiene longitud fija); todo lo anterior al último punto
+  es `timestampISO`.
+- Se firma con `KAPSO_WEBHOOK_SECRET` — el mismo secreto que ya verifica la
+  firma del webhook entrante (`verifyKapsoSignature` en
+  `lib/infrastructure/kapso.ts`), para no introducir un secreto nuevo solo
+  para esto: quien pueda falsificar un `flow_token` ya podría falsificar una
+  firma de webhook completa.
+- Para validar: recomputar el HMAC con el `telefono` reportado por el webhook
+  (o el remitente real del mensaje) y el `timestampISO` extraído del token, y
+  comparar en tiempo constante (`safeEqual` en `lib/security/crypto.ts`).
+  Rechazar (o degradar a "sin verificar") un `flow_token` cuyo `timestampISO`
+  sea demasiado viejo, ya que no lleva expiración propia.
 
 ## Mapeo requerido hacia el contrato del webhook (no implementado; NO se tocó `app/api/kapso/route.ts`)
 
@@ -246,7 +329,9 @@ curl -X POST "https://api.kapso.ai/meta/whatsapp/v24.0/<FLOW_ID>/publish?busines
 **Antes de correrlo:** un Flow publicado no se puede editar ni borrar (solo
 "deprecar"). Confirmar que la app real muestra el Flow como se espera (usar el
 `preview_url` de arriba, o regenerarlo con `GET
-/<FLOW_ID>?fields=preview.invalidate(false)&business_account_id=<WABA>`) y que
-el emisor de mensajes (pendiente, ver arriba) y el adaptador del webhook
-(pendiente, ver arriba) ya existen — publicar el Flow sin ellos deja a un
-solicitante llenando un formulario que nadie procesa.
+/<FLOW_ID>?fields=preview.invalidate(false)&business_account_id=<WABA>`), que
+`WHATSAPP_FLOW_MODE` pasa de `draft` a `published` (o se retira) en el emisor
+(`lib/infrastructure/flow-sender.ts`, ya existe — ver arriba), y que el
+adaptador del webhook (pendiente, ver "Mapeo requerido..." arriba) ya existe —
+publicar el Flow sin el adaptador del webhook deja a un solicitante llenando
+un formulario que nadie procesa.
