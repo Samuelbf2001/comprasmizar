@@ -272,10 +272,25 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
       expect(result).toMatchObject({ ok: false, reason: "invalid_response_json" });
     });
 
-    it("resuelve la evidencia del primer ítem cuando se inyecta un resolver", async () => {
+    it("resuelve la foto del ítem que la trae (adjunto por ítem, no una evidencia global)", async () => {
       const result = await adaptNfmReply(fixture, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT, resolveAttachmentUrl: async (mediaId) => (mediaId === "3631120727156756" ? FAKE_ATTACHMENT_URL : null) });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.event.submission?.items[0].attachmentUrl).toBe(FAKE_ATTACHMENT_URL);
+    });
+
+    it("la foto de un segundo ítem se adjunta a ESE ítem, no al primero", async () => {
+      // fixture con dos ítems: el segundo trae la foto; el primero no.
+      const raw = JSON.parse(fixture.message.interactive!.nfm_reply!.response_json) as Record<string, unknown>;
+      delete raw.item_1_foto;
+      raw.item_2_catalogo = ""; raw.item_2_descripcion = "Arena de río"; raw.item_2_cantidad = "3"; raw.item_2_unidad = "m3";
+      raw.item_2_foto = [{ file_name: "arena.jpg", mime_type: "image/jpeg", sha256: "x", id: "media-arena-2" }];
+      const dosItems = { ...fixture, message: { ...fixture.message, interactive: { ...fixture.message.interactive!, nfm_reply: { ...fixture.message.interactive!.nfm_reply!, response_json: JSON.stringify(raw) } } } };
+      const result = await adaptNfmReply(dosItems, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT, resolveAttachmentUrl: async (id) => (id === "media-arena-2" ? "https://cdn.example/arena.jpg" : null) });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.event.submission?.items).toHaveLength(2);
+      expect(result.event.submission?.items[0].attachmentUrl).toBeUndefined();
+      expect(result.event.submission?.items[1].attachmentUrl).toBe("https://cdn.example/arena.jpg");
     });
 
     it("nunca bloquea la traducción si el resolver de evidencia lanza", async () => {

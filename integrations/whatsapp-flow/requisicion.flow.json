@@ -7,34 +7,98 @@
       "data": {
         "obras": {
           "type": "array",
-          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
           "__example__": [
-            { "id": "11111111-1111-1111-1111-111111111111", "title": "Obra La Pradera" },
-            { "id": "22222222-2222-2222-2222-222222222222", "title": "Obra El Roble" }
+            {
+              "id": "11111111-1111-1111-1111-111111111111",
+              "title": "Obra La Pradera"
+            },
+            {
+              "id": "22222222-2222-2222-2222-222222222222",
+              "title": "Obra El Roble"
+            }
           ]
         },
         "catalogo": {
           "type": "array",
-          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
           "__example__": [
-            { "id": "33333333-3333-3333-3333-333333333333", "title": "Cemento gris 50kg" },
-            { "id": "44444444-4444-4444-4444-444444444444", "title": "Varilla 1/2\" x 6m" }
+            {
+              "id": "33333333-3333-3333-3333-333333333333",
+              "title": "Cemento gris 50kg"
+            },
+            {
+              "id": "44444444-4444-4444-4444-444444444444",
+              "title": "Varilla 1/2\" x 6m"
+            }
           ]
         }
       },
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-          { "type": "TextHeading", "text": "Solicita lo que tu obra necesita" },
-          { "type": "TextBody", "text": "Te identificamos por tu número de WhatsApp. Elige el tipo de solicitud y la obra." },
           {
-            "type": "RadioButtonsGroup", "name": "tipo_solicitud", "label": "Tipo de solicitud", "required": true,
-            "data-source": [ { "id": "compra", "title": "Compra" }, { "id": "pago", "title": "Pago" } ]
+            "type": "TextHeading",
+            "text": "Solicita lo que tu obra necesita"
           },
-          { "type": "Dropdown", "name": "obra", "label": "Obra", "required": true, "data-source": "${data.obras}" },
           {
-            "type": "Footer", "label": "Continuar",
-            "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "ARTICULO_UNO" }, "payload": {} }
+            "type": "TextBody",
+            "text": "Te identificamos por tu número de WhatsApp. Elige el tipo de solicitud y la obra."
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "tipo_solicitud",
+            "label": "Tipo de solicitud",
+            "required": true,
+            "data-source": [
+              {
+                "id": "compra",
+                "title": "Compra"
+              },
+              {
+                "id": "pago",
+                "title": "Pago"
+              }
+            ]
+          },
+          {
+            "type": "Dropdown",
+            "name": "obra",
+            "label": "Obra",
+            "required": true,
+            "data-source": "${data.obras}"
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_UNO"
+              },
+              "payload": {}
+            }
           }
         ]
       }
@@ -45,27 +109,131 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-          { "type": "TextHeading", "text": "Artículo 1 · obligatorio" },
-          { "type": "TextBody", "text": "El primer artículo es obligatorio. Elígelo del catálogo o descríbelo." },
-          { "type": "Dropdown", "name": "catalogo", "label": "Del catálogo", "required": false, "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}" },
-          { "type": "TextInput", "name": "descripcion", "label": "Descripción", "required": true, "max-chars": 500, "helper-text": "Si no está en el catálogo, descríbelo aquí" },
-          { "type": "TextInput", "name": "cantidad", "label": "Cantidad", "input-type": "text", "required": true, "max-chars": 12, "pattern": "^[0-9]+(\\.[0-9]+)?$", "helper-text": "Solo números; punto para decimales (ej. 2.5)" },
           {
-            "type": "Dropdown", "name": "unidad", "label": "Unidad", "required": true,
+            "type": "TextHeading",
+            "text": "Artículo 1 · obligatorio"
+          },
+          {
+            "type": "TextBody",
+            "text": "El primer artículo es obligatorio. Elígelo del catálogo o descríbelo."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": true,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": true,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": true,
             "data-source": [
-              { "id": "unidad", "title": "Unidad" }, { "id": "bulto", "title": "Bulto" },
-              { "id": "kg", "title": "Kilogramo (kg)" }, { "id": "lt", "title": "Litro (L)" },
-              { "id": "m", "title": "Metro (m)" }, { "id": "m2", "title": "Metro cuadrado (m²)" },
-              { "id": "m3", "title": "Metro cúbico (m³)" }, { "id": "gal", "title": "Galón" },
-              { "id": "rollo", "title": "Rollo" }, { "id": "caja", "title": "Caja" },
-              { "id": "par", "title": "Par" }, { "id": "global", "title": "Global" }
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "par",
+                "title": "Par"
+              },
+              {
+                "id": "global",
+                "title": "Global"
+              }
             ]
           },
-          { "type": "TextInput", "name": "proveedor", "label": "Posible proveedor", "required": false, "max-chars": 240 },
-          { "type": "TextInput", "name": "link", "label": "Link (https://)", "required": false, "max-chars": 2048, "pattern": "^https://.*", "helper-text": "Debe iniciar con https://" },
           {
-            "type": "Footer", "label": "Continuar",
-            "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "ARTICULO_DOS" }, "payload": {} }
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Link (https://)",
+            "required": false,
+            "max-chars": 2048,
+            "pattern": "^https://.*",
+            "helper-text": "Debe iniciar con https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Toma una foto del material o elígela de tu galería (opcional).",
+            "photo-source": "camera_gallery",
+            "min-uploaded-photos": 0,
+            "max-uploaded-photos": 1
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_DOS"
+              },
+              "payload": {}
+            }
           }
         ]
       }
@@ -76,27 +244,130 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-          { "type": "TextHeading", "text": "Artículo 2 · opcional" },
-          { "type": "TextBody", "text": "¿Necesitas algo más? Complétalo o toca Continuar para omitirlo." },
-          { "type": "Dropdown", "name": "catalogo", "label": "Del catálogo", "required": false, "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}" },
-          { "type": "TextInput", "name": "descripcion", "label": "Descripción", "required": false, "max-chars": 500 },
-          { "type": "TextInput", "name": "cantidad", "label": "Cantidad", "input-type": "text", "required": false, "max-chars": 12, "pattern": "^[0-9]+(\\.[0-9]+)?$", "helper-text": "Solo números; punto para decimales (ej. 2.5)" },
           {
-            "type": "Dropdown", "name": "unidad", "label": "Unidad", "required": false,
+            "type": "TextHeading",
+            "text": "Artículo 2 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "¿Necesitas algo más? Complétalo o toca Continuar para omitirlo."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
             "data-source": [
-              { "id": "unidad", "title": "Unidad" }, { "id": "bulto", "title": "Bulto" },
-              { "id": "kg", "title": "Kilogramo (kg)" }, { "id": "lt", "title": "Litro (L)" },
-              { "id": "m", "title": "Metro (m)" }, { "id": "m2", "title": "Metro cuadrado (m²)" },
-              { "id": "m3", "title": "Metro cúbico (m³)" }, { "id": "gal", "title": "Galón" },
-              { "id": "rollo", "title": "Rollo" }, { "id": "caja", "title": "Caja" },
-              { "id": "par", "title": "Par" }, { "id": "global", "title": "Global" }
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "par",
+                "title": "Par"
+              },
+              {
+                "id": "global",
+                "title": "Global"
+              }
             ]
           },
-          { "type": "TextInput", "name": "proveedor", "label": "Posible proveedor", "required": false, "max-chars": 240 },
-          { "type": "TextInput", "name": "link", "label": "Link (https://)", "required": false, "max-chars": 2048, "pattern": "^https://.*", "helper-text": "Debe iniciar con https://" },
           {
-            "type": "Footer", "label": "Continuar",
-            "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "ARTICULO_TRES" }, "payload": {} }
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Link (https://)",
+            "required": false,
+            "max-chars": 2048,
+            "pattern": "^https://.*",
+            "helper-text": "Debe iniciar con https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Toma una foto del material o elígela de tu galería (opcional).",
+            "photo-source": "camera_gallery",
+            "min-uploaded-photos": 0,
+            "max-uploaded-photos": 1
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_TRES"
+              },
+              "payload": {}
+            }
           }
         ]
       }
@@ -107,27 +378,130 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-          { "type": "TextHeading", "text": "Artículo 3 · opcional" },
-          { "type": "TextBody", "text": "Último artículo opcional. Complétalo o toca Continuar para omitirlo." },
-          { "type": "Dropdown", "name": "catalogo", "label": "Del catálogo", "required": false, "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}" },
-          { "type": "TextInput", "name": "descripcion", "label": "Descripción", "required": false, "max-chars": 500 },
-          { "type": "TextInput", "name": "cantidad", "label": "Cantidad", "input-type": "text", "required": false, "max-chars": 12, "pattern": "^[0-9]+(\\.[0-9]+)?$", "helper-text": "Solo números; punto para decimales (ej. 2.5)" },
           {
-            "type": "Dropdown", "name": "unidad", "label": "Unidad", "required": false,
+            "type": "TextHeading",
+            "text": "Artículo 3 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Último artículo opcional. Complétalo o toca Continuar para omitirlo."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
             "data-source": [
-              { "id": "unidad", "title": "Unidad" }, { "id": "bulto", "title": "Bulto" },
-              { "id": "kg", "title": "Kilogramo (kg)" }, { "id": "lt", "title": "Litro (L)" },
-              { "id": "m", "title": "Metro (m)" }, { "id": "m2", "title": "Metro cuadrado (m²)" },
-              { "id": "m3", "title": "Metro cúbico (m³)" }, { "id": "gal", "title": "Galón" },
-              { "id": "rollo", "title": "Rollo" }, { "id": "caja", "title": "Caja" },
-              { "id": "par", "title": "Par" }, { "id": "global", "title": "Global" }
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "par",
+                "title": "Par"
+              },
+              {
+                "id": "global",
+                "title": "Global"
+              }
             ]
           },
-          { "type": "TextInput", "name": "proveedor", "label": "Posible proveedor", "required": false, "max-chars": 240 },
-          { "type": "TextInput", "name": "link", "label": "Link (https://)", "required": false, "max-chars": 2048, "pattern": "^https://.*", "helper-text": "Debe iniciar con https://" },
           {
-            "type": "Footer", "label": "Continuar",
-            "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "DETALLES" }, "payload": {} }
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Link (https://)",
+            "required": false,
+            "max-chars": 2048,
+            "pattern": "^https://.*",
+            "helper-text": "Debe iniciar con https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Toma una foto del material o elígela de tu galería (opcional).",
+            "photo-source": "camera_gallery",
+            "min-uploaded-photos": 0,
+            "max-uploaded-photos": 1
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {}
+            }
           }
         ]
       }
@@ -138,18 +512,41 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-          { "type": "TextHeading", "text": "Detalles de la solicitud" },
-          { "type": "DatePicker", "name": "fecha_requerida", "label": "Fecha requerida", "required": true },
-          { "type": "TextInput", "name": "destino", "label": "Destino o frente", "required": false, "max-chars": 500 },
-          { "type": "TextArea", "name": "observaciones", "label": "Observaciones", "required": false, "max-length": 1024 },
           {
-            "type": "PhotoPicker", "name": "evidencia", "label": "Fotos de soporte",
-            "description": "Toma una foto de lo que necesitas o elígela de tu galería.",
-            "photo-source": "camera_gallery", "min-uploaded-photos": 0, "max-uploaded-photos": 3
+            "type": "TextHeading",
+            "text": "Detalles de la solicitud"
           },
           {
-            "type": "Footer", "label": "Continuar",
-            "on-click-action": { "name": "navigate", "next": { "type": "screen", "name": "RESUMEN" }, "payload": {} }
+            "type": "DatePicker",
+            "name": "fecha_requerida",
+            "label": "Fecha requerida",
+            "required": true
+          },
+          {
+            "type": "TextInput",
+            "name": "destino",
+            "label": "Destino o frente",
+            "required": false,
+            "max-chars": 500
+          },
+          {
+            "type": "TextArea",
+            "name": "observaciones",
+            "label": "Observaciones",
+            "required": false,
+            "max-length": 1024
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "RESUMEN"
+              },
+              "payload": {}
+            }
           }
         ]
       }
@@ -162,11 +559,26 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-          { "type": "TextHeading", "text": "Revisa antes de enviar" },
-          { "type": "TextBody", "text": "Obra: ${screen.TIPO_Y_OBRA.form.obra}" },
-          { "type": "TextBody", "text": "Tipo: ${screen.TIPO_Y_OBRA.form.tipo_solicitud}" },
-          { "type": "TextBody", "text": "Fecha requerida: ${screen.DETALLES.form.fecha_requerida}" },
-          { "type": "TextBody", "text": "Artículo 1: ${screen.ARTICULO_UNO.form.descripcion}" },
+          {
+            "type": "TextHeading",
+            "text": "Revisa antes de enviar"
+          },
+          {
+            "type": "TextBody",
+            "text": "Obra: ${screen.TIPO_Y_OBRA.form.obra}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Tipo: ${screen.TIPO_Y_OBRA.form.tipo_solicitud}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Fecha requerida: ${screen.DETALLES.form.fecha_requerida}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 1: ${screen.ARTICULO_UNO.form.descripcion}"
+          },
           {
             "type": "Footer",
             "label": "Enviar solicitud",
@@ -196,7 +608,9 @@
                 "item_3_unidad": "${screen.ARTICULO_TRES.form.unidad}",
                 "item_3_proveedor": "${screen.ARTICULO_TRES.form.proveedor}",
                 "item_3_link": "${screen.ARTICULO_TRES.form.link}",
-                "evidencia": "${screen.DETALLES.form.evidencia}"
+                "item_1_foto": "${screen.ARTICULO_UNO.form.foto}",
+                "item_2_foto": "${screen.ARTICULO_DOS.form.foto}",
+                "item_3_foto": "${screen.ARTICULO_TRES.form.foto}"
               }
             }
           }

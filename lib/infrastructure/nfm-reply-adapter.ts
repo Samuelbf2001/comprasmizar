@@ -139,8 +139,11 @@ interface CompactedItem { itemId?: string; proposedDescription?: string; quantit
  * franja presente con cantidad inválida (no numérica o <=0) o sin unidad invalida el evento
  * completo — no se envía una requisición a medias.
  */
-function compactItems(fields: Record<string, unknown>): { ok: true; items: CompactedItem[] } | { ok: false; reason: "invalid_item" | "no_items" } {
+function compactItems(fields: Record<string, unknown>): { ok: true; items: CompactedItem[]; fotoMediaIds: (string | null)[] } | { ok: false; reason: "invalid_item" | "no_items" } {
   const items: CompactedItem[] = [];
+  // Media id de la foto de CADA ítem presente, en el mismo orden que `items` (tras compactar las
+  // franjas vacías). Cada foto se adjunta a SU ítem, no una sola evidencia al primero.
+  const fotoMediaIds: (string | null)[] = [];
   for (const n of [1, 2, 3] as const) {
     const catalogo = asString(fields[`item_${n}_catalogo`]);
     const descripcion = asString(fields[`item_${n}_descripcion`]);
@@ -161,9 +164,10 @@ function compactItems(fields: Record<string, unknown>): { ok: true; items: Compa
     if (proveedor !== "") item.possibleSupplier = proveedor;
     if (link !== "") item.productLink = link;
     items.push(item);
+    fotoMediaIds.push(firstEvidenceMediaId(fields[`item_${n}_foto`]));
   }
   if (items.length === 0) return { ok: false, reason: "no_items" };
-  return { ok: true, items };
+  return { ok: true, items, fotoMediaIds };
 }
 
 interface TopLevelFields { type: "compra" | "pago"; workId: string; requiredDate: string; destination?: string; observations?: string; }
@@ -184,12 +188,9 @@ function extractTopLevelFields(fields: Record<string, unknown>): { ok: true; val
 }
 
 /**
- * El DocumentPicker `evidencia` es un único campo a nivel de envío (no por ítem) que puede traer
- * hasta 3 documentos. El contrato `KapsoFlowSubmission` solo admite un `attachmentUrl` por ítem, así
- * que — a falta de una relación natural evidencia↔ítem — este adaptador adjunta únicamente el
- * PRIMER documento al PRIMER ítem (el único garantizado presente). Documentos adicionales se
- * descartan; es una limitación conocida y deliberada de este ticket, análoga a la de los "3 items
- * fijos" ya aceptada en el README del Flow.
+ * Cada artículo tiene su propio `PhotoPicker` (`item_N_foto`), que llega como un arreglo de objetos
+ * de media. Se toma el `id` de la PRIMERA foto de ese ítem (max-uploaded-photos = 1 en el Flow, así
+ * que en la práctica hay a lo sumo una). Devuelve `null` si el ítem no trae foto.
  */
 function firstEvidenceMediaId(value: unknown): string | null {
   if (!Array.isArray(value) || value.length === 0) return null;
@@ -263,14 +264,19 @@ export async function adaptNfmReply(payload: RawKapsoWebhookPayload, config: Ada
   if (!compacted.ok) return { ok: false, reason: compacted.reason, wamid, phone: verifiedPhone };
   const items = compacted.items;
 
-  const evidenceMediaId = firstEvidenceMediaId(fields.evidencia);
-  if (evidenceMediaId && config.resolveAttachmentUrl && items[0]) {
-    try {
-      const url = await config.resolveAttachmentUrl(evidenceMediaId);
-      if (url) items[0] = { ...items[0], attachmentUrl: url };
-    } catch {
-      // Un adjunto perdido nunca debe bloquear la requisición — mismo contrato que
-      // `attachEvidence` en kapso-processor.ts / kapso-store.ts.
+  // Foto POR ÍTEM: la foto de cada artículo se adjunta a ese artículo. Un adjunto perdido nunca
+  // bloquea la requisición (mismo contrato que `attachEvidence` en kapso-store.ts); si falla la
+  // resolución, el ítem se crea igual sin foto.
+  if (config.resolveAttachmentUrl) {
+    for (let i = 0; i < items.length; i++) {
+      const mediaId = compacted.fotoMediaIds[i];
+      if (!mediaId) continue;
+      try {
+        const url = await config.resolveAttachmentUrl(mediaId);
+        if (url) items[i] = { ...items[i], attachmentUrl: url };
+      } catch {
+        // silencioso a propósito: la foto es opcional y nunca puede tumbar la solicitud.
+      }
     }
   }
 

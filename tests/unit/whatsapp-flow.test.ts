@@ -87,14 +87,21 @@ describe("requisicion.flow.json — estructura", () => {
     }
   });
 
-  it("DETALLES incluye fecha y un PhotoPicker con cámara (poder tomar fotos)", () => {
+  it("cada artículo tiene su propio PhotoPicker con cámara (una foto por ítem)", () => {
+    for (const id of ITEM_SCREENS) {
+      const screen = findScreen(id);
+      const pickers = componentsOf(screen).filter((c) => c.type === "PhotoPicker" || c.type === "DocumentPicker");
+      expect(pickers, `${id} debe tener exactamente un selector de foto`).toHaveLength(1); // Meta: máx 1 picker por pantalla
+      const foto = fieldByName(screen, "foto");
+      expect(foto.type).toBe("PhotoPicker");
+      expect(foto["photo-source"]).toBe("camera_gallery"); // tomar foto o galería
+    }
+  });
+
+  it("DETALLES tiene fecha requerida y ya no lleva selector de foto (está por ítem)", () => {
     const screen = findScreen("DETALLES");
     expect(fieldByName(screen, "fecha_requerida").type).toBe("DatePicker");
-    const picker = componentsOf(screen).find((c) => c.type === "PhotoPicker");
-    expect(picker, "debe haber un PhotoPicker en DETALLES").toBeDefined();
-    expect(picker!["photo-source"]).toBe("camera_gallery"); // cámara o galería
-    const otros = componentsOf(screen).filter((c) => c.type === "PhotoPicker" || c.type === "DocumentPicker");
-    expect(otros).toHaveLength(1); // Meta prohíbe combinar ambos en una pantalla
+    expect(componentsOf(screen).some((c) => c.type === "PhotoPicker" || c.type === "DocumentPicker")).toBe(false);
   });
 
   it("ningún selector de fotos aparece en el payload de un navigate (restricción de Meta)", () => {
@@ -107,7 +114,7 @@ describe("requisicion.flow.json — estructura", () => {
 
   it("el complete mapea al contrato del webhook, sin nombre ni teléfono del formulario", () => {
     const payload = footerOf(findScreen("RESUMEN"))["on-click-action"]?.payload ?? {};
-    for (const key of ["type", "workId", "requiredDate", "item_1_descripcion", "item_1_cantidad", "item_1_unidad", "evidencia"]) {
+    for (const key of ["type", "workId", "requiredDate", "item_1_descripcion", "item_1_cantidad", "item_1_unidad", "item_1_foto", "item_2_foto", "item_3_foto"]) {
       expect(payload).toHaveProperty(key);
     }
     // La identidad la resuelve la lista blanca por teléfono; el Flow no debe enviarla.
