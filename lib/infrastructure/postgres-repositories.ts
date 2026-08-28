@@ -103,13 +103,16 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
     let rows: DbRow[];
     if (kind === "works") {
       const work = value as Partial<Extract<CatalogRecord, { societyId: string }>>;
-      rows = await this.sql<DbRow[]>`update obras set nombre=coalesce(${work.name ?? null}, nombre), sociedad_id=coalesce(${work.societyId ?? null}, sociedad_id), estado=case when ${work.active ?? null} is null then estado when ${work.active ?? false} then 'activa' else 'cerrada' end where id=${id} returning *`;
+      // Los ${x ?? null} dentro de `case when ... is null` van con cast explícito: un NULL sin tipo
+      // en esa posición (a diferencia de coalesce, que infiere del otro argumento) dispara
+      // 42P18 "could not determine data type of parameter" contra Postgres real.
+      rows = await this.sql<DbRow[]>`update obras set nombre=coalesce(${work.name ?? null}, nombre), sociedad_id=coalesce(${work.societyId ?? null}, sociedad_id), estado=case when ${work.active ?? null}::boolean is null then estado when ${work.active ?? false} then 'activa' else 'cerrada' end where id=${id} returning *`;
     } else if (kind === "tags") {
       const tag = value as Partial<CatalogTag>, hasApprover = Object.hasOwn(tag, "approverId");
       rows = await this.sql<DbRow[]>`update etiquetas set nombre=coalesce(${tag.name ?? null}, nombre), aprobador_id=case when ${hasApprover} then ${tag.approverId ?? null} else aprobador_id end, activa=coalesce(${tag.active ?? null}, activa) where id=${id} returning *`;
     } else if (kind === "items") {
       const itemValue = value as Partial<CatalogItem>, name = itemValue.name ?? null, hasSpecification = Object.hasOwn(itemValue, "specification"), hasCategory = Object.hasOwn(itemValue, "category");
-      rows = await this.sql<DbRow[]>`update items set nombre=coalesce(${name}, nombre), nombre_normalizado=case when ${name} is null then nombre_normalizado else ${normalizeItemName(name ?? "")} end, especificacion=case when ${hasSpecification} then ${itemValue.specification ?? null} else especificacion end, unidad_defecto=coalesce(${itemValue.unit ?? null}, unidad_defecto), categoria=case when ${hasCategory} then ${itemValue.category ?? null} else categoria end, estado=case when ${itemValue.active ?? null} is null then estado when ${itemValue.active ?? false} then 'activo' else 'inactivo' end where id=${id} returning *`;
+      rows = await this.sql<DbRow[]>`update items set nombre=coalesce(${name}, nombre), nombre_normalizado=case when ${name}::text is null then nombre_normalizado else ${normalizeItemName(name ?? "")} end, especificacion=case when ${hasSpecification} then ${itemValue.specification ?? null} else especificacion end, unidad_defecto=coalesce(${itemValue.unit ?? null}, unidad_defecto), categoria=case when ${hasCategory} then ${itemValue.category ?? null} else categoria end, estado=case when ${itemValue.active ?? null}::boolean is null then estado when ${itemValue.active ?? false} then 'activo' else 'inactivo' end where id=${id} returning *`;
     } else if (kind === "societies") {
       const society = value as Partial<CatalogSociety>, hasNit = Object.hasOwn(society, "nit");
       rows = await this.sql<DbRow[]>`update sociedades set nombre=coalesce(${society.name ?? null}, nombre), nit=case when ${hasNit} then ${society.nit ?? null} else nit end, activa=coalesce(${society.active ?? null}, activa) where id=${id} returning *`;
@@ -117,7 +120,7 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
       const userPatch = value as Partial<CatalogUser>, hasPhone = Object.hasOwn(userPatch, "phone");
       // El trigger usuarios_baja_etiquetas_activas puede rechazar este UPDATE (errcode 23514) si el
       // usuario sigue siendo aprobador de una etiqueta activa; CatalogService.conflict lo traduce.
-      rows = await this.sql<DbRow[]>`update usuarios set nombre=coalesce(${userPatch.name ?? null}, nombre), telefono=case when ${hasPhone} then ${userPatch.phone ?? null} else telefono end, estado=case when ${userPatch.active ?? null} is null then estado when ${userPatch.active ?? false} then 'activo' else 'inactivo' end where id=${id} returning *`;
+      rows = await this.sql<DbRow[]>`update usuarios set nombre=coalesce(${userPatch.name ?? null}, nombre), telefono=case when ${hasPhone} then ${userPatch.phone ?? null} else telefono end, estado=case when ${userPatch.active ?? null}::boolean is null then estado when ${userPatch.active ?? false} then 'activo' else 'inactivo' end where id=${id} returning *`;
       if (!rows[0]) throw new Error("CATALOG_NOT_FOUND");
       // Los roles de un patch representan el conjunto final deseado (no un incremento): se
       // calcula el diff contra usuario_roles y cada DELETE dispara validar_retiro_ultimo_rol_aprobador.
@@ -138,7 +141,11 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
     if (!rows[0]) throw new Error("CATALOG_NOT_FOUND");
     return catalogRecord(kind, rows[0]);
   }
-  async findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null> { const rows = await this.sql<{ id: string }[]>`select id from proveedores where (${exceptId ?? null}::uuid is null or id <> ${exceptId ?? null}) and (lower(btrim(razon_social)) = lower(btrim(${value.name})) or (${value.nit ?? null} is not null and nit_normalizado = nullif(regexp_replace(${value.nit ?? null}, '[^0-9A-Za-z]', '', 'g'), ''))) limit 1`; return rows[0]?.id ?? null; }
+  // El cast ::text en `${nit} is not null` no es opcional: un `is null`/`is not null` sobre un
+  // parámetro sin otro contexto de tipo no permite a Postgres inferir el tipo EN TIEMPO DE PREPARE
+  // (independiente del valor), y dispara 42P18. Esta consulta corre en cada alta/edición de
+  // proveedor vía supplierConflict, así que sin el cast ninguna se podía crear contra Postgres real.
+  async findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null> { const rows = await this.sql<{ id: string }[]>`select id from proveedores where (${exceptId ?? null}::uuid is null or id <> ${exceptId ?? null}) and (lower(btrim(razon_social)) = lower(btrim(${value.name})) or (${value.nit ?? null}::text is not null and nit_normalizado = nullif(regexp_replace(${value.nit ?? null}, '[^0-9A-Za-z]', '', 'g'), ''))) limit 1`; return rows[0]?.id ?? null; }
   async isEligibleApprover(id: string): Promise<boolean> { const rows = await this.sql<{ eligible: boolean }[]>`select exists(select 1 from usuarios u join usuario_roles ur on ur.usuario_id=u.id where u.id=${id} and u.estado='activo' and ur.rol in ('aprobador', 'revisor', 'admin_sixteam')) as eligible`; return rows[0]?.eligible === true; }
   // RF-004: la conexión directa a Postgres (DATABASE_URL) puede leer auth.users; nunca se INSERTA
   // ni modifica esa tabla desde esta plataforma, solo se verifica que el id ya exista en Auth.

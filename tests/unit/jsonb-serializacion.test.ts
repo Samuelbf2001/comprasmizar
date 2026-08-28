@@ -54,3 +54,63 @@ describe("serializacion a columnas jsonb", () => {
     }
   });
 });
+
+/**
+ * Guardian de un bug que solo aparece contra Postgres real: un parámetro en `${x} is null` o
+ * `${x} is not null` SIN un cast de tipo (`::text`, `::boolean`, `::uuid`, …) no permite a Postgres
+ * inferir el tipo del parámetro EN TIEMPO DE PREPARE — independiente del valor en runtime — y dispara
+ * `42P18 could not determine data type of parameter`. Rompió la creación de proveedores y la edición
+ * de catálogos, y ningún test con mocks lo atrapa. La forma correcta es castear: `${x}::text is null`.
+ */
+/**
+ * Reemplaza comentarios (`//` y `/* *​/`) y literales de string comilla-simple/doble por espacios,
+ * preservando saltos de línea y posiciones, para que el escáner solo vea CÓDIGO y plantillas ``…``.
+ * Sin esto, el propio comentario que documenta la regla («`${nit} is not null`») se autodelata.
+ */
+function soloCodigo(src: string): string {
+  let out = "";
+  type Estado = "code" | "line" | "block" | "tmpl" | "sq" | "dq";
+  let estado: Estado = "code";
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i], c2 = src[i + 1], nl = c === "\n";
+    if (estado === "code") {
+      if (c === "/" && c2 === "/") { estado = "line"; out += "  "; i++; continue; }
+      if (c === "/" && c2 === "*") { estado = "block"; out += "  "; i++; continue; }
+      if (c === "`") estado = "tmpl";
+      else if (c === "'") estado = "sq";
+      else if (c === '"') estado = "dq";
+      out += c;
+    } else if (estado === "line") {
+      if (nl) { estado = "code"; out += c; } else out += " ";
+    } else if (estado === "block") {
+      if (c === "*" && c2 === "/") { estado = "code"; out += "  "; i++; } else out += nl ? c : " ";
+    } else if (estado === "tmpl") {
+      // Dentro de la plantilla conservamos el texto (es el SQL que queremos escanear).
+      out += c; if (c === "`") estado = "code";
+    } else { // sq | dq: string JS opaco → espacios (pero conserva el delimitador de cierre)
+      const cierre = estado === "sq" ? "'" : '"';
+      if (c === cierre && src[i - 1] !== "\\") { estado = "code"; out += c; } else out += nl ? c : " ";
+    }
+  }
+  return out;
+}
+
+describe("parámetros en is null / is not null llevan cast de tipo", () => {
+  const dir = join(process.cwd(), "lib", "infrastructure");
+  const archivos = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+
+  it("ningún `${param} is (not) null` va sin cast en el SQL de los repositorios", () => {
+    const infractores: string[] = [];
+    // `}` seguido de `is null`/`is not null`: el cierre de una interpolación pelada, sin `::tipo`.
+    // El cast válido termina en `::tipo` antes del `is`, así que `${x}::text is null` no matchea.
+    const patron = /\}\s+is\s+(?:not\s+)?null\b/gi;
+    for (const archivo of archivos) {
+      const src = soloCodigo(readFileSync(join(dir, archivo), "utf8"));
+      src.split("\n").forEach((linea, i) => {
+        if (patron.test(linea)) infractores.push(`${archivo}:${i + 1}`);
+        patron.lastIndex = 0;
+      });
+    }
+    expect(infractores, `Usa \${x}::text is null (o ::boolean/::uuid) en: ${infractores.join(", ")}`).toEqual([]);
+  });
+});
