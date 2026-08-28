@@ -151,7 +151,7 @@ describe("RF-506: filtros en el panel de órdenes", () => {
         data={{ rows: orderRows, requisitions, catalogs }}
         role="Contabilidad"
         refresh={vi.fn()}
-      />,
+       go={vi.fn()} />,
     );
     expect(screen.getByText("OC-001")).toBeInTheDocument();
     expect(screen.getByText("OC-002")).toBeInTheDocument();
@@ -169,7 +169,7 @@ describe("RF-506: filtros en el panel de órdenes", () => {
         data={{ rows: orderRows, requisitions, catalogs }}
         role="Contabilidad"
         refresh={vi.fn()}
-      />,
+       go={vi.fn()} />,
     );
     fireEvent.click(
       screen.getByLabelText("Solo pendientes (no cumplida)"),
@@ -190,7 +190,7 @@ describe("RF-506: filtros en el panel de órdenes", () => {
         data={{ rows: orderRows, requisitions, catalogs }}
         role="Contabilidad"
         refresh={vi.fn()}
-      />,
+       go={vi.fn()} />,
     );
     fireEvent.change(screen.getByLabelText("Proveedor"), {
       target: { value: "supplier-1" },

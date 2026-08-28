@@ -1,7 +1,8 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
+import { Inbox, TriangleAlert } from "lucide-react";
 import { navigation, type Role } from "../lib/demo-data";
 import { AppShell, roleAllowed } from "./layout/app-shell";
 import { PublicRequestScreen } from "./screens/public-request";
@@ -33,7 +34,9 @@ function AccessDenied({
 }) {
   return (
     <div className="state-panel panel access-denied" role="alert">
-      <span className="empty-icon">!</span>
+      <span className="empty-icon">
+        <TriangleAlert aria-hidden="true" size={21} />
+      </span>
       <h3>Sin acceso con este rol</h3>
       <p>
         La vista solicitada no está disponible para <b>{role}</b>
@@ -73,7 +76,9 @@ function Placeholder({
       />
       <div className="panel">
         <div className="empty-state">
-          <span className="empty-icon">—</span>
+          <span className="empty-icon">
+            <Inbox aria-hidden="true" size={21} />
+          </span>
           <h3>Sin datos conectados</h3>
           <p>La integración real se habilitará con el servicio de negocio.</p>
         </div>
@@ -90,7 +95,9 @@ function IntegrationGate({ role }: { role: Role }) {
         description={`Tu sesión tiene el rol ${role}, pero esta instalación aún no expone datos conectados.`}
       />
       <div className="panel integration-gate" role="status">
-        <span className="empty-icon">—</span>
+        <span className="empty-icon">
+          <Inbox aria-hidden="true" size={21} />
+        </span>
         <h2>Datos no disponibles en este entorno</h2>
         <p>
           No se muestran cifras sintéticas fuera del modo demo. Configura y
@@ -107,6 +114,21 @@ function IntegrationGate({ role }: { role: Role }) {
   );
 }
 
+const DEMO_ROLE_STORAGE_KEY = "mizar-demo-role";
+// sessionStorage como store externo: en SSR/hidratación devuelve null (sin mismatch)
+// y en cliente entrega el rol demo persistido tras cada remontaje de ruta.
+const subscribeToNothing = () => () => {};
+const getServerDemoRole = () => null;
+function readStoredDemoRole(): Role | null {
+  try {
+    const stored = window.sessionStorage.getItem(DEMO_ROLE_STORAGE_KEY);
+    return stored && stored in roleAllowed ? (stored as Role) : null;
+  } catch {
+    // sessionStorage no disponible (p.ej. modo privado estricto).
+    return null;
+  }
+}
+
 export default function MizarApp({
   initialRole = "Revisor",
   demoMode = false,
@@ -121,7 +143,25 @@ export default function MizarApp({
   const pathname = usePathname() || "/";
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [role, setRole] = useState<Role>(initialRole);
+  // El componente se remonta en cada navegación de ruta y el useState perdía el rol demo:
+  // el rol elegido se persiste en sessionStorage y se relee tras cada montaje.
+  const storedDemoRole = useSyncExternalStore(
+    subscribeToNothing,
+    readStoredDemoRole,
+    getServerDemoRole,
+  );
+  const [roleOverride, setRoleOverride] = useState<Role | null>(null);
+  const role: Role =
+    roleOverride ?? (demoMode ? (storedDemoRole ?? initialRole) : initialRole);
+  const changeRole = (next: Role) => {
+    setRoleOverride(next);
+    if (!demoMode) return;
+    try {
+      window.sessionStorage.setItem(DEMO_ROLE_STORAGE_KEY, next);
+    } catch {
+      // Sin persistencia disponible el selector sigue funcionando durante la vista actual.
+    }
+  };
   const go = (path: string) => {
     setSidebarOpen(false);
     router.push(path as never);
@@ -133,17 +173,52 @@ export default function MizarApp({
         publicConfigured={publicConfigured}
       />
     );
-  const current =
-    navigation.find(
-      (item) => item.href !== "/" && pathname.startsWith(item.href),
-    ) || navigation[0];
   const allowed = roleAllowed[role];
+  // Ítem de navegación cuyo href es prefijo (por segmentos) del pathname; gana el más largo.
+  const navMatch = navigation.reduce<(typeof navigation)[number] | undefined>(
+    (best, item) => {
+      if (item.href === "/") return best;
+      if (pathname !== item.href && !pathname.startsWith(`${item.href}/`))
+        return best;
+      return !best || item.href.length > best.href.length ? item : best;
+    },
+    undefined,
+  );
+  const isHome = pathname === "/" || pathname === "/inicio";
+  // Detalle de requisición (/requisiciones/REQ-…): ningún href de navegación lo prefija.
+  const isRequisitionDetail =
+    !navMatch && pathname.startsWith("/requisiciones/");
+  const detailParentHref = ["/revision", "/requisiciones/mis"].find((href) =>
+    allowed.includes(href),
+  );
+  const detailParent = isRequisitionDetail
+    ? navigation.find((item) => item.href === detailParentHref)
+    : undefined;
+  const currentHref = isHome
+    ? "/"
+    : (navMatch?.href ?? detailParent?.href ?? pathname);
+  const currentLabel = isHome
+    ? navigation[0].label
+    : navMatch
+      ? demoMode
+        ? navMatch.label
+        : (navMatch.genericLabel ?? navMatch.label)
+      : isRequisitionDetail
+        ? decodeURIComponent(pathname.split("/")[2] || "") ||
+          (detailParent?.label ?? "Requisición")
+        : pathname.startsWith("/configuracion")
+          ? "Configuración"
+          : pathname.startsWith("/ayuda")
+            ? "Ayuda"
+            : navigation[0].label;
+  // Control de acceso: misma semántica de antes (rutas sin ítem de navegación caen a "/").
+  const accessHref = navMatch?.href ?? "/";
   const routeKey = pathname.startsWith("/configuracion")
     ? "/configuracion"
-    : current.href;
+    : accessHref;
   const routeIsAllowed =
     role === "Administrador Sixteam"
-      ? pathname.startsWith("/configuracion") || allowed.includes(current.href)
+      ? pathname.startsWith("/configuracion") || allowed.includes(accessHref)
       : allowed.includes(routeKey);
   let content: React.ReactNode;
   if (!routeIsAllowed)
@@ -184,14 +259,14 @@ export default function MizarApp({
   else content = <DashboardScreen go={go} />;
   return (
     <AppShell
-      currentHref={current.href}
-      currentLabel={current.label}
+      currentHref={currentHref}
+      currentLabel={currentLabel}
       pathname={pathname}
       onNavigate={go}
       sidebarOpen={sidebarOpen}
       setSidebarOpen={setSidebarOpen}
       role={role}
-      setRole={setRole}
+      setRole={changeRole}
       demoMode={demoMode}
       actorName={actorName}
     >

@@ -81,7 +81,7 @@ export function AttachmentPicker({
     onFile(next);
   };
   return (
-    <div className="attachment-picker">
+    <div className="attachment-picker" style={{ gridColumn: "1 / -1" }}>
       <label className="upload-box attachment-picker-label" htmlFor={inputId}>
         {allowedMimeTypes.includes("application/pdf") ? <FileText aria-hidden="true" size={18} /> : <ImageIcon aria-hidden="true" size={18} />}
         <span>

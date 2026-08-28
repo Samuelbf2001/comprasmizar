@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Database,
   Download,
+  Lock,
   MoreHorizontal,
   ShieldCheck,
 } from "lucide-react";
@@ -25,7 +26,7 @@ export function ReportsScreen({ go }: { go: (href: string) => void }) {
               aria-disabled="true"
               title="Disponible al conectar el servicio"
             >
-              <Download size={15} /> Descargar PDF
+              <Download aria-hidden="true" size={15} /> Descargar PDF
             </button>
             <button
               className="button button-dark"
@@ -34,7 +35,7 @@ export function ReportsScreen({ go }: { go: (href: string) => void }) {
               aria-disabled="true"
               title="Disponible al conectar el servicio"
             >
-              <ArrowDownToLine size={15} /> Exportar Excel
+              <ArrowDownToLine aria-hidden="true" size={15} /> Exportar Excel
             </button>
           </div>
         }
@@ -76,7 +77,7 @@ export function ReportsScreen({ go }: { go: (href: string) => void }) {
               aria-disabled="true"
               title="Disponible al conectar el servicio"
             >
-              <MoreHorizontal size={17} />
+              <MoreHorizontal aria-hidden="true" size={17} />
             </button>
           </div>
           <div className="donut-layout">
@@ -113,7 +114,7 @@ export function ReportsScreen({ go }: { go: (href: string) => void }) {
               type="button"
               onClick={() => go("/revision")}
             >
-              Ver bandeja <ArrowRight size={14} />
+              Ver bandeja <ArrowRight aria-hidden="true" size={14} />
             </button>
           </div>
           <div className="horizontal-bars">
@@ -153,7 +154,9 @@ export function AdminScreen({
   if (role === "Administrador Mizar") {
     return (
       <div className="state-panel panel access-denied" role="alert">
-        <span className="empty-icon">!</span>
+        <span className="empty-icon">
+          <Lock aria-hidden="true" size={21} />
+        </span>
         <h3>Catálogos bloqueados en Básico</h3>
         <p>
           El autoservicio de Administrador Mizar requiere habilitar el módulo de
@@ -189,13 +192,13 @@ export function AdminScreen({
               key={label}
               onClick={() => setTab(label)}
             >
-              <Database size={16} />
+              <Database aria-hidden="true" size={16} />
               {label}
-              <ArrowRight size={14} />
+              <ArrowRight aria-hidden="true" size={14} />
             </button>
           ))}
           <div className="catalog-note">
-            <ShieldCheck size={16} />
+            <ShieldCheck aria-hidden="true" size={16} />
             <span>
               <b>Autoservicio Mizar</b>
               <small>
@@ -218,7 +221,7 @@ export function AdminScreen({
               aria-disabled="true"
               title="Disponible al conectar el servicio"
             >
-              <MoreHorizontal size={16} />
+              <MoreHorizontal aria-hidden="true" size={16} />
             </button>
           </div>
           {tab === "Ítems" ? (
@@ -247,7 +250,7 @@ export function AdminScreen({
           ) : (
             <div className="empty-state">
               <span className="empty-icon">
-                <Database size={21} />
+                <Database aria-hidden="true" size={21} />
               </span>
               <h3>Catálogo listo para administrar</h3>
               <p>

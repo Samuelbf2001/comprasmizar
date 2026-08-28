@@ -100,7 +100,7 @@ export function PantallaClient() {
     return (
       <main className="pantalla-page pantalla-page-empty">
         <div className="state-panel pantalla-empty" role="status" aria-live="polite">
-          <span className="empty-icon"><MonitorOff size={22} /></span>
+          <span className="empty-icon"><MonitorOff aria-hidden="true" size={22} /></span>
           <h1>Pantalla no autorizada</h1>
           <p>Pide a un administrador un enlace de pantalla válido para este monitor.</p>
         </div>
@@ -114,7 +114,7 @@ export function PantallaClient() {
   return (
     <main className="pantalla-page" aria-live="polite">
       <header className="pantalla-header">
-        <div className="pantalla-brand"><RadioTower size={20} /><b>MIZAR</b><small>Modo pantalla</small></div>
+        <div className="pantalla-brand"><RadioTower aria-hidden="true" size={20} /><b>MIZAR</b><small>Modo pantalla</small></div>
         <div className="pantalla-meta"><span>{sessionName}</span><span>Periodo {period}</span></div>
       </header>
       <section className="pantalla-grid" aria-label="Embudo de requisiciones">

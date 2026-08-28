@@ -529,7 +529,7 @@ export function ConnectedCatalogAdmin({
                 setSuccess("");
               }}
             >
-              <Database size={15} />
+              <Database aria-hidden="true" size={15} />
               {labels[option]}
               {!allowed && <span className="catalog-lock">Bloqueado</span>}
             </button>
@@ -543,7 +543,7 @@ export function ConnectedCatalogAdmin({
           role="tabpanel"
           aria-labelledby={`catalog-tab-${kind}`}
         >
-          <ShieldCheck size={22} />
+          <ShieldCheck aria-hidden="true" size={22} />
           <div role="alert">
             <h2>Gestión bloqueada para este rol</h2>
             <p>{blockedReason}</p>
@@ -576,7 +576,7 @@ export function ConnectedCatalogAdmin({
                 type="button"
                 onClick={openCreate}
               >
-                <Plus size={15} /> Nuevo registro
+                <Plus aria-hidden="true" size={15} /> Nuevo registro
               </button>
             )}
           </div>
@@ -614,7 +614,7 @@ export function ConnectedCatalogAdmin({
           {rows.length === 0 ? (
             <div className="empty-state">
               <span className="empty-icon">
-                <Database size={21} />
+                <Database aria-hidden="true" size={21} />
               </span>
               <h3>Catálogo vacío</h3>
               <p>Crea el primer registro cuando la operación lo permita.</p>
@@ -733,7 +733,7 @@ export function ConnectedCatalogAdmin({
                               disabled={saving}
                               onClick={() => openEdit(row)}
                             >
-                              <Edit3 size={15} />
+                              <Edit3 aria-hidden="true" size={15} />
                             </button>
                             <button
                               className="icon-button"
@@ -743,9 +743,9 @@ export function ConnectedCatalogAdmin({
                               onClick={() => void toggle(row)}
                             >
                               {isActive(row) ? (
-                                <ToggleRight size={17} />
+                                <ToggleRight aria-hidden="true" size={17} />
                               ) : (
-                                <ToggleLeft size={17} />
+                                <ToggleLeft aria-hidden="true" size={17} />
                               )}
                             </button>
                           </>
@@ -813,7 +813,7 @@ function CatalogForm({
           aria-label="Cerrar formulario"
           onClick={onCancel}
         >
-          <X size={16} />
+          <X aria-hidden="true" size={16} />
         </button>
       </div>
       <div className="field-grid">

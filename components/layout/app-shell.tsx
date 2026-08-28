@@ -173,7 +173,7 @@ export function AppShell({
             aria-label="Cerrar menú"
             type="button"
           >
-            <PanelLeftClose size={17} />
+            <PanelLeftClose aria-hidden="true" size={17} />
           </button>
         </div>
         {demoMode ? (
@@ -192,7 +192,7 @@ export function AppShell({
               </select>
               <b>{identity}</b>
             </span>
-            <ChevronDown size={14} />
+            <ChevronDown aria-hidden="true" size={14} />
           </label>
         ) : (
           <div className="role-switch role-production">
@@ -218,7 +218,7 @@ export function AppShell({
                   onClick={() => onNavigate(item.href)}
                   type="button"
                 >
-                  <Icon size={17} />
+                  <Icon aria-hidden="true" size={17} />
                   <span>{label}</span>
                   {demoMode && item.badge && (
                     <i className="nav-badge">{item.badge}</i>
@@ -237,7 +237,7 @@ export function AppShell({
               onClick={() => onNavigate("/configuracion")}
               type="button"
             >
-              <Settings size={17} />
+              <Settings aria-hidden="true" size={17} />
               <span>Configuración</span>
             </button>
           )}
@@ -246,20 +246,20 @@ export function AppShell({
             onClick={() => onNavigate("/ayuda")}
             type="button"
           >
-            <HelpCircle size={17} />
+            <HelpCircle aria-hidden="true" size={17} />
             <span>Ayuda</span>
           </button>
         </nav>
         <div className="sidebar-foot">
           <div className="secure-label">
-            <ShieldCheck size={14} />
+            <ShieldCheck aria-hidden="true" size={14} />
             <span>
               {demoMode ? "Modo demo · sin persistencia" : "Sesión protegida"}
             </span>
           </div>
           <form action={logout}>
             <button className="logout-button" type="submit">
-              <LogOut size={15} /> Cerrar sesión
+              <LogOut aria-hidden="true" size={15} /> Cerrar sesión
             </button>
           </form>
           <small>
@@ -288,7 +288,7 @@ export function AppShell({
             aria-label="Abrir menú"
             type="button"
           >
-            <Menu size={20} />
+            <Menu aria-hidden="true" size={20} />
           </button>
           <div className="breadcrumbs">
             <button
@@ -299,7 +299,7 @@ export function AppShell({
             >
               <span>Plataforma</span>
             </button>
-            <ArrowRight size={13} />
+            <ArrowRight aria-hidden="true" size={13} />
             <b>{currentLabel}</b>
           </div>
           <div className="topbar-actions">
@@ -311,7 +311,7 @@ export function AppShell({
               title="Notificaciones · próximamente"
               type="button"
             >
-              <Bell size={18} />
+              <Bell aria-hidden="true" size={18} />
               {demoMode && <i />}
             </button>
             <div className="profile-menu-wrap">
@@ -326,7 +326,7 @@ export function AppShell({
               >
                 <span className="avatar">{roleInitials[role]}</span>
                 <span>{identity}</span>
-                <ChevronDown size={14} />
+                <ChevronDown aria-hidden="true" size={14} />
               </button>
               {profileMenuOpen && (
                 <div
@@ -350,7 +350,7 @@ export function AppShell({
                       role="menuitem"
                       className="profile-menu-item"
                     >
-                      <LogOut size={15} />
+                      <LogOut aria-hidden="true" size={15} />
                       <span>Cerrar sesión</span>
                     </button>
                   </form>

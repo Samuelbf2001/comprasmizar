@@ -1,4 +1,4 @@
-import { FlaskConical } from 'lucide-react';
+import { FlaskConical, SearchX, TriangleAlert } from 'lucide-react';
 
 export function DemoNotice({ compact = false }: { compact?: boolean }) {
   // role="note", no "status": este aviso es permanente, no una actualización dinámica.
@@ -9,6 +9,6 @@ export function DemoNotice({ compact = false }: { compact?: boolean }) {
 
 export function ScreenState({ state, onRetry, onClear }: { state: 'loading' | 'error' | 'empty'; onRetry?: () => void; onClear?: () => void }) {
   if (state === 'loading') return <div className="state-panel" role="status" aria-live="polite"><span className="state-spinner" /><h3>Cargando datos de demo…</h3><p>Esta espera es simulada; no consulta ningún backend.</p></div>;
-  if (state === 'error') return <div className="state-panel state-error" role="alert"><span className="empty-icon">!</span><h3>No pudimos cargar esta vista</h3><p>El error es simulado para validar el estado visual. No se ha enviado información.</p>{onRetry && <button className="button button-secondary" onClick={onRetry} type="button">Reintentar</button>}</div>;
-  return <div className="state-panel"><span className="empty-icon">—</span><h3>No hay resultados</h3><p>Prueba con otro filtro o limpia la búsqueda.</p>{onClear && <button className="button button-secondary" onClick={onClear} type="button">Limpiar filtros</button>}</div>;
+  if (state === 'error') return <div className="state-panel state-error" role="alert"><span className="empty-icon"><TriangleAlert aria-hidden="true" size={21} /></span><h3>No pudimos cargar esta vista</h3><p>El error es simulado para validar el estado visual. No se ha enviado información.</p>{onRetry && <button className="button button-secondary" onClick={onRetry} type="button">Reintentar</button>}</div>;
+  return <div className="state-panel"><span className="empty-icon"><SearchX aria-hidden="true" size={21} /></span><h3>No hay resultados</h3><p>Prueba con otro filtro o limpia la búsqueda.</p>{onClear && <button className="button button-secondary" onClick={onClear} type="button">Limpiar filtros</button>}</div>;
 }

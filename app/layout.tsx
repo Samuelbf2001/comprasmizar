@@ -1,17 +1,11 @@
 import type { Metadata } from 'next';
-import { Fraunces, DM_Sans } from 'next/font/google';
+import { DM_Sans } from 'next/font/google';
 import './globals.css';
 
-// Tipografía de marca (ver docs/identidad-mizar.md): Fraunces para títulos,
-// DM Sans para cuerpo e interfaz. Next.js las autohospeda en build (sin
-// peticiones a Google en el navegador) y las expone como variables CSS que
-// consume app/globals.css (--font-display / --font-body).
-const fraunces = Fraunces({
-  subsets: ['latin'],
-  variable: '--font-fraunces',
-  display: 'swap',
-});
-
+// Tipografía de marca (ver docs/identidad-mizar.md): DM Sans para titulares,
+// cuerpo e interfaz. Next.js la autohospeda en build (sin peticiones a Google
+// en el navegador) y la expone como variable CSS que consume app/globals.css
+// (--font-display / --font-body).
 const dmSans = DM_Sans({
   subsets: ['latin'],
   variable: '--font-dm-sans',
@@ -25,7 +19,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="es" className={`${fraunces.variable} ${dmSans.variable}`}>
+    <html lang="es" className={dmSans.variable}>
       <body>{children}</body>
     </html>
   );

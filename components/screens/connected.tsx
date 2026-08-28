@@ -12,12 +12,17 @@ import {
   ArrowRight,
   BarChart3,
   CheckCircle2,
+  FileText,
   Inbox,
+  Pencil,
   Plus,
   RefreshCw,
+  SearchX,
   ShieldCheck,
   Trash2,
+  TriangleAlert,
   Truck,
+  X,
 } from "lucide-react";
 import {
   Bar,
@@ -99,6 +104,7 @@ type OrderRow = {
   requisitionId: string;
   supplierId?: string;
   status: string;
+  itemIds?: string[];
 };
 type ExpenseRow = {
   id: string;
@@ -224,6 +230,13 @@ function estadoLabel(status: string): string {
   if (known) return known;
   const text = status.replaceAll("_", " ");
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// Fecha de HOY en horario local (YYYY-MM-DD). toISOString() usa UTC y en Colombia
+// (UTC-5) daría "mañana" entre las 7pm y la medianoche.
+function localTodayISO(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
 const SIN_ETIQUETA = "__sin_etiqueta__";
@@ -613,7 +626,7 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
           description={`Rol activo: ${role}`}
         />
         <div className="panel state-panel" role="alert">
-          <span className="empty-icon">!</span>
+          <span className="empty-icon"><TriangleAlert aria-hidden="true" size={21} /></span>
           <h3>No pudimos cargar esta vista</h3>
           <p>{load.message}</p>
           <button
@@ -621,7 +634,7 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
             type="button"
             onClick={refresh}
           >
-            <RefreshCw size={15} /> Reintentar
+            <RefreshCw aria-hidden="true" size={15} /> Reintentar
           </button>
         </div>
       </>
@@ -666,6 +679,7 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
           data={load.data as OrdersBundle}
           role={role}
           refresh={refresh}
+          go={go}
         />
       )}
       {kind === "catalogs" && (
@@ -735,7 +749,7 @@ function DashboardBarChart({
       {rows.length === 0 ? (
         <div className="empty-state">
           <span className="empty-icon">
-            <BarChart3 size={20} />
+            <BarChart3 aria-hidden="true" size={20} />
           </span>
           <h3>Sin datos</h3>
           <p>{emptyHint}</p>
@@ -808,7 +822,7 @@ function DashboardPeriodChart({ rows }: { rows: DashboardAmountByKey[] }) {
       {points.length === 0 ? (
         <div className="empty-state">
           <span className="empty-icon">
-            <BarChart3 size={20} />
+            <BarChart3 aria-hidden="true" size={20} />
           </span>
           <h3>Sin datos</h3>
           <p>No hay gastos registrados en los últimos periodos.</p>
@@ -897,25 +911,25 @@ export function ConnectedDashboard({
       />
       <div className="stats-grid">
         <article className="stat-card stat-amber">
-          <span className="stat-icon"><Inbox size={17} /></span>
+          <span className="stat-icon"><Inbox aria-hidden="true" size={17} /></span>
           <span className="stat-label">En revisión</span>
           <strong>{metrics.byStatus?.en_revision ?? 0}</strong>
           <span className="stat-meta">requisiciones visibles</span>
         </article>
         <article className="stat-card stat-blue">
-          <span className="stat-icon"><CheckCircle2 size={17} /></span>
+          <span className="stat-icon"><CheckCircle2 aria-hidden="true" size={17} /></span>
           <span className="stat-label">En aprobación</span>
           <strong>{metrics.byStatus?.en_aprobacion ?? 0}</strong>
           <span className="stat-meta">{money.format(metrics.inProcessValue ?? 0)}</span>
         </article>
         <article className="stat-card stat-orange">
-          <span className="stat-icon"><Truck size={17} /></span>
+          <span className="stat-icon"><Truck aria-hidden="true" size={17} /></span>
           <span className="stat-label">Compras pendientes</span>
           <strong>{metrics.pendingOrders ?? 0}</strong>
           <span className="stat-meta">generadas o no cumplidas</span>
         </article>
         <article className="stat-card stat-forest">
-          <span className="stat-icon"><BarChart3 size={17} /></span>
+          <span className="stat-icon"><BarChart3 aria-hidden="true" size={17} /></span>
           <span className="stat-label">Gasto del periodo</span>
           <strong>{money.format(metrics.periodExpense ?? 0)}</strong>
           <span className="stat-meta">según alcance del rol</span>
@@ -937,7 +951,7 @@ export function ConnectedDashboard({
           {queue.length === 0 ? (
             <div className="empty-state">
               <span className="empty-icon">
-                <Inbox size={20} />
+                <Inbox aria-hidden="true" size={20} />
               </span>
               <h3>Sin pendientes</h3>
               <p>
@@ -955,9 +969,9 @@ export function ConnectedDashboard({
               >
                 <span className="alert-icon amber">
                   {item.kind === "orden" ? (
-                    <Truck size={16} />
+                    <Truck aria-hidden="true" size={16} />
                   ) : (
-                    <Inbox size={16} />
+                    <Inbox aria-hidden="true" size={16} />
                   )}
                 </span>
                 <span>
@@ -969,7 +983,7 @@ export function ConnectedDashboard({
                     {estadoLabel(item.status)}
                   </small>
                 </span>
-                <ArrowRight size={15} />
+                <ArrowRight aria-hidden="true" size={15} />
               </button>
             ))
           )}
@@ -986,7 +1000,7 @@ export function ConnectedDashboard({
           {activity.length === 0 ? (
             <div className="empty-state">
               <span className="empty-icon">
-                <RefreshCw size={20} />
+                <RefreshCw aria-hidden="true" size={20} />
               </span>
               <h3>Sin movimientos</h3>
               <p>Todavía no hay actividad reciente visible para tu rol.</p>
@@ -1029,7 +1043,7 @@ export function ConnectedDashboard({
         <DashboardPeriodChart rows={metrics.expenseByPeriod ?? []} />
       </div>
       <div className="panel integration-evidence">
-        <ShieldCheck size={18} />
+        <ShieldCheck aria-hidden="true" size={18} />
         <div>
           <b>Sin cifras de demostración</b>
           <p>
@@ -1108,7 +1122,7 @@ export function ConnectedNewRequisition({
   const [type, setType] = useState<"compra" | "pago">("compra"),
     [workId, setWorkId] = useState(catalogs.works[0]?.id ?? ""),
     [requiredDate, setRequiredDate] = useState(
-      new Date().toISOString().slice(0, 10),
+      localTodayISO(),
     );
   const [destination, setDestination] = useState(""),
     [observations, setObservations] = useState(""),
@@ -1121,7 +1135,7 @@ export function ConnectedNewRequisition({
     [createdId, setCreatedId] = useState("");
   // Hoy en formato YYYY-MM-DD: sirve como `min` del campo de fecha y para rechazar
   // fechas pasadas (comparación léxica válida por el formato ISO).
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayISO();
   const updateLine = (key: string, patch: Partial<DraftLine>) =>
     setLines((current) =>
       current.map((line) => (line.key === key ? { ...line, ...patch } : line)),
@@ -1346,7 +1360,7 @@ export function ConnectedNewRequisition({
               type="button"
               onClick={() => setLines((current) => [...current, newLine()])}
             >
-              <Plus size={14} /> Agregar ítem
+              <Plus aria-hidden="true" size={14} /> Agregar ítem
             </button>
           </div>
           <div className="connected-lines">
@@ -1481,7 +1495,7 @@ export function ConnectedNewRequisition({
                     )
                   }
                 >
-                  <Trash2 size={15} />
+                  <Trash2 aria-hidden="true" size={15} />
                 </button>
               </fieldset>
             ))}
@@ -1514,7 +1528,7 @@ export function ConnectedNewRequisition({
               type="button"
               onClick={() => go(`/requisiciones/${createdId}`)}
             >
-              Ver requisición <ArrowRight size={14} />
+              Ver requisición <ArrowRight aria-hidden="true" size={14} />
             </button>
           )}
           <button
@@ -1522,7 +1536,7 @@ export function ConnectedNewRequisition({
             disabled={busy || Boolean(createdId) || !catalogs.works.length}
             type="submit"
           >
-            {busy ? "Guardando…" : "Crear requisición"} <ArrowRight size={14} />
+            {busy ? "Guardando…" : "Crear requisición"} <ArrowRight aria-hidden="true" size={14} />
           </button>
         </div>
       </form>
@@ -1555,7 +1569,7 @@ export function DemoRequisitionScreen() {
           </label>
           <label className="field">
             <span>Fecha requerida</span>
-            <input type="date" defaultValue={new Date().toISOString().slice(0, 10)} />
+            <input type="date" defaultValue={localTodayISO()} />
           </label>
           <label className="field field-wide">
             <span>Observaciones</span>
@@ -1744,13 +1758,13 @@ export function ConnectedRequisitions({
         </div>
         {rows.length === 0 ? (
           <div className="empty-state">
-            <span className="empty-icon">—</span>
+            <span className="empty-icon"><Inbox aria-hidden="true" size={21} /></span>
             <h3>Sin requisiciones en esta vista</h3>
             <p>El resultado proviene del backend autenticado.</p>
           </div>
         ) : filteredRows.length === 0 ? (
           <div className="empty-state">
-            <span className="empty-icon">—</span>
+            <span className="empty-icon"><SearchX aria-hidden="true" size={21} /></span>
             <h3>Sin resultados para estos filtros</h3>
             <p>Ajusta o limpia los filtros para ver más requisiciones.</p>
             <button
@@ -1809,7 +1823,7 @@ export function ConnectedRequisitions({
                         type="button"
                         onClick={() => go(`/requisiciones/${row.id}`)}
                       >
-                        Abrir <ArrowRight size={13} />
+                        Abrir <ArrowRight aria-hidden="true" size={13} />
                       </button>
                     </td>
                   </tr>
@@ -1843,6 +1857,10 @@ export function ConnectedRequisitionDetail({
     attachments = [],
   } = data;
   const [tagId, setTagId] = useState(requisition.tagId ?? ""),
+    [editingHeader, setEditingHeader] = useState(false),
+    [headerForm, setHeaderForm] = useState({ requiredDate: requisition.requiredDate ?? "", destination: requisition.destination ?? "", observations: requisition.observations ?? "" }),
+    [headerBusy, setHeaderBusy] = useState(false),
+    [headerFeedback, setHeaderFeedback] = useState(""),
     [lines, setLines] = useState<RequisitionItem[]>(requisition?.items ?? []),
     [supplierOptions, setSupplierOptions] = useState<NamedOption[]>(
       catalogs.suppliers,
@@ -1990,6 +2008,25 @@ export function ConnectedRequisitionDetail({
   };
   const isReviewer = role === "Revisor" || role === "Administrador Sixteam",
     isApprover = role === "Aprobador" || role === "Administrador Sixteam";
+  // RF: cabecera editable. Solo el revisor/admin y solo mientras la requisición aún admite cambios.
+  const headerEditable = isReviewer && ["enviada", "en_revision", "devuelta"].includes(requisition.status);
+  const saveHeader = async () => {
+    setHeaderBusy(true);
+    setHeaderFeedback("");
+    try {
+      await mutate(`/api/requisitions/${requisition.id}`, "PATCH", {
+        requiredDate: headerForm.requiredDate || undefined,
+        destination: headerForm.destination.trim() || null,
+        observations: headerForm.observations.trim() || null,
+      });
+      setEditingHeader(false);
+      refresh();
+    } catch (error) {
+      setHeaderFeedback(error instanceof Error ? error.message : "No fue posible guardar la cabecera.");
+    } finally {
+      setHeaderBusy(false);
+    }
+  };
   const supplierGroups = [
       ...new Set(
         lines
@@ -2270,6 +2307,10 @@ export function ConnectedRequisitionDetail({
                 </dd>
               </div>
               <div>
+                <dt>Fecha requerida</dt>
+                <dd>{requisition.requiredDate ? formatIsoDate(requisition.requiredDate) : "—"}</dd>
+              </div>
+              <div>
                 <dt>Destino</dt>
                 <dd>{requisition.destination || "—"}</dd>
               </div>
@@ -2278,6 +2319,32 @@ export function ConnectedRequisitionDetail({
                 <dd>{requisition.observations || "—"}</dd>
               </div>
             </dl>
+            {headerEditable && !editingHeader && (
+              <button className="button button-secondary" type="button" onClick={() => { setHeaderForm({ requiredDate: requisition.requiredDate ?? "", destination: requisition.destination ?? "", observations: requisition.observations ?? "" }); setEditingHeader(true); }}>
+                <Pencil aria-hidden="true" size={14} /> Editar cabecera
+              </button>
+            )}
+            {headerEditable && editingHeader && (
+              <div className="connected-header-edit">
+                <label className="field">
+                  <span>Fecha requerida</span>
+                  <input type="date" value={headerForm.requiredDate} onChange={(event) => setHeaderForm({ ...headerForm, requiredDate: event.target.value })} />
+                </label>
+                <label className="field">
+                  <span>Destino o frente</span>
+                  <input maxLength={500} value={headerForm.destination} onChange={(event) => setHeaderForm({ ...headerForm, destination: event.target.value })} />
+                </label>
+                <label className="field">
+                  <span>Observaciones</span>
+                  <textarea maxLength={1024} value={headerForm.observations} onChange={(event) => setHeaderForm({ ...headerForm, observations: event.target.value })} />
+                </label>
+                {headerFeedback && <p className="field-error" role="alert">{headerFeedback}</p>}
+                <div className="form-footer">
+                  <button className="button button-secondary" type="button" onClick={() => setEditingHeader(false)} disabled={headerBusy}>Cancelar</button>
+                  <button className="button button-dark" type="button" onClick={() => void saveHeader()} disabled={headerBusy}>{headerBusy ? "Guardando…" : "Guardar cambios"}</button>
+                </div>
+              </div>
+            )}
             {requisition.returnReason && (
               <p data-testid="return-reason">
                 <b>Motivo de devolución:</b> {requisition.returnReason}
@@ -2536,7 +2603,7 @@ export function ConnectedRequisitionDetail({
                 onClick={closeQuickSupplier}
                 disabled={quickSupplierBusy}
               >
-                ×
+                <X aria-hidden="true" size={16} />
               </button>
             </div>
             <div className="quick-supplier-body">
@@ -2592,17 +2659,22 @@ export function ConnectedOrders({
   data,
   role,
   refresh,
+  go,
 }: {
   data: OrdersBundle;
   role: Role;
   refresh: () => void;
+  go: (href: string) => void;
 }) {
   const rows = Array.isArray(data?.rows) ? data.rows : [],
     requisitions = Array.isArray(data?.requisitions) ? data.requisitions : [],
     catalogs = data?.catalogs ?? emptyCatalogs,
     [feedback, setFeedback] = useState(""),
     [success, setSuccess] = useState(""),
+    [openOrderId, setOpenOrderId] = useState<string | null>(null),
     canUpdate = role === "Revisor" || role === "Administrador Sixteam";
+  const supplierName = (id?: string) => (id ? (catalogs.suppliers.find((s) => s.id === id)?.name ?? id) : "Por definir");
+  const workName = (id?: string) => (id ? (catalogs.works.find((w) => w.id === id)?.name ?? id) : "—");
   // La orden no guarda obra ni fecha propias (solo requisicion_id): se derivan
   // uniendo con /api/requisitions, que ya llega autorizado para todo rol que
   // puede leer órdenes. Evita tocar el dominio/infraestructura solo por un filtro.
@@ -2752,13 +2824,13 @@ export function ConnectedOrders({
         )}
         {rows.length === 0 ? (
           <div className="empty-state">
-            <span className="empty-icon">—</span>
+            <span className="empty-icon"><Inbox aria-hidden="true" size={21} /></span>
             <h3>Sin órdenes visibles</h3>
             <p>El servicio no devolvió órdenes para tu alcance.</p>
           </div>
         ) : filteredRows.length === 0 ? (
           <div className="empty-state">
-            <span className="empty-icon">—</span>
+            <span className="empty-icon"><SearchX aria-hidden="true" size={21} /></span>
             <h3>Sin resultados para estos filtros</h3>
             <p>Ajusta o limpia los filtros para ver más órdenes.</p>
             <button
@@ -2788,51 +2860,40 @@ export function ConnectedOrders({
                 {filteredRows.map((row) => {
                   const linked = requisitionById.get(row.requisitionId);
                   return (
-                    <tr key={row.id}>
+                    <tr
+                      key={row.id}
+                      className="clickable"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Abrir ficha de la orden ${row.consecutive}`}
+                      onClick={() => setOpenOrderId(row.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setOpenOrderId(row.id);
+                        }
+                      }}
+                    >
                       <td>
                         <b>{row.consecutive}</b>
                       </td>
                       <td>{row.type}</td>
-                      <td>
-                        {linked
-                          ? (catalogs.works.find(
-                              (work) => work.id === linked.workId,
-                            )?.name ?? linked.workId)
-                          : "—"}
-                      </td>
+                      <td>{workName(linked?.workId)}</td>
                       <td>{linked?.consecutive ?? row.requisitionId}</td>
-                      <td>{linked?.requiredDate || "—"}</td>
+                      <td>{linked?.requiredDate ? formatIsoDate(linked.requiredDate) : "—"}</td>
+                      <td>{supplierName(row.supplierId)}</td>
                       <td>
-                        {row.supplierId
-                          ? (catalogs.suppliers.find(
-                              (supplier) => supplier.id === row.supplierId,
-                            )?.name ?? row.supplierId)
-                          : "Por definir"}
+                        <Tone
+                          tone={row.status === "cumplida" ? "success" : row.status === "no_cumplida" ? "danger" : row.status === "no_necesario" ? "muted" : "warning"}
+                          dot
+                        >
+                          {estadoLabel(row.status)}
+                        </Tone>
                       </td>
-                      <td>{estadoLabel(row.status)}</td>
-                      <td>
-                        {canUpdate && row.status === "generada" ? (
-                          <select
-                            aria-label={`Cumplimiento de ${row.consecutive}`}
-                            defaultValue=""
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              // Se reinicia el selector a "Actualizar…" para que, si el
-                              // usuario cancela la confirmación, no quede mostrando un
-                              // estado que en realidad no se aplicó.
-                              event.target.value = "";
-                              if (value)
-                                void setStatus(row.id, value, row.consecutive);
-                            }}
-                          >
-                            <option value="">Actualizar…</option>
-                            <option value="cumplida">Cumplida</option>
-                            <option value="no_cumplida">No cumplida</option>
-                            <option value="no_necesario">No necesaria</option>
-                          </select>
-                        ) : (
-                          "—"
-                        )}
+                      <td className="align-right">
+                        <span className="row-open" aria-hidden="true">
+                          Abrir <ArrowRight size={14} />
+                        </span>
                       </td>
                     </tr>
                   );
@@ -2842,6 +2903,93 @@ export function ConnectedOrders({
           </div>
         )}
       </section>
+      {openOrderId && (() => {
+        const order = rows.find((r) => r.id === openOrderId);
+        if (!order) return null;
+        const linked = requisitionById.get(order.requisitionId);
+        const orderItemIds = new Set(order.itemIds ?? []);
+        const orderItems = (linked?.items ?? []).filter((it) => orderItemIds.has(it.id));
+        const total = orderItems.reduce((sum, it) => sum + (it.unitBase ?? 0) + (it.unitIva ?? 0), 0);
+        const requisitionHref = order.requisitionId ? `/requisiciones/${order.requisitionId}` : null;
+        return (
+          <div
+            className="supplier-overlay"
+            role="presentation"
+            onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenOrderId(null); }}
+          >
+            <aside className="supplier-drawer" role="dialog" aria-modal="true" aria-labelledby="order-detail-title">
+              <div className="supplier-drawer-head">
+                <div>
+                  <div className="eyebrow">Ficha de {order.type === "OP" ? "orden de pago" : "orden de compra"}</div>
+                  <h2 id="order-detail-title">{order.consecutive}</h2>
+                </div>
+                <button className="icon-button" type="button" aria-label="Cerrar ficha" onClick={() => setOpenOrderId(null)}><X aria-hidden="true" size={18} /></button>
+              </div>
+              <div className="supplier-drawer-body">
+                {feedback && <p className="field-error" role="alert">{feedback}</p>}
+                {success && <p className="supplier-success" role="status">{success}</p>}
+                <div className="supplier-detail-actions">
+                  <Tone tone={order.status === "cumplida" ? "success" : order.status === "no_cumplida" ? "danger" : order.status === "no_necesario" ? "muted" : "warning"} dot>{estadoLabel(order.status)}</Tone>
+                  <a className="button button-secondary" href={`/api/orders/${encodeURIComponent(order.id)}/document`} target="_blank" rel="noreferrer"><FileText aria-hidden="true" size={14} /> Documento</a>
+                </div>
+                <section className="supplier-info-grid">
+                  <div><span>Tipo</span><b>{order.type === "OP" ? "Orden de pago" : "Orden de compra"}</b></div>
+                  <div><span>Obra</span><b>{workName(linked?.workId)}</b></div>
+                  <div><span>Proveedor</span><b>{supplierName(order.supplierId)}</b></div>
+                  <div><span>Fecha requerida</span><b>{linked?.requiredDate ? formatIsoDate(linked.requiredDate) : "No registrada"}</b></div>
+                  <div>
+                    <span>Requisición de origen</span>
+                    {requisitionHref
+                      ? <b><button type="button" className="text-link" onClick={() => go(requisitionHref)}>{linked?.consecutive ?? "Abrir"} <ArrowRight aria-hidden="true" size={13} /></button></b>
+                      : <b>{linked?.consecutive ?? order.requisitionId}</b>}
+                  </div>
+                </section>
+                <section className="supplier-section">
+                  <div className="supplier-section-head">
+                    <div><h3>Ítems de la orden</h3><p>{orderItems.length} ítem{orderItems.length === 1 ? "" : "s"} de esta orden.</p></div>
+                    <Truck aria-hidden="true" size={17} />
+                  </div>
+                  {orderItems.length ? (
+                    <>
+                      <div className="supplier-order-total"><span>Total de la orden</span><b>{money.format(total)}</b></div>
+                      <div className="table-wrap supplier-orders-table">
+                        <table>
+                          <thead><tr><th>Descripción</th><th className="align-right">Cantidad</th><th>Unidad</th><th className="align-right">Valor</th></tr></thead>
+                          <tbody>
+                            {orderItems.map((it) => (
+                              <tr key={it.id}>
+                                <td>{it.description || "—"}</td>
+                                <td className="align-right money">{it.quantity}</td>
+                                <td>{it.unit}</td>
+                                <td className="align-right money">{money.format((it.unitBase ?? 0) + (it.unitIva ?? 0))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  ) : <p className="supplier-muted">No fue posible cargar los ítems de esta orden. Ábrela desde su requisición de origen para el detalle completo.</p>}
+                </section>
+                <section className="supplier-section">
+                  <div className="supplier-section-head">
+                    <div><h3>Cumplimiento</h3><p>La trazabilidad completa vive en la requisición de origen.</p></div>
+                    <CheckCircle2 aria-hidden="true" size={17} />
+                  </div>
+                  {canUpdate && order.status === "generada" ? (
+                    <div className="order-status-actions">
+                      <button className="button button-secondary" type="button" onClick={() => void setStatus(order.id, "cumplida", order.consecutive)}>Marcar cumplida</button>
+                      <button className="button button-secondary" type="button" onClick={() => void setStatus(order.id, "no_cumplida", order.consecutive)}>No cumplida</button>
+                      <button className="button button-secondary" type="button" onClick={() => void setStatus(order.id, "no_necesario", order.consecutive)}>No necesaria</button>
+                    </div>
+                  ) : (
+                    <p className="supplier-muted">{order.status === "generada" ? "Tu rol no puede cambiar el cumplimiento de la orden." : `Esta orden ya está marcada como "${estadoLabel(order.status)}". El estado de cumplimiento es definitivo.`}</p>
+                  )}
+                </section>
+              </div>
+            </aside>
+          </div>
+        );
+      })()}
     </>
   );
 }
@@ -2864,7 +3012,7 @@ export function ConnectedExpenses({
     canReadPettyCash = canCreate || role === "Contabilidad";
   const [workId, setWorkId] = useState(data.catalogs.works[0]?.id ?? ""),
     [tagId, setTagId] = useState(data.catalogs.tags[0]?.id ?? ""),
-    [date, setDate] = useState(new Date().toISOString().slice(0, 10)),
+    [date, setDate] = useState(localTodayISO()),
     [concept, setConcept] = useState(""),
     [amount, setAmount] = useState(""),
     [receiptFile, setReceiptFile] = useState<File | null>(null),
@@ -3119,13 +3267,13 @@ export function ConnectedExpenses({
           </div>
           {rows.length === 0 ? (
             <div className="empty-state">
-              <span className="empty-icon">—</span>
+              <span className="empty-icon"><Inbox aria-hidden="true" size={21} /></span>
               <h3>Sin gastos visibles</h3>
               <p>El servicio no devolvió movimientos para tu alcance.</p>
             </div>
           ) : filteredRows.length === 0 ? (
             <div className="empty-state">
-              <span className="empty-icon">—</span>
+              <span className="empty-icon"><SearchX aria-hidden="true" size={21} /></span>
               <h3>Sin resultados para estos filtros</h3>
               <p>Ajusta o limpia los filtros para ver más gastos.</p>
               <button
@@ -3170,7 +3318,7 @@ export function ConnectedExpenses({
                             aria-label={`Repartir gasto del ${row.date} por ${money.format(row.total)}`}
                             onClick={() => openShareForm(row)}
                           >
-                            Repartir <ArrowRight size={13} />
+                            Repartir <ArrowRight aria-hidden="true" size={13} />
                           </button>
                         </td>
                       )}
@@ -3256,7 +3404,7 @@ export function ConnectedExpenses({
                 onClick={closeShareForm}
                 disabled={shareBusy}
               >
-                ×
+                <X aria-hidden="true" size={16} />
               </button>
             </div>
             {shareLines.map((line, index) => (
@@ -3300,7 +3448,7 @@ export function ConnectedExpenses({
                     )
                   }
                 >
-                  <Trash2 size={15} />
+                  <Trash2 aria-hidden="true" size={15} />
                 </button>
               </div>
             ))}
@@ -3309,7 +3457,7 @@ export function ConnectedExpenses({
               type="button"
               onClick={() => setShareLines((current) => [...current, newShareLine()])}
             >
-              <Plus size={14} /> Agregar obra
+              <Plus aria-hidden="true" size={14} /> Agregar obra
             </button>
             <p data-testid="expense-share-summary">
               Repartido {money.format(shareTotal)} de {money.format(shareExpense.total)}
@@ -3358,7 +3506,7 @@ export function ConnectedExpenses({
             </div>
             {pettyRows.length === 0 ? (
               <div className="empty-state">
-                <span className="empty-icon">—</span>
+                <span className="empty-icon"><Inbox aria-hidden="true" size={21} /></span>
                 <h3>Sin movimientos de caja menor</h3>
                 <p>
                   Los registros aparecerán aquí después de una captura
@@ -3367,7 +3515,7 @@ export function ConnectedExpenses({
               </div>
             ) : filteredPettyRows.length === 0 ? (
               <div className="empty-state">
-                <span className="empty-icon">—</span>
+                <span className="empty-icon"><SearchX aria-hidden="true" size={21} /></span>
                 <h3>Sin resultados para estos filtros</h3>
                 <p>Ajusta o limpia los filtros para ver más movimientos.</p>
                 <button

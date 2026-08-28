@@ -41,3 +41,11 @@ export const requisitionActionSchema = z.discriminatedUnion("action", [
 export const orderStatusSchema = z.object({ status: z.enum(["cumplida", "no_cumplida", "no_necesario"]) }).strict();
 export const expenseSharesSchema = z.object({ total: z.number().int().positive(), shares: z.array(z.object({ workId: z.string().uuid(), amount: z.number().int().positive() }).strict()).min(1).max(100) }).strict();
 export const pettyCashSchema = z.object({ workId: z.string().uuid(), date: z.string().date(), concept: z.string().trim().min(1).max(500), tagId: z.string().uuid(), amount: z.number().int().positive() }).strict();
+
+// Edición de cabecera de requisición (ficha editable). Solo campos que no alteran la identidad ni
+// el gasto: fecha requerida, destino/frente y observaciones. Al menos un campo debe venir.
+export const requisitionHeaderSchema = z.object({
+  requiredDate: z.string().date().optional(),
+  destination: z.string().trim().max(500).nullable().optional(),
+  observations: z.string().trim().max(1024).nullable().optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, "Debe cambiar al menos un campo");

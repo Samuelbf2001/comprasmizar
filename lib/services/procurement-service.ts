@@ -50,12 +50,18 @@ export class ProcurementService {
       if (multiSupplier && !(await transactional.features.isEnabled("ordenes_multi_proveedor"))) throw new DomainError("FEATURE_DISABLED", "La división por proveedor no está habilitada");
       const groups = groupOrderItems(requisition.items, multiSupplier, requisition.type), orderType = orderTypeFor(requisition.type), year = this.now().getFullYear(), orders: Order[] = [], expenses: Expense[] = [];
       await this.transition(requisition, "aprobada", actor, "aprobada", undefined, this.origin(context), transactional.audit);
+      // El guardado de la requisición va ANTES de crear las órdenes: saveRequisition borra y
+      // reinserta requisicion_items, y orden_items tiene una FK a esas filas. Si se guardara después
+      // de crear las órdenes, el DELETE de los ítems chocaría con orden_items_requisicion_item_id_fkey
+      // y ninguna aprobación se podría persistir contra Postgres (los ítems no cambian al aprobar,
+      // solo el estado). Verificado contra la BD real.
+      await transactional.requisitions.save(requisition);
       for (const [supplierId, lines] of groups) {
         const order: Order = { id: this.deps.ids.next(), consecutive: await transactional.consecutives.take(orderType, year), type: orderType, requisitionId: id, supplierId, itemIds: lines.map((line) => line.id), status: "generada" }; await transactional.orders.save(order); orders.push(order); await this.audit("orden", order.id, "generada", actor, { requisitionId: id, supplierId }, this.origin(context), transactional.audit);
         const base = lines.reduce((sum, line) => sum + calculateLineAmounts(line).base, 0), iva = lines.reduce((sum, line) => sum + calculateLineAmounts(line).iva, 0);
         const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, date: this.now().toISOString().slice(0, 10), base, iva, total: sumLines(lines), period: this.now().toISOString().slice(0, 7) }; await transactional.expenses.save(expense); expenses.push(expense); await this.audit("gasto", expense.id, "registrado", actor, { orderId: order.id, supplierId }, this.origin(context), transactional.audit);
       }
-      await transactional.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_aprobada", transactional); return { requisition, orders, expenses };
+      await this.notifyRequester(requisition, "requisicion_aprobada", transactional); return { requisition, orders, expenses };
     });
   }
   async returnForCorrection(id: string, comment: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:return", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado"); await this.transition(requisition, "devuelta", actor, "devuelta", comment.trim(), this.origin(context), tx.audit); requisition.returnReason = comment.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_devuelta", tx); return requisition; }); }
@@ -65,6 +71,29 @@ export class ProcurementService {
   async listRequisitions(context: RequestContext): Promise<Requisition[]> { const actor = this.actor(context); if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor.roles, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones"); return this.deps.requisitions.listVisibleTo(actor); }
   async getRequisition(id: string, context: RequestContext): Promise<Requisition> { const visible = await this.listRequisitions(context), requisition = visible.find((entry) => entry.id === id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); return requisition; }
   async getRequisitionHistory(id: string, context: RequestContext): Promise<AuditEvent[]> { await this.getRequisition(id, context); return this.deps.audit.list("requisicion", id); }
+  /**
+   * Edita la cabecera de una requisición (ficha editable): fecha requerida, destino y observaciones.
+   * Solo el revisor/admin (requisition:review) y solo mientras la requisición aún es editable
+   * (enviada, en_revision o devuelta): una vez en aprobación, aprobada o declinada, la cabecera se
+   * congela. NO toca ítems, obra ni tipo — eso alteraría la identidad o el gasto y va por el flujo
+   * de revisión. Registra en auditoría qué cambió.
+   */
+  async updateRequisitionHeader(id: string, patch: { requiredDate?: string; destination?: string | null; observations?: string | null }, context: RequestContext): Promise<Requisition> {
+    const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context));
+    return this.transaction(`requisition:${id}`, async (tx) => {
+      const requisition = await tx.requisitions.get(id);
+      if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
+      if (!["enviada", "en_revision", "devuelta"].includes(requisition.status)) throw new DomainError("INVALID_STATE", "La requisición ya no admite cambios de cabecera en este estado");
+      const changed: Record<string, unknown> = {};
+      if (patch.requiredDate !== undefined && patch.requiredDate !== requisition.requiredDate) { requisition.requiredDate = patch.requiredDate; changed.requiredDate = patch.requiredDate; }
+      if (patch.destination !== undefined) { const value = patch.destination?.trim() || undefined; if (value !== requisition.destination) { requisition.destination = value; changed.destination = value ?? null; } }
+      if (patch.observations !== undefined) { const value = patch.observations?.trim() || undefined; if (value !== requisition.observations) { requisition.observations = value; changed.observations = value ?? null; } }
+      if (Object.keys(changed).length === 0) return requisition;
+      await tx.requisitions.save(requisition);
+      await this.audit("requisicion", requisition.id, "cabecera_editada", actor, changed, this.origin(context), tx.audit);
+      return requisition;
+    });
+  }
   async listOrders(context: RequestContext): Promise<Order[]> { const actor = this.actor(context); assertPermission(actor.roles, "order:read", this.authOrigin(context)); return this.deps.orders.listVisibleTo(actor); }
   async listExpenses(context: RequestContext): Promise<Expense[]> { const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context)); return this.deps.expenses.listVisibleTo(actor); }
   async listPettyCash(context: RequestContext): Promise<PettyCash[]> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:read", this.authOrigin(context)); return this.deps.pettyCash.list(); }
