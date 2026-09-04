@@ -2,6 +2,7 @@
 
 import { FileText, Image as ImageIcon, Upload, X } from "lucide-react";
 import { useId, type ChangeEvent } from "react";
+import { describeApiError, FriendlyApiError } from "../../lib/http/friendly-error";
 
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const DOCUMENT_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp"] as const;
@@ -123,12 +124,9 @@ export async function uploadSignedAttachment({
     body: JSON.stringify(metadata),
   });
   const prepared = (await prepareResponse.json().catch(() => null)) as SignedAttachmentResponse | { message?: string } | null;
-  if (!prepareResponse.ok || !prepared || !("upload" in prepared) || !prepared.upload) {
-    throw new Error(
-      prepared && "message" in prepared && typeof prepared.message === "string"
-        ? prepared.message
-        : "No fue posible preparar la carga del archivo.",
-    );
+  if (!prepareResponse.ok) throw new FriendlyApiError(describeApiError(prepareResponse.status, prepared));
+  if (!prepared || !("upload" in prepared) || !prepared.upload) {
+    throw new Error("No fue posible preparar la carga del archivo. Intenta de nuevo.");
   }
   const attachmentId =
     prepared.attachment && typeof prepared.attachment.id === "string"
@@ -151,7 +149,7 @@ export async function uploadSignedAttachment({
     method: prepared.upload.method,
     body,
   });
-  if (!uploadResponse.ok) throw new Error("La carga del archivo falló. Intenta nuevamente.");
+  if (!uploadResponse.ok) throw new Error("La carga del archivo falló. Verifica tu conexión e intenta nuevamente.");
   onProgress?.("completing");
   const completeResponse = await fetcher(
     typeof completeUrl === "function" ? completeUrl(attachmentId) : completeUrl,
@@ -163,12 +161,6 @@ export async function uploadSignedAttachment({
     },
   );
   const completed = await completeResponse.json().catch(() => null);
-  if (!completeResponse.ok) {
-    throw new Error(
-      completed && typeof completed === "object" && "message" in completed && typeof completed.message === "string"
-        ? completed.message
-        : "No fue posible completar el archivo.",
-    );
-  }
+  if (!completeResponse.ok) throw new FriendlyApiError(describeApiError(completeResponse.status, completed));
   return completed;
 }

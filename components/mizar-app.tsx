@@ -6,6 +6,7 @@ import { Inbox, TriangleAlert } from "lucide-react";
 import { navigation, type Role } from "../lib/demo-data";
 import { AppShell, roleAllowed } from "./layout/app-shell";
 import { PublicRequestScreen } from "./screens/public-request";
+import { MobilePublicRequestScreen } from "./screens/public-request-mobile";
 import { DashboardScreen } from "./screens/dashboard";
 import {
   ReviewScreen,
@@ -169,6 +170,13 @@ export default function MizarApp({
   if (pathname === "/requisiciones/publica")
     return (
       <PublicRequestScreen
+        demoMode={demoMode}
+        publicConfigured={publicConfigured}
+      />
+    );
+  if (pathname === "/requisiciones/publica-movil")
+    return (
+      <MobilePublicRequestScreen
         demoMode={demoMode}
         publicConfigured={publicConfigured}
       />

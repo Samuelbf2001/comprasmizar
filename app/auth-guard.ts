@@ -15,6 +15,15 @@ export type AuthSnapshot = { authenticated: boolean; demoMode: boolean; role: Ro
 
 export function isDemoMode() { return demoModeEnabled(); }
 
+/** Query string suffix para /login que explica por qué se redirigió, sin exponer detalle
+ *  técnico: 'role'/'inactive' -> cuenta sin acceso vigente; 'config' -> falla del servidor,
+ *  no del usuario (nunca debe leerse como "credenciales incorrectas"). */
+export function loginErrorParam(reason: AuthSnapshot['reason']): string {
+  if (reason === 'role' || reason === 'inactive') return '&error=access_denied';
+  if (reason === 'config') return '&error=config';
+  return '';
+}
+
 export async function getAuthSnapshot(): Promise<AuthSnapshot> {
   if (isDemoMode()) return { authenticated: true, demoMode: true, role: 'Revisor', displayName: 'Daniel Hernández', email: 'demo@mizar.local' };
   try {

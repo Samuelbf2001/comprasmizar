@@ -56,7 +56,46 @@ Solo 3 valores en `connected.tsx` (recharts) → ya apuntan a `var(--green)/--bl
 | 2b-css | Migrar estilos inline de B a `globals.css` (`.breadcrumb-root`, `.profile-menu*` con `:hover`/`:focus-visible` + `@media` móvil del crumb) | `app/globals.css` | evaluador | ✅ hecho (typecheck OK, CSS balanceado, 0 inline) |
 | 2c | Flujos: confirmaciones en aprobar/declinar/cumplir, `aria-describedby`, etiquetas de estado, `min` de fecha | `connected.tsx` | C | ⏳ ejecutando |
 | 2c | Flujos: confirmaciones, etiquetas de estado, aria-describedby, min fecha | `connected.tsx` | C | ✅ evaluado y aprobado |
-| 3 | Fixes de la evaluación visual en navegador (ver tabla abajo) | varios | E/F/G | ⏳ ejecutando |
+| 3 | Fixes de la evaluación visual en navegador (ver tabla abajo) | varios | E/F/G | ✅ todos evaluados, verificados en navegador |
+
+## Fase 5 — Restyle SaaS (decisión del usuario 2026-08-26)
+Nueva dirección de la PLATAFORMA (el home/landing no cambia): estética de SaaS grande, referencia HubSpot.
+- Tipografía **sin serif**: DM Sans en todo; Fraunces eliminada de la UI.
+- **Fondo blanco** (`--ivory→#ffffff`) + neutrales fríos (`--surface:#f5f8fa`, bordes `#dfe3eb`).
+- **Cero dorado**: `--dorado*` eliminados; eyebrows→muted, badges→rojo, estados en curso→ámbar semántico.
+- Botones rectangulares redondeados (radius-sm), no píldora.
+- Se conservan navy (sidebar) y crimson (CTA) como identidad.
+Registrado en memoria para que ninguna sesión "restaure" crema/Fraunces/dorado en la plataforma.
+
+## Fase 6 — Skill de diseño propia (2026-08-26)
+Se creó `.claude/skills/mizar-ui/SKILL.md`: cruce de **Apple** (Designing Fluid Interfaces +
+Principles of Great Design: respuesta inmediata, interrumpibilidad, tracking por tamaño,
+materiales, 8 principios) con **Impeccable** (detector anti-slop: fuentes genéricas, grises
+muertos, card nesting, bounce decorativo, negro puro, etc.), aterrizado a este repo
+(CSS plano, sin Tailwind/Framer) y a la estética HubSpot.
+Contiene el contrato de marca (blanco, sans, sin dorado, navy+crimson), 12 detectores
+anti-slop, escala de tracking/leading, reglas de movimiento realistas para CSS, elevación,
+accesibilidad AA y un checklist de salida. **Toda edición de UI debe leerla primero.**
+
+### Fase 6 — resultado
+Restyle completado y skill aplicada por subagentes, evaluado en navegador:
+- **Sans total** (DM Sans; Fraunces = 0), **fondo blanco**, **dorado = 0** (tokens eliminados).
+- Tracking por tamaño (h1 700/−.02em, h2–h3 −.01em, cuerpo 0), números tabulares en KPIs.
+- Botones rectangulares (6px); chips siguen en píldora. `:active` scale(.97/.99) para feedback inmediato.
+- Iconografía: glifos `!`/`—`/`×` → lucide con semántica correcta (vacío ≠ filtrado); 120+ iconos `aria-hidden`.
+- **Foco accesible (WCAG 2.4.11)**: los `outline:none` de inputs anulaban el anillo; restaurado
+  `outline:2px var(--navy)` (15.77:1) y `--focus-ring` subido de .38 (2.32:1 ❌) a .6 (4.32:1 ✅).
+- Grises sueltos → tokens; contraste verificado incluso contra el gradiente del sidebar.
+Gate: typecheck ✅ · eslint ✅ · **286/286** ✅ · llaves 963=963 ✅ · overflow 375px = 0 ✅
+
+## Cierre Fases 0–3 (2026-08-26)
+Todos los fixes F1–F9 aplicados y verificados en navegador por el evaluador:
+rol demo persiste (sessionStorage), breadcrumb correcto en detalle ("REQ-2026-0147" + ítem activo),
+overflow móvil 0px (antes 61px), disabled visibles (opacity .55), toggle Lista/Kanban dinámico,
+request-id en dos líneas, picker de foto a ancho completo, fechas en horario local (helper `localTodayISO`).
+Gate final: typecheck ✅ · eslint ✅ · 284/284 tests ✅.
+Pendiente opcional (decisión de negocio, Fase 4): panel de notificaciones real, command palette,
+modo oscuro, cablear exportaciones, baseline de regresión visual (lost-pixel) con el nuevo estado.
 
 ## Evaluación visual en navegador (desktop 1440px + móvil 375px, chrome-devtools)
 Lint ✅ · 284/284 tests ✅ · pantallas revisadas: dashboard, nueva requisición, bandeja (lista/kanban), detalle, aprobaciones, gastos+form, proveedores, reportes, login, /pantalla, drawer móvil.

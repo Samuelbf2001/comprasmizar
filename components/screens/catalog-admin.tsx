@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { Role } from "../../lib/demo-data";
 import { SectionTitle } from "./screen-primitives";
+import { apiRequest, friendlyErrorText } from "../../lib/http/friendly-error";
 
 type CatalogKind =
   | "works"
@@ -180,34 +181,12 @@ function canViewKind(
     );
   return canManageKind(kind, role, data, featureEnabled);
 }
-function readError(value: unknown, fallback: string) {
-  return value &&
-    typeof value === "object" &&
-    "message" in value &&
-    typeof value.message === "string"
-    ? value.message
-    : fallback;
-}
-
 async function writeCatalog(method: "POST" | "PATCH", body: unknown) {
-  const response = await fetch("/api/catalogs", {
+  return apiRequest<CatalogRecord>("/api/catalogs", {
     method,
-    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const value = await response.json().catch(() => null);
-  if (!response.ok)
-    throw new Error(
-      response.status === 403
-        ? "Tu rol no tiene permiso para esta acción."
-        : response.status === 409
-          ? "Ya existe un registro con ese nombre o NIT."
-          : response.status === 422
-            ? `La operación no cumple una regla de negocio: ${readError(value, "revisa los datos y el estado del registro.")}`
-            : readError(value, "No fue posible guardar el cambio."),
-    );
-  return value as CatalogRecord;
 }
 
 function payloadFor(
@@ -435,11 +414,7 @@ export function ConnectedCatalogAdmin({
       );
       closeForm();
     } catch (error) {
-      setFeedback(
-        error instanceof Error
-          ? error.message
-          : "No fue posible guardar el cambio.",
-      );
+      setFeedback(friendlyErrorText(error, "No fue posible guardar el cambio."));
     } finally {
       setSaving(false);
     }
@@ -476,11 +451,7 @@ export function ConnectedCatalogAdmin({
           : "Registro desactivado de forma reversible.",
       );
     } catch (error) {
-      setFeedback(
-        error instanceof Error
-          ? error.message
-          : "No fue posible cambiar el estado.",
-      );
+      setFeedback(friendlyErrorText(error, "No fue posible cambiar el estado."));
     } finally {
       setSaving(false);
     }

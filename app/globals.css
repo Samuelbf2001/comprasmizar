@@ -1077,6 +1077,7 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .state-panel h2{font:600 var(--text-xl) var(--font-display);letter-spacing:-.01em;margin:var(--space-2) 0 var(--space-1)}
 .state-panel h3{font:600 var(--text-xl) var(--font-display);margin:var(--space-2) 0 var(--space-1)}
 .state-panel p{font-size:var(--text-xs);color:var(--muted);max-width:340px;margin:0 auto var(--space-4)}
+.state-panel-hint{font-size:var(--text-3xs);color:var(--muted);max-width:340px;margin:calc(-1 * var(--space-3)) auto var(--space-4)}
 .state-spinner{display:block;height:28px;width:28px;border:3px solid #dfe3e9;border-top-color:var(--navy);border-radius:50%;animation:mizar-spin .8s linear infinite;margin:0 auto}
 @keyframes mizar-spin{to{transform:rotate(360deg)}}
 .state-error .empty-icon{background:var(--red-soft);color:var(--red);font-weight:700}

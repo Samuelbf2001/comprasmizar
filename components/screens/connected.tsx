@@ -43,13 +43,14 @@ import {
   type AttachmentMetadata,
 } from "./attachment-upload";
 import { RouteSkeleton, type RouteKind } from "./skeletons";
+import { apiRequest, friendlyErrorText, isFriendlyApiError, type FriendlyError } from "../../lib/http/friendly-error";
 
 // RF-1105 (percepción de carga): mientras carga se distingue el esqueleto de ESA ruta
 // (`kind`) de un error o de datos ya listos; en "ready" `revalidating` marca que hay
 // datos previos visibles mientras se refresca en segundo plano (stale-while-revalidate).
 type LoadState =
   | { state: "loading"; kind: RouteKind }
-  | { state: "error"; message: string }
+  | { state: "error"; message: string; friendly?: FriendlyError }
   | { state: "ready"; data: unknown; revalidating: boolean };
 type ConnectedProps = {
   pathname: string;
@@ -308,22 +309,7 @@ function routeKind(pathname: string): RouteKind | undefined {
 }
 
 async function readJson(url: string): Promise<unknown> {
-  const response = await fetch(url, {
-    cache: "no-store",
-    credentials: "same-origin",
-  });
-  const value = (await response.json().catch(() => null)) as {
-    message?: string;
-  } | null;
-  if (!response.ok)
-    throw new Error(
-      response.status === 403
-        ? "Tu rol no tiene permiso para consultar estos datos."
-        : response.status === 401
-          ? "La sesión expiró. Vuelve a iniciar sesión."
-          : value?.message || "No fue posible consultar el servicio.",
-    );
-  return value;
+  return apiRequest(url, { cache: "no-store" });
 }
 
 async function loadRoute(pathname: string, role: Role): Promise<unknown> {
@@ -498,22 +484,11 @@ async function mutate(
   method: "POST" | "PATCH" | "PUT",
   body: unknown,
 ): Promise<unknown> {
-  const response = await fetch(url, {
+  const value = await apiRequest(url, {
     method,
-    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const value = (await response.json().catch(() => null)) as {
-    message?: string;
-  } | null;
-  if (!response.ok)
-    throw new Error(
-      value?.message ||
-        (response.status === 403
-          ? "No tienes permiso para esta acción."
-          : "La operación no pudo completarse."),
-    );
   clearRouteCache();
   return value;
 }
@@ -593,8 +568,8 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
             ? { ...current, revalidating: false }
             : {
                 state: "error",
-                message:
-                  error instanceof Error ? error.message : "Fallo de consulta.",
+                message: friendlyErrorText(error, "No fue posible consultar el servicio."),
+                friendly: isFriendlyApiError(error) ? error.friendly : undefined,
               },
         );
       });
@@ -627,15 +602,25 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
         />
         <div className="panel state-panel" role="alert">
           <span className="empty-icon"><TriangleAlert aria-hidden="true" size={21} /></span>
-          <h3>No pudimos cargar esta vista</h3>
-          <p>{load.message}</p>
-          <button
-            className="button button-dark"
-            type="button"
-            onClick={refresh}
-          >
-            <RefreshCw aria-hidden="true" size={15} /> Reintentar
-          </button>
+          <h3>{load.friendly?.title ?? "No pudimos cargar esta vista"}</h3>
+          <p>{load.friendly?.message ?? load.message}</p>
+          {load.friendly?.solution && (
+            <p className="state-panel-hint">{load.friendly.solution}</p>
+          )}
+          <div className="button-row">
+            <button
+              className="button button-dark"
+              type="button"
+              onClick={refresh}
+            >
+              <RefreshCw aria-hidden="true" size={15} /> Reintentar
+            </button>
+            {load.friendly?.action?.kind === "link" && (
+              <a className="button button-secondary" href={load.friendly.action.href}>
+                {load.friendly.action.label}
+              </a>
+            )}
+          </div>
         </div>
       </>
     );

@@ -17,3 +17,6 @@ supabase/.temp/
 
 # Regresion visual: la linea base SI se commitea, el reporte y los diffs no
 playwright-report-visual/
+
+# Interno Sixteam (horas, costos): no se comparte con el cliente
+interno/

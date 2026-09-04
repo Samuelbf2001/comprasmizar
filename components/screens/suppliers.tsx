@@ -18,6 +18,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { suppliers as demoSuppliers, type Role } from "../../lib/demo-data";
 import { SectionTitle, Tone } from "./screen-primitives";
+import { apiRequest, describeApiError, friendlyErrorText, FriendlyApiError } from "../../lib/http/friendly-error";
 
 type Contact = {
   name?: string;
@@ -71,6 +72,10 @@ type SupplierDetail = {
   documents: SupplierDocument[];
   access?: SupplierAccess;
 };
+
+// Un documento elegido en el formulario de alta, antes de que exista el id del proveedor
+// al que subirlo; se sube en lote justo después de crear el registro (ver submitSupplier).
+type PendingDocument = { localId: string; type: SupplierDocument["type"]; file: File };
 
 type FormState = {
   name: string;
@@ -175,12 +180,6 @@ function humanDocumentType(type: SupplierDocument["type"]) {
   return DOCUMENT_LABELS[type] ?? type.replaceAll("_", " ");
 }
 
-function readMessage(value: unknown, fallback: string) {
-  return value && typeof value === "object" && "message" in value && typeof value.message === "string"
-    ? value.message
-    : fallback;
-}
-
 function formFromSupplier(supplier: Supplier & { bankDetails?: BankDetails }): FormState {
   return {
     name: supplier.name,
@@ -233,6 +232,35 @@ function formatBytes(size: number) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function validateDocumentFile(file: File): string {
+  if (!["application/pdf", "image/jpeg", "image/png"].includes(file.type)) {
+    return "El archivo debe ser PDF, JPG o PNG.";
+  }
+  if (file.size < 1 || file.size > 10 * 1024 * 1024) {
+    return "El archivo debe pesar como máximo 10 MB.";
+  }
+  return "";
+}
+
+type DocumentMetadata = { type: SupplierDocument["type"]; name: string; mimeType: string; sizeBytes: number };
+
+// Único punto que habla con /api/suppliers/:id/documents: lo usa tanto el adjunto inmediato
+// (ficha ya guardada) como el lote posterior a crear un proveedor nuevo (submitSupplier).
+async function uploadOneDocument(supplierId: string, file: File, metadata: DocumentMetadata) {
+  const prepare = await fetch(`/api/suppliers/${encodeURIComponent(supplierId)}/documents`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metadata) });
+  const preparedValue = await prepare.json().catch(() => null) as ({ document?: SupplierDocument; upload?: { url: string; method: "PUT"; multipart: { cacheControl: string; fileField: string } } } & { message?: string }) | null;
+  if (!prepare.ok) throw new FriendlyApiError(describeApiError(prepare.status, preparedValue));
+  if (!preparedValue?.document || !preparedValue.upload?.multipart) throw new Error("No fue posible preparar la carga del documento. Intenta de nuevo.");
+  const uploadBody = new FormData();
+  uploadBody.append("cacheControl", preparedValue.upload.multipart.cacheControl);
+  uploadBody.append(preparedValue.upload.multipart.fileField, file);
+  const upload = await fetch(preparedValue.upload.url, { method: preparedValue.upload.method, body: uploadBody });
+  if (!upload.ok) throw new Error("La carga al almacenamiento privado falló. Verifica tu conexión e intenta nuevamente.");
+  const complete = await fetch(`/api/suppliers/${encodeURIComponent(supplierId)}/documents/${encodeURIComponent(preparedValue.document.id)}/complete`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metadata) });
+  const completeValue = await complete.json().catch(() => null);
+  if (!complete.ok) throw new FriendlyApiError(describeApiError(complete.status, completeValue));
+}
+
 function directorySupplier(value: Supplier & { bankDetails?: unknown }): Supplier {
   const safe = { ...value } as Supplier & { bankDetails?: unknown };
   delete safe.bankDetails;
@@ -268,10 +296,16 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [documentType, setDocumentType] = useState<SupplierDocument["type"]>("rut");
+  const [pendingDocuments, setPendingDocuments] = useState<PendingDocument[]>([]);
   const editorRef = useRef<HTMLFormElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const detailRef = useRef<HTMLElement>(null);
   const previousDetailFocus = useRef<HTMLElement | null>(null);
+
+  const closeEditor = () => {
+    setEditor(null);
+    setPendingDocuments([]);
+  };
 
   const loadRows = async () => {
     if (demoMode) {
@@ -283,16 +317,14 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
     setFeedback("");
     setStatusMessage("");
     try {
-      const response = await fetch("/api/suppliers", { cache: "no-store", credentials: "same-origin" });
-      const value = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(readMessage(value, "No fue posible cargar los proveedores."));
+      const value = await apiRequest<{ suppliers?: unknown; access?: unknown }>("/api/suppliers", { cache: "no-store" });
       const next = value && typeof value === "object" && Array.isArray(value.suppliers) ? value.suppliers : [];
       const capabilities = value && typeof value === "object" && value.access && typeof value.access === "object" ? value.access as Partial<SupplierAccess> : undefined;
       if (capabilities) setAccess({ canManage: capabilities.canManage === true, canReadBank: capabilities.canReadBank === true });
       setRows((next as Supplier[]).map(directorySupplier));
       setStatusMessage("Directorio actualizado.");
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "No fue posible cargar los proveedores.");
+      setFeedback(friendlyErrorText(error, "No fue posible cargar los proveedores."));
     } finally {
       setLoading(false);
     }
@@ -301,10 +333,8 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
   useEffect(() => {
     if (demoMode) return;
     let active = true;
-    void fetch("/api/suppliers", { cache: "no-store", credentials: "same-origin" })
-      .then(async (response) => {
-        const value = await response.json().catch(() => null);
-        if (!response.ok) throw new Error(readMessage(value, "No fue posible cargar los proveedores."));
+    void apiRequest<{ suppliers?: unknown; access?: unknown }>("/api/suppliers", { cache: "no-store" })
+      .then((value) => {
         if (!active) return;
         const next = value && typeof value === "object" && Array.isArray(value.suppliers) ? value.suppliers : [];
         const capabilities = value && typeof value === "object" && value.access && typeof value.access === "object" ? value.access as Partial<SupplierAccess> : undefined;
@@ -312,7 +342,7 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
         setRows((next as Supplier[]).map(directorySupplier));
       })
       .catch((error) => {
-        if (active) setFeedback(error instanceof Error ? error.message : "No fue posible cargar los proveedores.");
+        if (active) setFeedback(friendlyErrorText(error, "No fue posible cargar los proveedores."));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -328,7 +358,7 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
     const firstControl = editorRef.current?.querySelector<HTMLElement>("input, select, button, textarea");
     firstControl?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setEditor(null);
+      if (event.key === "Escape") closeEditor();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -378,15 +408,13 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
     setDetailLoading(true);
     setDetail(null);
     try {
-      const response = await fetch(`/api/suppliers/${encodeURIComponent(id)}`, { cache: "no-store", credentials: "same-origin" });
-      const value = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(readMessage(value, "No fue posible cargar la ficha del proveedor."));
+      const value = await apiRequest<Record<string, unknown>>(`/api/suppliers/${encodeURIComponent(id)}`, { cache: "no-store" });
       setDetail(value as SupplierDetail);
       const capabilities = value && typeof value === "object" && value.access && typeof value.access === "object" ? value.access as Partial<SupplierAccess> : undefined;
       if (capabilities) setAccess({ canManage: capabilities.canManage === true, canReadBank: capabilities.canReadBank === true });
       setStatusMessage("Ficha cargada.");
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "No fue posible cargar la ficha del proveedor.");
+      setFeedback(friendlyErrorText(error, "No fue posible cargar la ficha del proveedor."));
     } finally {
       setDetailLoading(false);
     }
@@ -395,6 +423,7 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
   const openCreate = () => {
     setFeedback("");
     setForm(emptyForm);
+    setPendingDocuments([]);
     setEditor("create");
   };
 
@@ -402,6 +431,7 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
     if (!detail) return;
     setFeedback("");
     setForm(formFromSupplier(detail.supplier));
+    setPendingDocuments([]);
     setEditor("edit");
   };
 
@@ -414,7 +444,11 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
     setSaving(true);
     setFeedback("");
     const editing = editor === "edit" && detail;
+    // Los documentos elegidos en el formulario solo pueden subirse una vez exista el id del
+    // proveedor, así que en edición no aplica: esa ficha ya tiene su propio adjunto inmediato.
+    const documentsToUpload = editing ? [] : pendingDocuments;
     try {
+      const failedDocuments: string[] = [];
       if (demoMode) {
         const next = {
           id: editing ? detail.supplier.id : crypto.randomUUID(),
@@ -424,20 +458,47 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
           active: form.active,
         } satisfies Supplier;
         setRows((current) => editing ? current.map((row) => row.id === next.id ? next : row) : [next, ...current]);
-        if (editing) setDetail((current) => current ? { ...current, supplier: { ...next, bankDetails: toPayload(form).bankDetails } } : current);
+        if (editing) {
+          setDetail((current) => current ? { ...current, supplier: { ...next, bankDetails: toPayload(form).bankDetails } } : current);
+        } else if (documentsToUpload.length) {
+          const documents: SupplierDocument[] = documentsToUpload.map((pending) => ({
+            id: crypto.randomUUID(),
+            type: pending.type,
+            name: pending.file.name,
+            mimeType: pending.file.type,
+            sizeBytes: pending.file.size,
+            uploadedAt: new Date().toISOString(),
+          }));
+          setDetail({ ...demoDetail(next), documents });
+          setSelectedId(next.id);
+        }
       } else {
         const url = editing ? `/api/suppliers/${encodeURIComponent(detail.supplier.id)}` : "/api/suppliers";
-        const response = await fetch(url, { method: editing ? "PATCH" : "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(toPayload(form, Boolean(editing))) });
-        const value = await response.json().catch(() => null);
-        if (!response.ok) throw new Error(readMessage(value, "No fue posible guardar el proveedor."));
+        const value = await apiRequest(url, { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(toPayload(form, Boolean(editing))) });
         const saved = directorySupplier(value as Supplier & { bankDetails?: unknown });
         setRows((current) => editing ? current.map((row) => row.id === saved.id ? saved : row) : [saved, ...current]);
-        if (editing) await openDetail(saved.id);
+        if (editing) {
+          await openDetail(saved.id);
+        } else if (documentsToUpload.length) {
+          for (const pending of documentsToUpload) {
+            const metadata = { type: pending.type, name: pending.file.name, mimeType: pending.file.type, sizeBytes: pending.file.size };
+            try {
+              await uploadOneDocument(saved.id, pending.file, metadata);
+            } catch {
+              failedDocuments.push(pending.file.name);
+            }
+          }
+          await openDetail(saved.id);
+        }
       }
       setEditor(null);
+      setPendingDocuments([]);
       setStatusMessage(editor === "create" ? "Proveedor creado correctamente." : "Proveedor actualizado correctamente.");
+      if (failedDocuments.length) {
+        setFeedback(`El proveedor se guardó, pero no fue posible adjuntar: ${failedDocuments.join(", ")}. Ábrelo desde el listado para reintentar.`);
+      }
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "No fue posible guardar el proveedor.");
+      setFeedback(friendlyErrorText(error, "No fue posible guardar el proveedor."));
     } finally {
       setSaving(false);
     }
@@ -447,12 +508,9 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file || !detail || !canWrite) return;
-    if (!["application/pdf", "image/jpeg", "image/png"].includes(file.type)) {
-      setFeedback("El archivo debe ser PDF, JPG o PNG.");
-      return;
-    }
-    if (file.size < 1 || file.size > 10 * 1024 * 1024) {
-      setFeedback("El archivo debe pesar como máximo 10 MB.");
+    const validationError = validateDocumentFile(file);
+    if (validationError) {
+      setFeedback(validationError);
       return;
     }
     const metadata = { type: documentType, name: file.name, mimeType: file.type, sizeBytes: file.size };
@@ -463,26 +521,121 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
         const document: SupplierDocument = { id: crypto.randomUUID(), ...metadata, uploadedAt: new Date().toISOString() };
         setDetail((current) => current ? { ...current, documents: [document, ...current.documents] } : current);
       } else {
-        const prepare = await fetch(`/api/suppliers/${encodeURIComponent(detail.supplier.id)}/documents`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metadata) });
-        const preparedValue = await prepare.json().catch(() => null) as { document?: SupplierDocument; upload?: { url: string; method: "PUT"; multipart: { cacheControl: string; fileField: string } } } | null;
-        if (!prepare.ok || !preparedValue?.document || !preparedValue.upload?.multipart) throw new Error(readMessage(preparedValue, "No fue posible preparar la carga del documento."));
-        const uploadBody = new FormData();
-        uploadBody.append("cacheControl", preparedValue.upload.multipart.cacheControl);
-        uploadBody.append(preparedValue.upload.multipart.fileField, file);
-        const upload = await fetch(preparedValue.upload.url, { method: preparedValue.upload.method, body: uploadBody });
-        if (!upload.ok) throw new Error("La carga al almacenamiento privado falló. Intenta nuevamente.");
-        const complete = await fetch(`/api/suppliers/${encodeURIComponent(detail.supplier.id)}/documents/${encodeURIComponent(preparedValue.document.id)}/complete`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metadata) });
-        const completeValue = await complete.json().catch(() => null);
-        if (!complete.ok) throw new Error(readMessage(completeValue, "No fue posible completar el documento."));
+        await uploadOneDocument(detail.supplier.id, file, metadata);
         await openDetail(detail.supplier.id);
         setStatusMessage("Documento adjuntado correctamente.");
       }
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "No fue posible cargar el documento.");
+      setFeedback(friendlyErrorText(error, "No fue posible cargar el documento."));
     } finally {
       setUploading(false);
     }
   };
+
+  // Adjunta al formulario de alta (aún sin id de proveedor): valida y guarda el archivo en
+  // memoria; la subida real ocurre en submitSupplier una vez creado el registro.
+  const stagePendingDocument = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const validationError = validateDocumentFile(file);
+    if (validationError) {
+      setFeedback(validationError);
+      return;
+    }
+    setFeedback("");
+    setPendingDocuments((current) => [...current, { localId: crypto.randomUUID(), type: documentType, file }]);
+  };
+
+  const removePendingDocument = (localId: string) => {
+    setPendingDocuments((current) => current.filter((pending) => pending.localId !== localId));
+  };
+
+  // Compartida entre la ficha de detalle y el formulario de edición (ver editor === "edit"
+  // más abajo): misma lista, mismo control de carga inmediata contra un proveedor ya guardado.
+  const documentsSection = (activeDetail: SupplierDetail) => (
+    <section className="supplier-section">
+      <div className="supplier-section-head">
+        <div>
+          <h3>Documentos</h3>
+          <p>{activeDetail.documents.length} soporte{activeDetail.documents.length === 1 ? "" : "s"} disponible{activeDetail.documents.length === 1 ? "" : "s"} en almacenamiento privado.</p>
+        </div>
+        <FileText aria-hidden="true" size={17} />
+      </div>
+      {activeDetail.documents.length ? (
+        <ul className="supplier-documents">
+          {activeDetail.documents.map((doc) => (
+            <li key={doc.id}>
+              <span className="supplier-file-icon"><FileText aria-hidden="true" size={16} /></span>
+              <span><b>{humanDocumentType(doc.type)}</b><small>{doc.name} · {formatBytes(doc.sizeBytes)} · {compactDate(doc.uploadedAt)}</small></span>
+              <a className="text-link" href={`/api/suppliers/${encodeURIComponent(activeDetail.supplier.id)}/documents/${encodeURIComponent(doc.id)}/download`} target="_blank" rel="noreferrer">Descargar</a>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="supplier-muted">Aún no hay documentos adjuntos.</p>
+      )}
+      {canWrite && (
+        <div className="supplier-upload">
+          <label className="field">
+            <span>Tipo de documento</span>
+            <select value={documentType} onChange={(event) => setDocumentType(event.target.value as SupplierDocument["type"])}>
+              <option value="rut">RUT</option>
+              <option value="camara_comercio">Cámara de Comercio</option>
+              <option value="certificacion_bancaria">Certificación bancaria</option>
+              <option value="certificado_calidad">Certificado de calidad</option>
+            </select>
+          </label>
+          <label className={`button button-secondary supplier-upload-button ${uploading ? "is-busy" : ""}`}>
+            <Upload aria-hidden="true" size={15} /> {uploading ? "Cargando…" : "Adjuntar soporte"}
+            <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => void uploadDocument(event)} disabled={uploading} />
+          </label>
+        </div>
+      )}
+    </section>
+  );
+
+  // Mismo layout que documentsSection, pero sobre pendingDocuments: nada se sube todavía
+  // (no hay id de proveedor), así que "Descargar" se reemplaza por "Quitar".
+  const pendingDocumentsSection = (
+    <section className="supplier-section">
+      <div className="supplier-section-head">
+        <div>
+          <h3>Documentos</h3>
+          <p>Se cargan al guardar el proveedor.</p>
+        </div>
+        <FileText aria-hidden="true" size={17} />
+      </div>
+      {pendingDocuments.length ? (
+        <ul className="supplier-documents">
+          {pendingDocuments.map((pending) => (
+            <li key={pending.localId}>
+              <span className="supplier-file-icon"><FileText aria-hidden="true" size={16} /></span>
+              <span><b>{humanDocumentType(pending.type)}</b><small>{pending.file.name} · {formatBytes(pending.file.size)}</small></span>
+              <button className="attachment-remove" type="button" onClick={() => removePendingDocument(pending.localId)}><X aria-hidden="true" size={13} /> Quitar</button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="supplier-muted">Aún no hay documentos para adjuntar.</p>
+      )}
+      <div className="supplier-upload">
+        <label className="field">
+          <span>Tipo de documento</span>
+          <select value={documentType} onChange={(event) => setDocumentType(event.target.value as SupplierDocument["type"])}>
+            <option value="rut">RUT</option>
+            <option value="camara_comercio">Cámara de Comercio</option>
+            <option value="certificacion_bancaria">Certificación bancaria</option>
+            <option value="certificado_calidad">Certificado de calidad</option>
+          </select>
+        </label>
+        <label className="button button-secondary supplier-upload-button">
+          <Upload aria-hidden="true" size={15} /> Adjuntar documento
+          <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={stagePendingDocument} />
+        </label>
+      </div>
+    </section>
+  );
 
   return (
     <>
@@ -522,9 +675,9 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
         ) : <div className="empty-state supplier-empty"><span className="empty-icon"><Building2 aria-hidden="true" size={20} /></span><h3>No hay proveedores para este filtro</h3><p>Prueba con otro nombre o estado.</p></div>}
       </section>
 
-      {selectedId && !editor && <div className="supplier-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedId(null); }}><aside ref={detailRef} className="supplier-drawer" role="dialog" aria-modal="true" aria-labelledby="supplier-detail-title"><div className="supplier-drawer-head"><div><div className="eyebrow">Ficha de proveedor</div><h2 id="supplier-detail-title">{detail?.supplier.name || "Cargando ficha"}</h2></div><button className="icon-button" type="button" aria-label="Cerrar ficha" onClick={() => setSelectedId(null)}><X aria-hidden="true" size={18} /></button></div>{detailLoading ? <div className="state-panel" role="status"><Loader2 aria-hidden="true" className="state-spinner" size={26} /><h3>Cargando ficha</h3><p>Consultando órdenes y documentos.</p></div> : detail ? <div className="supplier-drawer-body">{feedback && <ErrorMessage>{feedback}</ErrorMessage>}{statusMessage && <p className="supplier-success" role="status">{statusMessage}</p>}<div className="supplier-detail-actions">{detail.supplier.active ? <Tone tone="success" dot>Activo</Tone> : <Tone tone="muted" dot>Inactivo</Tone>}{canWrite && <button className="button button-secondary" type="button" onClick={openEdit}><Pencil aria-hidden="true" size={14} /> Editar</button>}</div><section className="supplier-info-grid"><div><span>Razón social</span><b>{detail.supplier.name}</b></div><div><span>NIT</span><b>{detail.supplier.nit || "No registrado"}</b></div><div><span>Contacto</span><b>{detail.supplier.contact?.name || "No registrado"}</b></div><div><span>Teléfono</span><b>{detail.supplier.contact?.phone || "No registrado"}</b></div><div><span>Correo</span><b>{detail.supplier.contact?.email || "No registrado"}</b></div><div><span>Dirección</span><b>{detail.supplier.contact?.address || "No registrada"}</b></div></section><section className="supplier-section"><div className="supplier-section-head"><div><h3>Datos bancarios</h3><p>Visible solo para roles autorizados; nunca aparece en el directorio.</p></div><ShieldCheck aria-hidden="true" size={17} /></div>{capabilities.canReadBank && detail.supplier.bankDetails && Object.values(detail.supplier.bankDetails).some(Boolean) ? <dl className="supplier-bank-grid">{detail.supplier.bankDetails.bankName && <div><dt>Banco</dt><dd>{detail.supplier.bankDetails.bankName}</dd></div>}{detail.supplier.bankDetails.accountType && <div><dt>Tipo de cuenta</dt><dd>{detail.supplier.bankDetails.accountType}</dd></div>}{detail.supplier.bankDetails.accountNumber && <div><dt>Número de cuenta</dt><dd>{detail.supplier.bankDetails.accountNumber}</dd></div>}{detail.supplier.bankDetails.accountHolder && <div><dt>Titular</dt><dd>{detail.supplier.bankDetails.accountHolder}</dd></div>}{detail.supplier.bankDetails.accountHolderNit && <div><dt>NIT titular</dt><dd>{detail.supplier.bankDetails.accountHolderNit}</dd></div>}</dl> : <p className="supplier-muted">Datos bancarios no disponibles para tu alcance.</p>}</section><section className="supplier-section"><div className="supplier-section-head"><div><h3>Documentos</h3><p>{detail.documents.length} soporte{detail.documents.length === 1 ? "" : "s"} disponible{detail.documents.length === 1 ? "" : "s"} en almacenamiento privado.</p></div><FileText aria-hidden="true" size={17} /></div>{detail.documents.length ? <ul className="supplier-documents">{detail.documents.map((document) => <li key={document.id}><span className="supplier-file-icon"><FileText aria-hidden="true" size={16} /></span><span><b>{humanDocumentType(document.type)}</b><small>{document.name} · {formatBytes(document.sizeBytes)} · {compactDate(document.uploadedAt)}</small></span><a className="text-link" href={`/api/suppliers/${encodeURIComponent(detail.supplier.id)}/documents/${encodeURIComponent(document.id)}/download`} target="_blank" rel="noreferrer">Descargar</a></li>)}</ul> : <p className="supplier-muted">Aún no hay documentos adjuntos.</p>}{canWrite && <div className="supplier-upload"><label className="field"><span>Tipo de documento</span><select value={documentType} onChange={(event) => setDocumentType(event.target.value as SupplierDocument["type"])}><option value="rut">RUT</option><option value="camara_comercio">Cámara de Comercio</option><option value="certificacion_bancaria">Certificación bancaria</option><option value="certificado_calidad">Certificado de calidad</option></select></label><label className={`button button-secondary supplier-upload-button ${uploading ? "is-busy" : ""}`}><Upload aria-hidden="true" size={15} /> {uploading ? "Cargando…" : "Adjuntar soporte"}<input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => void uploadDocument(event)} disabled={uploading} /></label></div>}</section><section className="supplier-section"><div className="supplier-section-head"><div><h3>Historial de órdenes</h3><p>Órdenes generadas para este proveedor.</p></div><Check aria-hidden="true" size={17} /></div>{detail.orders.length ? <><div className="supplier-order-total"><span>Total comprado</span><b>{money.format(detail.orders.reduce((sum, order) => sum + order.total, 0))}</b></div><div className="table-wrap supplier-orders-table"><table><thead><tr><th>Orden</th><th>Fecha</th><th>Estado</th><th className="align-right">Total</th></tr></thead><tbody>{detail.orders.map((order) => <tr key={order.id}><td><b>{order.consecutive}</b><small>{order.type}</small></td><td>{compactDate(order.generatedAt)}</td><td><Tone tone={order.status === "cumplida" ? "success" : order.status === "no_cumplida" ? "danger" : "warning"}>{order.status.replaceAll("_", " ")}</Tone></td><td className="align-right money">{money.format(order.total)}</td></tr>)}</tbody></table></div></> : <p className="supplier-muted">No hay órdenes asociadas.</p>}</section></div> : <div className="empty-state"><span className="empty-icon"><TriangleAlert aria-hidden="true" size={21} /></span><h3>No fue posible cargar la ficha</h3><p>{feedback || "Cierra esta vista e inténtalo de nuevo."}</p></div>}</aside></div>}
+      {selectedId && !editor && <div className="supplier-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedId(null); }}><aside ref={detailRef} className="supplier-drawer" role="dialog" aria-modal="true" aria-labelledby="supplier-detail-title"><div className="supplier-drawer-head"><div><div className="eyebrow">Ficha de proveedor</div><h2 id="supplier-detail-title">{detail?.supplier.name || "Cargando ficha"}</h2></div><button className="icon-button" type="button" aria-label="Cerrar ficha" onClick={() => setSelectedId(null)}><X aria-hidden="true" size={18} /></button></div>{detailLoading ? <div className="state-panel" role="status"><Loader2 aria-hidden="true" className="state-spinner" size={26} /><h3>Cargando ficha</h3><p>Consultando órdenes y documentos.</p></div> : detail ? <div className="supplier-drawer-body">{feedback && <ErrorMessage>{feedback}</ErrorMessage>}{statusMessage && <p className="supplier-success" role="status">{statusMessage}</p>}<div className="supplier-detail-actions">{detail.supplier.active ? <Tone tone="success" dot>Activo</Tone> : <Tone tone="muted" dot>Inactivo</Tone>}{canWrite && <button className="button button-secondary" type="button" onClick={openEdit}><Pencil aria-hidden="true" size={14} /> Editar</button>}</div><section className="supplier-info-grid"><div><span>Razón social</span><b>{detail.supplier.name}</b></div><div><span>NIT</span><b>{detail.supplier.nit || "No registrado"}</b></div><div><span>Contacto</span><b>{detail.supplier.contact?.name || "No registrado"}</b></div><div><span>Teléfono</span><b>{detail.supplier.contact?.phone || "No registrado"}</b></div><div><span>Correo</span><b>{detail.supplier.contact?.email || "No registrado"}</b></div><div><span>Dirección</span><b>{detail.supplier.contact?.address || "No registrada"}</b></div></section><section className="supplier-section"><div className="supplier-section-head"><div><h3>Datos bancarios</h3><p>Visible solo para roles autorizados; nunca aparece en el directorio.</p></div><ShieldCheck aria-hidden="true" size={17} /></div>{capabilities.canReadBank && detail.supplier.bankDetails && Object.values(detail.supplier.bankDetails).some(Boolean) ? <dl className="supplier-bank-grid">{detail.supplier.bankDetails.bankName && <div><dt>Banco</dt><dd>{detail.supplier.bankDetails.bankName}</dd></div>}{detail.supplier.bankDetails.accountType && <div><dt>Tipo de cuenta</dt><dd>{detail.supplier.bankDetails.accountType}</dd></div>}{detail.supplier.bankDetails.accountNumber && <div><dt>Número de cuenta</dt><dd>{detail.supplier.bankDetails.accountNumber}</dd></div>}{detail.supplier.bankDetails.accountHolder && <div><dt>Titular</dt><dd>{detail.supplier.bankDetails.accountHolder}</dd></div>}{detail.supplier.bankDetails.accountHolderNit && <div><dt>NIT titular</dt><dd>{detail.supplier.bankDetails.accountHolderNit}</dd></div>}</dl> : <p className="supplier-muted">Datos bancarios no disponibles para tu alcance.</p>}</section>{documentsSection(detail)}<section className="supplier-section"><div className="supplier-section-head"><div><h3>Historial de órdenes</h3><p>Órdenes generadas para este proveedor.</p></div><Check aria-hidden="true" size={17} /></div>{detail.orders.length ? <><div className="supplier-order-total"><span>Total comprado</span><b>{money.format(detail.orders.reduce((sum, order) => sum + order.total, 0))}</b></div><div className="table-wrap supplier-orders-table"><table><thead><tr><th>Orden</th><th>Fecha</th><th>Estado</th><th className="align-right">Total</th></tr></thead><tbody>{detail.orders.map((order) => <tr key={order.id}><td><b>{order.consecutive}</b><small>{order.type}</small></td><td>{compactDate(order.generatedAt)}</td><td><Tone tone={order.status === "cumplida" ? "success" : order.status === "no_cumplida" ? "danger" : "warning"}>{order.status.replaceAll("_", " ")}</Tone></td><td className="align-right money">{money.format(order.total)}</td></tr>)}</tbody></table></div></> : <p className="supplier-muted">No hay órdenes asociadas.</p>}</section></div> : <div className="empty-state"><span className="empty-icon"><TriangleAlert aria-hidden="true" size={21} /></span><h3>No fue posible cargar la ficha</h3><p>{feedback || "Cierra esta vista e inténtalo de nuevo."}</p></div>}</aside></div>}
 
-      {editor && <div className="supplier-overlay" role="presentation"><form ref={editorRef} className="supplier-editor" role="dialog" aria-modal="true" aria-labelledby="supplier-editor-title" onSubmit={submitSupplier}><div className="supplier-drawer-head"><div><div className="eyebrow">{editor === "create" ? "Alta de catálogo" : "Edición de catálogo"}</div><h2 id="supplier-editor-title">{editor === "create" ? "Nuevo proveedor" : "Editar proveedor"}</h2></div><button className="icon-button" type="button" aria-label="Cerrar formulario" onClick={() => setEditor(null)}><X aria-hidden="true" size={18} /></button></div><div className="supplier-editor-body"><div className="field-grid"><label className="field field-wide"><span>Razón social *</span><input required maxLength={160} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label className="field"><span>NIT</span><input maxLength={32} value={form.nit} onChange={(event) => setForm({ ...form, nit: event.target.value })} /></label><label className="field"><span>Nombre de contacto</span><input maxLength={160} value={form.contactName} onChange={(event) => setForm({ ...form, contactName: event.target.value })} /></label><label className="field"><span>Teléfono</span><input type="tel" maxLength={20} value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label><label className="field"><span>Correo</span><input type="email" maxLength={254} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label className="field field-wide"><span>Dirección</span><input maxLength={300} value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></label></div><fieldset className="supplier-bank-form"><legend>Datos bancarios <small>Opcional</small></legend><div className="field-grid"><label className="field"><span>Banco</span><input maxLength={120} value={form.bankName} onChange={(event) => setForm({ ...form, bankName: event.target.value })} /></label><label className="field"><span>Tipo de cuenta</span><select value={form.accountType} onChange={(event) => setForm({ ...form, accountType: event.target.value as FormState["accountType"] })}><option value="">Selecciona…</option><option value="ahorros">Ahorros</option><option value="corriente">Corriente</option></select></label><label className="field"><span>Número de cuenta</span><input inputMode="numeric" maxLength={40} value={form.accountNumber} onChange={(event) => setForm({ ...form, accountNumber: event.target.value })} /></label><label className="field"><span>Titular</span><input maxLength={160} value={form.accountHolder} onChange={(event) => setForm({ ...form, accountHolder: event.target.value })} /></label><label className="field"><span>NIT del titular</span><input maxLength={32} value={form.accountHolderNit} onChange={(event) => setForm({ ...form, accountHolderNit: event.target.value })} /></label></div></fieldset><label className="check-line"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} />Proveedor activo para nuevas órdenes</label>{feedback && <ErrorMessage>{feedback}</ErrorMessage>}</div><div className="form-footer"><button className="button button-secondary" type="button" onClick={() => setEditor(null)}>Cancelar</button><button className="button button-dark" type="submit" disabled={saving}>{saving ? "Guardando…" : editor === "create" ? "Crear proveedor" : "Guardar cambios"}</button></div></form></div>}
+      {editor && <div className="supplier-overlay" role="presentation"><form ref={editorRef} className="supplier-editor" role="dialog" aria-modal="true" aria-labelledby="supplier-editor-title" onSubmit={submitSupplier}><div className="supplier-drawer-head"><div><div className="eyebrow">{editor === "create" ? "Alta de catálogo" : "Edición de catálogo"}</div><h2 id="supplier-editor-title">{editor === "create" ? "Nuevo proveedor" : "Editar proveedor"}</h2></div><button className="icon-button" type="button" aria-label="Cerrar formulario" onClick={closeEditor}><X aria-hidden="true" size={18} /></button></div><div className="supplier-editor-body"><div className="field-grid"><label className="field field-wide"><span>Razón social *</span><input required maxLength={160} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label className="field"><span>NIT</span><input maxLength={32} value={form.nit} onChange={(event) => setForm({ ...form, nit: event.target.value })} /></label><label className="field"><span>Nombre de contacto</span><input maxLength={160} value={form.contactName} onChange={(event) => setForm({ ...form, contactName: event.target.value })} /></label><label className="field"><span>Teléfono</span><input type="tel" maxLength={20} value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label><label className="field"><span>Correo</span><input type="email" maxLength={254} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label className="field field-wide"><span>Dirección</span><input maxLength={300} value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></label></div><fieldset className="supplier-bank-form"><legend>Datos bancarios <small>Opcional</small></legend><div className="field-grid"><label className="field"><span>Banco</span><input maxLength={120} value={form.bankName} onChange={(event) => setForm({ ...form, bankName: event.target.value })} /></label><label className="field"><span>Tipo de cuenta</span><select value={form.accountType} onChange={(event) => setForm({ ...form, accountType: event.target.value as FormState["accountType"] })}><option value="">Selecciona…</option><option value="ahorros">Ahorros</option><option value="corriente">Corriente</option></select></label><label className="field"><span>Número de cuenta</span><input inputMode="numeric" maxLength={40} value={form.accountNumber} onChange={(event) => setForm({ ...form, accountNumber: event.target.value })} /></label><label className="field"><span>Titular</span><input maxLength={160} value={form.accountHolder} onChange={(event) => setForm({ ...form, accountHolder: event.target.value })} /></label><label className="field"><span>NIT del titular</span><input maxLength={32} value={form.accountHolderNit} onChange={(event) => setForm({ ...form, accountHolderNit: event.target.value })} /></label></div></fieldset>{editor === "edit" && detail ? documentsSection(detail) : pendingDocumentsSection}<label className="check-line"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} />Proveedor activo para nuevas órdenes</label>{feedback && <ErrorMessage>{feedback}</ErrorMessage>}</div><div className="form-footer"><button className="button button-secondary" type="button" onClick={closeEditor}>Cancelar</button><button className="button button-dark" type="submit" disabled={saving}>{saving ? "Guardando…" : editor === "create" ? "Crear proveedor" : "Guardar cambios"}</button></div></form></div>}
     </>
   );
 }
