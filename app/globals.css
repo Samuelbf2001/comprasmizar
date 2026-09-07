@@ -912,6 +912,39 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .missing-supplier-assign{display:grid;gap:var(--space-3)}
 .connected-review{padding:var(--space-5);display:grid;gap:var(--space-4)}
 .review-line{grid-template-columns:repeat(5,minmax(100px,1fr));align-items:end}
+
+/* =========================================================================
+   Revisión como tabla (reunión 2026-09). Una fila por ítem en vez de un
+   <fieldset> de 7 controles: Daniel compara esta pantalla contra escribir un
+   WhatsApp, así que la densidad es lo que decide si la usa. Los controles
+   viven dentro de la celda y heredan el ancho de su columna, de modo que el
+   tabulado recorre la fila y salta a la siguiente sin pasar por botones.
+   ========================================================================= */
+.review-bulk{display:flex;flex-wrap:wrap;align-items:flex-end;gap:var(--space-3);
+  padding:var(--space-3);margin-bottom:var(--space-3);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-md)}
+.review-bulk-title{font-size:var(--text-xs);color:var(--muted);padding-bottom:var(--space-2)}
+.review-bulk-field{display:flex;flex-direction:column;gap:var(--space-1);min-width:150px}
+.review-bulk-field>span{font-size:var(--text-2xs);color:var(--muted)}
+.review-table-scroll{overflow-x:auto}
+.review-table{white-space:nowrap}
+.review-table th[scope="col"]{font-size:var(--text-2xs);color:var(--muted);font-weight:500}
+.review-table td,.review-table th{padding:var(--space-1) var(--space-2);vertical-align:middle}
+.review-row-name{max-width:220px;white-space:normal;font-weight:500;font-size:var(--text-xs)}
+.cell-input{width:100%;min-width:0;height:34px;padding:0 var(--space-2);font-size:var(--text-xs);
+  border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--paper)}
+.cell-input:focus-visible{outline:2px solid var(--navy);outline-offset:1px}
+.cell-narrow{max-width:88px}
+.cell-action{padding:0 var(--space-2);height:34px;font-size:var(--text-2xs)}
+/* El ítem declinado se queda en su fila con el motivo debajo: es la trazabilidad
+   de lo que se pidió y no se compró, que es justo lo que hoy se pierde en el Excel. */
+.review-row-declined>td,.review-row-declined>th{background:var(--red-soft)}
+.review-row-declined .review-row-name{color:var(--red)}
+@media(max-width:860px){
+  .review-row-name{max-width:140px}
+  .cell-input{height:44px}
+  .cell-action{height:44px}
+}
 .review-line strong{font-size:var(--text-sm);color:var(--navy);padding-bottom:var(--space-2)}
 .connected-actions{display:flex;justify-content:flex-end;gap:var(--space-2)}
 .check-line{display:flex;align-items:flex-start;gap:var(--space-2);font-size:var(--text-xs);line-height:1.4}

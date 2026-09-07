@@ -57,7 +57,7 @@ describe("alta rápida de proveedor desde revisión", () => {
       }),
     );
     renderDetail();
-    const trigger = screen.getByRole("button", { name: /Crear proveedor para/ });
+    const trigger = screen.getByRole("button", { name: /Crear proveedor/ });
     fireEvent.click(trigger);
     fireEvent.change(screen.getByLabelText("Razón social *"), {
       target: { value: "Canteras Norte" },
@@ -73,7 +73,7 @@ describe("alta rápida de proveedor desde revisión", () => {
         body: JSON.stringify({ name: "Canteras Norte" }),
       }),
     );
-    expect(screen.getByRole("combobox", { name: "Proveedor final" })).toHaveValue(
+    expect(screen.getByRole("combobox", { name: "Proveedor de Arena" })).toHaveValue(
       "supplier-2",
     );
     expect(screen.getByRole("status")).toHaveTextContent(
@@ -90,7 +90,7 @@ describe("alta rápida de proveedor desde revisión", () => {
       }),
     );
     renderDetail();
-    fireEvent.click(screen.getByRole("button", { name: /Crear proveedor para/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Crear proveedor/ }));
     fireEvent.change(screen.getByLabelText("Razón social *"), {
       target: { value: "Duplicado" },
     });
@@ -112,7 +112,7 @@ describe("alta rápida de proveedor desde revisión", () => {
 
   it("atrapa Tab y Shift+Tab en el diálogo y bloquea la alta para Aprobador", () => {
     renderDetail();
-    fireEvent.click(screen.getByRole("button", { name: /Crear proveedor para/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Crear proveedor/ }));
     const close = screen.getByRole("button", { name: "Cerrar alta de proveedor" });
     // El envío solo se habilita con razón social; deshabilitado quedaría fuera
     // de la trampa de foco y nunca sería el último elemento enfocable.
@@ -130,7 +130,7 @@ describe("alta rápida de proveedor desde revisión", () => {
 
     cleanup();
     renderDetail("Aprobador");
-    expect(screen.queryByRole("button", { name: /Crear proveedor para/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Crear proveedor/ })).toBeNull();
   });
 });
 
@@ -181,6 +181,58 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
     expect(workSelect).toBeInTheDocument();
   });
 
+  // Reunión 2026-09: el 19 % se teclaaba una vez por ítem, y ese tecleo repetido era la mayor
+  // parte del coste de revisar. La acción masiva es la razón de ser de la tabla, así que si
+  // deja de aplicar a todas las líneas vigentes el rediseño pierde su sentido.
+  it("aplica el IVA a todos los ítems vigentes de una sola vez y respeta los declinados", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "req-1", items: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const varias = {
+      ...reviewData,
+      requisition: {
+        ...reviewData.requisition,
+        items: [
+          { id: "item-1", description: "Arena", quantity: 1, unit: "saco", unitBase: 100000 },
+          { id: "item-2", description: "Cemento", quantity: 2, unit: "bulto", unitBase: 50000 },
+          {
+            id: "item-3",
+            description: "Arenilla",
+            quantity: 1,
+            unit: "m3",
+            unitBase: 20000,
+            status: "declinado" as const,
+            declineReason: "Se cubre con la arena",
+          },
+        ],
+      },
+    };
+    render(<ConnectedRequisitionDetail data={varias} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta y ruta de aprobación" }), {
+      target: { value: "tag-1" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), { target: { value: "work-1" } });
+
+    // Un solo gesto en la barra, en vez de abrir el select de cada ítem.
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Aplicar un IVA a todos los ítems vigentes" }),
+      { target: { value: "0.19" } },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Guardar revisión" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const porId = Object.fromEntries(body.items.map((i: { id: string }) => [i.id, i]));
+    expect(porId["item-1"].ivaRate).toBe(0.19);
+    expect(porId["item-2"].ivaRate).toBe(0.19);
+    // El declinado no se toca: aplicarle una tasa a una línea que no se va a comprar no significa nada.
+    expect(porId["item-3"].ivaRate).toBeUndefined();
+    expect(porId["item-3"].status).toBe("declinado");
+  });
+
   it("envía IVA/Desc como fracción, obra y forma de pago, sin exigir proveedor para enviar a aprobación", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "req-1", items: [] }), {
@@ -196,10 +248,10 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
       target: { value: "work-1" },
     });
     // El proveedor sigue sin asignarse (por definir) y "Enviar a aprobación" no está bloqueado por eso.
-    fireEvent.change(screen.getByRole("combobox", { name: "IVA %" }), {
+    fireEvent.change(screen.getByRole("combobox", { name: "IVA de Arena" }), {
       target: { value: "0.19" },
     });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Desc %" }), {
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Descuento de Arena" }), {
       target: { value: "10" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Guardar revisión" }));

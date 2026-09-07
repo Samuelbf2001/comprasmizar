@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -292,9 +293,13 @@ function estimateLineTotal(line: RequisitionItem): number {
 }
 // MENOR (QA 2026-08-31): "Nelson y Juliana deciden sin ver la cifra total" — barra de
 // Subtotal · IVA · Total al pie del bloque de ítems, en revisión y en aprobación.
+// Los declinados quedan fuera del total: es la cifra que el aprobador autoriza y la que se va a
+// comprar de verdad. Sumarlos inflaba el total con ítems que nadie va a pedir — el mismo criterio
+// que `sumApprovedLines` aplica en el dominio para el gasto y las órdenes.
 function summarizeLines(lines: readonly RequisitionItem[]): { base: number; iva: number; total: number } {
   return lines.reduce(
     (acc, line) => {
+      if (line.status === "declinado") return acc;
       const amounts = estimateLineAmounts(line);
       return { base: acc.base + amounts.base, iva: acc.iva + amounts.iva, total: acc.total + amounts.total };
     },
@@ -2110,6 +2115,13 @@ export function ConnectedRequisitionDetail({
     setLines((current) =>
       current.map((line) => (line.id === id ? { ...line, ...patch } : line)),
     );
+  // Reunión 2026-09: el IVA del 19 % se repetía a mano en cada ítem, y ese tecleo repetido
+  // era la mayor parte del coste de revisar. Las acciones masivas solo tocan las líneas
+  // vigentes: aplicar un proveedor o una tasa a una línea ya declinada no significa nada.
+  const applyToAllLines = (patch: Partial<RequisitionItem>) =>
+    setLines((current) =>
+      current.map((line) => (line.status === "declinado" ? line : { ...line, ...patch })),
+    );
   // Cotización del comprador: sube directo (la requisición ya existe) y refresca para que
   // aparezca en "Cotizaciones del comprador", separada de los adjuntos del solicitante.
   const uploadQuote = async () => {
@@ -2380,146 +2392,205 @@ export function ConnectedRequisitionDetail({
                   onChange={(event) => setPaymentTerms(event.target.value)}
                 />
               </label>
-              {lines.map((line) => (
-                // MENOR (QA 2026-08-31): antes un ítem declinado solo cambiaba el badge del
-                // <legend> — mismo borde y fondo que uno vigente. `.review-line-declined` le
-                // da borde de alerta y atenúa los campos que ya no aplican (ver globals.css).
-                <fieldset className={`review-line${line.status === "declinado" ? " review-line-declined" : ""}`} key={line.id}>
-                  <legend>
-                    {line.description ||
-                      catalogs.items.find((item) => item.id === line.itemId)
-                        ?.name ||
-                      "Ítem"}
-                    {line.status === "declinado" && (
-                      <Tone tone="danger" dot>Declinado</Tone>
-                    )}
-                  </legend>
-                  <label className="field">
-                    <span>Cantidad</span>
-                    <input
-                      type="number"
-                      step="0.001"
-                      min="0.001"
-                      value={line.quantity}
-                      onChange={(event) =>
-                        updateLine(line.id, {
-                          quantity: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Unidad</span>
-                    <input
-                      value={line.unit}
-                      onChange={(event) =>
-                        updateLine(line.id, { unit: event.target.value })
-                      }
-                    />
-                  </label>
-                  <div className="field supplier-assignment-field">
-                    <label className="field-label" htmlFor={`supplier-${line.id}`}>
-                      Proveedor final
-                    </label>
-                    <select
-                      id={`supplier-${line.id}`}
-                      value={line.finalSupplierId ?? ""}
-                      onChange={(event) =>
-                        updateLine(line.id, {
-                          finalSupplierId: event.target.value || undefined,
-                        })
-                      }
-                    >
-                      <option value="">Por definir</option>
-                      {supplierOptions.map((supplier) => (
-                        <option key={supplier.id} value={supplier.id}>
-                          {supplier.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className="button button-secondary quick-supplier-trigger"
-                      type="button"
-                      disabled={busy}
-                      onClick={(event) =>
-                        openQuickSupplier(line.id, event.currentTarget)
-                      }
-                      aria-label={`Crear proveedor para ${line.description || "este ítem"}`}
-                    >
-                      + Crear proveedor
-                    </button>
-                  </div>
-                  <label className="field">
-                    <span>Base unitaria COP</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={line.unitBase ?? 0}
-                      onChange={(event) =>
-                        updateLine(line.id, {
-                          unitBase: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                  {/* Reunión 2026-08-31: "IVA unitario COP" se sustituye por IVA % (fracción en la
-                      API: 19 % se envía como 0.19) y se añade Desc %. */}
-                  <label className="field">
-                    <span>IVA %</span>
-                    <select
-                      value={String(line.ivaRate ?? 0)}
-                      onChange={(event) =>
-                        updateLine(line.id, { ivaRate: Number(event.target.value) })
-                      }
-                    >
-                      <option value="0">0 %</option>
-                      <option value="0.05">5 %</option>
-                      <option value="0.19">19 %</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>Desc %</span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="1"
-                      value={line.discountRate !== undefined ? Math.round(line.discountRate * 100) : 0}
-                      onChange={(event) =>
-                        updateLine(line.id, { discountRate: Number(event.target.value) / 100 })
-                      }
-                    />
-                  </label>
-                  <div className="field">
-                    <label className="field-label" htmlFor={`decline-${line.id}`}>Estado del ítem</label>
-                    <select
-                      id={`decline-${line.id}`}
-                      value={line.status === "declinado" ? "declinado" : "pendiente"}
-                      onChange={(event) =>
-                        updateLine(line.id, {
-                          status: event.target.value === "declinado" ? "declinado" : undefined,
-                          declineReason: event.target.value === "declinado" ? line.declineReason : undefined,
-                        })
-                      }
-                    >
-                      <option value="pendiente">Vigente</option>
-                      <option value="declinado">Declinar</option>
-                    </select>
-                  </div>
-                  {line.status === "declinado" && (
-                    <label className="field field-wide">
-                      <span>Motivo de declinación</span>
-                      <textarea
-                        required
-                        value={line.declineReason ?? ""}
-                        onChange={(event) => updateLine(line.id, { declineReason: event.target.value })}
-                      />
-                    </label>
-                  )}
-                  <strong>{money.format(estimateLineTotal(line))}</strong>
-                </fieldset>
-              ))}
+              {/* Reunión 2026-09 (QA UX): la revisión era un <fieldset> por ítem en rejilla de
+                  5 columnas — 7 controles + 1 botón cada uno, que envolvían a dos filas y
+                  dejaban celdas huecas. Con 5 ítems eran 43 elementos y ~1.750px de scroll, y
+                  el tabulado pasaba por un botón entre el precio de un ítem y el del siguiente.
+                  Daniel comparaba eso contra escribir un WhatsApp, así que la densidad no era
+                  cosmética: decidía la adopción. Ahora es una fila por ítem, con las acciones
+                  masivas arriba (el 19 % se teclaba cinco veces) y el proveedor nuevo se crea
+                  una sola vez en la barra en vez de un botón por línea. */}
+              <div className="review-bulk" role="group" aria-label="Aplicar a todos los ítems vigentes">
+                <span className="review-bulk-title">Aplicar a todos:</span>
+                <label className="review-bulk-field">
+                  <span>IVA</span>
+                  <select
+                    aria-label="Aplicar un IVA a todos los ítems vigentes"
+                    value=""
+                    onChange={(event) => {
+                      if (event.target.value === "") return;
+                      applyToAllLines({ ivaRate: Number(event.target.value) });
+                      event.target.value = "";
+                    }}
+                  >
+                    <option value="">Elegir…</option>
+                    <option value="0">0 % a todos</option>
+                    <option value="0.05">5 % a todos</option>
+                    <option value="0.19">19 % a todos</option>
+                  </select>
+                </label>
+                <label className="review-bulk-field">
+                  <span>Proveedor</span>
+                  <select
+                    aria-label="Aplicar un proveedor a todos los ítems vigentes"
+                    value=""
+                    onChange={(event) => {
+                      if (event.target.value === "") return;
+                      applyToAllLines({ finalSupplierId: event.target.value });
+                      event.target.value = "";
+                    }}
+                  >
+                    <option value="">Elegir…</option>
+                    {supplierOptions.map((supplier) => (
+                      <option key={supplier.id} value={supplier.id}>
+                        {supplier.name} a todos
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="button button-secondary quick-supplier-trigger"
+                  type="button"
+                  disabled={busy || lines.length === 0}
+                  onClick={(event) => openQuickSupplier(lines[0]?.id ?? "", event.currentTarget)}
+                >
+                  + Crear proveedor
+                </button>
+              </div>
+              <div className="review-table-scroll">
+                <table className="review-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Ítem</th>
+                      <th scope="col" className="align-right">Cant.</th>
+                      <th scope="col">Und.</th>
+                      <th scope="col" className="align-right">Precio unit.</th>
+                      <th scope="col">IVA %</th>
+                      <th scope="col" className="align-right">Desc %</th>
+                      <th scope="col">Proveedor</th>
+                      <th scope="col" className="align-right">Total</th>
+                      <th scope="col"><span className="sr-only">Acciones</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lines.map((line) => {
+                      const nombre =
+                        line.description ||
+                        catalogs.items.find((item) => item.id === line.itemId)?.name ||
+                        "Ítem";
+                      const declinado = line.status === "declinado";
+                      return (
+                        <Fragment key={line.id}>
+                          <tr className={declinado ? "review-row-declined" : undefined}>
+                            <th scope="row" className="review-row-name">
+                              {nombre}
+                              {declinado && <Tone tone="danger" dot>Declinado</Tone>}
+                            </th>
+                            <td>
+                              <input
+                                className="cell-input align-right"
+                                type="number"
+                                step="0.001"
+                                min="0.001"
+                                disabled={declinado}
+                                aria-label={`Cantidad de ${nombre}`}
+                                value={line.quantity}
+                                onChange={(event) => updateLine(line.id, { quantity: Number(event.target.value) })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="cell-input cell-narrow"
+                                disabled={declinado}
+                                aria-label={`Unidad de ${nombre}`}
+                                value={line.unit}
+                                onChange={(event) => updateLine(line.id, { unit: event.target.value })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="cell-input align-right"
+                                type="number"
+                                min="0"
+                                step="1"
+                                disabled={declinado}
+                                aria-label={`Precio unitario de ${nombre}`}
+                                value={line.unitBase ?? 0}
+                                onChange={(event) => updateLine(line.id, { unitBase: Number(event.target.value) })}
+                              />
+                            </td>
+                            <td>
+                              <select
+                                className="cell-input cell-narrow"
+                                disabled={declinado}
+                                aria-label={`IVA de ${nombre}`}
+                                value={String(line.ivaRate ?? 0)}
+                                onChange={(event) => updateLine(line.id, { ivaRate: Number(event.target.value) })}
+                              >
+                                <option value="0">0</option>
+                                <option value="0.05">5</option>
+                                <option value="0.19">19</option>
+                              </select>
+                            </td>
+                            <td>
+                              <input
+                                className="cell-input cell-narrow align-right"
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="1"
+                                disabled={declinado}
+                                aria-label={`Descuento de ${nombre}`}
+                                value={line.discountRate !== undefined ? Math.round(line.discountRate * 100) : 0}
+                                onChange={(event) => updateLine(line.id, { discountRate: Number(event.target.value) / 100 })}
+                              />
+                            </td>
+                            <td>
+                              <select
+                                className="cell-input"
+                                id={`supplier-${line.id}`}
+                                disabled={declinado}
+                                aria-label={`Proveedor de ${nombre}`}
+                                value={line.finalSupplierId ?? ""}
+                                onChange={(event) => updateLine(line.id, { finalSupplierId: event.target.value || undefined })}
+                              >
+                                <option value="">Por definir</option>
+                                {supplierOptions.map((supplier) => (
+                                  <option key={supplier.id} value={supplier.id}>
+                                    {supplier.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="align-right money">
+                              {declinado ? "—" : money.format(estimateLineTotal(line))}
+                            </td>
+                            <td>
+                              <button
+                                className="button button-secondary cell-action"
+                                type="button"
+                                onClick={() =>
+                                  updateLine(line.id, {
+                                    status: declinado ? undefined : "declinado",
+                                    declineReason: declinado ? undefined : line.declineReason,
+                                  })
+                                }
+                              >
+                                {declinado ? "Reactivar" : "Declinar"}
+                              </button>
+                            </td>
+                          </tr>
+                          {declinado && (
+                            <tr className="review-row-declined">
+                              <td colSpan={9}>
+                                <label className="field field-wide">
+                                  <span>Motivo por el que se declina {nombre}</span>
+                                  <textarea
+                                    required
+                                    rows={2}
+                                    value={line.declineReason ?? ""}
+                                    onChange={(event) => updateLine(line.id, { declineReason: event.target.value })}
+                                  />
+                                </label>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
               {/* MENOR (QA 2026-08-31): "Nelson y Juliana deciden sin ver la cifra total" —
                   no existía en ninguna parte. Barra de Subtotal · IVA · Total al pie del
                   bloque de ítems, visible en revisión y en aprobación. */}
