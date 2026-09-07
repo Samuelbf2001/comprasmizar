@@ -1,6 +1,6 @@
 # Modelo de datos y controles — Plataforma Mizar
 
-La fuente de verdad versionada está formada por la migración núcleo [`202608240001_core_compras.sql`](../supabase/migrations/202608240001_core_compras.sql), el expediente privado de proveedor [`202608240002_proveedor_expediente_privado.sql`](../supabase/migrations/202608240002_proveedor_expediente_privado.sql) y los adjuntos operativos privados [`202608240003_adjuntos_genericos_privados.sql`](../supabase/migrations/202608240003_adjuntos_genericos_privados.sql). No se ha aplicado ni desplegado ningún proyecto Supabase desde este repositorio.
+La fuente de verdad versionada está formada por la migración núcleo [`202608240001_core_compras.sql`](../supabase/migrations/202608240001_core_compras.sql), el expediente privado de proveedor [`202608240002_proveedor_expediente_privado.sql`](../supabase/migrations/202608240002_proveedor_expediente_privado.sql), los adjuntos operativos privados [`202608240003_adjuntos_genericos_privados.sql`](../supabase/migrations/202608240003_adjuntos_genericos_privados.sql) y la Fase 1 de empresa/eje administrativo [`202609010001_empresa_estado_item_y_eje_administrativo.sql`](../supabase/migrations/202609010001_empresa_estado_item_y_eje_administrativo.sql), que separa sociedad (empresa) de obra en `requisiciones`, añade estado por ítem, un eje administrativo independiente en `ordenes`, tasas de IVA/descuento, el antifraude de doble orden y la lista blanca global de solicitantes. No se ha aplicado ni desplegado ningún proyecto Supabase desde este repositorio.
 
 ## Límites del modelo
 
@@ -8,7 +8,7 @@ El modelo es single-tenant: una obra pertenece a una sociedad, pero no existe un
 
 | Área | Tablas |
 | --- | --- |
-| Núcleo | `sociedades`, `usuarios`, `usuario_roles`, `modulos`, `obras`, `obra_solicitantes_autorizados`, `etiquetas`, `proveedores`, `items`, `consecutivos`, `adjuntos`, `auditoria` |
+| Núcleo | `sociedades`, `usuarios`, `usuario_roles`, `modulos`, `obras`, `obra_solicitantes_autorizados`, `solicitantes_autorizados`, `etiquetas`, `proveedores`, `items`, `consecutivos`, `adjuntos`, `auditoria` |
 | Compras | `requisiciones`, `requisicion_items`, `ordenes`, `orden_items`, `gastos`, `gastos_reparto`, `caja_menor` |
 | Integraciones | `notificaciones`, `whatsapp_eventos`, `kapso_procesamiento`, `mcp_api_keys`, `sesiones_pantalla` |
 | Controles auxiliares | `requisicion_historial`, `configuracion`, vista `gasto_distribucion` |
@@ -26,6 +26,13 @@ El modelo es single-tenant: una obra pertenece a una sociedad, pero no existe un
 - `kapso_procesamiento` es el ledger transaccional de idempotencia de webhooks Kapso: `event_id` es la clave, conserva únicamente un payload objeto técnico y registra `processing`, `retryable` o `completed`. Los `flow_submission` no pueden marcarse `completed` sin una `requisicion_id`, cuya fila usa `requisiciones.kapso_event_id` único parcial. Los `message_status` pueden completarse sin requisición y se correlacionan con `whatsapp_eventos`. Su RLS es exclusivamente `service_role` y Admin Sixteam técnico; su auditoría guarda solo hash de `event_id`, tipo y estado, nunca el payload.
 - `notificaciones` funciona como outbox transaccional: creación externa, envío a aprobación, aprobación, devolución y declinación encolan su plantilla dentro de la misma unidad de trabajo. El destino es exactamente un `usuario_id` o un `telefono_destino`, nunca ambos; conserva intentos, último error y bloqueo de reintento. Un estado `enviado` o `entregado` exige `enviado_at`. El despachador Kapso, los reintentos reales y las plantillas aprobadas siguen siendo un gate externo; una fila `pendiente` no se presenta como mensaje enviado.
 - `mcp_api_keys.key_hash` acepta únicamente el HMAC-SHA256 en 64 hexadecimales minúsculas de la clave con `MCP_KEY_PEPPER`; una clave `mizar_...` en claro es rechazada por constraint y no debe aparecer en logs, seeds ni auditoría.
+- `requisiciones.sociedad_id` es NOT NULL (empresa) y `obra_id` pasó a nullable (una requisición corporativa puede no tener obra concreta). Un trigger `BEFORE INSERT` (`requisiciones_0_derivar_sociedad`, que por nombre dispara alfabéticamente antes que `requisiciones_catalogos_activos`) deriva `sociedad_id` desde `obras.sociedad_id` cuando llega nula con obra presente; lo necesitan tanto el portal público (`crear_requisicion_publica`, anclado a la obra) como cualquier alta legacy. Cuando ambas están presentes, la obra debe pertenecer exactamente a la sociedad de la requisición.
+- `requisicion_items.estado` (`pendiente`/`aprobado`/`declinado`) permite decidir ítem por ítem dentro de una requisición; `declinado` exige `motivo_declinacion`.
+- `ordenes` tiene un eje administrativo (`estado_administrativo`: `pendiente`/`contabilizada`/`pagada`, con `contabilizada_at`/`pagada_at`/`forma_pago`) completamente independiente de `estado_cumplimiento`: contabilizar o pagar una orden no altera si fue cumplida operativamente, y viceversa. La invariante de orden entre transiciones administrativas vive en el dominio, no en un check de base de datos.
+- `requisicion_items.iva_tasa` y `descuento_tasa` son fracciones (`0.19`, no `19`) acotadas a `[0,1]`; no hay check que ate `iva` a `iva_tasa` porque el histórico no siempre cuadra exactamente.
+- `ordenes_una_por_requisicion_proveedor` es un índice único sobre `(requisicion_id, coalesce(proveedor_id, uuid cero))`: evita generar dos órdenes para la misma requisición y proveedor (incluido el caso sin proveedor asignado).
+- `solicitantes_autorizados` es la lista blanca global de solicitantes (mismo patrón de normalización de teléfono, unicidad, auditoría y baja reversible que `obra_solicitantes_autorizados`, pero sin `obra_id`); `obra_solicitantes_autorizados` se conserva intacta porque el portal público sigue anclado a la obra.
+- `requisiciones.destino` quedó obsoleta (fusionada en `observaciones`) y no se elimina para no romper historial ni el contrato de `crear_requisicion_publica`.
 
 ## RLS y acceso
 
@@ -85,3 +92,28 @@ git diff --check
 ```
 
 La prueba verifica presencia de las tablas requeridas por el PRD y el patrón de módulos, RLS, bucket privado, consecutivos atómicos, FK de reparto, NIT/IDs externos nulos repetibles, `auditoria.origen`, el límite de actualización de aprobador y que Admin-Mizar no pueda editar ítems. Las pruebas HTTP de JWT, rate-limit y URLs firmadas corresponden al arnés de integración de A6/A2.
+
+### `npm run verify:schema` — el mismo arnés SQL, pero sin Supabase CLI ni Docker
+
+Docker está roto en algunas máquinas de este equipo, y sin Postgres real detrás, dos bloqueantes de
+la reunión 2026-08-31 pasaron los 342 tests unitarios con mocks y solo se vieron corriendo la
+migración contra un motor de verdad (mismo tipo de bug que el commit `be06b83`, "bug solo-DB-real"):
+el código real que Postgres emite para un `ON DELETE RESTRICT` (`23001`, no `23503`) y el hecho de
+que una columna `NOT NULL DEFAULT 0` nunca deja leer `NULL` por más que el mapeador lo contemple.
+
+`scripts/verify-schema.ts` monta ese mismo Postgres real de forma reproducible y sin Docker, con el
+paquete `embedded-postgres` (Postgres 18.4, arranca y se detiene solo, sin instalación aparte):
+
+```powershell
+npm run verify:schema
+```
+
+El script: levanta un cluster efímero → aplica `supabase/tests/embedded_postgres_prelude.sql`
+(stubea SOLO lo que Supabase da por hecho y que las migraciones/arneses asumen: roles
+`anon`/`authenticated`/`service_role`, el esquema `auth` con `auth.users` y `auth.uid()`/`auth.role()`
+leyendo los mismos GUC que PostgREST, el esquema `storage` con `buckets`/`objects` y RLS activo, y
+`pgcrypto` instalado en un esquema `extensions`) → aplica las 4 migraciones de
+`supabase/migrations/` **en orden** → aplica `supabase/seed.sql` → corre los 3 arneses SQL
+(`schema_verification.sql`, `generic_attachments_verification.sql`,
+`supplier_documents_verification.sql`) → sale con código distinto de cero si cualquier paso falla.
+No modifica ninguno de los 3 arneses existentes: el prelude es exclusivamente aditivo.

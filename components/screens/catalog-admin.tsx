@@ -20,7 +20,10 @@ type CatalogKind =
   | "items"
   | "suppliers"
   | "societies"
-  | "users";
+  | "users"
+  // HUECO 1 (reunión 2026-08-31): lista blanca global de quién puede pedir por WhatsApp
+  // (tabla solicitantes_autorizados, migración 202609010001).
+  | "requesters";
 type CatalogRecord = {
   id: string;
   name: string;
@@ -55,23 +58,34 @@ type CatalogData = {
   userRecords?: CatalogRecord[];
   // RF-004: admin_mizar puede leer usuarios aunque `access.users` sea false (solo escribe admin_sixteam).
   canReadUsers?: boolean;
+  // HUECO 1: listado completo (incluye inactivos) de quién puede pedir por WhatsApp.
+  requesters?: CatalogRecord[];
+  // Igual que canReadUsers: revisor puede CONSULTAR aunque access.requesters (escritura) sea false.
+  canReadRequesters?: boolean;
 };
 type FormValues = Record<string, string | boolean | string[]>;
 
+// El término del cliente es "empresa" (no "sociedad"): unifica con el alta de requisición,
+// que ya dice "Empresa". El identificador interno (societyId, kind: "societies") no cambia
+// — solo la etiqueta visible — para no tocar la API/el modelo desde components/**.
 const labels: Record<CatalogKind, string> = {
   works: "Obras",
   tags: "Etiquetas",
   items: "Ítems",
   suppliers: "Proveedores",
-  societies: "Sociedades",
+  societies: "Empresas",
   users: "Usuarios",
+  // Lenguaje de producto (HUECO 1): quien administra esto piensa en "quién puede pedir por
+  // WhatsApp", no en el nombre de la tabla `solicitantes_autorizados`.
+  requesters: "Solicitantes WhatsApp",
 };
 // El título "Nuevo X" por defecto solo quita la "s" final de labels[kind] (falla en géneros y en
-// plurales irregulares como "Sociedades"); para las dos pestañas nuevas se declara explícito en vez
+// plurales irregulares como "Empresas"); para las pestañas nuevas se declara explícito en vez
 // de heredar ese atajo.
 const NEW_RECORD_LABEL: Partial<Record<CatalogKind, string>> = {
-  societies: "Nueva sociedad",
+  societies: "Nueva empresa",
   users: "Nuevo usuario",
+  requesters: "Nuevo solicitante autorizado",
 };
 // RF-004: debe coincidir exactamente con el tipo Role de lib/domain (lib/domain/model.ts) y con
 // `roleLiteral` en app/api/catalogs/route.ts.
@@ -179,6 +193,13 @@ function canViewKind(
       canManageKind(kind, role, data, featureEnabled) ||
       data.canReadUsers === true
     );
+  // HUECO 1: mismo patrón intermedio que "users" — Revisor puede CONSULTAR quién puede pedir por
+  // WhatsApp (RLS "solicitantes_autorizados_lectura_operativa") aunque no pueda administrar la lista.
+  if (kind === "requesters")
+    return (
+      canManageKind(kind, role, data, featureEnabled) ||
+      data.canReadRequesters === true
+    );
   return canManageKind(kind, role, data, featureEnabled);
 }
 async function writeCatalog(method: "POST" | "PATCH", body: unknown) {
@@ -218,6 +239,9 @@ function payloadFor(
     const nit = String(values.nit || "").trim();
     if (editing || nit) data.nit = nit || null;
   }
+  // HUECO 1: a diferencia de proveedores/usuarios, el teléfono es OBLIGATORIO (columna NOT NULL) y
+  // nunca se envía como null: sin teléfono la fila no tiene ninguna función.
+  if (kind === "requesters") data.phone = String(values.phone || "").trim();
   if (kind === "users") {
     // RF-004: id/correo son inmutables tras el alta (el correo vive en Supabase Auth, no en este
     // catálogo); el esquema de PATCH ni siquiera acepta esas claves, así que solo se envían al crear.
@@ -264,7 +288,9 @@ export function ConnectedCatalogAdmin({
             ? "societies"
             : pathname.startsWith("/catalogos/usuarios")
               ? "users"
-              : undefined;
+              : pathname.startsWith("/catalogos/solicitantes-whatsapp")
+                ? "requesters"
+                : undefined;
   const initialFeatureEnabled = dataFeatureEnabled(initialData);
   const firstAllowed = (Object.keys(labels) as CatalogKind[]).find((option) =>
     canViewKind(option, role, initialData, initialFeatureEnabled),
@@ -322,7 +348,7 @@ export function ConnectedCatalogAdmin({
       (!String(form.societyId || "").trim() ||
         !UUID_RE.test(String(form.societyId)))
     )
-      return "Selecciona una sociedad elegible con un UUID válido.";
+      return "Selecciona una empresa elegible con un UUID válido.";
     if (
       kind === "tags" &&
       (!editing || editing.active !== false) &&
@@ -347,8 +373,12 @@ export function ConnectedCatalogAdmin({
       (String(form.nit).length < 3 || String(form.nit).length > 32)
     )
       return "El NIT debe tener entre 3 y 32 caracteres.";
+    // HUECO 1: a diferencia de proveedores/usuarios, el teléfono es obligatorio para un solicitante
+    // autorizado (sin él la fila no identifica a nadie en el canal WhatsApp).
+    if (kind === "requesters" && !String(form.phone || "").trim())
+      return "El teléfono es obligatorio.";
     if (
-      (kind === "suppliers" || kind === "users") &&
+      (kind === "suppliers" || kind === "users" || kind === "requesters") &&
       String(form.phone || "").trim() &&
       !/^\+?[0-9 ()-]{7,20}$/.test(String(form.phone))
     )
@@ -461,13 +491,15 @@ export function ConnectedCatalogAdmin({
       ? "Los ítems solo pueden administrarse con item:manage (Revisor o Administrador Sixteam)."
       : kind === "users"
         ? "La administración de usuarios es exclusiva de Administrador Sixteam. Administrador Mizar puede consultarla en modo lectura; el resto de roles no tiene acceso."
-        : kind === "societies"
-          ? "Las sociedades solo pueden administrarse desde Administrador Mizar o Administrador Sixteam."
-          : role === "Administrador Mizar" && !featureEnabled
-            ? "El autoservicio de Administrador Mizar está bloqueado hasta habilitar el módulo catalogos_admin_mizar."
-            : kind === "suppliers"
-              ? "Necesitas supplier:manage para administrar proveedores."
-              : "Necesitas catalog:manage para administrar este catálogo.";
+        : kind === "requesters"
+          ? "Solo Administrador Sixteam (o Administrador Mizar con el autoservicio habilitado) puede administrar quién puede pedir por WhatsApp. Revisor puede consultar la lista en modo lectura."
+          : kind === "societies"
+            ? "Las empresas solo pueden administrarse desde Administrador Mizar o Administrador Sixteam."
+            : role === "Administrador Mizar" && !featureEnabled
+              ? "El autoservicio de Administrador Mizar está bloqueado hasta habilitar el módulo catalogos_admin_mizar."
+              : kind === "suppliers"
+                ? "Necesitas supplier:manage para administrar proveedores."
+                : "Necesitas catalog:manage para administrar este catálogo.";
   return (
     <>
       <SectionTitle
@@ -535,6 +567,12 @@ export function ConnectedCatalogAdmin({
           <div className="panel-head">
             <div>
               <h2>{labels[kind]}</h2>
+              {kind === "requesters" && (
+                <p className="panel-sub">
+                  Quién puede radicar una requisición por WhatsApp identificándose con su número de
+                  teléfono. Desactivar aquí revoca el acceso de inmediato, sin borrar el registro.
+                </p>
+              )}
               <p className="panel-sub">
                 {rows.length
                   ? `${rows.length} registros recibidos por API`
@@ -553,8 +591,9 @@ export function ConnectedCatalogAdmin({
           </div>
           {!canManage && (
             <p className="catalog-readonly-note" role="note">
-              Modo lectura: la administración de usuarios es exclusiva de
-              Administrador Sixteam.
+              {kind === "requesters"
+                ? "Modo lectura: solo Administrador Sixteam (o Administrador Mizar con el autoservicio habilitado) puede administrar quién puede pedir por WhatsApp."
+                : "Modo lectura: la administración de usuarios es exclusiva de Administrador Sixteam."}
             </p>
           )}
           {feedback && (
@@ -596,7 +635,7 @@ export function ConnectedCatalogAdmin({
                 <thead>
                   <tr>
                     <th>Nombre</th>
-                    {kind === "works" && <th>Sociedad</th>}
+                    {kind === "works" && <th>Empresa</th>}
                     {kind === "items" && (
                       <>
                         <th>Unidad</th>
@@ -621,6 +660,7 @@ export function ConnectedCatalogAdmin({
                         <th>Roles</th>
                       </>
                     )}
+                    {kind === "requesters" && <th>Teléfono</th>}
                     <th>Estado</th>
                     <th className="align-right">Acciones</th>
                   </tr>
@@ -687,6 +727,7 @@ export function ConnectedCatalogAdmin({
                           </td>
                         </>
                       )}
+                      {kind === "requesters" && <td>{row.phone || "—"}</td>}
                       <td>
                         <span
                           className={`badge ${isActive(row) ? "badge-success" : "badge-muted"}`}
@@ -809,7 +850,7 @@ function CatalogForm({
         {kind === "works" && (
           <label className="field">
             <span>
-              Sociedad <em>*</em>
+              Empresa <em>*</em>
             </span>
             <select
               value={String(values.societyId || "")}
@@ -831,8 +872,8 @@ function CatalogForm({
             >
               <option value="">
                 {societies.length
-                  ? "Selecciona una sociedad elegible"
-                  : "No hay sociedades elegibles"}
+                  ? "Selecciona una empresa elegible"
+                  : "No hay empresas elegibles"}
               </option>
               {societies.map((society) => (
                 <option key={society.id} value={society.id}>
@@ -844,7 +885,7 @@ function CatalogForm({
               (!String(values.societyId || "").trim() ||
                 !UUID_RE.test(String(values.societyId))) && (
                 <small className="field-error" id="catalog-society-error">
-                  Selecciona una sociedad elegible.
+                  Selecciona una empresa elegible.
                 </small>
               )}
           </label>
@@ -988,6 +1029,37 @@ function CatalogForm({
               maxLength={32}
               onChange={(event) => update("nit", event.target.value)}
             />
+          </label>
+        )}
+        {kind === "requesters" && (
+          <label className="field">
+            <span>
+              Teléfono <em>*</em>
+            </span>
+            <input
+              value={String(values.phone || "")}
+              maxLength={20}
+              required
+              inputMode="tel"
+              aria-invalid={Boolean(
+                feedback && !String(values.phone || "").trim(),
+              )}
+              aria-describedby={
+                feedback && !String(values.phone || "").trim()
+                  ? "catalog-requester-phone-error"
+                  : undefined
+              }
+              onChange={(event) => update("phone", event.target.value)}
+            />
+            <small>
+              Acepta el número local (3001112233) o con indicativo
+              (+57 300 111 2233): ambos identifican al mismo solicitante.
+            </small>
+            {feedback && !String(values.phone || "").trim() && (
+              <small className="field-error" id="catalog-requester-phone-error">
+                El teléfono es obligatorio.
+              </small>
+            )}
           </label>
         )}
         {kind === "users" && (

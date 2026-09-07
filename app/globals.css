@@ -308,9 +308,12 @@ tbody tr:last-child td{border-bottom:0}
 tbody tr.clickable{cursor:pointer;transition:background var(--duration-fast) var(--ease)}
 tbody tr.clickable:hover{background:var(--surface)}
 tbody tr.clickable:focus-visible{outline:2px solid var(--navy);outline-offset:-2px}
-/* Afordancia "Abrir" en filas clicables: aparece atenuada y se afirma en hover/focus de la fila. */
-.row-open{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--text-xs);font-weight:600;opacity:.7;transition:color var(--duration-fast) var(--ease),opacity var(--duration-fast) var(--ease)}
-tbody tr.clickable:hover .row-open,tbody tr.clickable:focus-visible .row-open{color:var(--navy);opacity:1}
+/* Afordancia "Abrir" en filas clicables: se afirma en hover/focus de la fila. MENOR (QA
+   2026-08-31): antes bajaba a opacity:.7 sobre --muted (~3,1:1 sobre blanco, falla AA) y era
+   el único indicio de que la fila era clicable; el cursor:pointer y el fondo en hover de
+   tbody tr.clickable ya dan esa señal, así que el texto puede quedarse a contraste completo. */
+.row-open{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--text-xs);font-weight:600;transition:color var(--duration-fast) var(--ease)}
+tbody tr.clickable:hover .row-open,tbody tr.clickable:focus-visible .row-open{color:var(--navy)}
 /* Botones de cumplimiento y edición de cabecera: grupos de acción, no controles sueltos. */
 .order-status-actions{display:flex;flex-wrap:wrap;gap:var(--space-2)}
 .connected-header-edit{display:grid;gap:var(--space-3);margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--line)}
@@ -904,6 +907,9 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .connected-summary dt{font-size:var(--text-3xs);color:var(--muted)}
 .connected-summary dd{font-size:var(--text-xs);margin:0;overflow-wrap:anywhere}
 .connected-summary p{font-size:var(--text-xs);line-height:1.45;margin:0}
+/* Bloqueante de atasco (reunión 2026-08-31): asignación de proveedor inline en "Generar órdenes" — un
+   .field por ítem sin proveedor más el botón de envío, espaciados igual que el resto del panel. */
+.missing-supplier-assign{display:grid;gap:var(--space-3)}
 .connected-review{padding:var(--space-5);display:grid;gap:var(--space-4)}
 .review-line{grid-template-columns:repeat(5,minmax(100px,1fr));align-items:end}
 .review-line strong{font-size:var(--text-sm);color:var(--navy);padding-bottom:var(--space-2)}
@@ -1322,4 +1328,42 @@ h2,h3,.panel-head h2,.approval-item h3,.detail-header h2,.pantalla-empty h1{lett
 .nav-main button:active,.nav-secondary button:active,.kanban-card:active,.alert-item:active{
   transform:scale(.99);
   transition:transform 100ms ease-out;
+}
+
+/* =========================================================================
+   QA 2026-08-31 — requisiciones/órdenes: bandeja, ejes de la orden y totales
+   ========================================================================= */
+/* Eje contable (Contabilidad): contorno sin punto, distinto del eje de entrega (relleno +
+   punto vía .badge-dot) — para que dos ejes independientes no se lean como una secuencia. */
+.badge-outline{background:transparent;border:1px solid currentColor}
+.badge-outline.badge-muted{border-color:var(--line)}
+/* Ficha de la orden: los dos badges de eje ahora llevan una etiqueta encima ("Entrega" /
+   "Contabilidad"), antes iban pegados y sin ninguna. */
+.order-axis-group{align-items:flex-start;gap:var(--space-4)}
+.order-axis{display:grid;gap:var(--space-1);justify-items:start}
+.order-axis-label{font-size:var(--text-3xs);color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+/* Grupo "Listas para generar orden" (BLOQUEANTE 2): mismo .panel, con un acento de borde para
+   que se note antes de leer el título — es la bandeja que antes no existía. */
+.connected-ready-panel{border-color:var(--green)}
+/* Barra Subtotal · IVA · Total al pie del bloque de ítems (MENOR: no existía en ninguna parte). */
+.connected-line-summary{display:flex;flex-wrap:wrap;gap:var(--space-5);padding:var(--space-3) var(--space-4);border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);font-size:var(--text-xs);color:var(--muted)}
+.connected-line-summary b{margin-left:var(--space-1);color:var(--ink)}
+.connected-line-summary-total{font-weight:700;color:var(--navy)}
+.connected-line-summary-total b{color:var(--navy)}
+/* Ítem declinado en el formulario del revisor: antes solo cambiaba el badge del <legend>,
+   mismo borde/fondo que uno vigente. Borde de alerta + campos atenuados lo diferencian.
+   El select "Estado del ítem" (id `decline-*`) y el textarea del motivo quedan a contraste
+   completo: son los únicos controles que siguen siendo relevantes en este estado. */
+.review-line.review-line-declined{border-color:var(--red);background:var(--red-soft)}
+.review-line.review-line-declined input,
+.review-line.review-line-declined select:not([id^="decline-"]){opacity:.6}
+
+/* =========================================================================
+   Táctil en móvil (skill §6 / QA 2026-08-31): 44px es el mínimo, no 33-36px.
+   Alcance acotado a controles que hoy quedan bajo 44px — no se toca la densidad
+   de escritorio, donde 34-36px es intencional para UI densa.
+   ========================================================================= */
+@media(max-width:530px){
+  .icon-button,.filter-button,.view-switch,.quick-supplier-trigger,.screen-session .button{min-height:44px}
+  .report-filters button{min-height:44px}
 }

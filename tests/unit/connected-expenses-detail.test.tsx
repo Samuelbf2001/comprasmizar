@@ -197,7 +197,7 @@ describe("RF-404 / RF-405: solicitante y usuario en la trazabilidad", () => {
     expect(screen.getByTestId("requisition-requester")).toHaveTextContent("Juan Pérez · +573001234567");
   });
 
-  it("muestra el id del solicitante interno cuando no hay solicitante externo", () => {
+  it("muestra un solicitante interno sin exponer su UUID cuando no hay solicitante externo", () => {
     render(
       <ConnectedRequisitionDetail
         data={{
@@ -223,10 +223,14 @@ describe("RF-404 / RF-405: solicitante y usuario en la trazabilidad", () => {
         refresh={vi.fn()}
       />,
     );
-    expect(screen.getByTestId("requisition-requester")).toHaveTextContent("Usuario user-42");
+    // GRAVE 4 (QA 2026-08-31): un UUID nunca debe llegar a pantalla. La API no expone el
+    // nombre del solicitante interno, así que el fallback es un texto honesto, no el id crudo.
+    const requester = screen.getByTestId("requisition-requester");
+    expect(requester).toHaveTextContent("Solicitante interno");
+    expect(requester).not.toHaveTextContent("user-42");
   });
 
-  it("muestra qué usuario ejecutó cada evento del historial, o que fue automático", () => {
+  it("indica que un evento tuvo actor humano o fue automático, sin exponer el UUID del actor", () => {
     render(
       <ConnectedRequisitionDetail
         data={{
@@ -256,7 +260,81 @@ describe("RF-404 / RF-405: solicitante y usuario en la trazabilidad", () => {
       />,
     );
     const actors = screen.getAllByTestId("audit-actor");
-    expect(actors[0]).toHaveTextContent("Usuario user-42");
-    expect(actors[1]).toHaveTextContent("Usuario automático");
+    expect(actors[0]).toHaveTextContent("Usuario interno");
+    expect(actors[0]).not.toHaveTextContent("user-42");
+    expect(actors[1]).toHaveTextContent("Automático");
+  });
+
+  // HUECO 2 (reunión 2026-08-31, QA): el hueco de arriba ("Solicitante interno"/"Usuario interno" sin
+  // nombre) se cierra agregando una lista mínima id+nombre a catalogs.users (GET /api/catalogs).
+  it("resuelve el nombre del solicitante interno contra catalogs.users cuando el id aparece en la lista", () => {
+    const catalogsWithUsers = { ...baseCatalogs, users: [{ id: "user-42", name: "Ana Torres" }] };
+    render(
+      <ConnectedRequisitionDetail
+        data={{
+          requisition: {
+            id: "req-1",
+            consecutive: "RQ-001",
+            type: "compra",
+            workId: "work-1",
+            requesterId: "user-42",
+            channel: "web",
+            requiredDate: "2026-08-24",
+            status: "en_revision",
+            items: [],
+          },
+          catalogs: catalogsWithUsers,
+          orders: [],
+          expenses: [],
+          history: [],
+          attachments: [],
+        }}
+        role="Revisor"
+        go={vi.fn()}
+        refresh={vi.fn()}
+      />,
+    );
+    const requester = screen.getByTestId("requisition-requester");
+    expect(requester).toHaveTextContent("Ana Torres");
+    expect(requester).not.toHaveTextContent("user-42");
+    expect(requester).not.toHaveTextContent("Solicitante interno");
+  });
+
+  it("resuelve el nombre del actor del historial contra catalogs.users, y conserva el fallback si el id no aparece en la lista", () => {
+    const catalogsWithUsers = { ...baseCatalogs, users: [{ id: "user-42", name: "Ana Torres" }] };
+    render(
+      <ConnectedRequisitionDetail
+        data={{
+          requisition: {
+            id: "req-1",
+            consecutive: "RQ-001",
+            type: "compra",
+            workId: "work-1",
+            requesterId: "user-42",
+            channel: "web",
+            requiredDate: "2026-08-24",
+            status: "en_revision",
+            items: [],
+          },
+          catalogs: catalogsWithUsers,
+          orders: [],
+          expenses: [],
+          history: [
+            { event: "creada", at: "2026-08-24T10:00:00.000Z", actorId: "user-42" },
+            { event: "iniciada_revision", at: "2026-08-24T11:00:00.000Z", actorId: "user-desconocido" },
+          ],
+          attachments: [],
+        }}
+        role="Revisor"
+        go={vi.fn()}
+        refresh={vi.fn()}
+      />,
+    );
+    const actors = screen.getAllByTestId("audit-actor");
+    expect(actors[0]).toHaveTextContent("Ana Torres");
+    expect(actors[0]).not.toHaveTextContent("user-42");
+    // Id ausente de catalogs.users: el fallback honesto se conserva, nunca el UUID crudo.
+    expect(actors[1]).toHaveTextContent("Usuario interno");
+    expect(actors[1]).not.toHaveTextContent("user-desconocido");
   });
 });

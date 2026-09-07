@@ -599,4 +599,166 @@ do $$ begin
   end;
 end $$;
 
+-- ============================================================================
+-- 202609010001_empresa_estado_item_y_eje_administrativo.sql
+-- ============================================================================
+
+-- requisiciones.obra_id es ahora nullable y sociedad_id es NOT NULL.
+do $$ begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'requisiciones' and column_name = 'obra_id' and is_nullable = 'NO'
+  ) then raise exception 'requisiciones.obra_id debería ser nullable tras la migración de empresa vs obra'; end if;
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'requisiciones' and column_name = 'sociedad_id' and is_nullable = 'YES'
+  ) then raise exception 'requisiciones.sociedad_id debería ser NOT NULL'; end if;
+end $$;
+
+-- La obra asignada debe pertenecer exactamente a la sociedad de la requisición.
+do $$ begin
+  begin
+    insert into public.requisiciones(consecutivo, tipo, obra_id, sociedad_id, solicitante_id, canal)
+      values ('', 'compra', '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', 'web');
+    raise exception 'Requisición aceptó obra de una sociedad distinta a la sociedad explícita';
+  exception when sqlstate '23514' then null;
+  end;
+end $$;
+
+-- Una requisición corporativa sin obra (solo sociedad) debe poder crearse.
+do $$
+declare v_req_sin_obra uuid; begin
+  insert into public.requisiciones(consecutivo, tipo, sociedad_id, solicitante_id, canal)
+    values ('', 'compra', '20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    returning id into v_req_sin_obra;
+  if v_req_sin_obra is null then raise exception 'Requisición sin obra_id (solo sociedad_id) no se pudo crear'; end if;
+end $$;
+
+-- El trigger de derivación completa sociedad_id cuando llega NULL con obra_id
+-- presente (contrato del portal público y de inserciones legacy).
+do $$
+declare v_req_derivada uuid; v_sociedad_derivada uuid; begin
+  insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
+    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    returning id, sociedad_id into v_req_derivada, v_sociedad_derivada;
+  if v_sociedad_derivada <> '20000000-0000-0000-0000-000000000001' then
+    raise exception 'El trigger de derivación de sociedad_id no completó el valor esperado desde obra_id';
+  end if;
+end $$;
+
+-- requisicion_items.estado nace en 'pendiente'; declinar exige motivo.
+do $$
+declare v_req uuid; v_item_pendiente uuid; begin
+  insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
+    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    returning id into v_req;
+  insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad)
+    values (v_req, 'Ítem estado por defecto QA', 1, 'unidad') returning id into v_item_pendiente;
+  if not exists (select 1 from public.requisicion_items where id = v_item_pendiente and estado = 'pendiente') then
+    raise exception 'requisicion_items.estado no nace en pendiente';
+  end if;
+  begin
+    insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad, estado)
+      values (v_req, 'Ítem declinado sin motivo QA', 1, 'unidad', 'declinado');
+    raise exception 'requisicion_items aceptó estado declinado sin motivo_declinacion';
+  exception when sqlstate '23514' then null;
+  end;
+  insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad, estado, motivo_declinacion)
+    values (v_req, 'Ítem declinado con motivo QA', 1, 'unidad', 'declinado', 'No corresponde a la obra');
+end $$;
+
+-- iva_tasa y descuento_tasa son fracciones acotadas a [0,1].
+do $$
+declare v_req uuid; begin
+  insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
+    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    returning id into v_req;
+  begin
+    insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad, iva_tasa)
+      values (v_req, 'Ítem iva_tasa fuera de rango QA', 1, 'unidad', 1.5);
+    raise exception 'requisicion_items aceptó iva_tasa > 1';
+  exception when sqlstate '23514' then null;
+  end;
+  begin
+    insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad, descuento_tasa)
+      values (v_req, 'Ítem descuento_tasa fuera de rango QA', 1, 'unidad', 1.01);
+    raise exception 'requisicion_items aceptó descuento_tasa > 1';
+  exception when sqlstate '23514' then null;
+  end;
+end $$;
+
+-- Eje administrativo de ordenes es independiente de estado_cumplimiento.
+do $$
+declare v_req uuid; v_orden uuid; begin
+  insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
+    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    returning id into v_req;
+  insert into public.ordenes(consecutivo, tipo, requisicion_id)
+    values ('', 'OC', v_req) returning id into v_orden;
+  update public.ordenes set estado_administrativo = 'contabilizada', contabilizada_at = now() where id = v_orden;
+  if not exists (select 1 from public.ordenes where id = v_orden and estado_cumplimiento = 'generada') then
+    raise exception 'Cambiar estado_administrativo alteró estado_cumplimiento';
+  end if;
+  update public.ordenes set estado_cumplimiento = 'cumplida' where id = v_orden;
+  if not exists (select 1 from public.ordenes where id = v_orden and estado_administrativo = 'contabilizada') then
+    raise exception 'Cambiar estado_cumplimiento alteró estado_administrativo';
+  end if;
+end $$;
+
+-- Índice único antifraude: una sola orden por (requisicion_id, proveedor_id),
+-- incluido el caso proveedor_id NULL vía coalesce.
+do $$
+declare v_req uuid; begin
+  insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
+    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    returning id into v_req;
+  insert into public.ordenes(consecutivo, tipo, requisicion_id, proveedor_id)
+    values ('', 'OC', v_req, '40000000-0000-0000-0000-000000000001');
+  begin
+    insert into public.ordenes(consecutivo, tipo, requisicion_id, proveedor_id)
+      values ('', 'OC', v_req, '40000000-0000-0000-0000-000000000001');
+    raise exception 'Se generó una segunda orden para la misma requisición y proveedor';
+  exception when sqlstate '23505' then null;
+  end;
+  insert into public.ordenes(consecutivo, tipo, requisicion_id)
+    values ('', 'OC', v_req);
+  begin
+    insert into public.ordenes(consecutivo, tipo, requisicion_id)
+      values ('', 'OC', v_req);
+    raise exception 'Se generó una segunda orden sin proveedor para la misma requisición';
+  exception when sqlstate '23505' then null;
+  end;
+end $$;
+
+-- orden_items.requisicion_item_id sigue con ON DELETE RESTRICT tras la migración.
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'orden_items_requisicion_item_id_fkey' and confdeltype = 'r'
+  ) then raise exception 'orden_items_requisicion_item_id_fkey dejó de ser ON DELETE RESTRICT'; end if;
+end $$;
+
+-- La lista blanca global no quedó más abierta que la tabla por obra que reemplaza.
+do $$ begin
+  if to_regclass('public.solicitantes_autorizados') is null then raise exception 'Falta tabla solicitantes_autorizados'; end if;
+  if not exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relname = 'solicitantes_autorizados' and c.relrowsecurity) then
+    raise exception 'RLS no está activo en solicitantes_autorizados';
+  end if;
+  if has_table_privilege('anon', 'public.solicitantes_autorizados', 'select') then
+    raise exception 'anon conserva privilegios sobre solicitantes_autorizados';
+  end if;
+  if (select count(*) from public.solicitantes_autorizados) <> (select count(distinct telefono_normalizado) from public.solicitantes_autorizados) then
+    raise exception 'La migración a solicitantes_autorizados dejó teléfonos normalizados duplicados';
+  end if;
+end $$;
+
+-- requisiciones.forma_pago existe: sin ella, el dominio no tiene dónde persistir la forma de pago
+-- capturada en review() y volvería a depender de la auditoría como fuente de verdad de negocio.
+do $$ begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'requisiciones' and column_name = 'forma_pago'
+  ) then raise exception 'Falta columna requisiciones.forma_pago'; end if;
+end $$;
+
 rollback;

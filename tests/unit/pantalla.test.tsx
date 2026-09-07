@@ -59,12 +59,12 @@ const requesterName = "Juliana Pérez", requesterPhone = "+573001112233";
 function fixtureCollections(): { requisitions: Requisition[]; expenses: Expense[]; orders: Order[] } {
   const items = [{ id: "item-1", description: "Cemento", quantity: 2, unit: "bulto", unitBase: 50_000, unitIva: 9_500 }];
   const requisitions: Requisition[] = [
-    { id: "req-1", consecutive: "REQ-2026-0001", type: "compra", workId: "work-1", requesterId: "user-1", channel: "web", requiredDate: "2026-08-20", status: "en_revision", items },
-    { id: "req-2", consecutive: "REQ-2026-0002", type: "compra", workId: "work-2", channel: "publico", requiredDate: "2026-08-21", status: "en_aprobacion", externalRequester: { name: requesterName, phone: requesterPhone }, items },
-    { id: "req-3", consecutive: "REQ-2026-0003", type: "compra", workId: "work-1", requesterId: "user-2", channel: "web", requiredDate: "2026-08-19", status: "aprobada", items },
+    { id: "req-1", consecutive: "REQ-2026-0001", type: "compra", societyId: "soc-1", workId: "work-1", requesterId: "user-1", channel: "web", requiredDate: "2026-08-20", status: "en_revision", items },
+    { id: "req-2", consecutive: "REQ-2026-0002", type: "compra", societyId: "soc-1", workId: "work-2", channel: "publico", requiredDate: "2026-08-21", status: "en_aprobacion", externalRequester: { name: requesterName, phone: requesterPhone }, items },
+    { id: "req-3", consecutive: "REQ-2026-0003", type: "compra", societyId: "soc-1", workId: "work-1", requesterId: "user-2", channel: "web", requiredDate: "2026-08-19", status: "aprobada", items },
   ];
   const orders: Order[] = [
-    { id: "order-1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "req-3", supplierId: "supplier-1", itemIds: ["item-1"], status: "generada" },
+    { id: "order-1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "req-3", supplierId: "supplier-1", itemIds: ["item-1"], status: "generada", adminStatus: "pendiente" },
   ];
   const period = new Date().toISOString().slice(0, 7);
   const expenses: Expense[] = [

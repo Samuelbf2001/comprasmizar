@@ -9,6 +9,7 @@ import { createPostgresDependencies } from "../../../lib/infrastructure/postgres
 export const runtime = "nodejs";
 
 type NamedRow = { id: string; name: string };
+type WorkRow = NamedRow & { societyId: string };
 const uuid = z.string().uuid();
 const name = z.string().trim().min(2).max(160);
 const active = z.boolean().optional();
@@ -26,6 +27,9 @@ const createCatalogSchema = z.discriminatedUnion("kind", [
   // RF-004: `id` es obligatorio y debe ser el id ya existente en Supabase Auth (auth.users) del usuario a
   // vincular; esta plataforma nunca crea la cuenta de Auth. Al menos un rol es obligatorio en el alta.
   z.object({ kind: z.literal("users"), data: z.object({ id: uuid, name, email: z.string().trim().email().max(254), phone: phone.optional(), roles: z.array(roleLiteral).min(1).max(6), active }).strict() }),
+  // HUECO 1: lista blanca global de solicitantes autorizados por WhatsApp (RF-902). `phone` es
+  // obligatorio (a diferencia de proveedores/usuarios): la columna `telefono` es NOT NULL.
+  z.object({ kind: z.literal("requesters"), data: z.object({ name, phone, active }).strict() }),
 ]);
 const patchCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("works"), id: uuid, data: z.object({ name: name.optional(), societyId: uuid.optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
@@ -36,6 +40,8 @@ const patchCatalogSchema = z.discriminatedUnion("kind", [
   // Sin "email": el correo se vincula a la cuenta de Auth y no se edita desde este catálogo.
   // "roles" es el conjunto final deseado (reemplaza, no incrementa) y puede quedar vacío.
   z.object({ kind: z.literal("users"), id: uuid, data: z.object({ name: name.optional(), phone: phone.nullable().optional(), roles: z.array(roleLiteral).max(6).optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  // HUECO 1: `phone` no admite null (nunca opcional-a-vacío) porque la columna es NOT NULL.
+  z.object({ kind: z.literal("requesters"), id: uuid, data: z.object({ name: name.optional(), phone: phone.optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
 ]);
 
 /**
@@ -45,16 +51,30 @@ const patchCatalogSchema = z.discriminatedUnion("kind", [
 export function GET() {
   return authenticatedJson(async (actor) => {
     const sql = sharedPostgres(runtimeEnv().DATABASE_URL);
-    const modules = await sql<Array<{ name: string; enabled: boolean }>>`select nombre as name, activo as enabled from modulos where nombre in ('ordenes_multi_proveedor', 'catalogos_admin_mizar')`;
+    // "ordenes_multi_proveedor" sale de aquí: la generación de órdenes ya siempre agrupa por proveedor
+    // (reunión 2026-08-31), y Fase 1 ya marcó ese módulo como obsoleto sin borrar la fila.
+    const modules = await sql<Array<{ name: string; enabled: boolean }>>`select nombre as name, activo as enabled from modulos where nombre in ('catalogos_admin_mizar')`;
     const features = Object.fromEntries(modules.map((module) => [module.name, module.enabled]));
     const canReadSuppliers = hasPermission(actor.roles, "order:read") || hasPermission(actor.roles, "supplier:manage") || actor.roles.includes("admin_sixteam") || (actor.roles.includes("admin_mizar") && features.catalogos_admin_mizar === true);
-    const [works, tags, suppliers, items] = await Promise.all([
-      sql<NamedRow[]>`select id, nombre as name from obras where estado = 'activa' order by nombre`,
+    // "sociedad_id as societyId" es el bloqueo exacto que hoy impide a la UI filtrar obras por empresa
+    // (reunión 2026-08-31: el solicitante elige empresa, la obra la asigna el revisor filtrada por ella).
+    // "societies" se añade al bootstrap por la misma razón: sin la lista, no hay qué ofrecer para elegir.
+    // HUECO 2 (QA reunión 2026-08-31): un UUID crudo nunca debe llegar a pantalla — el historial de
+    // trazabilidad y el solicitante interno de una requisición solo traían el id (ver
+    // components/screens/connected.tsx). Se añade esta lista MÍNIMA (id + nombre, sin correo/teléfono/
+    // roles) para que la UI resuelva el nombre; no se gatea por rol porque cualquier actor autenticado
+    // puede ver una requisición ajena o su historial (aprobador, contabilidad, revisor…) y necesita
+    // resolver ambos nombres. Deliberadamente sin `where estado='activo'`: un actor histórico ya
+    // desactivado igual debe poder identificarse en una traza pasada.
+    const [works, tags, suppliers, items, societies, users] = await Promise.all([
+      sql<WorkRow[]>`select id, nombre as name, sociedad_id as "societyId" from obras where estado = 'activa' order by nombre`,
       sql<NamedRow[]>`select id, nombre as name from etiquetas where activa = true order by nombre`,
       canReadSuppliers ? sql<NamedRow[]>`select id, razon_social as name from proveedores where activo = true order by razon_social` : Promise.resolve([]),
       sql<Array<NamedRow & { unit: string; status: string }>>`select id, nombre as name, unidad_defecto as unit, estado as status from items where estado = 'activo' order by nombre`,
+      sql<NamedRow[]>`select id, nombre as name from sociedades where activa = true order by nombre`,
+      sql<NamedRow[]>`select id, nombre as name from usuarios order by nombre`,
     ]);
-    return { works, tags, suppliers, items, features };
+    return { works, tags, suppliers, items, societies, users, features };
   });
 }
 

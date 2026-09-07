@@ -2,10 +2,10 @@
   "version": "7.3",
   "screens": [
     {
-      "id": "TIPO_Y_OBRA",
+      "id": "TIPO_Y_EMPRESA",
       "title": "Nueva requisición",
       "data": {
-        "obras": {
+        "sociedades": {
           "type": "array",
           "items": {
             "type": "object",
@@ -21,11 +21,11 @@
           "__example__": [
             {
               "id": "11111111-1111-1111-1111-111111111111",
-              "title": "Obra La Pradera"
+              "title": "Constructora Mizar S.A.S."
             },
             {
               "id": "22222222-2222-2222-2222-222222222222",
-              "title": "Obra El Roble"
+              "title": "Inversiones Mizar S.A.S."
             }
           ]
         },
@@ -63,7 +63,7 @@
           },
           {
             "type": "TextBody",
-            "text": "Te identificamos por tu número de WhatsApp. Elige el tipo de solicitud y la obra."
+            "text": "Te identificamos por tu número de WhatsApp. Elige el tipo de solicitud y tu empresa."
           },
           {
             "type": "RadioButtonsGroup",
@@ -83,10 +83,10 @@
           },
           {
             "type": "Dropdown",
-            "name": "obra",
-            "label": "Obra",
+            "name": "empresa",
+            "label": "Empresa",
             "required": true,
-            "data-source": "${data.obras}"
+            "data-source": "${data.sociedades}"
           },
           {
             "type": "Footer",
@@ -122,7 +122,7 @@
             "name": "catalogo",
             "label": "Del catálogo",
             "required": false,
-            "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}"
+            "data-source": "${screen.TIPO_Y_EMPRESA.data.catalogo}"
           },
           {
             "type": "TextInput",
@@ -257,7 +257,7 @@
             "name": "catalogo",
             "label": "Del catálogo",
             "required": false,
-            "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}"
+            "data-source": "${screen.TIPO_Y_EMPRESA.data.catalogo}"
           },
           {
             "type": "TextInput",
@@ -391,7 +391,7 @@
             "name": "catalogo",
             "label": "Del catálogo",
             "required": false,
-            "data-source": "${screen.TIPO_Y_OBRA.data.catalogo}"
+            "data-source": "${screen.TIPO_Y_EMPRESA.data.catalogo}"
           },
           {
             "type": "TextInput",
@@ -520,20 +520,14 @@
             "type": "DatePicker",
             "name": "fecha_requerida",
             "label": "Fecha requerida",
-            "required": true
-          },
-          {
-            "type": "TextInput",
-            "name": "destino",
-            "label": "Destino o frente",
-            "required": false,
-            "max-chars": 500
+            "required": false
           },
           {
             "type": "TextArea",
             "name": "observaciones",
             "label": "Observaciones",
             "required": false,
+            "helper-text": "Cuéntanos a dónde va la compra y cualquier otra nota",
             "max-length": 1024
           },
           {
@@ -565,11 +559,11 @@
           },
           {
             "type": "TextBody",
-            "text": "Obra: ${screen.TIPO_Y_OBRA.form.obra}"
+            "text": "Empresa: ${screen.TIPO_Y_EMPRESA.form.empresa}"
           },
           {
             "type": "TextBody",
-            "text": "Tipo: ${screen.TIPO_Y_OBRA.form.tipo_solicitud}"
+            "text": "Tipo: ${screen.TIPO_Y_EMPRESA.form.tipo_solicitud}"
           },
           {
             "type": "TextBody",
@@ -585,10 +579,9 @@
             "on-click-action": {
               "name": "complete",
               "payload": {
-                "type": "${screen.TIPO_Y_OBRA.form.tipo_solicitud}",
-                "workId": "${screen.TIPO_Y_OBRA.form.obra}",
+                "type": "${screen.TIPO_Y_EMPRESA.form.tipo_solicitud}",
+                "societyId": "${screen.TIPO_Y_EMPRESA.form.empresa}",
                 "requiredDate": "${screen.DETALLES.form.fecha_requerida}",
-                "destination": "${screen.DETALLES.form.destino}",
                 "observations": "${screen.DETALLES.form.observaciones}",
                 "item_1_catalogo": "${screen.ARTICULO_UNO.form.catalogo}",
                 "item_1_descripcion": "${screen.ARTICULO_UNO.form.descripcion}",

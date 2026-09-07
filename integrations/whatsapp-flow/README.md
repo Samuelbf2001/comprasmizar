@@ -21,14 +21,18 @@ cifrado, sin health checks). Toda la navegación es `navigate`/`complete` en el
 cliente. **Un artículo por pantalla** para que cada ítem se distinga con claridad
 del anterior (feedback de la prueba real):
 
-1. **TIPO_Y_OBRA** (entrada) — tipo (`compra`/`pago`) y obra (`Dropdown`). El
-   listado de obras **no está quemado**: llega dinámico por `data.obras`.
+1. **TIPO_Y_EMPRESA** (entrada) — tipo (`compra`/`pago`) y **empresa** (`Dropdown`,
+   reunión 2026-08-31: el solicitante elige empresa, no obra — la obra/centro de
+   costo la asigna el revisor en la oficina). El listado de sociedades **no
+   está quemado**: llega dinámico por `data.sociedades`.
 2. **ARTICULO_UNO** — artículo obligatorio: catálogo (opcional), descripción,
    cantidad, unidad, posible proveedor y link. Es el único obligatorio.
 3. **ARTICULO_DOS** — segundo artículo, todo opcional (se omite con Continuar).
 4. **ARTICULO_TRES** — tercer artículo, todo opcional.
-5. **DETALLES** — fecha requerida (`DatePicker`), destino/frente, observaciones,
-   y un **`PhotoPicker` con `photo-source: camera_gallery`**: el solicitante puede
+5. **DETALLES** — fecha requerida (`DatePicker`, **opcional** desde la reunión
+   2026-08-31, en los tres canales), observaciones (ya sin el campo "destino"
+   separado: su sentido se fusiona aquí — la ayuda del campo pide decir a dónde
+   va la compra), y un **`PhotoPicker` con `photo-source: camera_gallery`**: el solicitante puede
    **tomar una foto con la cámara** o elegirla de la galería.
 6. **RESUMEN** (terminal, `success: true`) — dispara `complete` con el payload
    plano. Las claves item_N_* se conservan aunque cada ítem venga de su pantalla.
@@ -57,12 +61,12 @@ Meta no soporta listas dinámicas sin Data Endpoint. Se usan 3 pantallas fijas
 (1 obligatoria + 2 opcionales). Una requisición con más de 3 ítems requiere otro
 envío; subir el límite es duplicar una pantalla `ARTICULO_*`.
 
-## Cómo se llenan los dropdowns dinámicos (obra y catálogo)
+## Cómo se llenan los dropdowns dinámicos (empresa y catálogo)
 
 Sin Data Endpoint, el **único** momento en que la pantalla de entrada recibe
 datos dinámicos es cuando el negocio **envía** el mensaje interactivo que abre
 el Flow. Ese envío incluye `interactive.action.parameters.flow_action_payload.data`,
-un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
+un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_EMPRESA`
 (`flows/guides/sendingaflow.md`):
 
 ```json
@@ -83,9 +87,9 @@ un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
         "flow_action": "navigate",
         "flow_token": "<timestampISO>.<hex>",
         "flow_action_payload": {
-          "screen": "TIPO_Y_OBRA",
+          "screen": "TIPO_Y_EMPRESA",
           "data": {
-            "obras": [{ "id": "<uuid-obra>", "title": "Obra La Pradera" }],
+            "sociedades": [{ "id": "<uuid-sociedad>", "title": "Constructora Mizar S.A.S." }],
             "catalogo": [{ "id": "<uuid-item>", "title": "Cemento gris 50kg" }]
           }
         }
@@ -132,20 +136,20 @@ Respuesta: solo `{ ok, messageId }` — nunca teléfonos ni el cuerpo de Kapso.
 
 **Fallo cerrado:** sin `KAPSO_API_KEY`, `WHATSAPP_FLOW_ID`,
 `KAPSO_PHONE_NUMBER_ID` o `KAPSO_WEBHOOK_SECRET`, `sendRequisitionFlow` lanza
-`FLOW_SEND_NOT_CONFIGURED` **antes** de consultar obras/catálogo — nunca toca
+`FLOW_SEND_NOT_CONFIGURED` **antes** de consultar sociedades/catálogo — nunca toca
 la BD a medias.
 
-**Origen de `obras` y `catalogo`:** `createPostgresFlowCatalogSource` (misma
-`sharedPostgres()` que usan los demás adaptadores) consulta obras con
-`estado = 'activa'` e items con `estado = 'activo'` — los mismos filtros que ya
-usa `GET /api/catalogs`. Orden: obras alfabético por nombre; items por uso más
+**Origen de `sociedades` y `catalogo`:** `createPostgresFlowCatalogSource` (misma
+`sharedPostgres()` que usan los demás adaptadores) consulta sociedades con
+`activa = true` e items con `estado = 'activo'` — los mismos filtros que ya
+usa `GET /api/catalogs`. Orden: sociedades alfabético por nombre; items por uso más
 reciente primero cuando hay señal (`max(requisicion_items.created_at)` por
 `item_id`), alfabético para lo nunca usado.
 
 **Tope de opciones — 200:** `flows/reference/components.md` (tabla "Limits and
 restrictions" de `Dropdown`) fija el máximo de opciones de un `data-source`
 dinámico en **200 si ninguna opción trae imagen, 100 si alguna la trae**.
-Ninguna opción de `obras`/`catalogo` lleva imagen, así que el tope aplicado es
+Ninguna opción de `sociedades`/`catalogo` lleva imagen, así que el tope aplicado es
 `MAX_DROPDOWN_OPTIONS = 200` (constante exportada de `flow-sender.ts`), pasado
 explícito a cada consulta — nunca "lo que devuelva la BD". La misma tabla fija
 en 30 caracteres el máximo de `title`; nombres más largos se recortan con
@@ -182,7 +186,17 @@ hex        = HMAC-SHA256(telefono + "." + timestampISO, KAPSO_WEBHOOK_SECRET)  /
   Rechazar (o degradar a "sin verificar") un `flow_token` cuyo `timestampISO`
   sea demasiado viejo, ya que no lleva expiración propia.
 
-## Mapeo requerido hacia el contrato del webhook (no implementado; NO se tocó `app/api/kapso/route.ts`)
+## Mapeo hacia el contrato del webhook (implementado en `lib/infrastructure/nfm-reply-adapter.ts` — Fase 6, reunión 2026-08-31)
+
+**Nota de esta fase:** el mapeo de abajo describe el diseño original, ya
+**implementado** (`adaptNfmReply`, `app/api/kapso/route.ts`) — la sección se
+conserva por su valor de referencia, con los campos actualizados a los
+vigentes tras la reunión 2026-08-31 (empresa en vez de obra; sin "destino";
+fecha requerida opcional). El manejo real de `item_N_foto` (evidencia por
+ítem, media id + descarga vía el proxy de Kapso) vive en
+`resolveKapsoMediaDownloadUrl`/`firstEvidenceMediaId` (`nfm-reply-adapter.ts`)
+y difiere del esquema `evidencia`/`cdn_url` cifrado que describe la sección
+siguiente (ese es el camino de un **Data Endpoint**, que este Flow no tiene).
 
 El payload de `complete` de `RESUMEN` es plano (Meta no permite objetos
 anidados salvo para `PhotoPicker`/`DocumentPicker`, que además solo pueden ir
@@ -194,25 +208,24 @@ es (`flows/guides/receiveflowresponse.md`):
   "interactive": {
     "type": "nfm_reply",
     "nfm_reply": {
-      "response_json": "{\"flow_token\":\"...\", \"type\":\"compra\", \"workId\":\"...\", ...}"
+      "response_json": "{\"flow_token\":\"...\", \"type\":\"compra\", \"societyId\":\"...\", ...}"
     }
   }
 }
 ```
 
-Eso **no** calza con `kapsoWebhookSchema`/`KapsoFlowSubmission`
+Eso **no** calza directo con `kapsoWebhookSchema`/`KapsoFlowSubmission`
 (`lib/services/kapso-contracts.ts`, `app/api/kapso/route.ts`), que esperan un
 evento ya envuelto (`eventId`, `type: "flow_submission"`, `receivedAt`,
-`submission.items[]`). Alguien —Kapso como proxy normalizador, o un adaptador
-propio si Kapso entrega el `nfm_reply` crudo— tiene que traducir antes de
-llamar al webhook existente. Documentamos el mapeo exacto en vez de tocar ese
-archivo (pertenece a otro agente):
+`submission.items[]`) — `adaptNfmReply` (`lib/infrastructure/nfm-reply-adapter.ts`)
+es ese traductor, ya implementado. Tabla de referencia (actualizada a los
+campos vigentes tras la reunión 2026-08-31):
 
 | Campo del Flow (`response_json`) | Campo de `KapsoFlowSubmission` | Nota |
 | --- | --- | --- |
 | `type` | `type` | Coincide tal cual (`"compra"\|"pago"`). |
-| `workId` | `workId` | UUID de la obra elegida en el dropdown dinámico. |
-| `requiredDate` | `requiredDate` | Ya viene `YYYY-MM-DD` (DatePicker ≥5.0); coincide con `z.string().date()`. |
+| `societyId` | `societyId` | UUID de la empresa elegida en el dropdown dinámico — el solicitante elige empresa, no obra (la asigna el revisor). Obligatorio en `KapsoFlowSubmission` y exigido por `ProcurementService.create` para el canal whatsapp. `workId` se conserva como campo OPCIONAL de compatibilidad (ver comentario en `extractTopLevelFields`, `nfm-reply-adapter.ts`); el Flow vigente ya no lo manda. |
+| `requiredDate` | `requiredDate` | **Opcional** (reunión 2026-08-31): si viene, ya llega `YYYY-MM-DD` (DatePicker ≥5.0) y se valida el formato; si no viene, se omite en vez de rechazar el evento. |
 | `requesterName` | `requesterName` | Coincide tal cual. |
 | `phone` | `phone` | **Decisión pendiente**: el Flow deja editar el teléfono aunque lo precarga con el remitente real de WhatsApp. Recomendado: para el campo de identidad usar el remitente verificado del mensaje (`context.from`/`from` en el webhook de mensajes de Meta) y tratar `phone` del Flow solo como dato de contacto alternativo, no como identidad. |
 | `item_N_catalogo` (N=1..3, si no vacío) | `items[i].itemId` | Solo incluir el ítem N en el arreglo si `item_N_catalogo` **o** `item_N_descripcion` no están vacíos; las franjas 2/3 vacías se descartan completas, no se envían como ítem con cantidad 0. |

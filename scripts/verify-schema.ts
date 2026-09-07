@@ -1,0 +1,94 @@
+// Arnés de esquema contra Postgres REAL (embedded-postgres, Postgres 18.4, sin Docker — roto en esta
+// máquina — y sin proyecto Supabase). Levanta un cluster efímero, aplica el prelude que stubea lo que
+// Supabase da por hecho (supabase/tests/embedded_postgres_prelude.sql), las 4 migraciones EN ORDEN,
+// supabase/seed.sql, y los 3 arneses SQL existentes (schema_verification, generic_attachments_verification,
+// supplier_documents_verification). Sale con código != 0 si algo falla, para poder engancharse a CI.
+//
+// Por qué existe: dos bloqueantes "solo-DB-real" (traducción de error de FK con código equivocado,
+// e IVA legacy) pasaron los 342 tests unitarios con mocks y solo se vieron corriendo la migración
+// contra un motor real (ver AGENTS.md/informe de la reunión 2026-08-31, y el commit be06b83, que ya
+// pagó esta misma clase de bug una vez). Este arnés es la red que evita que vuelvan a colarse.
+//
+// Uso: npm run verify:schema  (equivalente a `npx tsx scripts/verify-schema.ts`).
+import EmbeddedPostgres from "embedded-postgres";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const DATA_DIR = path.join(ROOT, ".embedded-postgres-verify");
+const PORT = 55987; // puerto alto, poco probable que choque con un Postgres local de verdad.
+const DB_NAME = "mizar_verify";
+
+const PRELUDE = path.join(ROOT, "supabase", "tests", "embedded_postgres_prelude.sql");
+const MIGRATIONS_DIR = path.join(ROOT, "supabase", "migrations");
+const SEED = path.join(ROOT, "supabase", "seed.sql");
+const HARNESSES = [
+  path.join(ROOT, "supabase", "tests", "schema_verification.sql"),
+  path.join(ROOT, "supabase", "tests", "generic_attachments_verification.sql"),
+  path.join(ROOT, "supabase", "tests", "supplier_documents_verification.sql"),
+];
+
+function migrationFiles(): string[] {
+  return readdirSync(MIGRATIONS_DIR)
+    .filter((name) => name.endsWith(".sql"))
+    .sort() // los 4 nombres son timestamp-prefijados (YYYYMMDDHHMM...): el orden alfabético YA es el orden cronológico.
+    .map((name) => path.join(MIGRATIONS_DIR, name));
+}
+
+async function runFile(client: import("pg").Client, filePath: string): Promise<void> {
+  const sql = readFileSync(filePath, "utf8");
+  const label = path.relative(ROOT, filePath);
+  process.stdout.write(`-> ${label} ... `);
+  try {
+    // Sin parámetros: node-postgres usa el protocolo "simple query", que SÍ admite múltiples
+    // sentencias separadas por ";" en un solo texto — necesario porque cada archivo de este repo es
+    // un script largo, no una sentencia aislada.
+    await client.query(sql);
+    console.log("ok");
+  } catch (error) {
+    console.log("FALLÓ");
+    throw error instanceof Error ? new Error(`${label}: ${error.message}`, { cause: error }) : error;
+  }
+}
+
+async function main(): Promise<void> {
+  rmSync(DATA_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+  const pg = new EmbeddedPostgres({ databaseDir: DATA_DIR, user: "postgres", password: "postgres", port: PORT, persistent: false });
+  await pg.initialise();
+  await pg.start();
+  let ok = false;
+  try {
+    await pg.createDatabase(DB_NAME);
+    const client = pg.getPgClient(DB_NAME);
+    await client.connect();
+    try {
+      await runFile(client, PRELUDE);
+      for (const migration of migrationFiles()) await runFile(client, migration);
+      await runFile(client, SEED);
+      for (const harness of HARNESSES) await runFile(client, harness);
+      ok = true;
+    } finally {
+      await client.end();
+    }
+  } finally {
+    await pg.stop().catch((error: unknown) => {
+      // El cleanup interno de embedded-postgres a veces choca con locks de archivo de Windows
+      // (EBUSY) DESPUÉS de que el resultado ya quedó decidido arriba; no debe enmascarar un éxito
+      // real ni cambiar el código de salida.
+      console.warn("Aviso: fallo no crítico al detener el cluster embebido:", error);
+    });
+    // Igual que arriba: en Windows el proceso de postgres a veces tarda un instante en soltar sus
+    // manejadores de archivo después de detenerse, y borrar el directorio de datos justo después
+    // puede fallar con EBUSY/EPERM. Es limpieza de un directorio TEMPORAL (.embedded-postgres-verify,
+    // recreado desde cero en cada corrida) — nunca debe convertir una corrida EXITOSA en un fallo.
+    try { rmSync(DATA_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 }); }
+    catch (error) { console.warn("Aviso: no se pudo borrar el directorio temporal (se recreará en la próxima corrida):", error); }
+  }
+  if (!ok) throw new Error("El arnés de esquema no completó todos los pasos");
+}
+
+main().then(
+  () => { console.log("\nTodo verde: prelude + 4 migraciones + seed + 3 arneses SQL pasaron contra Postgres real."); process.exit(0); },
+  (error) => { console.error("\nArnés de esquema FALLÓ:", error); process.exit(1); },
+);

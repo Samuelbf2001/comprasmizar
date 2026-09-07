@@ -103,6 +103,8 @@ describe("superficies demo de adjuntos operativos", () => {
         catalogs={{
           works: [{ id: "work-1", name: "Torre Norte" }],
           tags: [], suppliers: [], items: [], features: {},
+          // Reunión 2026-08-31: el alta ahora elige empresa, no obra (la asigna el revisor).
+          societies: [{ id: "soc-1", name: "Constructora Ejemplo" }],
         }}
         go={() => undefined}
       />,

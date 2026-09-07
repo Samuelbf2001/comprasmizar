@@ -24,7 +24,13 @@ npm run typecheck
 npm run test:coverage
 npm run build
 npm run test:e2e
+npm run verify:schema
 ```
+
+`npm run verify:schema` corre las migraciones y los 3 arneses SQL de `supabase/tests/` contra un
+Postgres real (motor embebido, sin Docker) — ver [docs/modelo-datos.md](./docs/modelo-datos.md#verificación-ejecutable).
+Los tests unitarios con mocks no ven los códigos de error reales de Postgres ni sus columnas
+`NOT NULL`; este script sí.
 
 ## Estructura
 

@@ -173,6 +173,10 @@ describe("RF-1105: cache en memoria por ruta", () => {
         "/api/dashboard": () => jsonResponse({ byStatus: { en_revision: 3 } }),
         "/api/catalogs": () => jsonResponse(catalogsPayload),
         "/api/requisitions": () => jsonResponse([]),
+        // BLOQUEANTE 2: /revision ahora también pide /api/orders (mismo permiso que /ordenes)
+        // para saber qué "aprobada" ya generó su orden y separar el grupo "Listas para
+        // generar orden" — sin este handler, routedFetch tumbaría la carga con un error.
+        "/api/orders": () => jsonResponse([]),
       }),
     );
 

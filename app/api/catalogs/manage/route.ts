@@ -14,10 +14,15 @@ export function GET() {
     const feature = featureRows[0]?.active === true;
     // RF-002/RF-004: "societies" y "users" no dependen del autoservicio de catálogos como el resto.
     // "users" solo habilita ESCRITURA aquí (ver canReadUsers para su lectura, exclusiva de admin_mizar/admin_sixteam).
-    const access = { works: canManageCatalog(actor, "works", feature), tags: canManageCatalog(actor, "tags", feature), items: canManageCatalog(actor, "items", feature), suppliers: canManageCatalog(actor, "suppliers", feature), societies: canManageCatalog(actor, "societies", feature), users: canManageCatalog(actor, "users", feature) };
+    const access = { works: canManageCatalog(actor, "works", feature), tags: canManageCatalog(actor, "tags", feature), items: canManageCatalog(actor, "items", feature), suppliers: canManageCatalog(actor, "suppliers", feature), societies: canManageCatalog(actor, "societies", feature), users: canManageCatalog(actor, "users", feature), requesters: canManageCatalog(actor, "requesters", feature) };
     const canReadUsers = access.users || actor.roles.includes("admin_mizar");
-    if (!Object.values(access).some(Boolean) && !canReadUsers) throw new DomainError("FORBIDDEN", "No puede administrar catálogos");
-    const [works, tags, items, suppliers, societies, approvers, societyRecords, userRecords] = await Promise.all([
+    // HUECO 1: mismo criterio que la policy RLS de lectura de solicitantes_autorizados
+    // ("solicitantes_autorizados_lectura_operativa" = can_operate_compras() or can_manage_catalogos()),
+    // más amplio que `access.requesters` (que ya es exactamente can_manage_catalogos): revisor puede
+    // CONSULTAR quién puede pedir por WhatsApp aunque no pueda administrar la lista.
+    const canReadRequesters = access.requesters || actor.roles.includes("revisor");
+    if (!Object.values(access).some(Boolean) && !canReadUsers && !canReadRequesters) throw new DomainError("FORBIDDEN", "No puede administrar catálogos");
+    const [works, tags, items, suppliers, societies, approvers, societyRecords, userRecords, requesters] = await Promise.all([
       access.works ? sql<Array<{ id: string; name: string; societyId: string; active: boolean }>>`select id, nombre as name, sociedad_id as "societyId", estado='activa' as active from obras order by nombre` : Promise.resolve([]),
       access.tags ? sql<Array<{ id: string; name: string; approverId: string | null; active: boolean }>>`select id, nombre as name, aprobador_id as "approverId", activa as active from etiquetas order by nombre` : Promise.resolve([]),
       access.items ? sql<Array<{ id: string; name: string; specification: string | null; unit: string; category: string | null; status: string; active: boolean }>>`select id, nombre as name, especificacion as specification, unidad_defecto as unit, categoria as category, estado as status, estado='activo' as active from items where estado <> 'fusionado' order by nombre` : Promise.resolve([]),
@@ -30,7 +35,9 @@ export function GET() {
       access.societies ? sql<Array<{ id: string; name: string; nit: string | null; active: boolean }>>`select id, nombre as name, nit, activa as active from sociedades order by nombre` : Promise.resolve([]),
       // RF-004: admin_mizar solo lee (nunca ve esto como habilitado para escribir vía `access.users`).
       canReadUsers ? sql<Array<{ id: string; name: string; email: string; phone: string | null; active: boolean; roles: string[] }>>`select u.id, u.nombre as name, u.email, u.telefono as phone, u.estado='activo' as active, coalesce(array_agg(ur.rol) filter (where ur.rol is not null), '{}') as roles from usuarios u left join usuario_roles ur on ur.usuario_id=u.id group by u.id order by u.nombre` : Promise.resolve([]),
+      // HUECO 1: listado completo (incluye inactivos) para poder reactivar una baja reversible.
+      canReadRequesters ? sql<Array<{ id: string; name: string; phone: string; active: boolean }>>`select id, nombre as name, telefono as phone, activo as active from solicitantes_autorizados order by nombre` : Promise.resolve([]),
     ]);
-    return { works, tags, items, suppliers, societies, approvers, societyRecords, userRecords, access, canReadUsers, features: { catalogos_admin_mizar: feature } };
+    return { works, tags, items, suppliers, societies, approvers, societyRecords, userRecords, requesters, access, canReadUsers, canReadRequesters, features: { catalogos_admin_mizar: feature } };
   });
 }

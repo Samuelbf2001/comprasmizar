@@ -1,9 +1,12 @@
 import postgres, { type Sql } from "postgres";
-import { normalizeItemName, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type Order, type PettyCash, type Requisition, type Role } from "../domain";
-import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, ConsecutiveRepository, IdGenerator, PublicAccessVerifier, ServiceDependencies, TagRepository, TransactionManager, TransactionRepositories } from "../services";
+import { DomainError, normalizeItemName, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type Role } from "../domain";
+import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, ConsecutiveRepository, IdGenerator, PublicAccessVerifier, ServiceDependencies, TagRepository, TransactionManager, TransactionRepositories } from "../services";
 import { hmacSha256, safeEqual } from "../security/crypto";
 import { publicEnv, runtimeEnv } from "../security/env";
 import { asJsonb } from "./jsonb";
+// HUECO 1: mismo criterio de normalización que la columna generada telefono_normalizado (ver
+// lib/infrastructure/phone.ts) — se usa en findRequesterDuplicate, más abajo.
+import { normalizeCoPhone } from "./phone";
 
 let sharedSql: Sql | undefined;
 export function sharedPostgres(databaseUrl = runtimeEnv().DATABASE_URL): Sql { sharedSql ??= postgres(databaseUrl, { prepare: true, max: 10 }); return sharedSql; }
@@ -15,13 +18,42 @@ const asNumber = (value: unknown) => Number(value ?? 0);
  * UTC. `String(fecha)` produce "Tue Aug 25 2026 19:00:00 GMT-0500", que ademas de no ser
  * un formato presentable muestra el DIA ANTERIOR en Colombia (GMT-5). Se toman los
  * componentes UTC para devolver siempre el mismo dia calendario que guarda la BD.
+ * Devuelve `undefined` (no `""`) para NULL: con `requiredDate` ahora opcional, un `""` se colaría en
+ * los rangos de filtro (`row.requiredDate >= dateFrom`) y en el PDF como si fuera una fecha real.
  */
-const asIsoDate = (value: unknown) => (value instanceof Date ? value.toISOString().slice(0, 10) : String(value ?? ""));
+const asIsoDate = (value: unknown): string | undefined => (value instanceof Date ? value.toISOString().slice(0, 10) : value == null ? undefined : String(value));
 const isElevated = (actor: Actor) => actor.roles.some((role) => ["revisor", "contabilidad", "admin_mizar", "admin_sixteam"].includes(role));
-function item(row: DbRow): ItemLine { return { id: String(row.id), itemId: row.item_id ? String(row.item_id) : undefined, description: row.descripcion_libre ? String(row.descripcion_libre) : undefined, quantity: asNumber(row.cantidad), unit: String(row.unidad), possibleSupplier: row.posible_proveedor_texto ? String(row.posible_proveedor_texto) : undefined, productLink: row.link_producto ? String(row.link_producto) : undefined, finalSupplierId: row.proveedor_final_id ? String(row.proveedor_final_id) : undefined, unitBase: asNumber(row.valor_base), unitIva: asNumber(row.iva), unitTotal: asNumber(row.valor_base) + asNumber(row.iva) }; }
-function requisition(row: DbRow, items: ItemLine[]): Requisition { return { id: String(row.id), consecutive: String(row.consecutivo), type: row.tipo as Requisition["type"], workId: String(row.obra_id), requesterId: row.solicitante_id ? String(row.solicitante_id) : undefined, externalRequester: row.solicitante_nombre_externo ? { name: String(row.solicitante_nombre_externo), phone: String(row.solicitante_telefono_externo ?? "") } : undefined, channel: row.canal as Requisition["channel"], requiredDate: asIsoDate(row.fecha_requerida), destination: row.destino ? String(row.destino) : undefined, observations: row.observaciones ? String(row.observaciones) : undefined, tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, approverId: row.aprobador_id ? String(row.aprobador_id) : undefined, status: row.estado as Requisition["status"], declineReason: row.motivo_declinacion ? String(row.motivo_declinacion) : undefined, returnReason: row.motivo_devolucion ? String(row.motivo_devolucion) : undefined, kapsoEventId: row.kapso_event_id ? String(row.kapso_event_id) : undefined, items, updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : undefined }; }
-function order(row: DbRow): Order { return { id: String(row.id), consecutive: String(row.consecutivo), type: row.tipo as Order["type"], requisitionId: String(row.requisicion_id), supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, itemIds: Array.isArray(row.item_ids) ? row.item_ids.map(String) : [], status: row.estado_cumplimiento as Order["status"], updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : undefined }; }
-function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: String(row.periodo).slice(0, 7) }; }
+function item(row: DbRow): ItemLine {
+  return {
+    id: String(row.id), itemId: row.item_id ? String(row.item_id) : undefined, description: row.descripcion_libre ? String(row.descripcion_libre) : undefined,
+    quantity: asNumber(row.cantidad), unit: String(row.unidad), possibleSupplier: row.posible_proveedor_texto ? String(row.posible_proveedor_texto) : undefined,
+    productLink: row.link_producto ? String(row.link_producto) : undefined, finalSupplierId: row.proveedor_final_id ? String(row.proveedor_final_id) : undefined,
+    unitBase: asNumber(row.valor_base), unitIva: asNumber(row.iva), unitTotal: asNumber(row.valor_base) + asNumber(row.iva),
+    status: row.estado as ItemLine["status"], declineReason: row.motivo_declinacion ? String(row.motivo_declinacion) : undefined,
+    ivaRate: row.iva_tasa != null ? asNumber(row.iva_tasa) : undefined, discountRate: row.descuento_tasa != null ? asNumber(row.descuento_tasa) : undefined,
+  };
+}
+function requisition(row: DbRow, items: ItemLine[]): Requisition {
+  return {
+    id: String(row.id), consecutive: String(row.consecutivo), type: row.tipo as Requisition["type"], societyId: String(row.sociedad_id), workId: row.obra_id ? String(row.obra_id) : undefined,
+    requesterId: row.solicitante_id ? String(row.solicitante_id) : undefined, externalRequester: row.solicitante_nombre_externo ? { name: String(row.solicitante_nombre_externo), phone: String(row.solicitante_telefono_externo ?? "") } : undefined,
+    channel: row.canal as Requisition["channel"], requiredDate: asIsoDate(row.fecha_requerida), observations: row.observaciones ? String(row.observaciones) : undefined,
+    tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, approverId: row.aprobador_id ? String(row.aprobador_id) : undefined, status: row.estado as Requisition["status"],
+    declineReason: row.motivo_declinacion ? String(row.motivo_declinacion) : undefined, returnReason: row.motivo_devolucion ? String(row.motivo_devolucion) : undefined,
+    kapsoEventId: row.kapso_event_id ? String(row.kapso_event_id) : undefined, items, updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : undefined,
+    paymentTerms: row.forma_pago ? String(row.forma_pago) : undefined,
+  };
+}
+function order(row: DbRow): Order {
+  return {
+    id: String(row.id), consecutive: String(row.consecutivo), type: row.tipo as Order["type"], requisitionId: String(row.requisicion_id), supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined,
+    itemIds: Array.isArray(row.item_ids) ? row.item_ids.map(String) : [], status: row.estado_cumplimiento as Order["status"],
+    adminStatus: (row.estado_administrativo as OrderAdminStatus | undefined) ?? "pendiente", generatedAt: row.fecha_generacion ? new Date(String(row.fecha_generacion)).toISOString() : undefined,
+    accountedAt: row.contabilizada_at ? new Date(String(row.contabilizada_at)).toISOString() : undefined, paidAt: row.pagada_at ? new Date(String(row.pagada_at)).toISOString() : undefined,
+    paymentTerms: row.forma_pago ? String(row.forma_pago) : undefined, updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : undefined,
+  };
+}
+function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, date: asIsoDate(row.fecha) as string, base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: String(row.periodo).slice(0, 7) }; }
 function catalogRecord(kind: CatalogKind, row: DbRow): CatalogRecord {
   if (kind === "works") return { id: String(row.id), name: String(row.nombre), societyId: String(row.sociedad_id), active: row.estado === "activa" };
   if (kind === "tags") return { id: String(row.id), name: String(row.nombre), approverId: row.aprobador_id ? String(row.aprobador_id) : undefined, active: row.activa === true };
@@ -30,14 +62,47 @@ function catalogRecord(kind: CatalogKind, row: DbRow): CatalogRecord {
   // "roles" no es columna de `usuarios`: siempre se adjunta a la fila antes de llamar a este mapeador
   // (agregada por join/select aparte en get/create/update, ver más abajo).
   if (kind === "users") return { id: String(row.id), name: String(row.nombre), email: String(row.email), phone: row.telefono ? String(row.telefono) : undefined, active: row.estado === "activo", roles: Array.isArray(row.roles) ? row.roles.map(String) as Role[] : [] };
+  // HUECO 1: solicitantes_autorizados (lista blanca global de WhatsApp, migración 202609010001).
+  if (kind === "requesters") return { id: String(row.id), name: String(row.nombre), phone: String(row.telefono), active: row.activo === true };
   const contact = row.contacto && typeof row.contacto === "object" ? row.contacto as Record<string, unknown> : {};
   return { id: String(row.id), name: String(row.razon_social), nit: row.nit ? String(row.nit) : undefined, phone: typeof contact.phone === "string" ? contact.phone : undefined, email: typeof contact.email === "string" ? contact.email : undefined, address: typeof contact.address === "string" ? contact.address : undefined, active: row.activo === true };
 }
 
-class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagRepository, CatalogRepository {
+export class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagRepository, CatalogRepository {
   constructor(private readonly sql: Sql) {}
   async getRequisition(id: string): Promise<Requisition | null> { const rows = await this.sql<DbRow[]>`select r.*, e.aprobador_id from requisiciones r left join etiquetas e on e.id = r.etiqueta_id where r.id = ${id}`; if (!rows[0]) return null; const items = await this.sql<DbRow[]>`select * from requisicion_items where requisicion_id = ${id} order by created_at`; return requisition(rows[0], items.map(item)); }
-  async saveRequisition(value: Requisition): Promise<void> { await this.sql`insert into requisiciones (id, consecutivo, tipo, obra_id, solicitante_id, solicitante_nombre_externo, solicitante_telefono_externo, canal, fecha_requerida, destino, observaciones, etiqueta_id, estado, motivo_declinacion, motivo_devolucion, kapso_event_id) values (${value.id}, ${value.consecutive}, ${value.type}, ${value.workId}, ${value.requesterId ?? null}, ${value.externalRequester?.name ?? null}, ${value.externalRequester?.phone ?? null}, ${value.channel}, ${value.requiredDate || null}, ${value.destination ?? null}, ${value.observations ?? null}, ${value.tagId ?? null}, ${value.status}, ${value.declineReason ?? null}, ${value.returnReason ?? null}, ${value.kapsoEventId ?? null}) on conflict (id) do update set etiqueta_id = excluded.etiqueta_id, estado = excluded.estado, motivo_declinacion = excluded.motivo_declinacion, motivo_devolucion = excluded.motivo_devolucion, destino = excluded.destino, observaciones = excluded.observaciones, kapso_event_id = coalesce(requisiciones.kapso_event_id, excluded.kapso_event_id), updated_at = now()`; await this.sql`delete from requisicion_items where requisicion_id = ${value.id}`; for (const line of value.items) await this.sql`insert into requisicion_items (id, requisicion_id, item_id, descripcion_libre, cantidad, unidad, posible_proveedor_texto, link_producto, proveedor_final_id, valor_base, iva) values (${line.id}, ${value.id}, ${line.itemId ?? null}, ${line.description ?? null}, ${line.quantity}, ${line.unit}, ${line.possibleSupplier ?? null}, ${line.productLink ?? null}, ${line.finalSupplierId ?? null}, ${line.unitBase ?? 0}, ${line.unitIva ?? 0})`; }
+  // Upsert por línea + borrado selectivo (en vez de DELETE incondicional + reinserción): orden_items
+  // tiene `requisicion_item_id references requisicion_items(id) on delete restrict`, así que borrar
+  // TODAS las líneas de una requisición con órdenes ya generadas violaba esa FK y tumbaba cualquier
+  // reguardado (incluida la sola edición de cabecera). El DELETE final solo se lleva los ids que ya
+  // no están en la lista vigente; si esa FK igual revienta (línea ya facturada en una orden) se
+  // traduce a un DomainError legible en vez de un 500.
+  async saveRequisition(value: Requisition): Promise<void> {
+    // societyId ausente (solo posible en el canal público, anclado a la obra) se traduce a NULL: el
+    // trigger `requisiciones_0_derivar_sociedad` la deriva de obra_id ANTES del insert. `destino` ya no se
+    // escribe desde el dominio (quedó obsoleto, fusionado en observaciones por la migración de Fase 1).
+    // forma_pago va también en el `on conflict do update`: si no, review() la asigna y nunca se persiste
+    // (el mismo bug que ya existía con fecha_requerida y con obra_id antes de arreglarse).
+    await this.sql`insert into requisiciones (id, consecutivo, tipo, sociedad_id, obra_id, solicitante_id, solicitante_nombre_externo, solicitante_telefono_externo, canal, fecha_requerida, observaciones, etiqueta_id, estado, motivo_declinacion, motivo_devolucion, forma_pago, kapso_event_id) values (${value.id}, ${value.consecutive}, ${value.type}, ${value.societyId ?? null}, ${value.workId ?? null}, ${value.requesterId ?? null}, ${value.externalRequester?.name ?? null}, ${value.externalRequester?.phone ?? null}, ${value.channel}, ${value.requiredDate || null}, ${value.observations ?? null}, ${value.tagId ?? null}, ${value.status}, ${value.declineReason ?? null}, ${value.returnReason ?? null}, ${value.paymentTerms ?? null}, ${value.kapsoEventId ?? null}) on conflict (id) do update set obra_id = excluded.obra_id, etiqueta_id = excluded.etiqueta_id, estado = excluded.estado, motivo_declinacion = excluded.motivo_declinacion, motivo_devolucion = excluded.motivo_devolucion, observaciones = excluded.observaciones, fecha_requerida = excluded.fecha_requerida, forma_pago = excluded.forma_pago, kapso_event_id = coalesce(requisiciones.kapso_event_id, excluded.kapso_event_id), updated_at = now()`;
+    // iva_tasa: NULL (no 0) cuando la línea no trae ivaRate. B2 (QA Postgres real): con `?? 0` una
+    // línea legacy cuya tasa se restauró como `undefined` (defensa IVA legacy en review(), ver
+    // procurement-service.ts) se reescribiría como 0 al guardar — el mismo bug que hizo nullable la
+    // columna, pero ahora en la escritura en vez de la lectura. `?? null` preserva la distinción:
+    // undefined -> NULL ("tasa sin capturar"), 0 explícito -> 0 ("tasa 0% real").
+    for (const line of value.items) await this.sql`insert into requisicion_items (id, requisicion_id, item_id, descripcion_libre, cantidad, unidad, posible_proveedor_texto, link_producto, proveedor_final_id, valor_base, iva, iva_tasa, descuento_tasa, estado, motivo_declinacion) values (${line.id}, ${value.id}, ${line.itemId ?? null}, ${line.description ?? null}, ${line.quantity}, ${line.unit}, ${line.possibleSupplier ?? null}, ${line.productLink ?? null}, ${line.finalSupplierId ?? null}, ${line.unitBase ?? 0}, ${line.unitIva ?? 0}, ${line.ivaRate ?? null}, ${line.discountRate ?? 0}, ${line.status ?? "pendiente"}, ${line.declineReason ?? null}) on conflict (id) do update set item_id = excluded.item_id, descripcion_libre = excluded.descripcion_libre, cantidad = excluded.cantidad, unidad = excluded.unidad, posible_proveedor_texto = excluded.posible_proveedor_texto, link_producto = excluded.link_producto, proveedor_final_id = excluded.proveedor_final_id, valor_base = excluded.valor_base, iva = excluded.iva, iva_tasa = excluded.iva_tasa, descuento_tasa = excluded.descuento_tasa, estado = excluded.estado, motivo_declinacion = excluded.motivo_declinacion, updated_at = now()`;
+    const ids = value.items.map((line) => line.id);
+    try { await this.sql`delete from requisicion_items where requisicion_id = ${value.id} and id <> all(${ids}::uuid[])`; }
+    catch (error) {
+      // B1 (QA Postgres real, verificado contra embedded-postgres 18.4): orden_items_requisicion_item_id_fkey
+      // es ON DELETE RESTRICT (ver 202608240001_core_compras.sql), y RESTRICT emite restrict_violation
+      // (23001), NO foreign_key_violation (23503) — el `error.code === "23503"` original nunca se disparaba
+      // contra Postgres real, así que un borrado bloqueado caía en el 500 genérico de abajo. NO ACTION (o
+      // una FK diferida) sí emitiría 23503, de ahí que se acepten AMBOS códigos: no "simplificar" a uno
+      // solo sin volver a romper esto.
+      if (typeof error === "object" && error !== null && "code" in error && (error.code === "23001" || error.code === "23503") && "constraint_name" in error && error.constraint_name === "orden_items_requisicion_item_id_fkey") throw new DomainError("ORDER_LINE_LOCKED", "No se puede eliminar un ítem que ya está en una orden generada");
+      throw error;
+    }
+  }
   async listRequisitions(): Promise<Requisition[]> { return this.listVisibleRequisitions({ id: "", roles: ["admin_sixteam"] }); }
   // Los ítems se traen en UNA sola consulta con `any(...)` y se agrupan en memoria.
   // Antes se hacía una consulta por requisición (N+1): con la base en us-east-2 cada
@@ -56,7 +121,20 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
     }
     return rows.map((row) => requisition(row, porRequisicion.get(String(row.id)) ?? []));
   }
-  async saveOrder(value: Order): Promise<void> { await this.sql`insert into ordenes (id, consecutivo, tipo, requisicion_id, proveedor_id, estado_cumplimiento) values (${value.id}, ${value.consecutive}, ${value.type}, ${value.requisitionId}, ${value.supplierId ?? null}, ${value.status}) on conflict (id) do update set estado_cumplimiento=excluded.estado_cumplimiento, updated_at=now()`; for (const itemId of value.itemIds) await this.sql`insert into orden_items (orden_id, requisicion_item_id) values (${value.id}, ${itemId}) on conflict do nothing`; }
+  // El delete final de orden_items nunca puede violar orden_items_requisicion_item_id_fkey (esa FK
+  // vive en esta misma tabla, no en la referenciada), así que no hace falta try/catch aquí: solo
+  // limpia huérfanos cuando una orden se regenera con menos líneas.
+  // estado_administrativo y forma_pago van en el `on conflict do update`: sin ellos el eje administrativo
+  // (contabilizada/pagada) nunca sobreviviría a un reguardado posterior de la orden.
+  async saveOrder(value: Order): Promise<void> {
+    // fecha_generacion: MENOR (QA Postgres real) — antes esta columna nunca se escribía y quedaba
+    // confiada al `default now()` de la BD, ignorando `value.generatedAt` (el reloj inyectado del
+    // servicio, ver ProcurementService.generateOrders). `coalesce(..., now())` respeta ese valor
+    // cuando viene informado y solo cae al default si alguna vez llega ausente.
+    await this.sql`insert into ordenes (id, consecutivo, tipo, requisicion_id, proveedor_id, estado_cumplimiento, estado_administrativo, fecha_generacion, contabilizada_at, pagada_at, forma_pago) values (${value.id}, ${value.consecutive}, ${value.type}, ${value.requisitionId}, ${value.supplierId ?? null}, ${value.status}, ${value.adminStatus}, coalesce(${value.generatedAt ?? null}::timestamptz, now()), ${value.accountedAt ?? null}, ${value.paidAt ?? null}, ${value.paymentTerms ?? null}) on conflict (id) do update set proveedor_id=excluded.proveedor_id, estado_cumplimiento=excluded.estado_cumplimiento, estado_administrativo=excluded.estado_administrativo, contabilizada_at=excluded.contabilizada_at, pagada_at=excluded.pagada_at, forma_pago=excluded.forma_pago, updated_at=now()`;
+    for (const itemId of value.itemIds) await this.sql`insert into orden_items (orden_id, requisicion_item_id) values (${value.id}, ${itemId}) on conflict do nothing`;
+    await this.sql`delete from orden_items where orden_id = ${value.id} and requisicion_item_id <> all(${value.itemIds}::uuid[])`;
+  }
   async listOrders(): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o left join orden_items oi on oi.orden_id=o.id group by o.id`; return rows.map(order); }
   async listVisibleOrders(actor: Actor): Promise<Order[]> { const rows = isElevated(actor) ? await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o left join orden_items oi on oi.orden_id=o.id group by o.id` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o join requisiciones r on r.id=o.requisicion_id left join etiquetas e on e.id=r.etiqueta_id left join orden_items oi on oi.orden_id=o.id where e.aprobador_id=${actor.id} group by o.id` : await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id where r.solicitante_id=${actor.id} group by o.id`; return rows.map(order); }
   async listByRequisition(requisitionId: string): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o left join orden_items oi on oi.orden_id=o.id where o.requisicion_id=${requisitionId} group by o.id`; return rows.map(order); }
@@ -68,7 +146,7 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
   async listVisibleExpenses(actor: Actor): Promise<Expense[]> { const rows = isElevated(actor) ? await this.sql<DbRow[]>`select * from gastos` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id join etiquetas e on e.id=r.etiqueta_id where e.aprobador_id=${actor.id}` : await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where r.solicitante_id=${actor.id}`; return rows.map(expense); }
   async listByReference(referenceId: string): Promise<Expense[]> { return (await this.sql<DbRow[]>`select g.* from gastos g where g.referencia_id=${referenceId} or exists (select 1 from ordenes o where o.id=g.referencia_id and o.requisicion_id=${referenceId})`).map(expense); }
   async savePettyCash(value: PettyCash): Promise<Expense> { const inserted = await this.sql<DbRow[]>`insert into caja_menor (id, obra_id, fecha, concepto, etiqueta_id, valor, registrado_por) values (${value.id}, ${value.workId}, ${value.date}, ${value.concept}, ${value.tagId}, ${value.amount}, ${value.registeredBy}) returning gasto_id`; const expenseRows = await this.sql<DbRow[]>`select * from gastos where id=${String(inserted[0]?.gasto_id ?? "")}`; if (!expenseRows[0]) throw new Error("PETTY_CASH_EXPENSE_MISSING"); return expense(expenseRows[0]); }
-  async listPettyCash(): Promise<PettyCash[]> { const rows = await this.sql<DbRow[]>`select * from caja_menor`; return rows.map((row) => ({ id: String(row.id), workId: String(row.obra_id), date: asIsoDate(row.fecha), concept: String(row.concepto), tagId: String(row.etiqueta_id), amount: asNumber(row.valor), registeredBy: String(row.registrado_por) })); }
+  async listPettyCash(): Promise<PettyCash[]> { const rows = await this.sql<DbRow[]>`select * from caja_menor`; return rows.map((row) => ({ id: String(row.id), workId: String(row.obra_id), date: asIsoDate(row.fecha) as string, concept: String(row.concepto), tagId: String(row.etiqueta_id), amount: asNumber(row.valor), registeredBy: String(row.registrado_por) })); }
   async append(event: AuditEvent): Promise<void> { await this.sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin ?? "web"}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(this.sql, event.data ?? {})})`; }
   async list(entity: string, entityId: string): Promise<AuditEvent[]> { const rows = await this.sql<DbRow[]>`select entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json from auditoria where entidad=${entity} and entidad_id=${entityId} order by fecha, id`; return rows.map((row) => ({ entity: String(row.entidad), entityId: String(row.entidad_id), event: String(row.evento).toLocaleLowerCase(), actorId: row.usuario_id ? String(row.usuario_id) : undefined, at: new Date(String(row.fecha)), data: row.datos_json && typeof row.datos_json === "object" ? row.datos_json as Record<string, unknown> : {}, origin: row.origen as AuditEvent["origin"] })); }
   async take(prefix: "REQ" | "OC" | "OP", year: number): Promise<string> { const rows = await this.sql<DbRow[]>`insert into consecutivos (tipo_documento, anio, siguiente) values (${prefix}, ${year}, 2) on conflict (tipo_documento, anio) do update set siguiente=consecutivos.siguiente+1 returning siguiente-1 as value`; return `${prefix}-${year}-${String(rows[0].value).padStart(4, "0")}`; }
@@ -90,12 +168,13 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
       for (const rol of user.roles) await this.sql`insert into usuario_roles (usuario_id, rol) values (${user.id}, ${rol}) on conflict do nothing`;
       return catalogRecord(kind, { ...rows[0], roles: [...user.roles] });
     }
+    else if (kind === "requesters") { const requester = value as CatalogRequester; rows = await this.sql<DbRow[]>`insert into solicitantes_autorizados (nombre, telefono, activo) values (${requester.name}, ${requester.phone}, ${requester.active}) returning *`; }
     else { const supplier = value as CatalogSupplier; rows = await this.sql<DbRow[]>`insert into proveedores (razon_social, nit, contacto, activo) values (${supplier.name}, ${supplier.nit ?? null}, ${asJsonb(this.sql, { ...(supplier.phone ? { phone: supplier.phone } : {}), ...(supplier.email ? { email: supplier.email } : {}), ...(supplier.address ? { address: supplier.address } : {}) })}, ${supplier.active}) returning *`; }
     return catalogRecord(kind, rows[0]);
   }
   async get(kind: CatalogKind, id: string): Promise<CatalogRecord | null> {
     if (kind === "users") { const rows = await this.sql<DbRow[]>`select u.*, coalesce(array_agg(ur.rol) filter (where ur.rol is not null), '{}') as roles from usuarios u left join usuario_roles ur on ur.usuario_id = u.id where u.id = ${id} group by u.id`; return rows[0] ? catalogRecord(kind, rows[0]) : null; }
-    const table = kind === "works" ? "obras" : kind === "tags" ? "etiquetas" : kind === "items" ? "items" : kind === "societies" ? "sociedades" : "proveedores";
+    const table = kind === "works" ? "obras" : kind === "tags" ? "etiquetas" : kind === "items" ? "items" : kind === "societies" ? "sociedades" : kind === "requesters" ? "solicitantes_autorizados" : "proveedores";
     const rows = await this.sql.unsafe<DbRow[]>(`select * from ${table} where id = $1`, [id]);
     return rows[0] ? catalogRecord(kind, rows[0]) : null;
   }
@@ -132,6 +211,12 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
       }
       const finalRoles = (await this.sql<{ rol: string }[]>`select rol from usuario_roles where usuario_id=${id}`).map((row) => row.rol);
       return catalogRecord(kind, { ...rows[0], roles: finalRoles });
+    } else if (kind === "requesters") {
+      // HUECO 1: a diferencia de proveedores/usuarios, `telefono` es NOT NULL (no tiene sentido un
+      // solicitante sin teléfono), así que un `coalesce` simple basta: nunca se envía null aquí porque
+      // CatalogPatchRecord no admite `phone: null` para este kind (ver contracts.ts).
+      const requester = value as Partial<CatalogRequester>;
+      rows = await this.sql<DbRow[]>`update solicitantes_autorizados set nombre=coalesce(${requester.name ?? null}, nombre), telefono=coalesce(${requester.phone ?? null}, telefono), activo=coalesce(${requester.active ?? null}, activo) where id=${id} returning *`;
     } else {
       const supplier = value as Partial<CatalogSupplier>, hasNit = Object.hasOwn(supplier, "nit"), contactPatch: Record<string, string | null> = {};
       for (const field of ["phone", "email", "address"] as const) if (Object.hasOwn(supplier, field)) contactPatch[field] = supplier[field] ?? null;
@@ -146,7 +231,17 @@ class PostgresPorts implements AuditRepository, ConsecutiveRepository, TagReposi
   // (independiente del valor), y dispara 42P18. Esta consulta corre en cada alta/edición de
   // proveedor vía supplierConflict, así que sin el cast ninguna se podía crear contra Postgres real.
   async findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null> { const rows = await this.sql<{ id: string }[]>`select id from proveedores where (${exceptId ?? null}::uuid is null or id <> ${exceptId ?? null}) and (lower(btrim(razon_social)) = lower(btrim(${value.name})) or (${value.nit ?? null}::text is not null and nit_normalizado = nullif(regexp_replace(${value.nit ?? null}, '[^0-9A-Za-z]', '', 'g'), ''))) limit 1`; return rows[0]?.id ?? null; }
+  // HUECO 1: compara contra telefono_normalizado (columna generada) con el MISMO criterio que
+  // normalizeCoPhone (ver lib/infrastructure/phone.ts) — así "3001112233" y "+57 300 111 2233" chocan
+  // como el mismo solicitante antes de que el INSERT/UPDATE llegue a depender del unique constraint.
+  async findRequesterDuplicate(phone: string, exceptId?: string): Promise<string | null> { const rows = await this.sql<{ id: string }[]>`select id from solicitantes_autorizados where (${exceptId ?? null}::uuid is null or id <> ${exceptId ?? null}) and telefono_normalizado = ${normalizeCoPhone(phone)} limit 1`; return rows[0]?.id ?? null; }
   async isEligibleApprover(id: string): Promise<boolean> { const rows = await this.sql<{ eligible: boolean }[]>`select exists(select 1 from usuarios u join usuario_roles ur on ur.usuario_id=u.id where u.id=${id} and u.estado='activo' and ur.rol in ('aprobador', 'revisor', 'admin_sixteam')) as eligible`; return rows[0]?.eligible === true; }
+  // GRAVE 3 (QA Postgres real): tras `update obras set sociedad_id=...`, cualquier UPDATE posterior de
+  // una requisición anclada a esa obra revienta con 23514 ("La obra asignada no pertenece a la
+  // sociedad de la requisición") porque saveRequisition siempre reenvía obra_id en su on conflict — la
+  // requisición queda inservible para siempre. CatalogService.patch usa este chequeo para impedir el
+  // cambio de sociedad en vez de intentar re-sincronizar historial.
+  async hasRequisitionsForWork(workId: string): Promise<boolean> { const rows = await this.sql<{ existe: boolean }[]>`select exists(select 1 from requisiciones where obra_id=${workId}) as existe`; return rows[0]?.existe === true; }
   // RF-004: la conexión directa a Postgres (DATABASE_URL) puede leer auth.users; nunca se INSERTA
   // ni modifica esa tabla desde esta plataforma, solo se verifica que el id ya exista en Auth.
   async authUserExists(id: string): Promise<boolean> { const rows = await this.sql<{ existe: boolean }[]>`select exists(select 1 from auth.users where id=${id}) as existe`; return rows[0]?.existe === true; }

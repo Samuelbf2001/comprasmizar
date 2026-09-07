@@ -23,7 +23,7 @@ function configurarEnvCompleto(): void {
 /** BD mockeada: nunca toca Postgres. */
 function fakeCatalogSource(obras: FlowOption[], catalogo: FlowOption[]): FlowCatalogSource {
   return {
-    listActiveWorks: vi.fn(async () => obras),
+    listActiveSocieties: vi.fn(async () => obras),
     listActiveCatalogItems: vi.fn(async () => catalogo),
   };
 }
@@ -64,7 +64,7 @@ describe("buildFlowSendPayload — shape exacto del mensaje interactive.type=flo
   const catalogo: FlowOption[] = [{ id: "item-1", title: "Cemento gris 50kg" }];
 
   it("arma flow_message_version 3, flow_action navigate y flow_action_payload.screen TIPO_Y_OBRA", () => {
-    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "1972861836748301", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", obras, catalogo });
+    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "1972861836748301", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", sociedades: obras, catalogo });
     expect(payload).toEqual({
       messaging_product: "whatsapp",
       recipient_type: "individual",
@@ -82,8 +82,8 @@ describe("buildFlowSendPayload — shape exacto del mensaje interactive.type=flo
             flow_action: "navigate",
             flow_token: "tok",
             flow_action_payload: {
-              screen: "TIPO_Y_OBRA",
-              data: { obras, catalogo },
+              screen: "TIPO_Y_EMPRESA",
+              data: { sociedades: obras, catalogo },
             },
           },
         },
@@ -92,14 +92,14 @@ describe("buildFlowSendPayload — shape exacto del mensaje interactive.type=flo
   });
 
   it("incluye mode solo cuando se pasa explícitamente (el Flow real hoy es DRAFT)", () => {
-    const conModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", mode: "draft", bodyText: "Texto", obras, catalogo });
+    const conModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", mode: "draft", bodyText: "Texto", sociedades: obras, catalogo });
     expect(conModo.interactive.action.parameters.mode).toBe("draft");
-    const sinModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Texto", obras, catalogo });
+    const sinModo = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Texto", sociedades: obras, catalogo });
     expect(sinModo.interactive.action.parameters.mode).toBeUndefined();
   });
 
   it("siempre incluye interactive.body.text: Meta lo exige para todo tipo interactivo salvo location_request_message", () => {
-    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", obras, catalogo });
+    const payload = buildFlowSendPayload({ to: "573000000000", flowId: "f", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", sociedades: obras, catalogo });
     expect(payload.interactive.body).toEqual({ text: "Solicita materiales o pagos." });
   });
 });
@@ -114,7 +114,7 @@ describe("sendRequisitionFlow — fallo cerrado", () => {
     const catalogSource = fakeCatalogSource([], []);
     const fetchImpl = fakeFetchOk();
     await expect(sendRequisitionFlow("573000000000", { catalogSource, fetchImpl })).rejects.toThrow("FLOW_SEND_NOT_CONFIGURED");
-    expect(catalogSource.listActiveWorks).not.toHaveBeenCalled();
+    expect(catalogSource.listActiveSocieties).not.toHaveBeenCalled();
     expect(catalogSource.listActiveCatalogItems).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -124,7 +124,7 @@ describe("sendRequisitionFlow — fallo cerrado", () => {
     delete process.env.WHATSAPP_FLOW_ID;
     const catalogSource = fakeCatalogSource([], []);
     await expect(sendRequisitionFlow("573000000000", { catalogSource, fetchImpl: fakeFetchOk() })).rejects.toThrow("FLOW_SEND_NOT_CONFIGURED");
-    expect(catalogSource.listActiveWorks).not.toHaveBeenCalled();
+    expect(catalogSource.listActiveSocieties).not.toHaveBeenCalled();
   });
 
   it("sin KAPSO_PHONE_NUMBER_ID (no hay URL de envío posible) también falla cerrado", async () => {
@@ -167,7 +167,7 @@ describe("sendRequisitionFlow — envío real (fetch mockeado, BD mockeada)", ()
     expect(typeof body.interactive.body.text).toBe("string");
     expect(body.interactive.body.text.length).toBeGreaterThan(0);
     expect(body.interactive.action.parameters.flow_id).toBe("1972861836748301");
-    expect(body.interactive.action.parameters.flow_action_payload.data.obras).toEqual(obras);
+    expect(body.interactive.action.parameters.flow_action_payload.data.sociedades).toEqual(obras);
     expect(body.interactive.action.parameters.flow_action_payload.data.catalogo).toEqual(catalogo);
     expect(body.interactive.action.parameters.flow_action_payload.data).not.toHaveProperty("telefono_remitente");
 
@@ -188,7 +188,7 @@ describe("sendRequisitionFlow — envío real (fetch mockeado, BD mockeada)", ()
     expect(MAX_DROPDOWN_OPTIONS).toBe(200);
     const catalogSource = fakeCatalogSource([], []);
     await sendRequisitionFlow("573000000000", { catalogSource, fetchImpl: fakeFetchOk() });
-    expect(catalogSource.listActiveWorks).toHaveBeenCalledWith(MAX_DROPDOWN_OPTIONS);
+    expect(catalogSource.listActiveSocieties).toHaveBeenCalledWith(MAX_DROPDOWN_OPTIONS);
     expect(catalogSource.listActiveCatalogItems).toHaveBeenCalledWith(MAX_DROPDOWN_OPTIONS);
   });
 
@@ -206,7 +206,7 @@ describe("sendRequisitionFlow — envío real (fetch mockeado, BD mockeada)", ()
     const catalogSource = fakeCatalogSource([], []);
     const fetchImpl = fakeFetchOk();
     await expect(sendRequisitionFlow("no-es-un-telefono", { catalogSource, fetchImpl })).rejects.toThrow("FLOW_SEND_INVALID_PHONE");
-    expect(catalogSource.listActiveWorks).not.toHaveBeenCalled();
+    expect(catalogSource.listActiveSocieties).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

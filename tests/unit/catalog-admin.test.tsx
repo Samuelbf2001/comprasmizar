@@ -419,4 +419,140 @@ describe("ConnectedCatalogAdmin", () => {
       );
     });
   });
+
+  // HUECO 1 (reunión 2026-08-31, QA): CRUD de solicitantes autorizados por WhatsApp.
+  describe("HUECO 1: pestaña de Solicitantes WhatsApp", () => {
+    it("permite consultar en modo lectura a Revisor (sin botón de alta ni acciones)", () => {
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/solicitantes-whatsapp"
+          role="Revisor"
+          initialData={catalogData({
+            canReadRequesters: true,
+            requesters: [
+              { id: "req-1", name: "Maestro Pérez", phone: "+573001112233", active: true },
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByText("Maestro Pérez")).toBeInTheDocument();
+      expect(screen.getByText("+573001112233")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /Nuevo registro/i }),
+      ).toBeNull();
+      expect(screen.getByText("Solo lectura")).toBeInTheDocument();
+      expect(screen.getByRole("note")).toHaveTextContent(
+        "quién puede pedir por WhatsApp",
+      );
+    });
+
+    it("blocks the tab entirely for a role with neither read nor manage access", () => {
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/items"
+          role="Aprobador"
+          initialData={catalogData({ access: { items: true } })}
+        />,
+      );
+      expect(
+        screen.getByRole("tab", { name: /Solicitantes WhatsApp/ }),
+      ).toBeDisabled();
+    });
+
+    it("creates an authorized requester with name and phone", async () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({ id: "req-1", name: "Maestro Gómez", phone: "3001112233", active: true }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/solicitantes-whatsapp"
+          role="Administrador Sixteam"
+          initialData={catalogData({ canReadRequesters: true, requesters: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), {
+        target: { value: "Maestro Gómez" },
+      });
+      fireEvent.change(screen.getByRole("textbox", { name: /Teléfono/i }), {
+        target: { value: "3001112233" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            kind: "requesters",
+            data: { name: "Maestro Gómez", phone: "3001112233" },
+          }),
+        }),
+      );
+    });
+
+    it("requires a phone number before creating an authorized requester", () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/solicitantes-whatsapp"
+          role="Administrador Sixteam"
+          initialData={catalogData({ canReadRequesters: true, requesters: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), {
+        target: { value: "Sin teléfono" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "El teléfono es obligatorio",
+      );
+    });
+
+    it("deactivates a requester reversibly (logical deactivation, not deletion)", async () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ id: "req-1", active: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/solicitantes-whatsapp"
+          role="Administrador Sixteam"
+          initialData={catalogData({
+            canReadRequesters: true,
+            requesters: [
+              { id: "req-1", name: "Maestro Pérez", phone: "+573001112233", active: true },
+            ],
+          })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Desactivar Maestro Pérez" }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({
+            kind: "requesters",
+            id: "req-1",
+            data: { active: false },
+          }),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("status")).toHaveTextContent(
+          "desactivado de forma reversible",
+        ),
+      );
+      expect(screen.getByText("Inactivo")).toBeInTheDocument();
+    });
+  });
 });

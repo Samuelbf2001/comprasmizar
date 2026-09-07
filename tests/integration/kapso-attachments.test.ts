@@ -30,7 +30,7 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
     tags: { getApproverId: unused },
     features: { isEnabled: unused },
     items,
-    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, isEligibleApprover: unused, authUserExists: unused },
+    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, findRequesterDuplicate: unused, isEligibleApprover: unused, authUserExists: unused, hasRequisitionsForWork: unused },
     notifications,
   };
   const dependencies: ServiceDependencies = {
@@ -183,7 +183,7 @@ describe("POST /api/kapso", () => {
     });
 
     it("no invoca la copia de adjuntos cuando ningún ítem trae attachmentUrl", async () => {
-      const noAttachmentEvent = { eventId: "evt-sin-adjunto", type: "flow_submission" as const, receivedAt: "2026-08-24T12:00:00.000Z", submission: { eventId: "evt-sin-adjunto", phone: "+573001234567", workId: "11111111-1111-4111-8111-111111111111", requiredDate: "2026-08-30", type: "compra" as const, requesterName: "Maestro sin evidencia", items: [{ quantity: 1, unit: "unidad", proposedDescription: "Ítem sin foto" }] } };
+      const noAttachmentEvent = { eventId: "evt-sin-adjunto", type: "flow_submission" as const, receivedAt: "2026-08-24T12:00:00.000Z", submission: { eventId: "evt-sin-adjunto", phone: "+573001234567", societyId: "22222222-2222-4222-8222-222222222222", workId: "11111111-1111-4111-8111-111111111111", requiredDate: "2026-08-30", type: "compra" as const, requesterName: "Maestro sin evidencia", items: [{ quantity: 1, unit: "unidad", proposedDescription: "Ítem sin foto" }] } };
       const raw = JSON.stringify(noAttachmentEvent);
       const response = await postRaw(raw);
       expect(response.status).toBe(200);

@@ -36,3 +36,12 @@ class SupabaseSupplierStorage {
   async createDownloadUrl(path: string, expiresInSeconds: number): Promise<string> { const result = await this.client.storage.from(SUPPLIER_DOCUMENT_BUCKET).createSignedUrl(path, expiresInSeconds); if (result.error || !result.data?.signedUrl) throw new Error("SUPPLIER_STORAGE_DOWNLOAD_URL_FAILED"); return result.data.signedUrl; }
 }
 export function createSupplierServiceDependencies(databaseUrl = runtimeEnv().DATABASE_URL): SupplierServiceDependencies { const sql = sharedPostgres(databaseUrl); return { transactions: new PostgresSupplierTransactions(sql), storage: new SupabaseSupplierStorage(), clock: { now: () => new Date() }, ids: { next: () => crypto.randomUUID() } }; }
+
+/**
+ * Lectura directa de un proveedor con su `contact` completo (nombre de contacto, teléfono, correo,
+ * dirección — `proveedores.contacto`), sin pasar por `SupplierService` (que exige un permiso de
+ * catálogo que no aplica aquí: cualquiera que ya pueda ver la orden puede ver el documento de su
+ * proveedor). Reutiliza `PostgresSupplierRepository`, la misma clase de arriba, en vez de escribir
+ * una consulta nueva (Fase 6, documento de la orden).
+ */
+export function createPostgresSupplierRepository(databaseUrl = runtimeEnv().DATABASE_URL) { return new PostgresSupplierRepository(sharedPostgres(databaseUrl)); }

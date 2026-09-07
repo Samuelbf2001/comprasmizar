@@ -9,43 +9,78 @@ const itemIdentity = {
   possibleSupplier: z.string().trim().min(1).max(240).optional(),
   productLink: httpsUrl.optional(),
 };
+/** Fracción 0..1 (0.19, no 19): la UI captura "19 %" y divide antes de mandarla. */
+const rateFraction = z.number().min(0).max(1);
 
+// Reunión 2026-08-31: el solicitante elige EMPRESA, no obra (la asigna el revisor en la revisión);
+// workId y requiredDate quedan opcionales en los tres canales. `destination` sale del formulario: se
+// fusiona en observations.
 export const createRequisitionSchema = z.object({
   type: z.enum(["compra", "pago"]),
-  workId: z.string().uuid(),
+  societyId: z.string().uuid(),
+  workId: z.string().uuid().optional(),
   requesterId: z.string().uuid().optional(),
-  requiredDate: z.string().date(),
-  destination: z.string().trim().min(1).max(500).optional(),
+  requiredDate: z.string().date().optional(),
   observations: z.string().trim().min(1).max(3_000).optional(),
   items: z.array(z.object(itemIdentity).strict().refine((item) => Boolean(item.itemId || item.description), "itemId or description is required")).min(1).max(100),
 }).strict();
 
+// "unitIva" pasa a derivado: el servidor lo calcula desde ivaRate/unitBase, ya no lo captura el cliente.
 export const reviewedItemSchema = z.object({
   id: z.string().uuid(),
   ...itemIdentity,
   finalSupplierId: z.string().uuid().optional(),
   unitBase: z.number().int().nonnegative(),
-  unitIva: z.number().int().nonnegative(),
-}).strict().refine((item) => Boolean(item.itemId || item.description), "itemId or description is required");
+  status: z.enum(["pendiente", "aprobado", "declinado"]).optional(),
+  declineReason: z.string().trim().min(1).max(2_000).optional(),
+  ivaRate: rateFraction.optional(),
+  discountRate: rateFraction.optional(),
+}).strict()
+  .refine((item) => Boolean(item.itemId || item.description), "itemId or description is required")
+  // MENOR (QA Postgres real): sin este refine, un "declinado" sin motivo pasaba la validación HTTP y
+  // moría en la BD con un 500 crudo (requisicion_items_motivo_declinacion_check, 23514) en vez de un
+  // 422 legible — la misma regla que itemDecisionSchema (decisión del aprobador) ya exige aquí, en la
+  // ficha de revisión.
+  .refine((item) => item.status !== "declinado" || Boolean(item.declineReason?.trim()), { message: "declineReason is required when status is declinado", path: ["declineReason"] });
+
+export const itemDecisionSchema = z.object({
+  itemId: z.string().uuid(),
+  status: z.enum(["pendiente", "aprobado", "declinado"]),
+  declineReason: z.string().trim().min(1).max(2_000).optional(),
+  quantity: z.number().finite().positive().max(1_000_000).optional(),
+}).strict();
 
 export const requisitionActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("start_review") }).strict(),
-  z.object({ action: z.literal("review"), tagId: z.string().uuid(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
+  // review gana workId (obra la asigna el revisor) y paymentTerms (forma de pago, capturada aquí).
+  z.object({ action: z.literal("review"), tagId: z.string().uuid(), workId: z.string().uuid().optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
   z.object({ action: z.literal("send_for_approval") }).strict(),
-  z.object({ action: z.literal("approve"), multiSupplier: z.boolean().default(false) }).strict(),
+  // "approve" pierde multiSupplier: aprobar ya no genera órdenes (eso es generate_orders, un paso propio).
+  z.object({ action: z.literal("approve") }).strict(),
   z.object({ action: z.literal("return"), comment: z.string().trim().min(1).max(2_000) }).strict(),
   z.object({ action: z.literal("decline"), reason: z.string().trim().min(1).max(2_000) }).strict(),
   z.object({ action: z.literal("propose_item"), description: z.string().trim().min(1).max(500) }).strict(),
+  // Decisión por ítem del aprobador (no cambia el estado de la requisición) y generación explícita de órdenes.
+  z.object({ action: z.literal("decide_items"), decisions: z.array(itemDecisionSchema).min(1).max(100) }).strict(),
+  // Bloqueante de atasco (reunión 2026-08-31): asigna finalSupplierId a ítems aprobados que quedaron sin
+  // proveedor. Shape acotado a {itemId, supplierId} a propósito — ver SupplierAssignment en procurement-service.ts.
+  z.object({ action: z.literal("assign_suppliers"), assignments: z.array(z.object({ itemId: z.string().uuid(), supplierId: z.string().uuid() }).strict()).min(1).max(100) }).strict(),
+  z.object({ action: z.literal("generate_orders") }).strict(),
 ]);
 
-export const orderStatusSchema = z.object({ status: z.enum(["cumplida", "no_cumplida", "no_necesario"]) }).strict();
+// Extiende la ruta existente app/api/orders/[id]/status/route.ts (ya auditada y probada) con el eje
+// administrativo, en vez de crear una ruta hermana: "status" sigue siendo cumplimiento, "adminStatus" es
+// el nuevo eje contable (pendiente → contabilizada → pagada), mutuamente excluyentes en un mismo PATCH.
+export const orderStatusSchema = z.union([
+  z.object({ status: z.enum(["cumplida", "no_cumplida", "no_necesario"]) }).strict(),
+  z.object({ adminStatus: z.enum(["contabilizada", "pagada"]) }).strict(),
+]);
 export const expenseSharesSchema = z.object({ total: z.number().int().positive(), shares: z.array(z.object({ workId: z.string().uuid(), amount: z.number().int().positive() }).strict()).min(1).max(100) }).strict();
 export const pettyCashSchema = z.object({ workId: z.string().uuid(), date: z.string().date(), concept: z.string().trim().min(1).max(500), tagId: z.string().uuid(), amount: z.number().int().positive() }).strict();
 
 // Edición de cabecera de requisición (ficha editable). Solo campos que no alteran la identidad ni
-// el gasto: fecha requerida, destino/frente y observaciones. Al menos un campo debe venir.
+// el gasto: fecha requerida y observaciones (`destination` sale: quedó obsoleto). Al menos un campo debe venir.
 export const requisitionHeaderSchema = z.object({
   requiredDate: z.string().date().optional(),
-  destination: z.string().trim().max(500).nullable().optional(),
   observations: z.string().trim().max(1024).nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "Debe cambiar al menos un campo");
