@@ -1,6 +1,6 @@
 # Implementación de la reunión del 31-ago — estado y pendientes
 
-**Rama:** `feat/reunion-agosto-empresa-items-ordenes` · **sin commitear**
+**Rama:** `feat/reunion-agosto-empresa-items-ordenes` · 4 commits (`cace2ce` → `bc7f445`)
 **Verificable ahora:** 417 tests en verde · `typecheck` y `lint` limpios · `npm run verify:schema` valida las 7 migraciones contra un Postgres real, sembrando datos legacy antes de las que hacen backfill.
 
 Plan de origen: `docs/reunion-2026-08-31-analisis.md` (análisis de la reunión) y el plan de implementación aprobado.
@@ -35,7 +35,7 @@ Los dos primeros son bugs **solo-DB-real**: ningún test unitario podía verlos.
 6. **Las requisiciones aprobadas no aparecían en ninguna bandeja**, así que el paso "Generar órdenes" —el que el cliente pidió— estaba construido pero era inalcanzable.
 7. Mover una obra de sociedad dejaba sus requisiciones imposibles de guardar · proveedor desactivado producía un 500 crudo al generar órdenes · la migración no era idempotente · UUIDs y eventos en `snake_case` inglés a la vista del usuario.
 
-Se cableó `npm run verify:schema`: levanta un Postgres embebido (sin Docker), aplica las 4 migraciones y el seed, y corre los 3 arneses SQL. Es lo que convierte los bugs solo-DB-real en detectables.
+Se cableó `npm run verify:schema`: levanta un Postgres embebido (sin Docker), aplica todas las migraciones y el seed, corre los arneses SQL y siembra datos legacy antes de las que hacen backfill. Es lo que convierte los bugs solo-DB-real en detectables.
 
 ---
 
@@ -55,13 +55,13 @@ Se cableó `npm run verify:schema`: levanta un Postgres embebido (sin Docker), a
 
 ### Riesgo de adopción — lo más importante que queda
 
-- [ ] **La pantalla de revisión son 38 campos en dos pantallas de scroll.** Es la pantalla que decide el proyecto: si a Daniel le cuesta más que escribir un WhatsApp, vuelve al WhatsApp. Hace falta convertirla en **una tabla editable** (una fila por ítem) con acciones masivas — sobre todo **"IVA 19 % a todos"** — y tabulado que encadene de una fila a la siguiente sin pasar por botones intermedios.
+- [x] **Hecho (`9683346`).** La revisión pasó de 43 campos y ~1.750 px de scroll a una tabla de una fila por ítem (363 px) con "Aplicar a todos" para IVA y proveedor. Lo que queda es **verla con Daniel usándola**: el rediseño se justificó por su criterio de esfuerzo, no por el nuestro.
 
 ### Menores
 
 - [ ] La columna `ITEM` (nº de línea) falta en el PDF; la tabla de poda la conservaba.
 - [ ] Un emoji en la descripción tumba la generación del PDF (`StandardFonts.Helvetica` solo cubre WinAnsi), y las descripciones vienen de WhatsApp.
-- [ ] `fecha requerida` sigue siendo obligatoria en el portal público; se decidió opcional en los tres canales.
+- [x] `fecha requerida` ya es opcional también en el portal público (`d14d8c6`).
 - [ ] El portal público admite **un solo ítem** y no acepta fotos, y el enlace que se reparte apunta a la versión de escritorio aunque exista una móvil.
 - [ ] `obra_solicitantes_autorizados` (la lista del portal público) tiene el mismo bug de normalización de teléfono; vive en una migración ya aplicada.
 - [ ] `admin_mizar` puede crear requisiciones pero no listar ninguna: la matriz de permisos no le da lectura.
