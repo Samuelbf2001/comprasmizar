@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   Database,
   Edit3,
@@ -773,7 +773,167 @@ export function ConnectedCatalogAdmin({
           )}
         </section>
       )}
+      {/* Acceso público (reunión: "una sola contraseña para todo el mundo") es administración de
+          plataforma, no un CatalogKind más — vive fuera de /api/catalogs y del pestañeo de arriba,
+          como un panel independiente al mismo nivel (nunca anidado dentro de otro .panel). */}
+      {(role === "Administrador Mizar" || role === "Administrador Sixteam") && (
+        <PublicAccessPanel />
+      )}
     </>
+  );
+}
+
+type PublicAccessStatus = { configured: boolean; updatedAt: string | null };
+
+function formatPublicAccessDate(iso: string): string {
+  // toLocaleString puede lanzar con una fecha corrupta; nunca vale la pena tumbar el panel por un
+  // dato de solo lectura — se muestra el ISO crudo antes que romper la pantalla.
+  try {
+    return new Date(iso).toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * Reunión (literal): "yo digo que sea solamente una contraseña para todo el mundo". Administra la
+ * contraseña GLOBAL del portal público (app/api/public-access, lib/services/public-access-service.ts)
+ * — deliberadamente fuera de /api/catalogs: no es un CatalogKind, es una fila de configuración única.
+ * El hash nunca llega aquí: el GET solo informa si hay una contraseña fijada y cuándo cambió.
+ */
+function PublicAccessPanel() {
+  const [status, setStatus] = useState<PublicAccessStatus | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [code, setCode] = useState("");
+  const [confirmCode, setConfirmCode] = useState("");
+  const [fieldError, setFieldError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    apiRequest<PublicAccessStatus>("/api/public-access")
+      .then((value) => {
+        if (active) setStatus(value);
+      })
+      .catch((error: unknown) => {
+        if (active) setLoadError(friendlyErrorText(error, "No fue posible consultar el estado del acceso público."));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setFeedback("");
+    setSuccess("");
+    if (code.length < 8) {
+      setFieldError("La contraseña debe tener al menos 8 caracteres.");
+      return;
+    }
+    if (code !== confirmCode) {
+      setFieldError("Las dos contraseñas no coinciden.");
+      return;
+    }
+    setFieldError("");
+    setSaving(true);
+    try {
+      const next = await apiRequest<PublicAccessStatus>("/api/public-access", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      setStatus(next);
+      setCode("");
+      setConfirmCode("");
+      setSuccess("Contraseña del portal actualizada.");
+    } catch (error) {
+      setFeedback(friendlyErrorText(error, "No fue posible actualizar la contraseña."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="panel catalog-admin-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Acceso público</h2>
+          <p className="panel-sub">
+            Contraseña del portal de requisiciones: una sola clave para todas las obras que lo tengan
+            habilitado. El enlace sigue siendo por obra; solo la contraseña es global.
+          </p>
+        </div>
+      </div>
+      {loadError ? (
+        <p className="field-error catalog-feedback" role="alert">
+          {loadError}
+        </p>
+      ) : (
+        <p className="public-access-status">
+          {status === null
+            ? "Consultando estado…"
+            : status.configured
+              ? `Contraseña configurada. Último cambio: ${status.updatedAt ? formatPublicAccessDate(status.updatedAt) : "fecha no disponible"}.`
+              : "Todavía no hay una contraseña configurada: el portal público rechaza cualquier intento hasta que se fije una."}
+        </p>
+      )}
+      <form className="catalog-edit-form" onSubmit={submit} noValidate>
+        <div className="field-grid">
+          <label className="field">
+            <span>
+              Nueva contraseña <em>*</em>
+            </span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              minLength={8}
+              aria-invalid={Boolean(fieldError)}
+              aria-describedby={fieldError ? "public-access-field-error" : undefined}
+            />
+          </label>
+          <label className="field">
+            <span>
+              Confirmar contraseña <em>*</em>
+            </span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirmCode}
+              onChange={(event) => setConfirmCode(event.target.value)}
+              minLength={8}
+              aria-invalid={Boolean(fieldError)}
+              aria-describedby={fieldError ? "public-access-field-error" : undefined}
+            />
+          </label>
+        </div>
+        {fieldError && (
+          <small className="field-error" id="public-access-field-error">
+            {fieldError}
+          </small>
+        )}
+        {feedback && (
+          <p className="field-error catalog-feedback" role="alert">
+            {feedback}
+          </p>
+        )}
+        {success && (
+          <p className="catalog-success" role="status">
+            {success}
+          </p>
+        )}
+        <div className="form-footer">
+          <span>Se audita quién y cuándo la cambia; la contraseña nunca queda en claro en el registro.</span>
+          <button className="button button-dark" type="submit" disabled={saving}>
+            {saving ? "Guardando…" : "Fijar contraseña"}
+          </button>
+        </div>
+      </form>
+    </section>
   );
 }
 

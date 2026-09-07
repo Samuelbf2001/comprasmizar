@@ -68,7 +68,9 @@ function fixtureCollections(): { requisitions: Requisition[]; expenses: Expense[
   ];
   const period = new Date().toISOString().slice(0, 7);
   const expenses: Expense[] = [
-    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "order-1", tagId: "tag-1", supplierId: "supplier-1", date: `${period}-05`, base: 100_000, iva: 19_000, total: 119_000, period },
+    // Reunión 2026-09: orderDate (nace con el registro) y date (fecha de pago) son fechas
+    // independientes; esta orden se generó y se pagó el mismo día del fixture.
+    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "order-1", tagId: "tag-1", supplierId: "supplier-1", orderDate: `${period}-05`, date: `${period}-05`, base: 100_000, iva: 19_000, total: 119_000, period },
   ];
   return { requisitions, expenses, orders };
 }
@@ -112,7 +114,9 @@ describe("GET /api/pantalla", () => {
     const body = await response.json();
     expect(body.sessionName).toBe("TV oficina");
     expect(body.metrics.byStatus).toMatchObject({ en_revision: 1, en_aprobacion: 1, aprobada: 1 });
-    expect(body.metrics.inProcessValue).toBe(119_000 * 2); // req-1 (en_revision) + req-2 (en_aprobacion), misma línea cada una
+    // Reunión 2026-09: inProcessValue ya no depende de requisiciones en revisión/aprobación — suma
+    // gastos sin fecha de pago. El único gasto del fixture (exp-1) ya está pagado, así que da 0.
+    expect(body.metrics.inProcessValue).toBe(0);
     expect(body.metrics.periodExpense).toBe(119_000);
     expect(body.metrics.pendingOrders).toBe(1);
     expect(body.metrics.expenseByWork).toEqual([{ key: "work-1", total: 119_000 }]);

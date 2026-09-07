@@ -14,7 +14,7 @@ const COLS = { desc: MARGIN, und: 300, cant: 335, precio: 375, discount: 460, to
  * Orden de compra/pago real — calcada de la hoja "ORDEN DE ANTICIPO" del Excel del cliente, ya
  * podada en la reunión 2026-08-31 (docs/reunion-2026-08-31-analisis.md): se elimina CÓDIGO/VERSIÓN,
  * el bloque EMPRESA+NIT repetido (solo aparece una vez), T. ENTREGA y las 6 líneas de observaciones
- * legales. Reemplaza al stub anterior, que imprimía "PROVISIONAL P4 PENDIENTE", el UUID crudo de la
+ * legales. Reemplaza al stub anterior, que imprimía un marcador de borrador en el título, el UUID crudo de la
  * obra y el literal "Proveedor asignado" — ver tests/unit/order-document-pdf.test.ts.
  */
 export async function buildOrderPdf(order: OrderDocument): Promise<Uint8Array> {
@@ -89,4 +89,28 @@ export async function buildOrderPdf(order: OrderDocument): Promise<Uint8Array> {
   return pdf.save();
 }
 
-export async function buildPartnersExpensePdf(title: string, expenses: readonly ReportExpense[]): Promise<Uint8Array> { const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold); let page = pdf.addPage([595, 842]), y = 790, total = 0, pageNumber = 1; const header = () => { page.drawText(`${title} - PROVISIONAL P4 PENDIENTE`, { x: 50, y, size: 16, font: bold }); y -= 20; page.drawText(`Periodo: ${expenses[0]?.date.slice(0, 7) ?? "sin datos"} | Página ${pageNumber}`, { x: 50, y, size: 9, font }); y -= 20; }; header(); for (const expense of expenses) { if (y < 65) { page = pdf.addPage([595, 842]); pageNumber++; y = 790; header(); } total += expense.total; page.drawText(`${expense.date} | ${expense.work.slice(0, 25)} | ${(expense.tag ?? "").slice(0, 20)} | ${cop.format(expense.total)}`, { x: 50, y, size: 9, font }); y -= 15; } if (y < 65) { page = pdf.addPage([595, 842]); y = 790; header(); } page.drawText(`TOTAL: ${cop.format(total)}`, { x: 50, y: y - 12, size: 13, font: bold }); return pdf.save(); }
+/**
+ * Reunión 2026-09: `expense.date` (fecha de pago) es opcional — falta mientras la orden que originó
+ * el gasto no se ha pagado. Antes `expenses[0]?.date.slice(0, 7)` reventaba en cuanto la primera fila
+ * llegaba sin pagar (el `?.` solo protegía `expenses[0]`, no `.date`); ahora se busca el primer gasto
+ * CON fecha de pago para el periodo del encabezado, y cada fila imprime sus dos fechas por separado
+ * ("Fecha orden" siempre presente, "Fecha pago" o "Sin pagar"). De paso se retira del título el
+ * marcador de borrador en mayúsculas que traía antes: ya estaba anotado como identificador técnico a
+ * la vista.
+ */
+export async function buildPartnersExpensePdf(title: string, expenses: readonly ReportExpense[]): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  let page = pdf.addPage([595, 842]), y = 790, total = 0, pageNumber = 1;
+  const periodLabel = expenses.find((expense) => expense.date)?.date?.slice(0, 7) ?? "sin datos";
+  const header = () => { page.drawText(title, { x: 50, y, size: 16, font: bold }); y -= 20; page.drawText(`Periodo: ${periodLabel} | Página ${pageNumber}`, { x: 50, y, size: 9, font }); y -= 20; };
+  header();
+  for (const expense of expenses) {
+    if (y < 65) { page = pdf.addPage([595, 842]); pageNumber++; y = 790; header(); }
+    total += expense.total;
+    page.drawText(`${expense.orderDate} | ${expense.date ?? "Sin pagar"} | ${expense.work.slice(0, 25)} | ${(expense.tag ?? "").slice(0, 20)} | ${cop.format(expense.total)}`, { x: 50, y, size: 9, font });
+    y -= 15;
+  }
+  if (y < 65) { page = pdf.addPage([595, 842]); y = 790; header(); }
+  page.drawText(`TOTAL: ${cop.format(total)}`, { x: 50, y: y - 12, size: 13, font: bold });
+  return pdf.save();
+}

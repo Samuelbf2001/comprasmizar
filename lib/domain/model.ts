@@ -43,7 +43,15 @@ export interface Order {
   adminStatus: OrderAdminStatus; generatedAt?: string; accountedAt?: string; paidAt?: string; paymentTerms?: string;
   /** RF-1102: ver Requisition.updatedAt. */ updatedAt?: string;
 }
-export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; date: string; base: Money; iva: Money; total: Money; period: string; }
+/**
+ * Decisión del cliente (reunión 2026-09, literal): "que quede como fechas aparte cuándo se sube y
+ * cuándo se paga; la del gasto es la del pago". `orderDate`: fecha en que nace el registro (generación
+ * de la orden, o el movimiento de caja menor); nunca cambia. `date`/`period` (mes de `date`): fecha y
+ * periodo del GASTO, es decir del PAGO — ausentes mientras la orden que lo originó no se ha pagado
+ * (es un compromiso, todavía no un gasto). Para `origin: "caja_menor"` ambas fechas coinciden siempre
+ * (se paga en el acto).
+ */
+export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; }
 export interface ExpenseShare { expenseId: string; workId: string; amount: Money; }
 export interface PettyCash { id: string; workId: string; date: string; concept: string; tagId: string; amount: Money; registeredBy: string; attachmentUrl?: string; }
 /** RF-1102: un elemento de la cola de "qué espera algo de mí" en el dashboard conectado. */

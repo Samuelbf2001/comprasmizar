@@ -78,8 +78,18 @@ describe("domain calculations", () => {
     expect(() => groupOrderItems([{ ...line, finalSupplierId: undefined }], "pago")).toThrow("proveedor");
   });
   it("returns period metrics", () => {
-    const result = calculateDashboard([{ id: "e", workId: "w", origin: "requisicion", referenceId: "r", date: "2026-08-02", base: 10, iva: 2, total: 12, period: "2026-08" }], [{ id: "o", consecutive: "OC", type: "OC", requisitionId: "r", itemIds: [], status: "no_cumplida", adminStatus: "pendiente" }, { id: "o2", consecutive: "OC2", type: "OC", requisitionId: "r", itemIds: [], status: "generada", adminStatus: "pendiente" }], ["en_revision"], "2026-08");
+    const result = calculateDashboard([{ id: "e", workId: "w", origin: "requisicion", referenceId: "r", orderDate: "2026-08-02", date: "2026-08-02", base: 10, iva: 2, total: 12, period: "2026-08" }], [{ id: "o", consecutive: "OC", type: "OC", requisitionId: "r", itemIds: [], status: "no_cumplida", adminStatus: "pendiente" }, { id: "o2", consecutive: "OC2", type: "OC", requisitionId: "r", itemIds: [], status: "generada", adminStatus: "pendiente" }], ["en_revision"], "2026-08");
     expect(result.periodExpense).toBe(12); expect(result.pendingOrders).toBe(2); expect(result.byStatus.en_revision).toBe(1);
+  });
+  // Reunión 2026-09: "la fecha del gasto es la del pago" — inProcessValue ya no queda fijo en 0: suma
+  // los gastos sin fecha de pago (compromiso de órdenes generadas y aún sin pagar).
+  it("calculateDashboard.inProcessValue suma los gastos sin fecha de pago (comprometido sin pagar)", () => {
+    const paid = { id: "e1", workId: "w", origin: "requisicion" as const, referenceId: "o1", orderDate: "2026-08-01", date: "2026-08-05", base: 100, iva: 0, total: 100, period: "2026-08" };
+    const unpaid1 = { id: "e2", workId: "w", origin: "requisicion" as const, referenceId: "o2", orderDate: "2026-08-02", base: 40, iva: 0, total: 40 };
+    const unpaid2 = { id: "e3", workId: "w", origin: "requisicion" as const, referenceId: "o3", orderDate: "2026-08-03", base: 15, iva: 0, total: 15 };
+    const result = calculateDashboard([paid, unpaid1, unpaid2], [], [], "2026-08");
+    expect(result.inProcessValue).toBe(55);
+    expect(result.periodExpense).toBe(100); // solo lo pagado entra al gasto del periodo
   });
 });
 describe("reunión 2026-08-31: aprobación parcial por ítem y eje administrativo de la orden", () => {
@@ -151,7 +161,7 @@ describe("RF-1102 dashboard queue and recent activity", () => {
   it("orders recent activity by timestamp desc across requisitions, orders and expenses, and caps to the limit", () => {
     const requisitions = [req({ id: "r1", updatedAt: "2026-08-20T10:00:00.000Z" }), req({ id: "r2", updatedAt: "2026-08-22T10:00:00.000Z" })];
     const orders = [ord({ id: "o1", updatedAt: "2026-08-21T10:00:00.000Z" })];
-    const expenses = [{ id: "e1", workId: "work-a", origin: "requisicion" as const, referenceId: "r1", date: "2026-08-23", base: 100, iva: 19, total: 119, period: "2026-08" }];
+    const expenses = [{ id: "e1", workId: "work-a", origin: "requisicion" as const, referenceId: "r1", orderDate: "2026-08-23", date: "2026-08-23", base: 100, iva: 19, total: 119, period: "2026-08" }];
     const activity = buildRecentActivity(requisitions, orders, expenses, 3);
     expect(activity.map((item) => item.id)).toEqual(["e1", "r2", "o1"]);
   });
@@ -159,15 +169,31 @@ describe("RF-1102 dashboard queue and recent activity", () => {
     const activity = buildRecentActivity([req({ id: "r1" })], [ord({ id: "o1" })], []);
     expect(activity).toEqual([]);
   });
+  // Reunión 2026-09: un gasto sin fecha de pago usa orderDate como `at` — no desaparece de la
+  // actividad reciente solo porque la orden que lo originó aún no se ha pagado.
+  it("uses orderDate as `at` for an unpaid expense (no date yet)", () => {
+    const expenses = [{ id: "e1", workId: "work-a", origin: "requisicion" as const, referenceId: "r1", orderDate: "2026-08-23", base: 100, iva: 19, total: 119 }];
+    const activity = buildRecentActivity([], [], expenses);
+    expect(activity).toEqual([{ kind: "gasto", id: "e1", consecutive: "e1".slice(0, 8), workId: "work-a", status: "requisicion", at: "2026-08-23" }]);
+  });
   it("groups expenses by work, tag (using '' for missing tagId) and period, most recent months last", () => {
     const expenses = [
-      { id: "e1", workId: "a", origin: "requisicion" as const, referenceId: "r1", tagId: "t1", date: "2026-07-01", base: 100, iva: 0, total: 100, period: "2026-07" },
-      { id: "e2", workId: "a", origin: "requisicion" as const, referenceId: "r2", date: "2026-08-01", base: 50, iva: 0, total: 50, period: "2026-08" },
-      { id: "e3", workId: "b", origin: "requisicion" as const, referenceId: "r3", tagId: "t1", date: "2026-08-02", base: 30, iva: 0, total: 30, period: "2026-08" },
+      { id: "e1", workId: "a", origin: "requisicion" as const, referenceId: "r1", tagId: "t1", orderDate: "2026-07-01", date: "2026-07-01", base: 100, iva: 0, total: 100, period: "2026-07" },
+      { id: "e2", workId: "a", origin: "requisicion" as const, referenceId: "r2", orderDate: "2026-08-01", date: "2026-08-01", base: 50, iva: 0, total: 50, period: "2026-08" },
+      { id: "e3", workId: "b", origin: "requisicion" as const, referenceId: "r3", tagId: "t1", orderDate: "2026-08-02", date: "2026-08-02", base: 30, iva: 0, total: 30, period: "2026-08" },
     ];
     expect(groupExpenseByWork(expenses)).toEqual([{ key: "a", total: 150 }, { key: "b", total: 30 }]);
     expect(groupExpenseByTag(expenses)).toEqual([{ key: "t1", total: 130 }, { key: "", total: 50 }]);
     expect(groupExpenseByPeriod(expenses)).toEqual([{ key: "2026-07", total: 100 }, { key: "2026-08", total: 80 }]);
     expect(groupExpenseByPeriod(expenses, 1)).toEqual([{ key: "2026-08", total: 80 }]);
+  });
+  // Reunión 2026-09: groupExpenseByPeriod excluye lo no pagado (period undefined) — no inventa un
+  // bucket "sin periodo" en una serie que es, por definición, mensual.
+  it("groupExpenseByPeriod excluye los gastos sin periodo (aún sin pagar)", () => {
+    const expenses = [
+      { id: "e1", workId: "a", origin: "requisicion" as const, referenceId: "r1", orderDate: "2026-08-01", date: "2026-08-01", base: 100, iva: 0, total: 100, period: "2026-08" },
+      { id: "e2", workId: "a", origin: "requisicion" as const, referenceId: "r2", orderDate: "2026-08-05", base: 40, iva: 0, total: 40 },
+    ];
+    expect(groupExpenseByPeriod(expenses)).toEqual([{ key: "2026-08", total: 100 }]);
   });
 });

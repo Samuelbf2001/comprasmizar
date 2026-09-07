@@ -156,9 +156,15 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
         { id: "work-1", name: "Torre Norte", societyId: "soc-1" },
         { id: "work-other", name: "Obra de otra empresa", societyId: "soc-2" },
       ],
-      tags: [{ id: "tag-1", name: "Urgente" }],
+      // approverId: sugerencia por defecto de la etiqueta (reunión 2026-09) — prerellena el select
+      // "Aprobador" al elegir "tag-1", pero el revisor puede cambiarlo (ver `approvers`, abajo).
+      tags: [{ id: "tag-1", name: "Urgente", approverId: "approver-1" }],
       suppliers: [],
       items: [],
+      approvers: [
+        { id: "approver-1", name: "Nelson Aprobador" },
+        { id: "approver-2", name: "Sonia Aprobadora" },
+      ],
       features: {},
     },
     orders: [],
@@ -211,7 +217,7 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
       },
     };
     render(<ConnectedRequisitionDetail data={varias} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
-    fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta y ruta de aprobación" }), {
+    fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta" }), {
       target: { value: "tag-1" },
     });
     fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), { target: { value: "work-1" } });
@@ -241,7 +247,7 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
       }),
     );
     render(<ConnectedRequisitionDetail data={reviewData} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
-    fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta y ruta de aprobación" }), {
+    fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta" }), {
       target: { value: "tag-1" },
     });
     fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), {
@@ -261,9 +267,55 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
     expect(body.paymentTerms).toBe("ANTICIPADO");
     expect(body.items[0].ivaRate).toBe(0.19);
     expect(body.items[0].discountRate).toBe(0.1);
+    // Elegir "tag-1" prerellenó el aprobador con su sugerencia por defecto (approver-1); el review
+    // enviado lo lleva sin que el revisor haya tocado el select de aprobador.
+    expect(body.approverId).toBe("approver-1");
 
     const sendButton = screen.getByRole("button", { name: "Enviar a aprobación" });
     expect(sendButton).toBeEnabled();
+  });
+
+  // Reunión 2026-09 (decisión del cliente): "etiqueto a qué obra va y etiqueto quién me va a aprobar" —
+  // el aprobador se sugiere por la etiqueta pero el revisor puede cambiarlo, y sin aprobador "Enviar a
+  // aprobación" queda deshabilitado con el motivo explicado al lado (regla única del repo).
+  it("elegir etiqueta pre-rellena el aprobador (sugerencia por defecto) pero se puede cambiar", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "req-1", items: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<ConnectedRequisitionDetail data={reviewData} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    const approverSelect = screen.getByRole("combobox", { name: "Aprobador" });
+    expect(approverSelect).toHaveValue(""); // nada elegido todavía: sin sugerencia disparada
+    fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), { target: { value: "work-1" } });
+
+    // "Enviar a aprobación" explica por qué está deshabilitado antes de elegir nada.
+    expect(screen.getByRole("button", { name: "Enviar a aprobación" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Falta elegir la etiqueta");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta" }), { target: { value: "tag-1" } });
+    expect(approverSelect).toHaveValue("approver-1"); // sugerencia por defecto de la etiqueta
+    expect(screen.getByRole("button", { name: "Enviar a aprobación" })).toBeEnabled();
+
+    // El revisor cambia el aprobador sugerido: la elección manual gana, no la etiqueta.
+    fireEvent.change(approverSelect, { target: { value: "approver-2" } });
+    expect(approverSelect).toHaveValue("approver-2");
+    fireEvent.click(screen.getByRole("button", { name: "Guardar revisión" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.approverId).toBe("approver-2");
+  });
+
+  it("sin aprobador, Enviar a aprobación queda deshabilitado con el motivo explicado al lado", () => {
+    // Etiqueta sin aprobador por defecto: elegirla no prerellena nada, y el botón sigue explicando por qué.
+    const sinSugerencia = { ...reviewData, catalogs: { ...reviewData.catalogs, tags: [{ id: "tag-2", name: "Sin sugerencia" }] } };
+    render(<ConnectedRequisitionDetail data={sinSugerencia} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta" }), { target: { value: "tag-2" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), { target: { value: "work-1" } });
+    expect(screen.getByRole("combobox", { name: "Aprobador" })).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Enviar a aprobación" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Falta elegir el aprobador");
   });
 });
 

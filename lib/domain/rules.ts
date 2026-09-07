@@ -115,10 +115,18 @@ export function groupOrderItems(lines: readonly ItemLine[], type: "compra" | "pa
   for (const line of lines) { const key = line.finalSupplierId as string; groups.set(key, [...(groups.get(key) ?? []), line]); }
   return groups;
 }
+/**
+ * Decisión del cliente (reunión 2026-09): el gasto se fecha con el pago, no con la generación de la
+ * orden — `periodExpense` (que filtra por `period`, derivado de `date`) ya deja fuera, correctamente,
+ * lo que aún no se ha pagado. `inProcessValue` ANTES quedaba fijo en 0 (dead code, ver historial):
+ * ahora suma los gastos SIN `date` — lo comprometido en órdenes ya generadas y todavía sin pagar —
+ * para que ese dinero no desaparezca de todas las vistas hasta que se pague.
+ */
 export function calculateDashboard(expenses: readonly Expense[], orders: readonly Order[], statuses: readonly RequisitionStatus[], period: string): DashboardMetrics {
   const byStatus = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
   for (const status of statuses) byStatus[status]++;
-  return { byStatus, inProcessValue: 0, periodExpense: expenses.filter((expense) => expense.period === period).reduce((sum, expense) => sum + expense.total, 0), pendingOrders: orders.filter((order) => order.status === "generada" || order.status === "no_cumplida").length };
+  const inProcessValue = expenses.filter((expense) => expense.date === undefined).reduce((sum, expense) => sum + expense.total, 0);
+  return { byStatus, inProcessValue, periodExpense: expenses.filter((expense) => expense.period === period).reduce((sum, expense) => sum + expense.total, 0), pendingOrders: orders.filter((order) => order.status === "generada" || order.status === "no_cumplida").length };
 }
 /**
  * RF-1102: cola de "qué espera algo de mí" en el dashboard conectado. Se calcula en el dominio sobre
@@ -146,14 +154,17 @@ export function buildAttentionQueue(requisitions: readonly Requisition[], orders
  * RF-1102: actividad reciente combinando requisiciones, órdenes y gastos visibles para el actor.
  * Requisiciones/órdenes ordenan por su `updatedAt` real (poblado solo por el adaptador Postgres); los
  * gastos del dominio solo llevan fecha (sin hora), así que dos eventos del mismo día ordenan por esa
- * fecha. Es una aproximación explícita, no un registro de auditoría con hora exacta.
+ * fecha. `expense.date` (fecha de pago) puede faltar mientras la orden no se ha pagado: se usa
+ * `expense.orderDate` en ese caso, para que un compromiso recién generado siga apareciendo en la
+ * actividad reciente en vez de desaparecer hasta que se pague. Es una aproximación explícita, no un
+ * registro de auditoría con hora exacta.
  */
 export function buildRecentActivity(requisitions: readonly Requisition[], orders: readonly Order[], expenses: readonly Expense[], limit = 8): DashboardActivityItem[] {
   const workByRequisition = new Map(requisitions.map((requisition) => [requisition.id, requisition.workId]));
   const items: DashboardActivityItem[] = [];
   for (const requisition of requisitions) if (requisition.updatedAt) items.push({ kind: "requisicion", id: requisition.id, consecutive: requisition.consecutive, workId: requisition.workId, status: requisition.status, at: requisition.updatedAt });
   for (const order of orders) if (order.updatedAt) items.push({ kind: "orden", id: order.id, consecutive: order.consecutive, workId: workByRequisition.get(order.requisitionId) ?? "", status: order.status, at: order.updatedAt });
-  for (const expense of expenses) items.push({ kind: "gasto", id: expense.id, consecutive: expense.id.slice(0, 8), workId: expense.workId, status: expense.origin, at: expense.date });
+  for (const expense of expenses) items.push({ kind: "gasto", id: expense.id, consecutive: expense.id.slice(0, 8), workId: expense.workId, status: expense.origin, at: expense.date ?? expense.orderDate });
   return items.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
 }
 function amountByKey(rows: Iterable<readonly [string, Money]>): DashboardAmountByKey[] {
@@ -165,7 +176,12 @@ function amountByKey(rows: Iterable<readonly [string, Money]>): DashboardAmountB
 export function groupExpenseByWork(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.map((expense) => [expense.workId, expense.total] as const)); }
 /** RF-706/RF-1103: gasto agrupado por etiqueta; clave "" representa gastos sin etiqueta asignada. */
 export function groupExpenseByTag(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.map((expense) => [expense.tagId ?? "", expense.total] as const)); }
-/** RF-706/RF-1103: tendencia de gasto por periodo (YYYY-MM), cronológica, limitada a los últimos `monthsBack`. */
+/**
+ * RF-706/RF-1103: tendencia de gasto por periodo (YYYY-MM), cronológica, limitada a los últimos
+ * `monthsBack`. Excluye los gastos sin `period` (orden generada, aún sin pagar): no inventa un bucket
+ * "sin periodo" en una serie que es, por definición, mensual.
+ */
 export function groupExpenseByPeriod(expenses: readonly Expense[], monthsBack = 6): DashboardAmountByKey[] {
-  return amountByKey(expenses.map((expense) => [expense.period, expense.total] as const)).sort((a, b) => a.key.localeCompare(b.key)).slice(-monthsBack);
+  const withPeriod = expenses.filter((expense): expense is Expense & { period: string } => expense.period !== undefined);
+  return amountByKey(withPeriod.map((expense) => [expense.period, expense.total] as const)).sort((a, b) => a.key.localeCompare(b.key)).slice(-monthsBack);
 }

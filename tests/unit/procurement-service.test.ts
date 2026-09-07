@@ -6,9 +6,12 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   const req = new Map<string, Requisition>(), ordersData: Order[] = [], expensesData: Expense[] = [], petty: PettyCash[] = [], audits: AuditEvent[] = [], shares: ExpenseShare[] = [], visibleActors: string[] = []; let seq = 0;
   const requisitions = { get: async (id: string) => req.get(id) ? structuredClone(req.get(id)!) : null, save: async (r: Requisition) => void req.set(r.id, structuredClone(r)), list: async () => [...req.values()].map((value) => structuredClone(value)), listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`req:${actor.id}`); return [...req.values()].filter((r) => actor.id === "daniel" || r.approverId === actor.id).map((value) => structuredClone(value)); } };
   const orders = { save: async (o: Order) => { const i = ordersData.findIndex((x) => x.id === o.id); if (i >= 0) ordersData[i] = o; else ordersData.push(o); }, list: async () => ordersData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return actor.id === "daniel" ? ordersData : ordersData.filter((o) => o.requisitionId.includes(actor.id)); }, listByRequisition: async (id: string) => ordersData.filter((o) => o.requisitionId === id), get: async (id: string) => ordersData.find((o) => o.id === id) ?? null };
-  const expenses = { get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e), saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); }, list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return actor.id === "daniel" ? expensesData : []; }, listByReference: async (id: string) => expensesData.filter((e) => e.referenceId === id || ordersData.some((o) => o.id === e.referenceId && o.requisitionId === id)) };
-  const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, tags = { getApproverId: async (tag: string) => tag === "tag" ? "nelson" : null }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
-  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty };
+  // markPaid: mismo criterio que el adaptador Postgres real (markExpensePaid) — solo actualiza `date`
+  // de un gasto `origen: "requisicion"` ya existente; `saveExpense`/`save` nunca sirve para esto.
+  const expenses = { get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e), markPaid: async (referenceId: string, date: string) => { const entry = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === referenceId); if (entry) { entry.date = date; entry.period = date.slice(0, 7); } }, saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); }, list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return actor.id === "daniel" ? expensesData : []; }, listByReference: async (id: string) => expensesData.filter((e) => e.referenceId === id || ordersData.some((o) => o.id === e.referenceId && o.requisitionId === id)) };
+  const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
+  // Reunión 2026-09: caja menor nace pagada — orderDate y date coinciden siempre con la fecha del movimiento.
+  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty };
   // "works"/"work" con sociedad "soc": único caso que review() debe resolver como obra válida y de la
   // misma sociedad que usan los fixtures de este archivo; cualquier otro id (p.ej. una obra de otra
   // empresa) resuelve a null para poder probar el rechazo INVALID_INPUT.
@@ -18,22 +21,58 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // inactiveSuppliers: mutable, para probar el chequeo de generateOrders() (proveedor desactivado
   // DESPUÉS de assignSuppliers()/approve()) sin acoplarse al chequeo estático de "p-inactivo".
   const inactiveSuppliers = new Set<string>();
-  const catalogs = { create: async (_kind: string, value: never) => value, get: async (kind: string, id: string) => (kind === "works" && id === "work" ? { id: "work", name: "Obra Test", societyId: "soc", active: true } : kind === "suppliers" && ["p1", "p2", "p3"].includes(id) ? { id, name: `Proveedor ${id}`, active: !inactiveSuppliers.has(id) } : kind === "suppliers" && id === "p-inactivo" ? { id, name: "Proveedor inactivo", active: false } : null), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, findRequesterDuplicate: async () => null, isEligibleApprover: async () => true, authUserExists: async () => true, hasRequisitionsForWork: async () => false };
+  // "no-elegible": único id que review() debe rechazar como aprobador (usuario sin rol
+  // aprobador/revisor/admin_sixteam, o dado de baja) — cualquier otro id (incluidos "nelson" y "sonia",
+  // los dos actores aprobador de este archivo) es elegible.
+  const catalogs = { create: async (_kind: string, value: never) => value, get: async (kind: string, id: string) => (kind === "works" && id === "work" ? { id: "work", name: "Obra Test", societyId: "soc", active: true } : kind === "suppliers" && ["p1", "p2", "p3"].includes(id) ? { id, name: `Proveedor ${id}`, active: !inactiveSuppliers.has(id) } : kind === "suppliers" && id === "p-inactivo" ? { id, name: "Proveedor inactivo", active: false } : null), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, findRequesterDuplicate: async () => null, isEligibleApprover: async (id: string) => id !== "no-elegible", authUserExists: async () => true, hasRequisitionsForWork: async () => false };
   const transactions = { transaction: async <T>(_id: string | undefined, work: (repositories: Parameters<ServiceDependencies["transactions"]["transaction"]>[1] extends (repositories: infer R) => Promise<unknown> ? R : never) => Promise<T>) => {
     const snapshot = { req: structuredClone([...req.entries()]), orders: structuredClone(ordersData), expenses: structuredClone(expensesData), petty: structuredClone(petty), audits: structuredClone(audits), shares: structuredClone(shares), proposed: structuredClone([...proposed.entries()]), notifications: structuredClone(notificationData) };
-    try { return await work({ requisitions, orders, expenses, pettyCash, audit, consecutives, tags, features, items: itemCatalog, catalogs, notifications }); }
+    try { return await work({ requisitions, orders, expenses, pettyCash, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
     catch (error) { req.clear(); for (const [id, value] of snapshot.req) req.set(id, value); ordersData.splice(0, ordersData.length, ...snapshot.orders); expensesData.splice(0, expensesData.length, ...snapshot.expenses); petty.splice(0, petty.length, ...snapshot.petty); audits.splice(0, audits.length, ...snapshot.audits); shares.splice(0, shares.length, ...snapshot.shares); proposed.clear(); for (const [key, value] of snapshot.proposed) proposed.set(key, value); notificationData.splice(0, notificationData.length, ...snapshot.notifications); throw error; }
   } };
-  return { req, ordersData, expensesData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234" }, tags, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, pettyCash, audit, inactiveSuppliers };
+  return { req, ordersData, expensesData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, pettyCash, audit, inactiveSuppliers };
 }
 const reviewer = { actor: { id: "daniel", roles: ["revisor"] as const } }, approver = { actor: { id: "nelson", roles: ["aprobador"] as const } }, requester = { actor: { id: "sol", roles: ["solicitante"] as const } };
+// "sonia": segundo actor aprobador, distinto de "nelson" — usado para probar que el aprobador ELEGIDO
+// por el revisor en review() (no uno cualquiera con rol aprobador) es quien puede decidir la requisición.
+const otherApprover = { actor: { id: "sonia", roles: ["aprobador"] as const } };
 const items = [{ id: "l1", itemId: "catalog-cemento", description: "Cemento", quantity: 2, unit: "und", unitBase: 100, unitIva: 19, unitTotal: 119, finalSupplierId: "p1" }, { id: "l2", itemId: "catalog-arena", description: "Arena", quantity: 1, unit: "und", unitBase: 200, unitIva: 38, unitTotal: 238, finalSupplierId: "p2" }];
-async function reviewed(service: ProcurementService) { const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); await service.startReview(r.id, reviewer); await service.review(r.id, { tagId: "tag", items }, reviewer); return service.sendForApproval(r.id, reviewer); }
+async function reviewed(service: ProcurementService) { const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); await service.startReview(r.id, reviewer); await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer); return service.sendForApproval(r.id, reviewer); }
 
 describe("ProcurementService", () => {
   it("persists enviada first and enters review through an audited explicit transition", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); expect(r.status).toBe("enviada"); expect(deps.audits.map((a) => a.event)).toEqual(["creada"]); await service.startReview(r.id, reviewer); expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); expect(deps.audits.at(-1)?.data).toMatchObject({ from: "enviada", to: "en_revision" }); });
   it("uses a verifier for public access, materializes proposals and requires external identity", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const created = await service.create({ type: "pago", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro", phone: "+57 300 123 4567" }, items: [{ ...items[0], itemId: undefined, description: "Tubería especial" }] }, {}); expect(created).toMatchObject({ status: "enviada", externalRequester: { phone: "+573001234567" }, items: [{ itemId: expect.stringMatching(/^catalog-/) }] }); expect(deps.audits.map((entry) => entry.event)).toContain("propuesto"); await expect(service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro" }, items }, {})).rejects.toMatchObject({ code: "INVALID_INPUT" }); });
-  it("routes from tag data, does not accept client approver, and audits return transitions", async () => { const service = new ProcurementService(fakeDeps()), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); await service.startReview(r.id, reviewer); const reviewedR = await service.review(r.id, { tagId: "tag", items }, reviewer); expect(reviewedR.approverId).toBe("nelson"); await expect(service.review(r.id, { tagId: "missing", items }, reviewer)).rejects.toMatchObject({ code: "ROUTING_NOT_FOUND" }); await service.sendForApproval(r.id, reviewer); await expect(service.returnForCorrection(r.id, "", approver)).rejects.toBeInstanceOf(DomainError); expect((await service.returnForCorrection(r.id, "falta soporte", approver)).status).toBe("devuelta"); });
+  // Decisión del cliente (reunión 2026-09, literal de Daniel): "etiqueto a qué obra va y etiqueto quién
+  // me va a aprobar" — el aprobador YA NO se deriva de la etiqueta, lo elige el revisor en review().
+  it("review() persiste el aprobador elegido por el revisor (no lo deriva de la etiqueta) y audita transiciones de devolución", async () => { const service = new ProcurementService(fakeDeps()), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); await service.startReview(r.id, reviewer); const reviewedR = await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer); expect(reviewedR.approverId).toBe("nelson"); await service.sendForApproval(r.id, reviewer); await expect(service.returnForCorrection(r.id, "", approver)).rejects.toBeInstanceOf(DomainError); expect((await service.returnForCorrection(r.id, "falta soporte", approver)).status).toBe("devuelta"); });
+  it("review() rechaza un approverId no elegible (usuario sin rol aprobador/revisor/admin_sixteam, o dado de baja)", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    await expect(service.review(r.id, { tagId: "tag", approverId: "no-elegible", items }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    // La validación de approverId corre ANTES de tocar la requisición: un aprobador no elegible no deja
+    // nada a medio camino (ni tagId ni approverId quedan escritos).
+    const untouched = await service.getRequisition(r.id, reviewer);
+    expect(untouched.approverId).toBeUndefined(); expect(untouched.tagId).toBeUndefined(); expect(untouched.status).toBe("en_revision");
+  });
+  it("review() puede guardarse como borrador sin approverId todavía, pero sendForApproval() lo exige aunque ya haya etiqueta", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    const draft = await service.review(r.id, { tagId: "tag", items }, reviewer); // sin approverId: borrador válido
+    expect(draft.tagId).toBe("tag"); expect(draft.approverId).toBeUndefined();
+    await expect(service.sendForApproval(r.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
+  });
+  // El aprobador lo elige el revisor, no la etiqueta: dos requisiciones con la MISMA etiqueta pueden
+  // terminar con aprobadores distintos, y solo el asignado a cada una puede decidirla.
+  it("el aprobador asignado en review() (no cualquier otro con rol aprobador) es quien puede aprobar la requisición", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    const reviewedR = await service.review(r.id, { tagId: "tag", approverId: "sonia", items }, reviewer);
+    expect(reviewedR.approverId).toBe("sonia");
+    await service.sendForApproval(r.id, reviewer);
+    // "nelson" tiene rol aprobador pero NO es el elegido para esta requisición.
+    await expect(service.approve(r.id, approver)).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" });
+    await expect(service.approve(r.id, otherApprover)).resolves.toMatchObject({ status: "aprobada" });
+  });
   it("returns traceability only after applying requisition visibility", async () => { const service = new ProcurementService(fakeDeps()), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); await service.startReview(r.id, reviewer); const history = await service.getRequisitionHistory(r.id, reviewer); expect(history.map((entry) => entry.event)).toEqual(["creada", "entrada_revision"]); await expect(service.getRequisitionHistory(r.id, { actor: { id: "stranger", roles: ["solicitante"] } })).rejects.toMatchObject({ code: "NOT_FOUND" }); });
   it("does not let an MCP caller bypass service read permissions", async () => { const service = new ProcurementService(fakeDeps()); await expect(service.listOrders({ ...requester, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" }); await expect(service.listExpenses({ ...requester, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" }); });
 
@@ -52,7 +91,7 @@ describe("ProcurementService", () => {
     const r = await service.create({ type: "compra", societyId: "soc", channel: "web", items }, requester);
     expect(r.workId).toBeUndefined(); expect(r.requiredDate).toBeUndefined();
     await service.startReview(r.id, reviewer);
-    await service.review(r.id, { tagId: "tag", items }, reviewer); // no asigna obra
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer); // no asigna obra
     await expect(service.sendForApproval(r.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
   });
   it("review() asigna la obra (la elige el revisor) y valida que pertenezca a la sociedad de la requisición", async () => {
@@ -69,7 +108,7 @@ describe("ProcurementService", () => {
     const service = new ProcurementService(fakeDeps());
     const req = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], finalSupplierId: undefined }] }, requester);
     await service.startReview(req.id, reviewer);
-    await service.review(req.id, { tagId: "tag", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
+    await service.review(req.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
     await expect(service.sendForApproval(req.id, reviewer)).resolves.toMatchObject({ status: "en_aprobacion" });
   });
   // Ítem 7: IVA legacy — una línea con iva > 0 y sin ivaRate entrante no se pone en cero al guardar,
@@ -91,17 +130,19 @@ describe("ProcurementService", () => {
     expect(service.lineTotal(reviewedR.items[0])).toBe(1190);
   });
 
-  // GRAVE 1 (QA Postgres real): fecha y periodo del gasto en zona horaria de Colombia (UTC-5), no en
+  // GRAVE 1 (QA Postgres real): fecha (orderDate) del gasto en zona horaria de Colombia (UTC-5), no en
   // UTC. Reloj congelado en la frontera exacta del bug: 2026-08-31T23:30:00-05:00 (== UTC
-  // 2026-09-01T04:30:00Z) debe seguir contabilizando en agosto, no en septiembre.
-  it("generateOrders calcula fecha/periodo del gasto en hora de Colombia, no en UTC (frontera 2026-08-31 23:30 -05:00)", async () => {
+  // 2026-09-01T04:30:00Z) debe seguir naciendo en agosto, no en septiembre.
+  // Reunión 2026-09: generateOrders ya NO fija fecha/periodo de pago — el gasto nace sin `date`/
+  // `period` (compromiso, todavía no un gasto) y solo trae `orderDate`.
+  it("generateOrders crea el gasto sin fecha de pago, con orderDate en hora de Colombia (frontera 2026-08-31 23:30 -05:00)", async () => {
     const deps = fakeDeps(); deps.clock.now = () => new Date("2026-09-01T04:30:00.000Z");
     const service = new ProcurementService(deps);
     const r = await reviewed(service);
     await service.approve(r.id, approver);
     await service.generateOrders(r.id, reviewer);
     expect(deps.expensesData).toHaveLength(2);
-    for (const expense of deps.expensesData) { expect(expense.date).toBe("2026-08-31"); expect(expense.period).toBe("2026-08"); }
+    for (const expense of deps.expensesData) { expect(expense.orderDate).toBe("2026-08-31"); expect(expense.date).toBeUndefined(); expect(expense.period).toBeUndefined(); }
   });
 
   // Menor (QA Postgres real): un proveedor puede desactivarse DESPUÉS de aprobar/asignar — generateOrders
@@ -137,7 +178,7 @@ describe("ProcurementService", () => {
     const deps = fakeDeps(), service = new ProcurementService(deps);
     const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], finalSupplierId: undefined }] }, requester);
     await service.startReview(r.id, reviewer);
-    await service.review(r.id, { tagId: "tag", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
     await service.sendForApproval(r.id, reviewer);
     await service.approve(r.id, approver);
     await expect(service.generateOrders(r.id, reviewer)).rejects.toMatchObject({ code: "SUPPLIER_REQUIRED" });
@@ -150,7 +191,7 @@ describe("ProcurementService", () => {
     const deps = fakeDeps(), service = new ProcurementService(deps);
     const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], finalSupplierId: undefined }] }, requester);
     await service.startReview(r.id, reviewer);
-    await service.review(r.id, { tagId: "tag", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
     await service.sendForApproval(r.id, reviewer);
     await service.approve(r.id, approver);
     await expect(service.generateOrders(r.id, reviewer)).rejects.toMatchObject({ code: "SUPPLIER_REQUIRED" }); // atascada
@@ -170,7 +211,7 @@ describe("ProcurementService", () => {
     const service = new ProcurementService(fakeDeps());
     const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], finalSupplierId: undefined }] }, requester);
     await service.startReview(r.id, reviewer);
-    await service.review(r.id, { tagId: "tag", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer);
     await service.sendForApproval(r.id, reviewer);
     await service.approve(r.id, approver);
     await expect(service.assignSuppliers(r.id, [{ itemId: items[0].id, supplierId: "p3" }], approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -225,12 +266,29 @@ describe("ProcurementService", () => {
     await service.updateOrderStatus(orderB.id, "no_necesario", reviewer);
     await expect(service.updateOrderAdminStatus(orderB.id, "contabilizada", { actor: { id: "cont2", roles: ["contabilidad"] } })).rejects.toMatchObject({ code: "ORDER_NOT_NEEDED" });
   });
+  // Reunión 2026-09: "la fecha del gasto es la del pago" — marcar una orden "pagada" fija `date`
+  // (y por tanto `period`) del gasto que esa orden generó, en hora de Colombia. Reloj congelado en
+  // 2026-09-01T03:30:00Z (== 2026-08-31T22:30:00-05:00): la fecha de pago debe caer en agosto, no en
+  // septiembre — mismo criterio de zona horaria que generateOrders (colombiaDateParts).
+  it("marcar una orden pagada fija la fecha de pago del gasto en hora de Colombia (frontera 2026-09-01T03:30:00Z -> 2026-08-31)", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    const [orderA] = await service.generateOrders(r.id, reviewer);
+    let expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
+    expect(expense.date).toBeUndefined(); expect(expense.period).toBeUndefined(); // compromiso, aún sin pagar
+    await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+    deps.clock.now = () => new Date("2026-09-01T03:30:00.000Z");
+    await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
+    expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
+    expect(expense.date).toBe("2026-08-31");
+    expect(expense.period).toBe("2026-08");
+  });
   it("rejects incomplete review and blocks approval from MCP", async () => {
     const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
     await expect(service.approve(r.id, { ...approver, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     const zeroQuote = new ProcurementService(fakeDeps()), zero = await zeroQuote.create({ type: "pago", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, requester);
     await zeroQuote.startReview(zero.id, reviewer);
-    await zeroQuote.review(zero.id, { tagId: "tag", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, reviewer);
+    await zeroQuote.review(zero.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, reviewer);
     await expect(zeroQuote.sendForApproval(zero.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
   });
   it("enforces shares, order fulfillment, role-scoped dashboard, typed failures and unit totals", async () => {
@@ -247,7 +305,15 @@ describe("ProcurementService", () => {
     await expect(service.updateOrderStatus(orders[0].id, "no_cumplida", reviewer)).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
     const cash = await service.registerPettyCash({ workId: "work", date: "2026-08-03", concept: "Taxi", tagId: "t", amount: 500 }, reviewer);
     expect(cash.expense.origin).toBe("caja_menor");
-    await expect(service.dashboard("2026-08", reviewer)).resolves.toMatchObject({ periodExpense: 976 });
+    // Reunión 2026-09: la caja menor nace pagada — orderDate y date coinciden siempre con la fecha del
+    // movimiento, y el periodo queda calculado de inmediato (nunca un compromiso sin pagar).
+    expect(cash.expense.orderDate).toBe("2026-08-03");
+    expect(cash.expense.date).toBe("2026-08-03");
+    expect(cash.expense.period).toBe("2026-08");
+    // Reunión 2026-09: periodExpense solo cuenta lo PAGADO — las dos órdenes generadas (476) siguen sin
+    // pagar, así que el gasto del periodo es únicamente la caja menor (500, pagada en el acto);
+    // inProcessValue es lo comprometido sin pagar (las órdenes: 476).
+    await expect(service.dashboard("2026-08", reviewer)).resolves.toMatchObject({ periodExpense: 500, inProcessValue: 476 });
     expect(deps.visibleActors).toEqual(expect.arrayContaining(["req:daniel", "order:daniel", "expense:daniel"]));
     const approverDashboard = await service.dashboard("2026-08", approver);
     expect(approverDashboard.byStatus.aprobada).toBe(1);
@@ -279,7 +345,7 @@ describe("ProcurementService", () => {
     const deps = fakeDeps(), service = new ProcurementService(deps), paymentItems = [items[0]];
     const r = await service.create({ type: "pago", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: paymentItems }, requester);
     await service.startReview(r.id, reviewer);
-    await service.review(r.id, { tagId: "tag", items: paymentItems }, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: paymentItems }, reviewer);
     await service.sendForApproval(r.id, reviewer);
     await service.approve(r.id, approver);
     const orders = await service.generateOrders(r.id, reviewer);
@@ -295,7 +361,7 @@ describe("ProcurementService", () => {
     let auditListCalls = 0; deps.audit.list = async (entity: string, entityId: string) => { auditListCalls++; return originalList(entity, entityId); };
     const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
     await service.startReview(r.id, reviewer);
-    await service.review(r.id, { tagId: "tag", paymentTerms: "Contado", items }, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", paymentTerms: "Contado", items }, reviewer);
     await service.sendForApproval(r.id, reviewer);
     await service.approve(r.id, approver);
     const orders = await service.generateOrders(r.id, reviewer);
@@ -386,7 +452,10 @@ describe("ProcurementService", () => {
     expect(dashboard.recentActivity?.every((item) => item.kind === "gasto")).toBe(true);
     expect(dashboard.expenseByWork).toEqual([{ key: "work", total: 476 }]);
     expect(dashboard.expenseByTag).toEqual([{ key: "tag", total: 476 }]);
-    expect(dashboard.expenseByPeriod).toEqual([{ key: "2026-08", total: 476 }]);
+    // Reunión 2026-09: las dos órdenes recién generadas aún no se han pagado (sin `date`/`period`) —
+    // groupExpenseByPeriod las excluye a propósito, no inventa un bucket "sin periodo".
+    expect(dashboard.expenseByPeriod).toEqual([]);
+    expect(dashboard.inProcessValue).toBe(476);
   });
 
   it("edita la cabecera de la requisición solo por revisor y solo mientras es editable", async () => {
@@ -401,7 +470,7 @@ describe("ProcurementService", () => {
     expect(history.map((e) => e.event)).toContain("cabecera_editada");
     // tras enviar a aprobación, la cabecera se congela
     await service.startReview(r.id, reviewer);
-    await service.review(r.id, { tagId: "tag", items }, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
     await service.sendForApproval(r.id, reviewer);
     await expect(service.updateRequisitionHeader(r.id, { observations: "tarde" }, reviewer)).rejects.toMatchObject({ code: "INVALID_STATE" });
   });

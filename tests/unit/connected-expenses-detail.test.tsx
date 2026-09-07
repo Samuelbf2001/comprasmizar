@@ -37,10 +37,10 @@ const catalogs = {
 
 describe("RF-702: subtotal por etiqueta dentro de cada obra", () => {
   const rows = [
-    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "r-1", tagId: "tag-1", date: "2026-08-01", total: 100000, period: "2026-08" },
-    { id: "exp-2", workId: "work-1", origin: "requisicion", referenceId: "r-2", tagId: "tag-2", date: "2026-08-02", total: 50000, period: "2026-08" },
-    { id: "exp-3", workId: "work-1", origin: "caja_menor", referenceId: "p-1", tagId: "tag-1", date: "2026-08-03", total: 20000, period: "2026-08" },
-    { id: "exp-4", workId: "work-2", origin: "requisicion", referenceId: "r-3", tagId: "tag-2", date: "2026-08-04", total: 30000, period: "2026-08" },
+    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "r-1", tagId: "tag-1", orderDate: "2026-08-01", date: "2026-08-01", total: 100000, period: "2026-08" },
+    { id: "exp-2", workId: "work-1", origin: "requisicion", referenceId: "r-2", tagId: "tag-2", orderDate: "2026-08-02", date: "2026-08-02", total: 50000, period: "2026-08" },
+    { id: "exp-3", workId: "work-1", origin: "caja_menor", referenceId: "p-1", tagId: "tag-1", orderDate: "2026-08-03", date: "2026-08-03", total: 20000, period: "2026-08" },
+    { id: "exp-4", workId: "work-2", origin: "requisicion", referenceId: "r-3", tagId: "tag-2", orderDate: "2026-08-04", date: "2026-08-04", total: 30000, period: "2026-08" },
   ];
 
   it("agrupa y suma los importes por obra y por etiqueta dentro de la obra", () => {
@@ -91,7 +91,7 @@ describe("RF-702: subtotal por etiqueta dentro de cada obra", () => {
 
 describe("RF-305: interfaz de gastos compartidos entre obras", () => {
   const rows = [
-    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "r-1", tagId: "tag-1", date: "2026-08-01", total: 100000, period: "2026-08" },
+    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "r-1", tagId: "tag-1", orderDate: "2026-08-01", date: "2026-08-01", total: 100000, period: "2026-08" },
   ];
   const expenseData = { expenses: rows, catalogs, pettyCash: [], pettyAttachments: {} };
 

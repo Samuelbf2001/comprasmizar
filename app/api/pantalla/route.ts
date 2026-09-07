@@ -1,4 +1,4 @@
-import { calculateDashboard, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumLines } from "../../../lib/domain";
+import { calculateDashboard, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork } from "../../../lib/domain";
 import { apiError } from "../../../lib/http/api";
 import { createPostgresDependencies } from "../../../lib/infrastructure/postgres-repositories";
 import { createScreenSessionServiceDependencies } from "../../../lib/infrastructure/screen-session-repository";
@@ -37,10 +37,10 @@ export async function GET(request: Request) {
     const deps = createPostgresDependencies();
     const [requisitions, expenses, orders] = await Promise.all([deps.requisitions.list(), deps.expenses.list(), deps.orders.list()]);
     const period = new Date().toISOString().slice(0, 7);
+    // Reunión 2026-09: inProcessValue ya lo calcula calculateDashboard (suma de gastos sin fecha de
+    // pago, "comprometido sin pagar") — esta ruta ya no lo recalcula aparte a partir de requisiciones
+    // en revisión/aprobación.
     const dashboard = calculateDashboard(expenses, orders, requisitions.map((requisition) => requisition.status), period);
-    const inProcessValue = requisitions
-      .filter((requisition) => requisition.status === "en_revision" || requisition.status === "en_aprobacion")
-      .reduce((sum, requisition) => sum + sumLines(requisition.items), 0);
 
     return Response.json(
       {
@@ -48,7 +48,7 @@ export async function GET(request: Request) {
         period,
         metrics: {
           byStatus: dashboard.byStatus,
-          inProcessValue,
+          inProcessValue: dashboard.inProcessValue,
           periodExpense: dashboard.periodExpense,
           pendingOrders: dashboard.pendingOrders,
           expenseByWork: groupExpenseByWork(expenses),

@@ -15,7 +15,7 @@ export const runtime = "nodejs";
 /**
  * Documento real de la orden (Fase 6, reunión 2026-08-31): calcado de la hoja "ORDEN DE ANTICIPO"
  * del Excel del cliente ya podada (docs/reunion-2026-08-31-analisis.md) — reemplaza al stub que
- * imprimía "PROVISIONAL P4 PENDIENTE", el UUID crudo de la obra y el literal "Proveedor asignado".
+ * imprimía un marcador de borrador en el título, el UUID crudo de la obra y el literal "Proveedor asignado".
  * La fecha impresa es SIEMPRE `ordenes.fecha_generacion` (`order.generatedAt`), nunca la fecha
  * requerida de la requisición (que ahora puede faltar y, además, no es la fecha correcta de una
  * orden). Visibility is checked through the order list first, exactly como antes.

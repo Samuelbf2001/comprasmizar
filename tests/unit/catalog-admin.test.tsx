@@ -29,6 +29,32 @@ function catalogData(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function publicAccessStatusResponse(): Response {
+  return new Response(JSON.stringify({ configured: false, updatedAt: null }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+/**
+ * ConnectedCatalogAdmin ahora también monta PublicAccessPanel (pestaña "Acceso público", contraseña
+ * GLOBAL del portal público — ver migración 202609070002_acceso_publico_global.sql) para roles
+ * admin_mizar/admin_sixteam: ese panel hace su propio GET a /api/public-access al montar. Sin este
+ * enrutador esa llamada se colaría en el fetchMock genérico de cada prueba de catálogos (pensado solo
+ * para /api/catalogs, escrito antes de que existiera esa pestaña) y rompería sus aserciones de conteo.
+ * Cuando `catalogsResponse` se omite, una llamada a /api/catalogs se rechaza — reproduce el
+ * comportamiento de las pruebas "no debería llamarse a fetch" de antes de este panel.
+ */
+function mockFetch(catalogsResponse?: Response) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url === "/api/public-access") return Promise.resolve(publicAccessStatusResponse());
+    return catalogsResponse ? Promise.resolve(catalogsResponse) : Promise.reject(new Error(`unexpected fetch(${url}) in this test`));
+  });
+}
+
+/** Aísla las llamadas a /api/catalogs entre el ruido del GET automático de PublicAccessPanel. */
+function catalogsCalls(fetchMock: { mock: { calls: unknown[][] } }): unknown[][] {
+  return fetchMock.mock.calls.filter((call) => call[0] === "/api/catalogs");
+}
+
 describe("ConnectedCatalogAdmin", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -114,7 +140,7 @@ describe("ConnectedCatalogAdmin", () => {
   });
 
   it("submits a tag with an eligible approver id", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchMock = mockFetch(
       new Response(
         JSON.stringify({ id: "tag-1", name: "Urgente", approverId }),
         {
@@ -143,8 +169,8 @@ describe("ConnectedCatalogAdmin", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+    await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+    expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -156,7 +182,7 @@ describe("ConnectedCatalogAdmin", () => {
   });
 
   it("requires an approver before creating a tag", () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const fetchMock = mockFetch();
     render(
       <ConnectedCatalogAdmin
         pathname="/catalogos/etiquetas"
@@ -170,7 +196,7 @@ describe("ConnectedCatalogAdmin", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(catalogsCalls(fetchMock)).toHaveLength(0);
     expect(
       screen.getByRole("combobox", { name: /Aprobador elegible/i }),
     ).toHaveAttribute("aria-invalid", "true");
@@ -180,7 +206,7 @@ describe("ConnectedCatalogAdmin", () => {
   });
 
   it("sends null for cleared optional fields when editing", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchMock = mockFetch(
       new Response(
         JSON.stringify({
           id: "item-1",
@@ -218,8 +244,8 @@ describe("ConnectedCatalogAdmin", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+    await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+    expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({
@@ -258,7 +284,7 @@ describe("ConnectedCatalogAdmin", () => {
     });
 
     it("creates a society with an optional NIT", async () => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      const fetchMock = mockFetch(
         new Response(
           JSON.stringify({ id: "society-1", name: "Sociedad Sur", nit: "900999888", active: true }),
           { status: 201, headers: { "Content-Type": "application/json" } },
@@ -280,8 +306,8 @@ describe("ConnectedCatalogAdmin", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+      expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
@@ -341,7 +367,7 @@ describe("ConnectedCatalogAdmin", () => {
     });
 
     it("creates a user with an existing Supabase Auth id, email and at least one role", async () => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      const fetchMock = mockFetch(
         new Response(
           JSON.stringify({
             id: authUserId,
@@ -374,8 +400,8 @@ describe("ConnectedCatalogAdmin", () => {
       fireEvent.click(screen.getByRole("checkbox", { name: "Revisor" }));
       fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+      expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
@@ -392,7 +418,7 @@ describe("ConnectedCatalogAdmin", () => {
     });
 
     it("requires selecting at least one role before creating a user", () => {
-      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const fetchMock = mockFetch();
       render(
         <ConnectedCatalogAdmin
           pathname="/catalogos/usuarios"
@@ -413,7 +439,7 @@ describe("ConnectedCatalogAdmin", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
 
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(catalogsCalls(fetchMock)).toHaveLength(0);
       expect(screen.getByRole("alert")).toHaveTextContent(
         "Selecciona al menos un rol",
       );
@@ -460,7 +486,7 @@ describe("ConnectedCatalogAdmin", () => {
     });
 
     it("creates an authorized requester with name and phone", async () => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      const fetchMock = mockFetch(
         new Response(
           JSON.stringify({ id: "req-1", name: "Maestro Gómez", phone: "3001112233", active: true }),
           { status: 201, headers: { "Content-Type": "application/json" } },
@@ -482,8 +508,8 @@ describe("ConnectedCatalogAdmin", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+      expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
@@ -495,7 +521,7 @@ describe("ConnectedCatalogAdmin", () => {
     });
 
     it("requires a phone number before creating an authorized requester", () => {
-      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const fetchMock = mockFetch();
       render(
         <ConnectedCatalogAdmin
           pathname="/catalogos/solicitantes-whatsapp"
@@ -509,14 +535,14 @@ describe("ConnectedCatalogAdmin", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
 
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(catalogsCalls(fetchMock)).toHaveLength(0);
       expect(screen.getByRole("alert")).toHaveTextContent(
         "El teléfono es obligatorio",
       );
     });
 
     it("deactivates a requester reversibly (logical deactivation, not deletion)", async () => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      const fetchMock = mockFetch(
         new Response(JSON.stringify({ id: "req-1", active: false }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -536,8 +562,8 @@ describe("ConnectedCatalogAdmin", () => {
       );
       fireEvent.click(screen.getByRole("button", { name: "Desactivar Maestro Pérez" }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-      expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+      expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
         expect.objectContaining({
           method: "PATCH",
           body: JSON.stringify({

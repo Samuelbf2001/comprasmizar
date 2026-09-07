@@ -208,6 +208,8 @@ describe("RF-703: filtros de gastos por obra y periodo", () => {
         workId: "work-1",
         origin: "requisicion",
         referenceId: "req-1",
+        // orderDate (generación) distinto de date (pago), a propósito: exercita las dos columnas.
+        orderDate: "2026-07-14",
         date: "2026-07-15",
         total: 100000,
         period: "2026-07",
@@ -217,6 +219,7 @@ describe("RF-703: filtros de gastos por obra y periodo", () => {
         workId: "work-2",
         origin: "caja_menor",
         referenceId: "petty-1",
+        orderDate: "2026-08-16",
         date: "2026-08-15",
         total: 50000,
         period: "2026-08",

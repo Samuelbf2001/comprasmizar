@@ -66,15 +66,22 @@ export function GET() {
     // puede ver una requisición ajena o su historial (aprobador, contabilidad, revisor…) y necesita
     // resolver ambos nombres. Deliberadamente sin `where estado='activo'`: un actor histórico ya
     // desactivado igual debe poder identificarse en una traza pasada.
-    const [works, tags, suppliers, items, societies, users] = await Promise.all([
+    // Reunión 2026-09: el aprobador ya no se deriva de la etiqueta, lo elige el revisor en la pantalla —
+    // "approverId" viaja en cada etiqueta SOLO como sugerencia por defecto (prerellenar el select de
+    // aprobador al elegir etiqueta), y "approvers" es la lista completa de donde elegir. Misma consulta
+    // de elegibilidad que ya usa app/api/catalogs/manage/route.ts (no se duplica el SQL, se repite el
+    // texto porque manage/route.ts la gatea por permiso de administrar catálogos y esta lista es para
+    // cualquier revisor). Nunca expone teléfono ni correo, igual que el resto de este bootstrap mínimo.
+    const [works, tags, suppliers, items, societies, users, approvers] = await Promise.all([
       sql<WorkRow[]>`select id, nombre as name, sociedad_id as "societyId" from obras where estado = 'activa' order by nombre`,
-      sql<NamedRow[]>`select id, nombre as name from etiquetas where activa = true order by nombre`,
+      sql<Array<NamedRow & { approverId: string | null }>>`select id, nombre as name, aprobador_id as "approverId" from etiquetas where activa = true order by nombre`,
       canReadSuppliers ? sql<NamedRow[]>`select id, razon_social as name from proveedores where activo = true order by razon_social` : Promise.resolve([]),
       sql<Array<NamedRow & { unit: string; status: string }>>`select id, nombre as name, unidad_defecto as unit, estado as status from items where estado = 'activo' order by nombre`,
       sql<NamedRow[]>`select id, nombre as name from sociedades where activa = true order by nombre`,
       sql<NamedRow[]>`select id, nombre as name from usuarios order by nombre`,
+      sql<NamedRow[]>`select distinct u.id, u.nombre as name from usuarios u join usuario_roles ur on ur.usuario_id=u.id where u.estado='activo' and ur.rol in ('aprobador', 'revisor', 'admin_sixteam') order by u.nombre`,
     ]);
-    return { works, tags, suppliers, items, societies, users, features };
+    return { works, tags, suppliers, items, societies, users, approvers, features };
   });
 }
 

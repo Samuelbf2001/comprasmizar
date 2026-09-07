@@ -27,6 +27,11 @@ const HARNESSES = [
   path.join(ROOT, "supabase", "tests", "schema_verification.sql"),
   path.join(ROOT, "supabase", "tests", "generic_attachments_verification.sql"),
   path.join(ROOT, "supabase", "tests", "supplier_documents_verification.sql"),
+  // Decisiones del 2026-09-07: cada una trae su propio arnés en vez de crecer schema_verification,
+  // para que varios cambios de esquema puedan verificarse en paralelo sin pisarse el archivo.
+  path.join(ROOT, "supabase", "tests", "aprobador_elegido_verification.sql"),
+  path.join(ROOT, "supabase", "tests", "acceso_publico_verification.sql"),
+  path.join(ROOT, "supabase", "tests", "gasto_fecha_pago_verification.sql"),
 ];
 
 function migrationFiles(): string[] {
@@ -89,6 +94,6 @@ async function main(): Promise<void> {
 }
 
 main().then(
-  () => { console.log("\nTodo verde: prelude + 4 migraciones + seed + 3 arneses SQL pasaron contra Postgres real."); process.exit(0); },
+  () => { console.log(`\nTodo verde: prelude + ${migrationFiles().length} migraciones + seed + ${HARNESSES.length} arneses SQL pasaron contra Postgres real.`); process.exit(0); },
   (error) => { console.error("\nArnés de esquema FALLÓ:", error); process.exit(1); },
 );

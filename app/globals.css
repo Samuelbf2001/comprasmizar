@@ -1175,6 +1175,9 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .checkbox-field{display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);color:#424750}
 .checkbox-field input{width:16px;height:16px;flex:none}
 .catalog-readonly-note{margin:0 var(--space-5) var(--space-4);padding:var(--space-2) var(--space-3);border-radius:var(--radius-sm);background:var(--blue-soft);color:#1f4d68;font-size:var(--text-xs)}
+/* Acceso público (contraseña global del portal, ver catalog-admin.tsx PublicAccessPanel): línea de
+   estado entre el encabezado del panel y el formulario, mismo tono que .table-sub. */
+.public-access-status{margin:0 var(--space-6) var(--space-4);color:var(--muted);font-size:var(--text-xs)}
 @media(max-width:530px){.catalog-roles-grid{grid-template-columns:1fr}}
 
 /* RF-1102: lista de actividad reciente del dashboard conectado (cola de atención reutiliza .alert-item). */

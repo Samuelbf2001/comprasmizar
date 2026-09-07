@@ -68,7 +68,10 @@ type NamedOption = { id: string; name: string };
 // la revisión pueda filtrar obras por la empresa de la requisición.
 type CatalogData = {
   works: Array<NamedOption & { societyId?: string }>;
-  tags: NamedOption[];
+  // Reunión 2026-09: approverId por etiqueta es SOLO la sugerencia por defecto (prerellena el select de
+  // aprobador al elegir etiqueta en la revisión); el aprobador real de la requisición ya no se deriva de
+  // aquí — lo elige el revisor (ver `approvers`, abajo).
+  tags: Array<NamedOption & { approverId?: string }>;
   suppliers: NamedOption[];
   items: Array<NamedOption & { unit: string; status: string }>;
   features: Record<string, boolean>;
@@ -143,16 +146,23 @@ type OrderRow = {
   status: string;
   adminStatus?: OrderAdminStatus;
   itemIds?: string[];
+  // RF eje administrativo: las tres fechas del ciclo de vida contable de la orden (ISO datetime).
+  generatedAt?: string;
+  accountedAt?: string;
+  paidAt?: string;
 };
+// Reunión 2026-09: "la fecha del gasto es la del pago" — orderDate (nace con el registro) siempre
+// viaja; date/period (fecha y periodo de PAGO) faltan mientras la orden no se ha pagado.
 type ExpenseRow = {
   id: string;
   workId: string;
   origin: string;
   referenceId: string;
   tagId?: string;
-  date: string;
+  orderDate: string;
+  date?: string;
   total: number;
-  period: string;
+  period?: string;
 };
 type AttachmentRow = {
   id: string;
@@ -1063,7 +1073,10 @@ export function ConnectedDashboard({
           <span className="stat-icon"><CheckCircle2 aria-hidden="true" size={17} /></span>
           <span className="stat-label">En aprobación</span>
           <strong>{metrics.byStatus?.en_aprobacion ?? 0}</strong>
-          <span className="stat-meta">{money.format(metrics.inProcessValue ?? 0)}</span>
+          {/* Reunión 2026-09: la fecha del gasto es la del pago — este monto es lo comprometido en
+              órdenes ya generadas y aún sin pagar (calculateDashboard.inProcessValue), no el valor de
+              las requisiciones en aprobación que muestra la tarjeta. */}
+          <span className="stat-meta">Comprometido sin pagar: {money.format(metrics.inProcessValue ?? 0)}</span>
         </article>
         <article className="stat-card stat-orange">
           <span className="stat-icon"><Truck aria-hidden="true" size={17} /></span>
@@ -2056,6 +2069,10 @@ export function ConnectedRequisitionDetail({
     attachments = [],
   } = data;
   const [tagId, setTagId] = useState(requisition.tagId ?? ""),
+    // Reunión 2026-09: el aprobador lo elige el revisor (ya no lo deriva la etiqueta). Se inicializa con
+    // el ya asignado si lo hay; elegir una etiqueta con aprobador por defecto lo prerellena SOLO si esto
+    // sigue vacío (ver el onChange de la etiqueta, abajo) — nunca pisa una elección ya hecha.
+    [approverId, setApproverId] = useState(requisition.approverId ?? ""),
     // Reunión 2026-08-31: la obra la asigna el revisor (filtrada por la empresa de la
     // requisición) y la forma de pago se captura aquí también.
     [workId, setWorkId] = useState(requisition.workId ?? ""),
@@ -2339,16 +2356,43 @@ export function ConnectedRequisitionDetail({
           ["en_revision", "devuelta"].includes(requisition.status) ? (
             <div className="connected-review">
               <label className="field">
-                <span>Etiqueta y ruta de aprobación</span>
+                {/* Reunión 2026-09: la etiqueta ya solo clasifica el gasto (alimenta el reporte por
+                    etiqueta) — quién aprueba se elige aparte, abajo. */}
+                <span>Etiqueta</span>
                 <select
                   required
                   value={tagId}
-                  onChange={(event) => setTagId(event.target.value)}
+                  onChange={(event) => {
+                    const nextTagId = event.target.value;
+                    setTagId(nextTagId);
+                    // Sugerencia por defecto: solo prerellena si el revisor aún no eligió aprobador —
+                    // nunca pisa una elección ya hecha, y el select de abajo sigue siendo editable.
+                    if (!approverId) {
+                      const suggested = catalogs.tags.find((tag) => tag.id === nextTagId)?.approverId;
+                      if (suggested) setApproverId(suggested);
+                    }
+                  }}
                 >
                   <option value="">Selecciona una etiqueta</option>
                   {catalogs.tags.map((tag) => (
                     <option key={tag.id} value={tag.id}>
                       {tag.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Aprobador</span>
+                <select
+                  required
+                  value={approverId}
+                  aria-invalid={Boolean(feedback && !approverId)}
+                  onChange={(event) => setApproverId(event.target.value)}
+                >
+                  <option value="">Selecciona un aprobador</option>
+                  {(catalogs.approvers ?? []).map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
                     </option>
                   ))}
                 </select>
@@ -2624,6 +2668,7 @@ export function ConnectedRequisitionDetail({
                     void run({
                       action: "review",
                       tagId,
+                      ...(approverId ? { approverId } : {}),
                       ...(workId ? { workId } : {}),
                       ...(paymentTerms.trim() ? { paymentTerms: paymentTerms.trim() } : {}),
                       items: lines.map(
@@ -2665,8 +2710,8 @@ export function ConnectedRequisitionDetail({
                 <button
                   className="button button-dark"
                   // El proveedor ya NO bloquea el envío a aprobación (aprobar y designar proveedor
-                  // son roles distintos); sí lo bloquean etiqueta y obra, que el backend exige.
-                  disabled={busy || requisition.status === "devuelta" || !tagId || !workId}
+                  // son roles distintos); sí lo bloquean etiqueta, obra y aprobador, que el backend exige.
+                  disabled={busy || requisition.status === "devuelta" || !tagId || !workId || !approverId}
                   type="button"
                   onClick={() => void run({ action: "send_for_approval" })}
                 >
@@ -2674,13 +2719,15 @@ export function ConnectedRequisitionDetail({
                 </button>
                 {/* GRAVE 3: regla única del repo — todo `disabled` lleva texto adyacente con la
                     razón y el siguiente paso, no solo un `title`. */}
-                {!busy && requisition.status !== "devuelta" && (!tagId || !workId) && (
+                {!busy && requisition.status !== "devuelta" && (!tagId || !workId || !approverId) && (
                   <p className="field-error" role="alert">
                     {!workId && workOptions.length === 0
                       ? "Falta asignar la obra. Esta empresa no tiene obras registradas: pídele a un administrador que la cree."
                       : !workId
                         ? "Falta asignar la obra."
-                        : "Falta elegir la etiqueta y ruta de aprobación."}
+                        : !tagId
+                          ? "Falta elegir la etiqueta."
+                          : "Falta elegir el aprobador."}
                   </p>
                 )}
               </div>
@@ -2837,6 +2884,15 @@ export function ConnectedRequisitionDetail({
                       // solamente); "Solicitante interno" se conserva como fallback honesto — nunca se
                       // muestra el UUID crudo si el id no aparece en esa lista.
                       resolveUserName(catalogs, requisition.requesterId, "Solicitante interno")}
+                </dd>
+              </div>
+              <div>
+                {/* Reunión 2026-09: el aprobador ya no se deriva de la etiqueta — lo elige el revisor en
+                    la revisión (ver el <select> "Aprobador", arriba). Se muestra aquí para toda la
+                    ficha, incluida la vista de solo lectura de roles que no revisan. */}
+                <dt>Aprobador</dt>
+                <dd data-testid="requisition-approver">
+                  {resolveUserName(catalogs, requisition.approverId, "Sin aprobador asignado")}
                 </dd>
               </div>
               <div>
@@ -3709,6 +3765,11 @@ export function ConnectedOrders({
                       ? <b><button type="button" className="text-link" onClick={() => go(requisitionHref)}>{linked?.consecutive ?? "Abrir"} <ArrowRight aria-hidden="true" size={13} /></button></b>
                       : <b>{linked?.consecutive ?? "—"}</b>}
                   </div>
+                  {/* Reunión 2026-09: las tres fechas del ciclo administrativo, cada una con su
+                      propia etiqueta — nunca fusionadas en una sola "fecha de la orden". */}
+                  <div><span>Generada</span><b>{order.generatedAt ? formatIsoDate(order.generatedAt) : "—"}</b></div>
+                  <div><span>Contabilizada</span><b>{order.accountedAt ? formatIsoDate(order.accountedAt) : "—"}</b></div>
+                  <div><span>Pagada</span><b>{order.paidAt ? formatIsoDate(order.paidAt) : "—"}</b></div>
                 </section>
                 <section className="supplier-section">
                   <div className="supplier-section-head">
@@ -3856,10 +3917,19 @@ export function ConnectedExpenses({
   // recibido evita otra ruta para un cruce que cabe en memoria.
   const [expenseWorkFilter, setExpenseWorkFilter] = useState(""),
     [periodFilter, setPeriodFilter] = useState("");
-  const filteredRows = rows.filter(
+  // Reunión 2026-09: "la fecha del gasto es la del pago" — un gasto sin `date` es un compromiso
+  // (orden generada, aún sin pagar), no un gasto de ningún mes todavía. Se separa ANTES de filtrar
+  // por periodo: el filtro de periodo solo tiene sentido sobre lo ya pagado (mismo criterio que
+  // groupExpenseByPeriod en el dominio), y lo comprometido se muestra aparte, siempre visible.
+  const paidRows = rows.filter((row) => row.date !== undefined);
+  const unpaidRows = rows.filter((row) => row.date === undefined);
+  const filteredRows = paidRows.filter(
     (row) =>
       (!expenseWorkFilter || row.workId === expenseWorkFilter) &&
       (!periodFilter || row.period === periodFilter),
+  );
+  const filteredUnpaidRows = unpaidRows.filter(
+    (row) => !expenseWorkFilter || row.workId === expenseWorkFilter,
   );
   const filteredPettyRows = pettyRows.filter(
     (row) =>
@@ -3867,6 +3937,10 @@ export function ConnectedExpenses({
       (!periodFilter || row.date.slice(0, 7) === periodFilter),
   );
   const total = filteredRows.reduce(
+    (sum, row) => sum + Number(row.total || 0),
+    0,
+  );
+  const unpaidTotal = filteredUnpaidRows.reduce(
     (sum, row) => sum + Number(row.total || 0),
     0,
   );
@@ -4113,7 +4187,8 @@ export function ConnectedExpenses({
               <table>
                 <thead>
                   <tr>
-                    <th>Fecha</th>
+                    <th>Fecha orden</th>
+                    <th>Fecha pago</th>
                     <th>Obra</th>
                     <th>Origen</th>
                     <th>Periodo</th>
@@ -4124,6 +4199,7 @@ export function ConnectedExpenses({
                 <tbody>
                   {filteredRows.map((row) => (
                     <tr key={row.id}>
+                      <td>{row.orderDate}</td>
                       <td>{row.date}</td>
                       <td>
                         {data.catalogs.works.find(
@@ -4139,7 +4215,7 @@ export function ConnectedExpenses({
                             className="text-link"
                             type="button"
                             data-testid="expense-share-trigger"
-                            aria-label={`Repartir gasto del ${row.date} por ${money.format(row.total)}`}
+                            aria-label={`Repartir gasto de la orden del ${row.orderDate} por ${money.format(row.total)}`}
                             onClick={() => openShareForm(row)}
                           >
                             Repartir <ArrowRight aria-hidden="true" size={13} />
@@ -4153,6 +4229,50 @@ export function ConnectedExpenses({
             </div>
           )}
         </section>
+        {filteredUnpaidRows.length > 0 && (
+          // Reunión 2026-09: "la fecha del gasto es la del pago" — mientras una orden generada no se
+          // paga, su valor es un COMPROMISO, no un gasto de ningún mes: se muestra en un grupo propio,
+          // nunca mezclado con la tabla de gastos (pagados) de arriba, para que ese dinero no
+          // desaparezca de la vista hasta que se pague.
+          <section className="panel" data-testid="expense-unpaid-group">
+            <div className="panel-head">
+              <div>
+                <h3>Comprometido, pendiente de pago</h3>
+                <p className="panel-sub">
+                  Órdenes ya generadas que todavía no se han pagado — no cuentan en el gasto de ningún
+                  periodo hasta que se paguen.
+                </p>
+              </div>
+              <Tone tone="warning">{money.format(unpaidTotal)}</Tone>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fecha orden</th>
+                    <th>Obra</th>
+                    <th>Origen</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUnpaidRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.orderDate}</td>
+                      <td>
+                        {data.catalogs.works.find(
+                          (work) => work.id === row.workId,
+                        )?.name ?? row.workId}
+                      </td>
+                      <td>{originLabel(row.origin)}</td>
+                      <td>{money.format(row.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
         {filteredRows.length > 0 && (
           <section className="panel connected-summary" data-testid="expense-subtotals">
             <div className="panel-head">
@@ -4217,7 +4337,7 @@ export function ConnectedExpenses({
               <div>
                 <h3>Repartir gasto entre obras</h3>
                 <p className="panel-sub">
-                  Gasto del {shareExpense.date} por {money.format(shareExpense.total)}.
+                  Gasto de la orden del {shareExpense.orderDate} por {money.format(shareExpense.total)}.
                   La suma de las líneas debe ser idéntica al total, sin obra repetida.
                 </p>
               </div>

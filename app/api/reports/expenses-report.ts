@@ -51,7 +51,7 @@ export async function buildExpensesReport(dependencies: ServiceDependencies, act
     (!filters.period || expense.period === filters.period) &&
     (!filters.workId || expense.workId === filters.workId) &&
     (!workIdsForSociety || workIdsForSociety.has(expense.workId)));
-  const mapped: ReportExpense[] = expenses.map((expense) => ({ date: expense.date, work: expense.workId, tag: expense.tagId, supplier: expense.supplierId, origin: expense.origin, base: expense.base, iva: expense.iva, total: expense.total }));
+  const mapped: ReportExpense[] = expenses.map((expense) => ({ orderDate: expense.orderDate, date: expense.date, work: expense.workId, tag: expense.tagId, supplier: expense.supplierId, origin: expense.origin, base: expense.base, iva: expense.iva, total: expense.total }));
   if (filters.format === "pdf") {
     return { bytes: await buildPartnersExpensePdf("Gastos por socios", mapped), mimeType: "application/pdf", filename: "gastos-socios-provisional-v0.1.pdf", rows: expenses.length };
   }

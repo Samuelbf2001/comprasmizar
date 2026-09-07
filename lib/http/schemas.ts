@@ -52,8 +52,10 @@ export const itemDecisionSchema = z.object({
 
 export const requisitionActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("start_review") }).strict(),
-  // review gana workId (obra la asigna el revisor) y paymentTerms (forma de pago, capturada aquí).
-  z.object({ action: z.literal("review"), tagId: z.string().uuid(), workId: z.string().uuid().optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
+  // review gana workId (obra la asigna el revisor), paymentTerms (forma de pago, capturada aquí) y
+  // approverId (reunión 2026-09: el revisor lo elige, ya no lo deriva la etiqueta). Opcional aquí — un
+  // borrador puede guardarse sin aprobador todavía — pero sendForApproval() lo exige antes de avanzar.
+  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.string().uuid().optional(), workId: z.string().uuid().optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
   z.object({ action: z.literal("send_for_approval") }).strict(),
   // "approve" pierde multiSupplier: aprobar ya no genera órdenes (eso es generate_orders, un paso propio).
   z.object({ action: z.literal("approve") }).strict(),

@@ -16,12 +16,11 @@ function fakeReportDeps(expenses: Expense[]): ServiceDependencies {
   return {
     requisitions: { get: notUsed, save: notUsed, list: notUsed, listVisibleTo: notUsed },
     orders: { save: notUsed, list: notUsed, listVisibleTo: notUsed, listByRequisition: notUsed, get: notUsed },
-    expenses: { get: notUsed, save: notUsed, saveShares: notUsed, list: notUsed, listVisibleTo: async () => expenses, listByReference: notUsed },
+    expenses: { get: notUsed, save: notUsed, saveShares: notUsed, list: notUsed, listVisibleTo: async () => expenses, listByReference: notUsed, markPaid: notUsed },
     pettyCash: { save: notUsed, list: notUsed },
     audit: { append: async () => {}, list: async () => [] },
     consecutives: { take: notUsed },
     publicAccess: { verify: notUsed },
-    tags: { getApproverId: notUsed },
     features: { isEnabled: async () => false },
     items: { propose: notUsed },
     catalogs: { create: notUsed, get: notUsed, update: notUsed, findSupplierDuplicate: notUsed, findRequesterDuplicate: notUsed, isEligibleApprover: notUsed, authUserExists: notUsed, hasRequisitionsForWork: notUsed },
@@ -33,9 +32,9 @@ function fakeReportDeps(expenses: Expense[]): ServiceDependencies {
 }
 // UUID válidos para satisfacer expensesReportFiltersSchema; los gastos y la sociedad no son reales.
 const workA = "11111111-1111-4111-8111-111111111111", workB = "22222222-2222-4222-8222-222222222222", workC = "33333333-3333-4333-8333-333333333333", societyA = "55555555-5555-4555-8555-555555555555";
-const expenseWorkA: Expense = { id: "e1", workId: workA, origin: "requisicion", referenceId: "r1", tagId: "t1", supplierId: "s1", date: "2026-08-05", base: 100, iva: 19, total: 119, period: "2026-08" };
-const expenseWorkB: Expense = { id: "e2", workId: workB, origin: "requisicion", referenceId: "r2", tagId: "t2", supplierId: "s2", date: "2026-07-05", base: 200, iva: 38, total: 238, period: "2026-07" };
-const expenseWorkC: Expense = { id: "e3", workId: workC, origin: "caja_menor", referenceId: "r3", date: "2026-08-10", base: 50, iva: 0, total: 50, period: "2026-08" };
+const expenseWorkA: Expense = { id: "e1", workId: workA, origin: "requisicion", referenceId: "r1", tagId: "t1", supplierId: "s1", orderDate: "2026-08-05", date: "2026-08-05", base: 100, iva: 19, total: 119, period: "2026-08" };
+const expenseWorkB: Expense = { id: "e2", workId: workB, origin: "requisicion", referenceId: "r2", tagId: "t2", supplierId: "s2", orderDate: "2026-07-05", date: "2026-07-05", base: 200, iva: 38, total: 238, period: "2026-07" };
+const expenseWorkC: Expense = { id: "e3", workId: workC, origin: "caja_menor", referenceId: "r3", orderDate: "2026-08-10", date: "2026-08-10", base: 50, iva: 0, total: 50, period: "2026-08" };
 const accountant = { id: "contadora", roles: ["contabilidad"] as const };
 const fakeSocietyIndex: WorkSocietyIndex = { workIdsForSociety: async (societyId) => (societyId === societyA ? [workA, workC] : []) };
 

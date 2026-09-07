@@ -1,4 +1,11 @@
-export interface ReportExpense { date: string; work: string; tag?: string; supplier?: string; origin: "requisicion" | "caja_menor"; base: number; iva: number; total: number; }
+/**
+ * Reunión 2026-09: "la fecha del gasto es la del pago" — `orderDate` (nace con el registro) siempre
+ * viaja; `date` (fecha de pago) falta mientras la orden no se ha pagado. El reporte filtrado por
+ * periodo solo puede incluir filas con `date` (ver buildExpensesReport): un reporte sin filtro de
+ * periodo sí puede traer filas sin pagar, así que todo consumidor de este tipo debe tolerar `date`
+ * ausente.
+ */
+export interface ReportExpense { orderDate: string; date?: string; work: string; tag?: string; supplier?: string; origin: "requisicion" | "caja_menor"; base: number; iva: number; total: number; }
 
 /**
  * Reunión 2026-08-31 (Fase 6): formato real de la orden, calcado de la hoja "ORDEN DE ANTICIPO"

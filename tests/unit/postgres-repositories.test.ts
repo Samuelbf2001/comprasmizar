@@ -160,6 +160,60 @@ describe("PostgresPorts.saveRequisition — upsert por línea, sin DELETE incond
 
     expect(store.get("req-1")?.fecha_requerida).toBe("2026-09-15");
   });
+
+  // Reunión 2026-09: aprobador_id lo asigna el revisor en review() y ya NO se deriva de etiqueta_id —
+  // mismo bug que ya se pagó tres veces con fecha_requerida, obra_id y forma_pago: lo que no está en el
+  // `on conflict do update set` se audita pero nunca se persiste.
+  it("aprobador_id está en el on conflict do update de requisiciones y sobrevive a un segundo guardado", async () => {
+    const store = new Map<string, { aprobador_id: string | null }>();
+    const sql = fakeSql((call) => {
+      if (/^insert into requisiciones/i.test(call.text)) {
+        // Índice 12: ver comentario de columnas más arriba en este archivo (fecha_requerida=9,
+        // observaciones=10, etiqueta_id=11, aprobador_id=12).
+        const id = call.values[0] as string, aprobadorId = call.values[12] as string | null;
+        const existing = store.get(id);
+        if (!existing) store.set(id, { aprobador_id: aprobadorId });
+        else if (/aprobador_id\s*=\s*excluded\.aprobador_id/.test(call.text)) store.set(id, { aprobador_id: aprobadorId });
+        return [];
+      }
+      return [];
+    });
+    const ports = new PostgresPorts(sql);
+    await ports.saveRequisition(baseRequisition({ approverId: "aprobador-1" }));
+    const insertRequisicion = sql.calls.find((call) => /^insert into requisiciones/i.test(call.text));
+    expect(insertRequisicion!.text).toMatch(/aprobador_id\s*=\s*excluded\.aprobador_id/);
+    await ports.saveRequisition(baseRequisition({ approverId: "aprobador-2" }));
+    expect(store.get("req-1")?.aprobador_id).toBe("aprobador-2");
+  });
+});
+
+describe("PostgresPorts.getRequisition / listVisibleRequisitions — aprobador_id ya no se resuelve por join con etiquetas", () => {
+  it("getRequisition lee directamente de requisiciones, sin left join etiquetas", async () => {
+    const sql = fakeSql((call) => (/^select \* from requisiciones/i.test(call.text) ? [{ id: "req-1", sociedad_id: "soc-1", tipo: "compra", canal: "web", estado: "enviada", consecutivo: "REQ-2026-0001" }] : []));
+    const ports = new PostgresPorts(sql);
+    await ports.getRequisition("req-1");
+    const select = sql.calls.find((call) => /^select .* from requisiciones/i.test(call.text));
+    expect(select!.text).not.toMatch(/etiquetas/i);
+  });
+  // La bandeja del aprobador filtra por r.aprobador_id (columna propia), no por un join con etiquetas —
+  // dos requisiciones con la MISMA etiqueta pero aprobadores distintos ya no se confunden.
+  it("un actor con rol aprobador lista por r.aprobador_id, sin join con etiquetas", async () => {
+    const sql = fakeSql();
+    const ports = new PostgresPorts(sql);
+    await ports.listVisibleRequisitions({ id: "aprobador-1", roles: ["aprobador"] });
+    const select = sql.calls.find((call) => /^select r\.\* from requisiciones/i.test(call.text));
+    expect(select).toBeDefined();
+    expect(select!.text).not.toMatch(/etiquetas/i);
+    expect(select!.text).toMatch(/aprobador_id/);
+    expect(select!.values).toContain("aprobador-1");
+  });
+  it("un revisor/admin ve todas las requisiciones sin filtrar por aprobador_id ni etiquetas", async () => {
+    const sql = fakeSql();
+    const ports = new PostgresPorts(sql);
+    await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] });
+    const select = sql.calls.find((call) => /^select r\.\* from requisiciones/i.test(call.text));
+    expect(select!.text).not.toMatch(/etiquetas/i);
+  });
 });
 
 describe("PostgresPorts.saveOrder — proveedor_id persistido y sin huérfanos en orden_items", () => {

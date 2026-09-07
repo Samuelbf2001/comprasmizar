@@ -23,8 +23,14 @@ function colombiaDateParts(date: Date): { day: string; period: string } {
 }
 
 export interface CreateRequisitionInput { type: RequisitionType; societyId?: string; workId?: string; requiredDate?: string; channel: RequisitionChannel; requesterId?: string; externalRequester?: { name: string; phone?: string }; observations?: string; items: ItemLine[]; publicCode?: string; publicLinkToken?: string; kapsoEventId?: string; }
-/** approverId is intentionally absent: the current tag configuration owns routing. workId/paymentTerms: RF reunión 2026-08-31, el revisor asigna la obra y la forma de pago. */
-export interface ReviewInput { tagId: string; workId?: string; paymentTerms?: string; items: ItemLine[]; }
+/**
+ * Decisión del cliente (reunión 2026-09, literal de Daniel): "etiqueto a qué obra va y etiqueto quién me
+ * va a aprobar" — approverId lo elige el revisor, ya NO se deriva de tagId. Opcional aquí: review()
+ * puede guardarse como borrador sin aprobador todavía; sendForApproval() sí lo exige (ya lo hacía por
+ * `!requisition.approverId`). workId/paymentTerms: RF reunión 2026-08-31, el revisor asigna la obra y la
+ * forma de pago.
+ */
+export interface ReviewInput { tagId: string; approverId?: string; workId?: string; paymentTerms?: string; items: ItemLine[]; }
 export interface PettyCashInput { workId: string; date: string; concept: string; tagId: string; amount: number; attachmentUrl?: string; }
 /** Reunión 2026-08-31: decisión por ítem del aprobador. No cambia el estado de la requisición. */
 export interface ItemDecision { itemId: string; status: ItemStatus; declineReason?: string; quantity?: number; }
@@ -78,7 +84,12 @@ export class ProcurementService {
   async review(id: string, input: ReviewInput, context: RequestContext): Promise<Requisition> {
     const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); if (!input.tagId) throw new DomainError("INVALID_INPUT", "Etiqueta obligatoria"); sumLines(input.items);
     return this.transaction(`requisition:${id}`, async (tx) => {
-      const approverId = await tx.tags.getApproverId(input.tagId); if (!approverId) throw new DomainError("ROUTING_NOT_FOUND", "La etiqueta no tiene aprobador activo");
+      // Decisión del cliente (reunión 2026-09): el aprobador ya NO se deriva de la etiqueta — lo elige el
+      // revisor aquí. Se valida contra el mismo puerto que ya usa CatalogService.validateTag para exigir
+      // un aprobador elegible en una etiqueta activa (isEligibleApprover), sin duplicar ese SQL en el
+      // servicio. approverId es opcional (un borrador de revisión puede guardarse sin aprobador todavía);
+      // sendForApproval() es quien lo exige antes de avanzar el estado.
+      if (input.approverId && !(await tx.catalogs.isEligibleApprover(input.approverId))) throw new DomainError("INVALID_INPUT", "El aprobador debe ser un usuario activo y elegible");
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       if (requisition.status === "devuelta") await this.transition(requisition, "en_revision", actor, "retomada_revision", undefined, this.origin(context), tx.audit);
       if (requisition.status !== "en_revision") throw new DomainError("INVALID_STATE", "La requisición no está en revisión");
@@ -94,7 +105,7 @@ export class ProcurementService {
         if (!work || !work.active || work.societyId !== requisition.societyId) throw new DomainError("INVALID_INPUT", "La obra debe existir, estar activa y pertenecer a la sociedad de la requisición");
         requisition.workId = input.workId;
       }
-      requisition.tagId = input.tagId; requisition.approverId = approverId;
+      requisition.tagId = input.tagId; if (input.approverId) requisition.approverId = input.approverId;
       if (input.paymentTerms !== undefined) requisition.paymentTerms = input.paymentTerms.trim() || undefined;
       const storedById = new Map(requisition.items.map((line) => [line.id, line]));
       requisition.items = (await this.materializeProposals(input.items, actor, this.origin(context), tx)).map((line) => {
@@ -114,7 +125,7 @@ export class ProcurementService {
         return line;
       });
       await tx.requisitions.save(requisition);
-      await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId, workId: input.workId, paymentTerms: input.paymentTerms }, this.origin(context), tx.audit);
+      await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId: requisition.approverId, workId: input.workId, paymentTerms: input.paymentTerms }, this.origin(context), tx.audit);
       return requisition;
     });
   }
@@ -209,7 +220,9 @@ export class ProcurementService {
       const groups = groupOrderItems(lines, requisition.type), orderType = orderTypeFor(requisition.type), year = this.now().getFullYear(), orders: Order[] = [];
       const paymentTerms = requisition.paymentTerms;
       const generatedAt = this.now().toISOString();
-      const { day: expenseDate, period: expensePeriod } = colombiaDateParts(this.now());
+      // Reunión 2026-09: el gasto nace SIN fecha de pago (`date`/`period` ausentes) — es un compromiso,
+      // todavía no un gasto. `orderDate` es la fecha en que nace el registro (hoy, hora Colombia).
+      const { day: orderDate } = colombiaDateParts(this.now());
       // MENOR (QA Postgres real): un proveedor puede desactivarse DESPUÉS de que assignSuppliers() lo
       // validó activo (no hay ninguna restricción de fila que lo impida) — sin este chequeo,
       // generateOrders reventaba con un 500 crudo en vez de un error de dominio legible. Validación
@@ -224,7 +237,7 @@ export class ProcurementService {
         await transactional.orders.save(order); orders.push(order);
         await this.audit("orden", order.id, "generada", actor, { requisitionId: id, supplierId }, this.origin(context), transactional.audit);
         const base = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).base, 0), iva = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).iva, 0);
-        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, date: expenseDate, base, iva, total: sumLines(groupLines), period: expensePeriod };
+        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, orderDate, base, iva, total: sumLines(groupLines) };
         await transactional.expenses.save(expense);
         await this.audit("gasto", expense.id, "registrado", actor, { orderId: order.id, supplierId }, this.origin(context), transactional.audit);
       }
@@ -240,7 +253,16 @@ export class ProcurementService {
       const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
       assertAdminTransition(order.adminStatus, status, order.status);
       order.adminStatus = status;
-      if (status === "contabilizada") order.accountedAt = this.now().toISOString(); else order.paidAt = this.now().toISOString();
+      if (status === "contabilizada") { order.accountedAt = this.now().toISOString(); }
+      else {
+        order.paidAt = this.now().toISOString();
+        // Reunión 2026-09: "la fecha del gasto es la del pago" — al marcar la orden pagada, se fija
+        // (misma transacción) la fecha de pago del gasto que esa orden generó, en hora Colombia
+        // (colombiaDateParts, mismo criterio que generateOrders). saveExpense no sirve para esto: su
+        // `on conflict do nothing` nunca actualiza un gasto ya guardado.
+        const { day: paidDate } = colombiaDateParts(this.now());
+        await tx.expenses.markPaid(order.id, paidDate);
+      }
       await tx.orders.save(order);
       await this.audit("orden", order.id, "estado_administrativo_actualizado", actor, { status }, this.origin(context), tx.audit);
       return order;
@@ -280,10 +302,13 @@ export class ProcurementService {
   async dashboard(period: string, context: RequestContext) {
     const actor = this.actor(context); assertPermission(actor.roles, "dashboard:read", this.authOrigin(context)); if (!/^\d{4}-\d{2}$/.test(period)) throw new DomainError("INVALID_INPUT", "Periodo inválido");
     const [requisitions, expenses, orders] = await Promise.all([this.deps.requisitions.listVisibleTo(actor), this.deps.expenses.listVisibleTo(actor), this.deps.orders.listVisibleTo(actor)]);
+    // inProcessValue ya lo calcula calculateDashboard (reunión 2026-09: suma de gastos sin fecha de
+    // pago, "comprometido sin pagar") — antes este método lo sobrescribía aquí mismo con el valor de
+    // las líneas de requisiciones en revisión/aprobación, dejando el cálculo de calculateDashboard como
+    // dead code (siempre pisado antes de que nadie lo viera). Se retira la sobrescritura para que quede
+    // un solo significado del campo, el que de verdad llega hasta la UI.
     const metrics = calculateDashboard(expenses, orders, requisitions.map((r) => r.status), period);
-    metrics.inProcessValue = requisitions.filter((r) => r.status === "en_revision" || r.status === "en_aprobacion").reduce((sum, r) => sum + sumLines(r.items), 0);
-    // RF-1102/RF-706/RF-1103: agregados adicionales sobre las mismas colecciones ya autorizadas por listVisibleTo,
-    // igual que inProcessValue arriba; calculateDashboard no los produce para no romper su firma existente.
+    // RF-1102/RF-706/RF-1103: agregados adicionales sobre las mismas colecciones ya autorizadas por listVisibleTo.
     metrics.attentionQueue = buildAttentionQueue(requisitions, orders, actor);
     metrics.recentActivity = buildRecentActivity(requisitions, orders, expenses);
     metrics.expenseByWork = groupExpenseByWork(expenses);
