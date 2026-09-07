@@ -8,9 +8,16 @@ export interface OrderRepository { save(order: Order): Promise<void>; list(): Pr
  * `save` inserta con `on conflict (origen, referencia_id) do nothing` (ver adaptador Postgres): nunca
  * sirve para actualizar un gasto ya existente. `markPaid` es el método dedicado para fijar la fecha de
  * pago del gasto de una orden (reunión 2026-09: "la fecha del gasto es la del pago") — solo aplica a
- * `origin: "requisicion"`, la caja menor nace pagada y nunca pasa por aquí.
+ * `origin: "requisicion"`, la caja menor nace pagada y nunca pasa por aquí. Devuelve el número de filas
+ * afectadas: GRAVE (QA reasignación) — si una orden `contabilizada` llegó a "pagada" sin gasto propio
+ * (estado inconsistente), 0 filas es la única señal de que el UPDATE no tocó nada; el servicio debe
+ * fallar con un DomainError en vez de dejarla "pagada" en silencio.
+ * `deleteByReference` borra el/los gastos de un origen+referencia y su reparto (`gastos_reparto`, FK
+ * `on delete restrict`, por eso el reparto se borra PRIMERO) en la MISMA transacción del llamador — usado
+ * cuando una orden `contabilizada` pasa a `no_necesario` y su gasto (aún sin pagar) debe anularse por
+ * completo, no solo dejarlo huérfano sin fecha para siempre.
  */
-export interface ExpenseRepository { get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string): Promise<void>; saveShares(shares: ExpenseShare[]): Promise<void>; list(): Promise<Expense[]>; listVisibleTo(actor: Actor): Promise<Expense[]>; listByReference(referenceId: string): Promise<Expense[]>; }
+export interface ExpenseRepository { get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string): Promise<number>; deleteByReference(origin: Expense["origin"], referenceId: string): Promise<void>; saveShares(shares: ExpenseShare[]): Promise<void>; list(): Promise<Expense[]>; listVisibleTo(actor: Actor): Promise<Expense[]>; listByReference(referenceId: string): Promise<Expense[]>; }
 /** Persistence returns the expense created by the database trigger in the same transaction. */
 export interface PettyCashRepository { save(entry: PettyCash): Promise<Expense>; list(): Promise<PettyCash[]>; }
 export interface AuditRepository { append(event: AuditEvent): Promise<void>; list(entity: string, entityId: string): Promise<AuditEvent[]>; }

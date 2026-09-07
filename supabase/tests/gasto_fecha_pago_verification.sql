@@ -3,9 +3,10 @@
 -- schema_verification.sql y aprobador_elegido_verification.sql: transacción + bloques `do $$ ... $$`
 -- con `raise exception` en fallo, `rollback` al final.
 --
--- Deliberadamente NO se registra en scripts/verify-schema.ts en este cambio (otro agente toca ese
--- archivo en paralelo con la Fase de acceso público); ver el informe final de esta tarea para cómo se
--- ejecutó a mano contra el mismo Postgres embebido.
+-- Registrado en scripts/verify-schema.ts (corre contra una base VACÍA, sembrada solo por
+-- supabase/seed.sql). El caso con datos LEGADO reales (una base que ya tenía gastos antes de esta
+-- migración) vive aparte, en supabase/tests/legacy/202609070003_gasto_fecha_pago.{pre,post}.sql — ver
+-- el mecanismo documentado en el encabezado de scripts/verify-schema.ts y en docs/modelo-datos.md.
 begin;
 
 -- Columnas y nulabilidad correctas: fecha_orden NOT NULL, fecha nullable.
@@ -37,11 +38,16 @@ declare v_req uuid; v_orden uuid; v_gasto uuid; begin
     raise exception 'El gasto de una orden recién generada debe tener fecha_orden puesta, fecha NULL y periodo NULL';
   end if;
 
-  -- Al marcar la orden pagada y fijar fecha, periodo se calcula solo (columna generada).
-  update public.ordenes set estado_administrativo = 'contabilizada', contabilizada_at = now() where id = v_orden;
-  update public.ordenes set estado_administrativo = 'pagada', pagada_at = '2026-09-01 03:30:00-05' where id = v_orden;
+  -- Al marcar la orden pagada y fijar fecha, periodo se calcula solo (columna generada). MENOR (QA
+  -- Postgres real): la versión anterior de esta aserción escribía `fecha = '2026-08-31'` y luego
+  -- comprobaba `fecha = '2026-08-31'` — tautológico, no ejercitaba ninguna conversión de zona horaria.
+  -- La conversión real (timestamptz de pago -> fecha de pared en Bogotá) se prueba ahora en
+  -- supabase/tests/legacy/202609070003_gasto_fecha_pago.post.sql, que corre DESPUÉS del backfill de la
+  -- migración sobre datos legado sembrados a propósito (ver scripts/verify-schema.ts). Lo que sigue
+  -- siendo responsabilidad de ESTE arnés es que `periodo` (columna GENERADA) se recalcule solo al
+  -- fijar `fecha` — eso sí es real: `periodo` nunca se escribe directamente.
   update public.gastos set fecha = '2026-08-31' where id = v_gasto;
-  if not exists (select 1 from public.gastos where id = v_gasto and fecha = '2026-08-31' and periodo = '2026-08-01') then
+  if not exists (select 1 from public.gastos where id = v_gasto and periodo = '2026-08-01') then
     raise exception 'Al fijar fecha de pago, periodo debe calcularse solo (columna generada)';
   end if;
 

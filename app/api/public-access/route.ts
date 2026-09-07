@@ -8,8 +8,12 @@ export const runtime = "nodejs";
 
 // La contraseña global del portal público (reunión: "una sola contraseña para todo el mundo") se
 // administra aquí. El mínimo de 8 caracteres es la única validación de forma: la fuerza real la da el
-// hash bcrypt (extensions.crypt + gen_salt('bf')), calculado EN LA BASE — este archivo jamás ve el hash.
-export const publicAccessPasswordSchema = z.object({ code: z.string().min(8, "La contraseña debe tener al menos 8 caracteres") });
+// hash bcrypt (extensions.crypt + gen_salt('bf', 12)), calculado EN LA BASE — este archivo jamás ve el
+// hash. GRAVE (QA Postgres real): `.min(8)` se aplicaba ANTES del trim, así que "        " (8 espacios)
+// pasaba esta validación de forma. `.trim()` normaliza el valor antes de medir su longitud —
+// PublicAccessAdminService.setPassword repite el mismo trim de forma defensiva, por si algún día se
+// invoca sin pasar por esta ruta.
+export const publicAccessPasswordSchema = z.object({ code: z.string().trim().min(8, "La contraseña debe tener al menos 8 caracteres") });
 
 function service() {
   // Reutiliza audit/clock de las dependencias Postgres compartidas (mismo AuditRepository que el resto

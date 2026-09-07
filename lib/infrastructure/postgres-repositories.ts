@@ -158,7 +158,20 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // la fecha de pago cuando `updateOrderAdminStatus(..., "pagada")` la conoce. Solo aplica a
   // `origen = 'requisicion'`: la caja menor nace pagada y su `fecha` la gobierna
   // `sincronizar_gasto_caja_menor` (trigger), no este método.
-  async markExpensePaid(referenceId: string, date: string): Promise<void> { await this.sql`update gastos set fecha = ${date} where origen = 'requisicion' and referencia_id = ${referenceId}`; }
+  // GRAVE (QA reasignación): `returning id` + `.length` es la única forma de saber si el UPDATE tocó
+  // algo — sin esto, marcar "pagada" una orden sin gasto propio (estado inconsistente que no debería
+  // existir, pero contabilizada/pagada son ejes independientes del cumplimiento) quedaba en silencio.
+  async markExpensePaid(referenceId: string, date: string): Promise<number> { const rows = await this.sql<{ id: string }[]>`update gastos set fecha = ${date} where origen = 'requisicion' and referencia_id = ${referenceId} returning id`; return rows.length; }
+  // GRAVE 2 (QA reasignación): una orden `contabilizada` que pasa a `no_necesario` debe poder anular su
+  // gasto (aún sin pagar) por completo, no dejarlo huérfano sin fecha para siempre. El reparto
+  // (`gastos_reparto`, FK `on delete restrict` hacia `gastos`) se borra PRIMERO — si no, el DELETE de
+  // `gastos` revienta esa FK. Ambos DELETE corren sobre `this.sql`, que ya es la conexión transaccional
+  // del llamador (ver PostgresTransactionManager): no hace falta un `.begin()` propio, y el trigger
+  // diferido `gastos_reparto_cuadra` solo se evalúa al COMMIT de esa transacción externa.
+  async deleteExpenseByReference(origin: Expense["origin"], referenceId: string): Promise<void> {
+    await this.sql`delete from gastos_reparto where gasto_id in (select id from gastos where origen=${origin} and referencia_id=${referenceId})`;
+    await this.sql`delete from gastos where origen=${origin} and referencia_id=${referenceId}`;
+  }
   async getExpense(id: string): Promise<Expense | null> { const rows = await this.sql<DbRow[]>`select * from gastos where id=${id}`; return rows[0] ? expense(rows[0]) : null; }
   async saveShares(shares: ExpenseShare[]): Promise<void> { if (!shares.length) return; await this.sql`delete from gastos_reparto where gasto_id=${shares[0].expenseId}`; for (const share of shares) await this.sql`insert into gastos_reparto (gasto_id, obra_id, valor) values (${share.expenseId}, ${share.workId}, ${share.amount})`; }
   async listExpenses(): Promise<Expense[]> { return (await this.sql<DbRow[]>`select * from gastos`).map(expense); }
@@ -269,7 +282,7 @@ class PostgresTransactionManager implements TransactionManager {
   constructor(private readonly sql: Sql) {}
   async transaction<T>(lockKey: string | undefined, work: (repositories: TransactionRepositories) => Promise<T>): Promise<T> { return this.sql.begin(async (tx) => { const [kind, id] = lockKey?.includes(":") ? lockKey.split(":", 2) : ["requisition", lockKey]; if (id && kind === "requisition") await tx`select id from requisiciones where id=${id} for update`; else if (id && kind === "order") await tx`select id from ordenes where id=${id} for update`; else if (id && kind === "expense") await tx`select id from gastos where id=${id} for update`; return work(transactionRepositories(new PostgresPorts(tx as unknown as Sql))); }) as Promise<T>; }
 }
-function transactionRepositories(ports: PostgresPorts): TransactionRepositories { return { requisitions: { get: ports.getRequisition.bind(ports), save: ports.saveRequisition.bind(ports), list: ports.listRequisitions.bind(ports), listVisibleTo: ports.listVisibleRequisitions.bind(ports) }, orders: { save: ports.saveOrder.bind(ports), list: ports.listOrders.bind(ports), listVisibleTo: ports.listVisibleOrders.bind(ports), listByRequisition: ports.listByRequisition.bind(ports), get: ports.getOrder.bind(ports) }, expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports) }, pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) }, audit: ports, consecutives: ports, features: ports, items: ports, catalogs: ports, notifications: ports }; }
+function transactionRepositories(ports: PostgresPorts): TransactionRepositories { return { requisitions: { get: ports.getRequisition.bind(ports), save: ports.saveRequisition.bind(ports), list: ports.listRequisitions.bind(ports), listVisibleTo: ports.listVisibleRequisitions.bind(ports) }, orders: { save: ports.saveOrder.bind(ports), list: ports.listOrders.bind(ports), listVisibleTo: ports.listVisibleOrders.bind(ports), listByRequisition: ports.listByRequisition.bind(ports), get: ports.getOrder.bind(ports) }, expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), deleteByReference: ports.deleteExpenseByReference.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports) }, pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) }, audit: ports, consecutives: ports, features: ports, items: ports, catalogs: ports, notifications: ports }; }
 export function createPostgresDependencies(databaseUrl = runtimeEnv().DATABASE_URL): ServiceDependencies {
   const sql = sharedPostgres(databaseUrl), ports = new PostgresPorts(sql);
   const publicAccess: PublicAccessVerifier = { verify: async (workId, linkToken, code) => { const env = publicEnv(); if (!safeEqual(hmacSha256(workId, env.PUBLIC_FORM_CODE_PEPPER), linkToken)) return false; const rows = await sql<DbRow[]>`select o.public_submission_enabled and public.verificar_codigo_publico(${code}) as valid from obras o where o.id=${workId}`; return rows[0]?.valid === true; } };

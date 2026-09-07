@@ -35,6 +35,20 @@ describe("PublicAccessAdminService — administración de la contraseña global 
     expect(setPasswordCalls).toHaveLength(0);
   });
 
+  // GRAVE (QA Postgres real): el mínimo se medía sobre el texto SIN recortar — ocho espacios en
+  // blanco (8 caracteres, cero entropía) pasaban la validación de forma.
+  it("rechaza una contraseña que solo llega a 8 caracteres por espacios en blanco (trim antes de medir)", async () => {
+    const { service, setPasswordCalls } = deps();
+    await expect(service.setPassword(sixteamAdmin, "        ")).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(setPasswordCalls).toHaveLength(0);
+  });
+
+  it("recorta espacios al inicio/fin antes de persistir la contraseña", async () => {
+    const { service, setPasswordCalls } = deps();
+    await service.setPassword(sixteamAdmin, "  contraseña-con-espacios  ");
+    expect(setPasswordCalls).toEqual([{ code: "contraseña-con-espacios", actorId: "sixteam-admin" }]);
+  });
+
   it("fija la contraseña, audita quién la cambió SIN el código en claro y devuelve el estado actualizado", async () => {
     const { service, audits, setPasswordCalls } = deps();
     await service.setPassword(mizarAdmin, "contraseña-super-larga");

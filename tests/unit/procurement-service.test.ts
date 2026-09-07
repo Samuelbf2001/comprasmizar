@@ -8,7 +8,12 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   const orders = { save: async (o: Order) => { const i = ordersData.findIndex((x) => x.id === o.id); if (i >= 0) ordersData[i] = o; else ordersData.push(o); }, list: async () => ordersData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return actor.id === "daniel" ? ordersData : ordersData.filter((o) => o.requisitionId.includes(actor.id)); }, listByRequisition: async (id: string) => ordersData.filter((o) => o.requisitionId === id), get: async (id: string) => ordersData.find((o) => o.id === id) ?? null };
   // markPaid: mismo criterio que el adaptador Postgres real (markExpensePaid) — solo actualiza `date`
   // de un gasto `origen: "requisicion"` ya existente; `saveExpense`/`save` nunca sirve para esto.
-  const expenses = { get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e), markPaid: async (referenceId: string, date: string) => { const entry = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === referenceId); if (entry) { entry.date = date; entry.period = date.slice(0, 7); } }, saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); }, list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return actor.id === "daniel" ? expensesData : []; }, listByReference: async (id: string) => expensesData.filter((e) => e.referenceId === id || ordersData.some((o) => o.id === e.referenceId && o.requisitionId === id)) };
+  // GRAVE 3 (QA reasignación): devuelve el número de filas afectadas, igual que markExpensePaid real
+  // (`returning id`.length) — 0 cuando la orden no tiene gasto propio, la señal que el servicio usa
+  // para rechazar "pagada" en vez de dejarla pasar en silencio.
+  // GRAVE 2 (QA reasignación): deleteByReference borra el gasto Y su reparto, igual que el adaptador
+  // Postgres real (gastos_reparto primero, por la FK on delete restrict).
+  const expenses = { get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e), markPaid: async (referenceId: string, date: string) => { const entry = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === referenceId); if (!entry) return 0; entry.date = date; entry.period = date.slice(0, 7); return 1; }, deleteByReference: async (origin: Expense["origin"], referenceId: string) => { const toDelete = expensesData.filter((e) => e.origin === origin && e.referenceId === referenceId); for (const entry of toDelete) { for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === entry.id) shares.splice(index, 1); const i = expensesData.indexOf(entry); if (i >= 0) expensesData.splice(i, 1); } }, saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); }, list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return actor.id === "daniel" ? expensesData : []; }, listByReference: async (id: string) => expensesData.filter((e) => e.referenceId === id || ordersData.some((o) => o.id === e.referenceId && o.requisitionId === id)) };
   const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
   // Reunión 2026-09: caja menor nace pagada — orderDate y date coinciden siempre con la fecha del movimiento.
   const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty };
@@ -450,8 +455,12 @@ describe("ProcurementService", () => {
     // reciente solo puede traer los gastos, que sí llevan fecha en el dominio.
     expect(dashboard.recentActivity).toHaveLength(2);
     expect(dashboard.recentActivity?.every((item) => item.kind === "gasto")).toBe(true);
-    expect(dashboard.expenseByWork).toEqual([{ key: "work", total: 476 }]);
-    expect(dashboard.expenseByTag).toEqual([{ key: "tag", total: 476 }]);
+    // GRAVE 3 (QA reasignación): las dos órdenes recién generadas aún no se han pagado (sin `date`) —
+    // "gasto" = pagado (misma decisión que ya gobierna groupExpenseByPeriod), así que expenseByWork y
+    // expenseByTag NO cuentan lo comprometido sin pagar: antes de este arreglo mostraban 476 aquí,
+    // mezclando comprometido con gasto real.
+    expect(dashboard.expenseByWork).toEqual([]);
+    expect(dashboard.expenseByTag).toEqual([]);
     // Reunión 2026-09: las dos órdenes recién generadas aún no se han pagado (sin `date`/`period`) —
     // groupExpenseByPeriod las excluye a propósito, no inventa un bucket "sin periodo".
     expect(dashboard.expenseByPeriod).toEqual([]);
@@ -473,5 +482,122 @@ describe("ProcurementService", () => {
     await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
     await service.sendForApproval(r.id, reviewer);
     await expect(service.updateRequisitionHeader(r.id, { observations: "tarde" }, reviewer)).rejects.toMatchObject({ code: "INVALID_STATE" });
+  });
+
+  // BLOQUEANTE (QA reasignación, reunión 2026-09): antes de reassignApprover() esta requisición quedaba
+  // atascada para siempre en cuanto "nelson" dejaba de poder entrar como el aprobador exacto — decline()
+  // desde en_aprobacion es transición inválida, y approve()/otro aprobador no asignado rebota con
+  // NOT_ASSIGNED_APPROVER. "falla antes" (ambas vías cerradas) / "pasa después" (reassignApprover abre una
+  // tercera vía, y el nuevo aprobador sí puede decidirla).
+  it("reassignApprover desatasca una requisición en_aprobacion: decline()/approve() por otro no funcionan, reasignar sí", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service); // approverId: nelson
+    await expect(service.decline(r.id, "motivo", reviewer)).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
+    await expect(service.approve(r.id, otherApprover)).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" }); // "sonia" no es la asignada
+    const reassigned = await service.reassignApprover(r.id, "sonia", reviewer);
+    expect(reassigned.approverId).toBe("sonia");
+    expect((await service.getRequisitionHistory(r.id, reviewer)).map((e) => e.event)).toContain("aprobador_reasignado");
+    await expect(service.approve(r.id, otherApprover)).resolves.toMatchObject({ status: "aprobada" }); // ya no está atascada
+  });
+  it("reassignApprover rechaza estados que no lo admiten (aprobada) y exige un aprobador elegible; solo revisor/admin puede llamarlo", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    await expect(service.reassignApprover(r.id, "sonia", reviewer)).rejects.toMatchObject({ code: "INVALID_STATE" });
+    const pending = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(pending.id, reviewer);
+    await expect(service.reassignApprover(pending.id, "no-elegible", reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(service.reassignApprover(pending.id, "sonia", approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  // M-6: review() distingue `undefined` (el campo no vino: no tocar) de `""`/`null` (desasignar
+  // explícitamente). Antes `if (input.approverId)` trataba `""` igual que `undefined` — un revisor que
+  // intentaba limpiar el aprobador lo conservaba en silencio.
+  it("review() desasigna el aprobador con approverId \"\" o null; approverId ausente no lo toca", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    const withApprover = await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
+    expect(withApprover.approverId).toBe("nelson");
+    const untouched = await service.review(r.id, { tagId: "tag", items }, reviewer); // approverId ausente
+    expect(untouched.approverId).toBe("nelson");
+    const cleared = await service.review(r.id, { tagId: "tag", approverId: "", items }, reviewer);
+    expect(cleared.approverId).toBeUndefined();
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
+    const clearedNull = await service.review(r.id, { tagId: "tag", approverId: null, items }, reviewer);
+    expect(clearedNull.approverId).toBeUndefined();
+  });
+  // M-5 (decisión, ver el comentario junto a buildAttentionQueue en lib/domain/rules.ts): admin_sixteam
+  // puede decidir/aprobar/devolver CUALQUIER requisición en_aprobacion, no solo las que tiene asignadas —
+  // de lo contrario esa cola de "Aprobar" que ya le muestra buildAttentionQueue sería un botón muerto.
+  it("M-5: admin_sixteam puede decidir ítems y aprobar una requisición en_aprobacion que no tiene asignada", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service); // approverId: nelson, no "root"
+    const admin = { actor: { id: "root", roles: ["admin_sixteam"] as const } };
+    await expect(service.decideItems(r.id, [{ itemId: items[0].id, status: "aprobado" }], admin)).resolves.toMatchObject({ status: "en_aprobacion" });
+    await expect(service.approve(r.id, admin)).resolves.toMatchObject({ status: "aprobada" });
+  });
+  it("M-5: admin_sixteam puede devolver a revisión una requisición en_aprobacion que no tiene asignada", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
+    const admin = { actor: { id: "root", roles: ["admin_sixteam"] as const } };
+    await expect(service.returnForCorrection(r.id, "falta soporte", admin)).resolves.toMatchObject({ status: "devuelta" });
+  });
+  // M-7 (QA reasignación): decisión consciente PENDIENTE de confirmar con el cliente — ver el comentario
+  // en review() (procurement-service.ts). Se fija aquí como comportamiento ACTUAL para que cambiarlo, si
+  // el negocio lo pide, sea deliberado y no un descubrimiento accidental en producción.
+  it("M-7: un usuario con roles revisor+aprobador puede asignarse a sí mismo y aprobar su propia revisión (comportamiento actual, no bloqueado)", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, dual);
+    await service.review(r.id, { tagId: "tag", approverId: "dual-role", items }, dual);
+    await service.sendForApproval(r.id, dual);
+    await expect(service.approve(r.id, dual)).resolves.toMatchObject({ status: "aprobada" });
+  });
+
+  // GRAVE 2 (QA reasignación): generar → contabilizar → no_necesario dejaba el gasto (aún sin pagar)
+  // engordando inProcessValue para siempre, sin ninguna forma de anularlo (assertAdminTransition bloquea
+  // contabilizar/pagar desde no_necesario). "falla antes" queda documentado en el test de más abajo
+  // (ORDER_ALREADY_PAID); este cubre la vía que SÍ debe funcionar.
+  it("GRAVE 2: contabilizada -> no_necesario borra el gasto y su reparto, y baja inProcessValue", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    const [orderA] = await service.generateOrders(r.id, reviewer);
+    const expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
+    await service.redistribute(expense.id, expense.total, [{ expenseId: expense.id, workId: "work", amount: expense.total }], reviewer);
+    expect(deps.shares.some((s) => s.expenseId === expense.id)).toBe(true);
+    await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+    const before = await service.dashboard("2026-08", reviewer);
+    const updated = await service.updateOrderStatus(orderA.id, "no_necesario", reviewer);
+    expect(updated.status).toBe("no_necesario");
+    expect(deps.expensesData.some((e) => e.id === expense.id)).toBe(false); // el gasto desapareció
+    expect(deps.shares.some((s) => s.expenseId === expense.id)).toBe(false); // y su reparto con él
+    const after = await service.dashboard("2026-08", reviewer);
+    expect(after.inProcessValue).toBe(before.inProcessValue - expense.total);
+    expect(deps.audits.map((a) => a.event)).toContain("gasto_anulado");
+  });
+  it("GRAVE 2: una orden ya pagada rechaza no_necesario (ORDER_ALREADY_PAID) — no existe flujo de devolución", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    const [orderA] = await service.generateOrders(r.id, reviewer);
+    await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+    await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
+    await expect(service.updateOrderStatus(orderA.id, "no_necesario", reviewer)).rejects.toMatchObject({ code: "ORDER_ALREADY_PAID" });
+    expect(deps.expensesData.some((e) => e.referenceId === orderA.id)).toBe(true); // el gasto sigue intacto
+  });
+  it("no_cumplida no toca el gasto: el material puede llegar después", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    const [orderA] = await service.generateOrders(r.id, reviewer);
+    await service.updateOrderStatus(orderA.id, "no_cumplida", reviewer);
+    expect(deps.expensesData.some((e) => e.referenceId === orderA.id)).toBe(true);
+  });
+  // GRAVE 3 (QA reasignación): si `markPaid` no encuentra el gasto de la orden (0 filas — un estado
+  // inconsistente que contabilizada/pagada, un eje independiente del cumplimiento, no impide por sí
+  // solo), el servicio debe fallar explícito en vez de dejar la orden "pagada" en silencio.
+  it("GRAVE 3: marcar pagada una orden sin gasto propio falla con ORDER_EXPENSE_MISSING en vez de pasar en silencio", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    const [orderA] = await service.generateOrders(r.id, reviewer);
+    const index = deps.expensesData.findIndex((e) => e.referenceId === orderA.id);
+    deps.expensesData.splice(index, 1); // simula el estado inconsistente: el gasto ya no existe
+    await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+    await expect(service.updateOrderAdminStatus(orderA.id, "pagada", reviewer)).rejects.toMatchObject({ code: "ORDER_EXPENSE_MISSING" });
   });
 });

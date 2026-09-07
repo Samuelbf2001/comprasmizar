@@ -48,6 +48,24 @@ export function assertCop(value: Money, label = "valor"): void {
   if (!Number.isInteger(value) || value < 0) throw new DomainError("INVALID_MONEY", `${label} debe ser un peso COP entero no negativo`);
 }
 /**
+ * QA reasignación (reunión 2026-09): fecha/periodo de la OPERACIÓN en hora de Colombia
+ * (America/Bogotá, UTC-5 fijo, sin horario de verano), no en UTC. Vivía duplicada en
+ * procurement-service.ts (fecha de orden/pago) y app/api/pantalla/route.ts la recalculaba mal en UTC
+ * (`new Date().toISOString().slice(0,7)`: el último día del mes después de las 19:00 hora Colombia
+ * mostraba el mes SIGUIENTE en la pantalla de oficina). Única fuente de verdad ahora: se movió al
+ * dominio para que ambos consumidores (servicio y ruta HTTP de pantalla) importen la misma función en
+ * vez de reimplementarla. Usa `Intl.DateTimeFormat` de zona FIJA (no los getters locales de `Date`,
+ * que dependen del TZ del proceso, a menudo UTC en producción) — mismo criterio que `localTodayISO()`
+ * en components/screens/connected.tsx, que sí puede fiarse del reloj del navegador del usuario.
+ */
+const COLOMBIA_TIME_ZONE = "America/Bogota";
+export function colombiaDateParts(date: Date): { day: string; period: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: COLOMBIA_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const day = `${get("year")}-${get("month")}-${get("day")}`;
+  return { day, period: day.slice(0, 7) };
+}
+/**
  * Reunión 2026-08-31: aritmética del formato Excel del cliente, redondeando por LÍNEA (no por unidad):
  * bruto = round(cantidad×precioUnitario) → descuento = round(bruto×descuentoTasa) → base = bruto−descuento
  * → iva = round(base×ivaTasa) (reutiliza calculateTax) → total = base+iva.
@@ -134,6 +152,17 @@ export function calculateDashboard(expenses: readonly Expense[], orders: readonl
  * expone un documento que ese alcance no hubiera autorizado ya. Determinística: ordena por consecutivo
  * descendente (el formato PREFIJO-AÑO-NNNN es monótono) y limita a 20 elementos para el panel.
  */
+/**
+ * M-5 (QA reasignación, reunión 2026-09): esta cola ya metía en "Aprobar" de admin_sixteam TODA
+ * requisición en_aprobacion (línea de abajo), pero antes de esta reunión approve()/returnForCorrection()/
+ * decideItems() en procurement-service.ts exigían `approverId === actor.id` sin excepción — admin_sixteam
+ * veía el botón y el backend se lo rechazaba con NOT_ASSIGNED_APPROVER. DECISIÓN (no la alternativa de
+ * vaciar esta cola para admin_sixteam): admin_sixteam SÍ puede decidir/aprobar/devolver CUALQUIER
+ * requisición en aprobación, no solo las que tiene asignadas — coherente con que ya ve y puede accionar
+ * todo lo demás en esta cola (revisar, confirmar cumplimiento, contabilizar) sin estar "asignado" a nada,
+ * y con isElevated() en postgres-repositories.ts (admin_sixteam ve todas las filas sin scope de rol). Ver
+ * el mismo chequeo replicado, a propósito, en approve()/returnForCorrection()/decideItems().
+ */
 export function buildAttentionQueue(requisitions: readonly Requisition[], orders: readonly Order[], actor: Actor): DashboardQueueItem[] {
   const workByRequisition = new Map(requisitions.map((requisition) => [requisition.id, requisition.workId]));
   const canReview = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam");
@@ -172,10 +201,19 @@ function amountByKey(rows: Iterable<readonly [string, Money]>): DashboardAmountB
   for (const [key, amount] of rows) totals.set(key, (totals.get(key) ?? 0) + amount);
   return [...totals.entries()].map(([key, total]) => ({ key, total })).sort((a, b) => b.total - a.total);
 }
-/** RF-706/RF-1103: gasto agrupado por obra, mayor a menor, para el gráfico ejecutivo correspondiente. */
-export function groupExpenseByWork(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.map((expense) => [expense.workId, expense.total] as const)); }
-/** RF-706/RF-1103: gasto agrupado por etiqueta; clave "" representa gastos sin etiqueta asignada. */
-export function groupExpenseByTag(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.map((expense) => [expense.tagId ?? "", expense.total] as const)); }
+/**
+ * GRAVE 3 (QA reasignación, reunión 2026-09): "gasto" = pagado (decisión del cliente, la misma que ya
+ * gobierna `date`/`period`, ver Expense en model.ts). Antes de esta reunión sumaban pagado + no pagado,
+ * mientras que groupExpenseByPeriod (abajo) ya excluía lo no pagado — tres cifras de "gasto" en la misma
+ * pantalla que no cuadraban entre sí. Un gasto sin `date` es un COMPROMISO (orden generada, aún sin
+ * pagar): calculateDashboard.inProcessValue ya lo cuenta aparte, con su propio nombre; si el dashboard
+ * algún día quiere una serie de "comprometido por obra", debe ser otra función con su propio nombre, no
+ * sumada aquí en silencio.
+ */
+/** RF-706/RF-1103: gasto agrupado por obra, mayor a menor, para el gráfico ejecutivo correspondiente. Solo gastos pagados (con `date`); ver nota GRAVE 3 arriba. */
+export function groupExpenseByWork(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.filter((expense) => expense.date !== undefined).map((expense) => [expense.workId, expense.total] as const)); }
+/** RF-706/RF-1103: gasto agrupado por etiqueta; clave "" representa gastos sin etiqueta asignada. Solo gastos pagados (con `date`); ver nota GRAVE 3 arriba. */
+export function groupExpenseByTag(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.filter((expense) => expense.date !== undefined).map((expense) => [expense.tagId ?? "", expense.total] as const)); }
 /**
  * RF-706/RF-1103: tendencia de gasto por periodo (YYYY-MM), cronológica, limitada a los últimos
  * `monthsBack`. Excluye los gastos sin `period` (orden generada, aún sin pagar): no inventa un bucket

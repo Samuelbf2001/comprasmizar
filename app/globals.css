@@ -1178,6 +1178,14 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 /* Acceso público (contraseña global del portal, ver catalog-admin.tsx PublicAccessPanel): línea de
    estado entre el encabezado del panel y el formulario, mismo tono que .table-sub. */
 .public-access-status{margin:0 var(--space-6) var(--space-4);color:var(--muted);font-size:var(--text-xs)}
+/* GRAVE (QA Postgres real): el día del despliegue el hash global nace en NULL y el portal rechaza
+   TODO código en silencio (202 neutro del lado público) — este aviso es la única señal del lado
+   admin, así que no puede ser un texto gris más (.public-access-status). Mismo lenguaje visual que
+   .public-gate .field-error (fondo --red-soft, texto --red), pero con icono y peso propios porque
+   aquí SÍ hace falta parar la vista, no solo señalar un campo. */
+.public-access-closed-alert{display:flex;align-items:flex-start;gap:var(--space-3);margin:0 var(--space-6) var(--space-4);padding:var(--space-4);border-radius:var(--radius-sm);background:var(--red-soft);color:var(--red);font-weight:600;font-size:var(--text-sm);line-height:1.45}
+.public-access-closed-alert svg{flex:none;margin-top:2px}
+.public-access-closed-alert b{font-weight:700}
 @media(max-width:530px){.catalog-roles-grid{grid-template-columns:1fr}}
 
 /* RF-1102: lista de actividad reciente del dashboard conectado (cola de atención reutiliza .alert-item). */

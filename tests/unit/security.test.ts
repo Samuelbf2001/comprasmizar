@@ -16,7 +16,7 @@ function fakeReportDeps(expenses: Expense[]): ServiceDependencies {
   return {
     requisitions: { get: notUsed, save: notUsed, list: notUsed, listVisibleTo: notUsed },
     orders: { save: notUsed, list: notUsed, listVisibleTo: notUsed, listByRequisition: notUsed, get: notUsed },
-    expenses: { get: notUsed, save: notUsed, saveShares: notUsed, list: notUsed, listVisibleTo: async () => expenses, listByReference: notUsed, markPaid: notUsed },
+    expenses: { get: notUsed, save: notUsed, saveShares: notUsed, list: notUsed, listVisibleTo: async () => expenses, listByReference: notUsed, markPaid: notUsed, deleteByReference: notUsed },
     pettyCash: { save: notUsed, list: notUsed },
     audit: { append: async () => {}, list: async () => [] },
     consecutives: { take: notUsed },

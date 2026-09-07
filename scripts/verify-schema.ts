@@ -1,17 +1,33 @@
 // Arnés de esquema contra Postgres REAL (embedded-postgres, Postgres 18.4, sin Docker — roto en esta
 // máquina — y sin proyecto Supabase). Levanta un cluster efímero, aplica el prelude que stubea lo que
-// Supabase da por hecho (supabase/tests/embedded_postgres_prelude.sql), las 4 migraciones EN ORDEN,
-// supabase/seed.sql, y los 3 arneses SQL existentes (schema_verification, generic_attachments_verification,
-// supplier_documents_verification). Sale con código != 0 si algo falla, para poder engancharse a CI.
+// Supabase da por hecho (supabase/tests/embedded_postgres_prelude.sql), las migraciones de
+// supabase/migrations/ EN ORDEN (con el mecanismo legado descrito abajo intercalado), supabase/seed.sql,
+// y los arneses SQL de supabase/tests/*.sql. Sale con código != 0 si algo falla, para poder engancharse
+// a CI.
 //
 // Por qué existe: dos bloqueantes "solo-DB-real" (traducción de error de FK con código equivocado,
 // e IVA legacy) pasaron los 342 tests unitarios con mocks y solo se vieron corriendo la migración
 // contra un motor real (ver AGENTS.md/informe de la reunión 2026-08-31, y el commit be06b83, que ya
 // pagó esta misma clase de bug una vez). Este arnés es la red que evita que vuelvan a colarse.
 //
+// MECANISMO LEGADO (2026-09-07, QA Postgres real): lo anterior corre las migraciones sobre una base
+// VACÍA — un backfill no-op y uno correcto son indistinguibles ahí, porque no hay ninguna fila previa
+// que backfillear. `supabase/tests/legacy/` cierra ese hueco de forma genérica: para cada migración
+// `supabase/migrations/<nombre>.sql`,
+//   - si existe `supabase/tests/legacy/<nombre>.pre.sql`, se ejecuta JUSTO ANTES de esa migración —
+//     siembra filas como las que ya existirían en una base de producción (SIN `rollback`: esas filas
+//     deben sobrevivir para que la migración bajo prueba, y su .post, las encuentren);
+//   - si existe `supabase/tests/legacy/<nombre>.post.sql`, se ejecuta JUSTO DESPUÉS de esa misma
+//     migración — asserta el resultado del backfill sobre esas filas legado, con el mismo formato
+//     `do $$ ... raise exception ... $$` que el resto de arneses de este repo (el .post SÍ puede
+//     limpiar lo que sembró el .pre si hace falta que el seed.sql posterior no choque; no es
+//     obligatorio si los IDs usados no colisionan con supabase/seed.sql).
+// Ninguno de los dos es obligatorio por migración: la mayoría no toca datos existentes y no necesita
+// par legado. Ver docs/modelo-datos.md para el mismo mecanismo explicado del lado de documentación.
+//
 // Uso: npm run verify:schema  (equivalente a `npx tsx scripts/verify-schema.ts`).
 import EmbeddedPostgres from "embedded-postgres";
-import { readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +38,7 @@ const DB_NAME = "mizar_verify";
 
 const PRELUDE = path.join(ROOT, "supabase", "tests", "embedded_postgres_prelude.sql");
 const MIGRATIONS_DIR = path.join(ROOT, "supabase", "migrations");
+const LEGACY_DIR = path.join(ROOT, "supabase", "tests", "legacy");
 const SEED = path.join(ROOT, "supabase", "seed.sql");
 const HARNESSES = [
   path.join(ROOT, "supabase", "tests", "schema_verification.sql"),
@@ -37,8 +54,16 @@ const HARNESSES = [
 function migrationFiles(): string[] {
   return readdirSync(MIGRATIONS_DIR)
     .filter((name) => name.endsWith(".sql"))
-    .sort() // los 4 nombres son timestamp-prefijados (YYYYMMDDHHMM...): el orden alfabético YA es el orden cronológico.
+    .sort() // los nombres son timestamp-prefijados (YYYYMMDDHHMM...): el orden alfabético YA es el orden cronológico.
     .map((name) => path.join(MIGRATIONS_DIR, name));
+}
+
+/** `<nombre>.pre.sql`/`<nombre>.post.sql` en supabase/tests/legacy/ para la migración dada, si existen. */
+function legacyPairFor(migrationPath: string): { pre: string | null; post: string | null } {
+  const base = path.basename(migrationPath, ".sql");
+  const pre = path.join(LEGACY_DIR, `${base}.pre.sql`);
+  const post = path.join(LEGACY_DIR, `${base}.post.sql`);
+  return { pre: existsSync(pre) ? pre : null, post: existsSync(post) ? post : null };
 }
 
 async function runFile(client: import("pg").Client, filePath: string): Promise<void> {
@@ -69,7 +94,12 @@ async function main(): Promise<void> {
     await client.connect();
     try {
       await runFile(client, PRELUDE);
-      for (const migration of migrationFiles()) await runFile(client, migration);
+      for (const migration of migrationFiles()) {
+        const { pre, post } = legacyPairFor(migration);
+        if (pre) await runFile(client, pre);
+        await runFile(client, migration);
+        if (post) await runFile(client, post);
+      }
       await runFile(client, SEED);
       for (const harness of HARNESSES) await runFile(client, harness);
       ok = true;
@@ -94,6 +124,10 @@ async function main(): Promise<void> {
 }
 
 main().then(
-  () => { console.log(`\nTodo verde: prelude + ${migrationFiles().length} migraciones + seed + ${HARNESSES.length} arneses SQL pasaron contra Postgres real.`); process.exit(0); },
+  () => {
+    const legacyPairs = migrationFiles().filter((m) => { const { pre, post } = legacyPairFor(m); return pre ?? post; }).length;
+    console.log(`\nTodo verde: prelude + ${migrationFiles().length} migraciones (${legacyPairs} con .pre/.post de datos legado) + seed + ${HARNESSES.length} arneses SQL pasaron contra Postgres real.`);
+    process.exit(0);
+  },
   (error) => { console.error("\nArnés de esquema FALLÓ:", error); process.exit(1); },
 );

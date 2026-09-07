@@ -187,6 +187,20 @@ describe("RF-1102 dashboard queue and recent activity", () => {
     expect(groupExpenseByPeriod(expenses)).toEqual([{ key: "2026-07", total: 100 }, { key: "2026-08", total: 80 }]);
     expect(groupExpenseByPeriod(expenses, 1)).toEqual([{ key: "2026-08", total: 80 }]);
   });
+  // GRAVE 3 (QA reasignación, reunión 2026-09): "gasto" = pagado. Antes de este arreglo,
+  // groupExpenseByWork/groupExpenseByTag sumaban pagado + no pagado mientras groupExpenseByPeriod ya
+  // excluía lo no pagado — tres cifras de "gasto" en la misma pantalla que no cuadraban entre sí.
+  // Escenario exacto del QA: un gasto no pagado de 1.000.000 y uno pagado de 500.000 en la MISMA obra.
+  it("groupExpenseByWork/groupExpenseByTag solo cuentan lo pagado; inProcessValue y periodExpense no se mezclan con eso", () => {
+    const unpaid = { id: "e1", workId: "w", tagId: "t", origin: "requisicion" as const, referenceId: "o1", orderDate: "2026-08-01", base: 1_000_000, iva: 0, total: 1_000_000 };
+    const paid = { id: "e2", workId: "w", tagId: "t", origin: "requisicion" as const, referenceId: "o2", orderDate: "2026-08-02", date: "2026-08-10", base: 500_000, iva: 0, total: 500_000, period: "2026-08" };
+    const expenses = [unpaid, paid];
+    const dashboard = calculateDashboard(expenses, [], [], "2026-08");
+    expect(dashboard.inProcessValue).toBe(1_000_000);
+    expect(dashboard.periodExpense).toBe(500_000);
+    expect(groupExpenseByWork(expenses)).toEqual([{ key: "w", total: 500_000 }]);
+    expect(groupExpenseByTag(expenses)).toEqual([{ key: "t", total: 500_000 }]);
+  });
   // Reunión 2026-09: groupExpenseByPeriod excluye lo no pagado (period undefined) — no inventa un
   // bucket "sin periodo" en una serie que es, por definición, mensual.
   it("groupExpenseByPeriod excluye los gastos sin periodo (aún sin pagar)", () => {

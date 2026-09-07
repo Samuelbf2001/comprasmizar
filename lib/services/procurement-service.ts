@@ -1,26 +1,9 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateTax, calculateLineAmounts, calculateLineTotal, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 
-/**
- * GRAVE 1 (QA Postgres real): fecha y periodo del gasto en la zona horaria DE LA OPERACIÓN
- * (Colombia, America/Bogotá, UTC-5 fijo, sin horario de verano), no en UTC. `this.now().toISOString()
- * .slice(0,10/7)` (el código anterior) toma componentes UTC: cualquier orden generada después de las
- * 19:00 hora local se contabilizaba al día siguiente, y el último día del mes caía en el `periodo`
- * SIGUIENTE (columna generada en `gastos`, ver migración base) — justo el cierre mensual que motiva
- * este proyecto.
- * Mismo CRITERIO que `localTodayISO()` (components/screens/connected.tsx: componentes del calendario
- * local, nunca `toISOString().slice()`), pero implementado con `Intl.DateTimeFormat` de zona horaria
- * FIJA en vez de los getters locales de `Date`: `localTodayISO()` corre en el navegador del usuario,
- * cuyo reloj local ya se asume en Bogotá; esto corre en el servidor, cuyo TZ de proceso es
- * desconocido (a menudo UTC en producción), así que los getters locales de `Date` no sirven aquí.
- */
-const COLOMBIA_TIME_ZONE = "America/Bogota";
-function colombiaDateParts(date: Date): { day: string; period: string } {
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: COLOMBIA_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
-  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
-  const day = `${get("year")}-${get("month")}-${get("day")}`;
-  return { day, period: day.slice(0, 7) };
-}
+// GRAVE 1/QA reasignación: `colombiaDateParts` (fecha/periodo en hora de Colombia, no UTC) se movió a
+// lib/domain/rules.ts — vivía duplicada aquí y en app/api/pantalla/route.ts (que además la tenía MAL,
+// en UTC crudo). Ver el comentario completo junto a su definición en el dominio; no la reimplementes.
 
 export interface CreateRequisitionInput { type: RequisitionType; societyId?: string; workId?: string; requiredDate?: string; channel: RequisitionChannel; requesterId?: string; externalRequester?: { name: string; phone?: string }; observations?: string; items: ItemLine[]; publicCode?: string; publicLinkToken?: string; kapsoEventId?: string; }
 /**
@@ -29,8 +12,14 @@ export interface CreateRequisitionInput { type: RequisitionType; societyId?: str
  * puede guardarse como borrador sin aprobador todavía; sendForApproval() sí lo exige (ya lo hacía por
  * `!requisition.approverId`). workId/paymentTerms: RF reunión 2026-08-31, el revisor asigna la obra y la
  * forma de pago.
+ * M-6 (QA reasignación): `approverId` distingue tres casos, no dos. `undefined` = el campo no vino en el
+ * payload, no tocar el aprobador ya asignado (compatibilidad con el borrador parcial de siempre). `null`
+ * o `""` = el revisor lo está DESASIGNANDO explícitamente (p.ej. para reelegir uno nuevo desde cero). Un
+ * string no vacío = asignar ese aprobador (validado con isEligibleApprover, como siempre). Antes
+ * `if (input.approverId)` trataba `""` igual que `undefined` (conservaba el anterior en silencio) y
+ * sendForApproval() seguía notificando al aprobador viejo aunque el revisor hubiera intentado limpiarlo.
  */
-export interface ReviewInput { tagId: string; approverId?: string; workId?: string; paymentTerms?: string; items: ItemLine[]; }
+export interface ReviewInput { tagId: string; approverId?: string | null; workId?: string; paymentTerms?: string; items: ItemLine[]; }
 export interface PettyCashInput { workId: string; date: string; concept: string; tagId: string; amount: number; attachmentUrl?: string; }
 /** Reunión 2026-08-31: decisión por ítem del aprobador. No cambia el estado de la requisición. */
 export interface ItemDecision { itemId: string; status: ItemStatus; declineReason?: string; quantity?: number; }
@@ -89,6 +78,8 @@ export class ProcurementService {
       // un aprobador elegible en una etiqueta activa (isEligibleApprover), sin duplicar ese SQL en el
       // servicio. approverId es opcional (un borrador de revisión puede guardarse sin aprobador todavía);
       // sendForApproval() es quien lo exige antes de avanzar el estado.
+      // M-6: solo se valida cuando el revisor manda un aprobador de verdad (string no vacío) — `null`/`""`
+      // es una desasignación explícita, no un valor a validar contra el catálogo.
       if (input.approverId && !(await tx.catalogs.isEligibleApprover(input.approverId))) throw new DomainError("INVALID_INPUT", "El aprobador debe ser un usuario activo y elegible");
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       if (requisition.status === "devuelta") await this.transition(requisition, "en_revision", actor, "retomada_revision", undefined, this.origin(context), tx.audit);
@@ -105,7 +96,17 @@ export class ProcurementService {
         if (!work || !work.active || work.societyId !== requisition.societyId) throw new DomainError("INVALID_INPUT", "La obra debe existir, estar activa y pertenecer a la sociedad de la requisición");
         requisition.workId = input.workId;
       }
-      requisition.tagId = input.tagId; if (input.approverId) requisition.approverId = input.approverId;
+      // M-7 (QA reasignación, decisión consciente PENDIENTE de confirmar con el cliente): nada aquí
+      // impide que un usuario con roles revisor+aprobador a la vez se asigne a sí mismo como approverId
+      // y luego apruebe su propia revisión (approve() solo exige `approverId === actor.id`, sin excluir
+      // al propio revisor). No se bloquea porque el negocio no ha dicho si eso debe prohibirse — se deja
+      // fijado como comportamiento ACTUAL por un test explícito (ver procurement-service.test.ts) para
+      // que cualquier cambio futuro sea deliberado, no un descubrimiento accidental en producción.
+      requisition.tagId = input.tagId;
+      // M-6: `undefined` = no tocar (compatibilidad con guardados parciales); `null`/`""` = desasignar
+      // explícitamente; string no vacío = asignar. `input.approverId || undefined` colapsa `null`/`""` a
+      // `undefined` (el sentinel de "sin aprobador" que ya usa el resto del dominio).
+      if (input.approverId !== undefined) requisition.approverId = input.approverId || undefined;
       if (input.paymentTerms !== undefined) requisition.paymentTerms = input.paymentTerms.trim() || undefined;
       const storedById = new Map(requisition.items.map((line) => [line.id, line]));
       requisition.items = (await this.materializeProposals(input.items, actor, this.origin(context), tx)).map((line) => {
@@ -129,6 +130,32 @@ export class ProcurementService {
       return requisition;
     });
   }
+  /**
+   * BLOQUEANTE (QA reasignación, reunión 2026-09): si el aprobador asignado deja de ser elegible (baja,
+   * cambio de rol) mientras la requisición está `en_aprobacion`, antes de este método no había salida por
+   * la aplicación — approve()/returnForCorrection() exigen `approverId === actor.id` y ese usuario ya no
+   * puede entrar; review() (el único lugar que asignaba aprobador) solo opera en `en_revision`; decline()
+   * desde `en_aprobacion` es transición inválida. Solo un DBA podía desatascarla. Mismo permiso y misma
+   * validación de elegibilidad que review() (isEligibleApprover); válido en `en_revision`/`devuelta`
+   * (mismos estados que review()) y, sobre todo, en `en_aprobacion` — el caso que de verdad bloqueaba. Si
+   * la requisición ya está en_aprobacion se notifica al aprobador NUEVO (el viejo, si sigue sin poder
+   * entrar, no gana nada con la notificación).
+   */
+  async reassignApprover(id: string, approverId: string, context: RequestContext): Promise<Requisition> {
+    const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context));
+    if (!approverId) throw new DomainError("INVALID_INPUT", "Debe indicar el nuevo aprobador");
+    return this.transaction(`requisition:${id}`, async (tx) => {
+      if (!(await tx.catalogs.isEligibleApprover(approverId))) throw new DomainError("INVALID_INPUT", "El aprobador debe ser un usuario activo y elegible");
+      const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
+      if (!["en_revision", "devuelta", "en_aprobacion"].includes(requisition.status)) throw new DomainError("INVALID_STATE", "La requisición no admite reasignar aprobador en este estado");
+      const previousApproverId = requisition.approverId;
+      requisition.approverId = approverId;
+      await tx.requisitions.save(requisition);
+      await this.audit("requisicion", id, "aprobador_reasignado", actor, { previousApproverId: previousApproverId ?? null, approverId }, this.origin(context), tx.audit);
+      if (requisition.status === "en_aprobacion") await tx.notifications.enqueue({ userId: approverId, channel: "whatsapp", template: "pendiente_aprobador", payload: { requisitionId: requisition.id, consecutive: requisition.consecutive } });
+      return requisition;
+    });
+  }
   async decline(id: string, reason: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); await this.transition(requisition, "declinada", actor, "declinada", reason.trim(), this.origin(context), tx.audit); requisition.declineReason = reason.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_declinada", tx); return requisition; }); }
   // "sendForApproval" ya NO exige proveedor final por ítem (decisión de la reunión: aprobar y designar
   // proveedor son roles distintos). Sí exige obra: gastos.obra_id es NOT NULL y sin obra generateOrders
@@ -139,7 +166,9 @@ export class ProcurementService {
     const actor = this.actor(context); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
-      if (requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
+      // M-5: admin_sixteam puede decidir CUALQUIER requisición en aprobación, no solo las asignadas —
+      // ver la justificación completa junto a buildAttentionQueue en lib/domain/rules.ts.
+      if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
       if (requisition.status !== "en_aprobacion") throw new DomainError("INVALID_STATE", "La requisición no está en aprobación");
       const byId = new Map(requisition.items.map((line) => [line.id, line]));
       for (const decision of decisions) {
@@ -161,7 +190,8 @@ export class ProcurementService {
     const actor = this.actor(context); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
-      if (requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
+      // M-5: mismo bypass de decideItems() — ver justificación junto a buildAttentionQueue en lib/domain/rules.ts.
+      if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
       if (requisition.status === "aprobada") return requisition;
       assertHasApprovedLine(requisition.items);
       await this.transition(requisition, "aprobada", actor, "aprobada", undefined, this.origin(context), tx.audit);
@@ -244,8 +274,36 @@ export class ProcurementService {
       return orders;
     });
   }
-  async returnForCorrection(id: string, comment: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:return", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado"); await this.transition(requisition, "devuelta", actor, "devuelta", comment.trim(), this.origin(context), tx.audit); requisition.returnReason = comment.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_devuelta", tx); return requisition; }); }
-  async updateOrderStatus(orderId: string, status: OrderStatus, context: RequestContext): Promise<Order> { const actor = this.actor(context); assertPermission(actor.roles, "order:update", this.authOrigin(context)); return this.transaction(`order:${orderId}`, async (tx) => { const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada"); if (order.status !== "generada" || !["cumplida", "no_cumplida", "no_necesario"].includes(status)) throw new DomainError("INVALID_TRANSITION", "Estado de orden inválido"); order.status = status; await tx.orders.save(order); await this.audit("orden", order.id, "estado_cumplimiento_actualizado", actor, { status }, this.origin(context), tx.audit); return order; }); }
+  // M-5: mismo bypass de admin_sixteam que approve()/decideItems() — ver justificación junto a buildAttentionQueue en lib/domain/rules.ts.
+  async returnForCorrection(id: string, comment: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:return", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado"); await this.transition(requisition, "devuelta", actor, "devuelta", comment.trim(), this.origin(context), tx.audit); requisition.returnReason = comment.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_devuelta", tx); return requisition; }); }
+  /**
+   * GRAVE 2 (QA reasignación, reunión 2026-09): el eje administrativo (adminStatus) y el de cumplimiento
+   * (status, aquí) son independientes — una orden puede llegar a `no_necesario` ya `contabilizada` (el
+   * chequeo de arriba solo exige `status === "generada"`, nunca miró adminStatus). Secuencia legal
+   * generar → contabilizar → no_necesario: desde ahí assertAdminTransition bloquea contabilizar/pagar
+   * para siempre (ORDER_NOT_NEEDED), así que su gasto (nacido sin `date`, un compromiso) quedaba
+   * engordando inProcessValue sin fecha y sin forma de anularlo. Se anula aquí, en la MISMA transacción
+   * que el cambio de estado: si NO está pagada (pendiente o contabilizada), se borra el gasto y su
+   * reparto — todavía no se le pagó a nadie, no hay nada que devolver. Si YA está pagada, se rechaza:
+   * anular un pago ya hecho exige un flujo de devolución que no existe todavía. `no_cumplida` no entra
+   * en este `if`: el material puede llegar después, el compromiso sigue en pie.
+   */
+  async updateOrderStatus(orderId: string, status: OrderStatus, context: RequestContext): Promise<Order> {
+    const actor = this.actor(context); assertPermission(actor.roles, "order:update", this.authOrigin(context));
+    return this.transaction(`order:${orderId}`, async (tx) => {
+      const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
+      if (order.status !== "generada" || !["cumplida", "no_cumplida", "no_necesario"].includes(status)) throw new DomainError("INVALID_TRANSITION", "Estado de orden inválido");
+      if (status === "no_necesario") {
+        if (order.adminStatus === "pagada") throw new DomainError("ORDER_ALREADY_PAID", "Una orden ya pagada no puede declararse innecesaria: no existe un flujo de devolución");
+        const linkedExpenses = await tx.expenses.listByReference(order.id);
+        await tx.expenses.deleteByReference("requisicion", order.id);
+        for (const expense of linkedExpenses) await this.audit("gasto", expense.id, "gasto_anulado", actor, { orderId: order.id, reason: "orden_no_necesaria" }, this.origin(context), tx.audit);
+      }
+      order.status = status; await tx.orders.save(order);
+      await this.audit("orden", order.id, "estado_cumplimiento_actualizado", actor, { status }, this.origin(context), tx.audit);
+      return order;
+    });
+  }
   /** Reunión 2026-08-31: eje administrativo/contable, independiente de updateOrderStatus (cumplimiento). "contabilizada" exige order:account (contabilidad); "pagada" exige order:pay (revisor/admins). */
   async updateOrderAdminStatus(orderId: string, status: OrderAdminStatus, context: RequestContext): Promise<Order> {
     const actor = this.actor(context); assertPermission(actor.roles, status === "contabilizada" ? "order:account" : "order:pay", this.authOrigin(context));
@@ -261,7 +319,12 @@ export class ProcurementService {
         // (colombiaDateParts, mismo criterio que generateOrders). saveExpense no sirve para esto: su
         // `on conflict do nothing` nunca actualiza un gasto ya guardado.
         const { day: paidDate } = colombiaDateParts(this.now());
-        await tx.expenses.markPaid(order.id, paidDate);
+        // GRAVE 3 (QA reasignación): 0 filas actualizadas significa que esta orden no tiene gasto propio
+        // — un estado inconsistente (contabilizada/pagada son un eje independiente del cumplimiento, así
+        // que nada más lo garantiza) que antes quedaba en "pagada" en silencio. Se falla explícito en vez
+        // de dejarla pasar: una orden "pagada" sin gasto es peor que rechazar la transición.
+        const paidRows = await tx.expenses.markPaid(order.id, paidDate);
+        if (paidRows === 0) throw new DomainError("ORDER_EXPENSE_MISSING", "La orden no tiene un gasto asociado; no se puede marcar como pagada");
       }
       await tx.orders.save(order);
       await this.audit("orden", order.id, "estado_administrativo_actualizado", actor, { status }, this.origin(context), tx.audit);

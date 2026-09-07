@@ -29,8 +29,19 @@ function catalogData(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function publicAccessStatusResponse(): Response {
-  return new Response(JSON.stringify({ configured: false, updatedAt: null }), { status: 200, headers: { "Content-Type": "application/json" } });
+// GRAVE (QA Postgres real): PublicAccessPanel ahora pinta un role="alert" PROMINENTE cuando el portal
+// no tiene contraseña configurada (el aviso de "portal cerrado", ver el componente). El default de
+// este mock era `configured: false`, así que CUALQUIER prueba de este archivo que esperara un único
+// role="alert" (o ninguno) empezaba a competir con ese banner en cuanto el GET de /api/public-access
+// resolvía. Como ninguna prueba de este archivo ejercita el panel de acceso público en sí (eso vive en
+// tests/unit/public-access-service.test.ts, tests/unit/public-access-route.test.ts y
+// tests/unit/public-access.test.ts), el default pasa a `configured: true` — sin alerta — y el caso
+// "portal cerrado" tiene su propia prueba dedicada más abajo con su propio mock.
+function publicAccessStatusResponse(configured = true): Response {
+  return new Response(
+    JSON.stringify({ configured, updatedAt: configured ? "2026-09-01T12:00:00.000Z" : null }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
 }
 
 /**
@@ -42,10 +53,10 @@ function publicAccessStatusResponse(): Response {
  * Cuando `catalogsResponse` se omite, una llamada a /api/catalogs se rechaza — reproduce el
  * comportamiento de las pruebas "no debería llamarse a fetch" de antes de este panel.
  */
-function mockFetch(catalogsResponse?: Response) {
+function mockFetch(catalogsResponse?: Response, publicAccessConfigured = true) {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = String(input);
-    if (url === "/api/public-access") return Promise.resolve(publicAccessStatusResponse());
+    if (url === "/api/public-access") return Promise.resolve(publicAccessStatusResponse(publicAccessConfigured));
     return catalogsResponse ? Promise.resolve(catalogsResponse) : Promise.reject(new Error(`unexpected fetch(${url}) in this test`));
   });
 }
@@ -579,6 +590,39 @@ describe("ConnectedCatalogAdmin", () => {
         ),
       );
       expect(screen.getByText("Inactivo")).toBeInTheDocument();
+    });
+  });
+
+  describe("Acceso público — portal cerrado (GRAVE, QA Postgres real)", () => {
+    it("muestra un role=\"alert\" prominente cuando no hay contraseña configurada", async () => {
+      mockFetch(undefined, false);
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/etiquetas"
+          role="Administrador Sixteam"
+          initialData={catalogData()}
+        />,
+      );
+
+      const alert = await waitFor(() => screen.getByRole("alert"));
+      expect(alert).toHaveTextContent("El portal de requisiciones está cerrado");
+      expect(alert).toHaveTextContent("Nadie puede radicar por el enlace hasta que la fijes");
+    });
+
+    it("no muestra la alerta cuando la contraseña ya está configurada", async () => {
+      mockFetch(undefined, true);
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/etiquetas"
+          role="Administrador Sixteam"
+          initialData={catalogData()}
+        />,
+      );
+
+      await waitFor(() =>
+        expect(screen.getByText(/Contraseña configurada/)).toBeInTheDocument(),
+      );
+      expect(screen.queryByRole("alert")).toBeNull();
     });
   });
 });

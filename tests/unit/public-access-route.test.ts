@@ -60,6 +60,13 @@ describe("PATCH/GET /api/public-access — administración de la contraseña glo
     expect(mocks.setPassword).not.toHaveBeenCalled();
   });
 
+  // GRAVE (QA Postgres real): el esquema medía la longitud ANTES de recortar espacios.
+  it("PATCH rechaza un código de puros espacios (8 caracteres, 0 tras recortar) con 400", async () => {
+    const response = await PATCH(patchRequest({ code: "        " }));
+    expect(response.status).toBe(400);
+    expect(mocks.setPassword).not.toHaveBeenCalled();
+  });
+
   it("PATCH rechaza un origen distinto al configurado", async () => {
     const response = await PATCH(patchRequest({ code: "contraseña-larga" }, "https://evil.test"));
     expect(response.status).toBe(403);

@@ -1,7 +1,7 @@
 # Implementación de la reunión del 31-ago — estado y pendientes
 
 **Rama:** `feat/reunion-agosto-empresa-items-ordenes` · **sin commitear**
-**Verificable ahora:** 367 tests en verde · `typecheck` y `lint` limpios · `npm run verify:schema` valida las 4 migraciones contra un Postgres real.
+**Verificable ahora:** 417 tests en verde · `typecheck` y `lint` limpios · `npm run verify:schema` valida las 7 migraciones contra un Postgres real, sembrando datos legacy antes de las que hacen backfill.
 
 Plan de origen: `docs/reunion-2026-08-31-analisis.md` (análisis de la reunión) y el plan de implementación aprobado.
 
@@ -70,8 +70,20 @@ Se cableó `npm run verify:schema`: levanta un Postgres embebido (sin Docker), a
 
 ---
 
+## Decisiones cerradas el 7 de septiembre (implementadas)
+
+| Decisión | Cómo quedó |
+|---|---|
+| **El aprobador lo elige el revisor** | `requisiciones.aprobador_id` propio; la etiqueta queda como clasificación y su aprobador es solo la sugerencia por defecto. Se puede reasignar incluso en `en_aprobacion`, y no se puede dar de baja a un aprobador con requisiciones en aprobación |
+| **Contraseña única del portal** | Un solo hash global (bcrypt coste 12) en la tabla `acceso_publico`, fuera de la auditoría; el enlace sigue siendo por obra. Se administra en Catálogos › Acceso público. **Tras migrar, el portal rechaza todo hasta que se fije** (paso obligatorio del runbook) |
+| **Comprobante de egreso fuera** | Sin cambios: no entra en esta versión |
+| **El gasto se fecha con el pago** | `gastos.fecha_orden` (nacimiento) y `gastos.fecha` (pago, nula hasta pagar). El reporte por mes solo cuenta lo pagado; lo comprometido sin pagar tiene su propio grupo y su propia cifra ("Comprometido sin pagar"). Una orden `no_necesario` sin pagar anula su gasto; una ya pagada no puede declararse innecesaria (no hay flujo de devolución) |
+
+El arnés `npm run verify:schema` ahora siembra **datos legacy** antes de cada migración que los necesite (`supabase/tests/legacy/*.pre.sql` / `*.post.sql`), que es lo que destapó un backfill no-op que habría perdido la fecha original de todos los gastos sin pagar.
+
 ## Decisiones que conviene avisarle al cliente
 
-- **La fecha del gasto es la de generación de la orden, no la de aprobación.** Si Daniel aprueba el 30 y genera el 2, el gasto cae en el mes siguiente.
 - **El módulo `catalogos_admin_mizar` también gobierna quién puede radicar por WhatsApp**, no solo los catálogos internos.
-- Sigue abierto de la reunión: si el aprobador lo elige Daniel o lo fija la etiqueta; contraseña única para el enlace público frente al código por obra; y que el comprobante de egreso y el de pago quedan fuera de esta versión.
+- **Un usuario con los roles revisor y aprobador puede asignarse a sí mismo y aprobar su propia revisión.** Hoy se permite a propósito; confirmar con Daniel si quiere separación de funciones.
+- **`admin_sixteam` puede aprobar o devolver cualquier requisición** aunque no sea el aprobador asignado.
+- **Una orden pagada que resulte innecesaria no tiene salida**: hace falta un flujo de devolución, que no existe.

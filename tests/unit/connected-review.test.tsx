@@ -521,3 +521,69 @@ describe("bloque Generar órdenes agrupa por proveedor", () => {
     expect(JSON.parse(String(init.body))).toEqual({ action: "generate_orders" });
   });
 });
+
+// BLOQUEANTE (QA reasignación, reunión 2026-09): el revisor necesita poder reasignar el aprobador de
+// una requisición ya en_aprobacion (el caso real: el asignado dejó de ser elegible) sin pasar por
+// review(), que solo opera en_revision/devuelta.
+describe("reasignar aprobador en en_aprobacion", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+  const detailData = {
+    requisition: {
+      id: "req-1",
+      consecutive: "RQ-001",
+      type: "compra" as const,
+      workId: "work-1",
+      channel: "interno",
+      requiredDate: "2026-08-24",
+      status: "en_aprobacion",
+      approverId: "approver-1",
+      items: [{ id: "item-1", description: "Arena", quantity: 1, unit: "saco" }],
+    },
+    catalogs: {
+      works: [],
+      tags: [{ id: "tag-1", name: "Obra" }],
+      suppliers: [],
+      items: [],
+      users: [{ id: "approver-1", name: "Nelson" }, { id: "approver-2", name: "Sonia" }],
+      approvers: [{ id: "approver-1", name: "Nelson" }, { id: "approver-2", name: "Sonia" }],
+      features: {},
+    },
+    orders: [],
+    expenses: [],
+    history: [],
+    attachments: [],
+  };
+
+  it("el revisor ve el aprobador asignado y un control para reasignarlo, con el texto de cuándo usarlo", () => {
+    render(<ConnectedRequisitionDetail data={detailData} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    expect(screen.getByTestId("requisition-approver")).toHaveTextContent("Nelson");
+    expect(screen.getByTestId("reassign-approver")).toHaveTextContent(
+      "Si el aprobador asignado no puede atenderla, reasígnala aquí.",
+    );
+  });
+
+  it("reasignar envía action: reassign_approver con el nuevo approverId", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ...detailData.requisition, approverId: "approver-2" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<ConnectedRequisitionDetail data={detailData} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    const panel = within(screen.getByTestId("reassign-approver"));
+    fireEvent.change(panel.getByRole("combobox"), { target: { value: "approver-2" } });
+    fireEvent.click(panel.getByRole("button", { name: "Reasignar aprobador" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/requisitions/req-1/actions");
+    expect(JSON.parse(String(init.body))).toEqual({ action: "reassign_approver", approverId: "approver-2" });
+  });
+
+  it("un aprobador (no revisor) no ve el control de reasignación", () => {
+    render(<ConnectedRequisitionDetail data={detailData} role="Aprobador" go={vi.fn()} refresh={vi.fn()} />);
+    expect(screen.queryByTestId("reassign-approver")).toBeNull();
+  });
+});

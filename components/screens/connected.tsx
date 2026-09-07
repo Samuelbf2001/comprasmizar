@@ -2904,6 +2904,35 @@ export function ConnectedRequisitionDetail({
                 <dd>{requisition.observations || "—"}</dd>
               </div>
             </dl>
+            {/* BLOQUEANTE (QA reasignación, reunión 2026-09): si el aprobador asignado deja de ser
+                elegible (baja, cambio de rol) mientras la requisición está en_aprobacion, antes no había
+                salida por la aplicación — approve()/returnForCorrection() exigen ser el aprobador exacto
+                y ese usuario ya no puede entrar. Reutiliza `approverId`/`setApproverId` (mismo estado que
+                el <select> de la revisión, arriba): no colisionan porque nunca se muestran a la vez. */}
+            {isReviewer && requisition.status === "en_aprobacion" && (
+              <div className="connected-review" data-testid="reassign-approver">
+                <label className="field">
+                  <span>Reasignar aprobador</span>
+                  <select value={approverId} onChange={(event) => setApproverId(event.target.value)}>
+                    <option value="">Selecciona un aprobador</option>
+                    {(catalogs.approvers ?? []).map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="muted-copy">Si el aprobador asignado no puede atenderla, reasígnala aquí.</p>
+                <button
+                  className="button button-secondary"
+                  disabled={busy || !approverId || approverId === requisition.approverId}
+                  type="button"
+                  onClick={() => void run({ action: "reassign_approver", approverId })}
+                >
+                  Reasignar aprobador
+                </button>
+              </div>
+            )}
             {headerEditable && !editingHeader && (
               <button className="button button-secondary" type="button" onClick={() => { setHeaderForm({ requiredDate: requisition.requiredDate ?? "", observations: requisition.observations ?? "" }); setEditingHeader(true); }}>
                 <Pencil aria-hidden="true" size={14} /> Editar cabecera

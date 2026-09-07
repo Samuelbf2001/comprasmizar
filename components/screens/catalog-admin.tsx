@@ -5,6 +5,7 @@ import {
   Database,
   Edit3,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   ToggleLeft,
   ToggleRight,
@@ -871,13 +872,23 @@ function PublicAccessPanel() {
         <p className="field-error catalog-feedback" role="alert">
           {loadError}
         </p>
-      ) : (
+      ) : status === null ? (
+        <p className="public-access-status">Consultando estado…</p>
+      ) : status.configured ? (
         <p className="public-access-status">
-          {status === null
-            ? "Consultando estado…"
-            : status.configured
-              ? `Contraseña configurada. Último cambio: ${status.updatedAt ? formatPublicAccessDate(status.updatedAt) : "fecha no disponible"}.`
-              : "Todavía no hay una contraseña configurada: el portal público rechaza cualquier intento hasta que se fije una."}
+          {`Contraseña configurada. Último cambio: ${status.updatedAt ? formatPublicAccessDate(status.updatedAt) : "fecha no disponible"}.`}
+        </p>
+      ) : (
+        // GRAVE (QA Postgres real): el día del despliegue, el hash global nace en NULL y TODA obra con
+        // portal habilitado deja de aceptar cualquier código — el solicitante recibe un 202 neutro
+        // indistinguible del éxito, así que nadie se entera desde el lado público. Este aviso es la
+        // única señal del lado admin: tiene que ser imposible de pasar por alto, no un texto gris más.
+        <p className="public-access-closed-alert" role="alert">
+          <ShieldAlert aria-hidden="true" size={18} />
+          <span>
+            El portal de requisiciones está <b>cerrado</b>: no hay contraseña configurada. Nadie puede
+            radicar por el enlace hasta que la fijes.
+          </span>
         </p>
       )}
       <form className="catalog-edit-form" onSubmit={submit} noValidate>

@@ -11,18 +11,33 @@ alter table public.requisiciones add column if not exists aprobador_id uuid refe
 
 -- Backfill: toda requisición existente hereda el aprobador que hoy tenía por etiqueta (lectura actual,
 -- vía left join etiquetas). Solo toca filas sin aprobador_id propio (idempotente ante un re-run).
+-- QA Postgres real (bloqueante 3): SIN el filtro de elegibilidad de abajo, este backfill siembra el
+-- problema desde el minuto cero — copia ciegamente `etiquetas.aprobador_id` aunque ese usuario ya no
+-- sea elegible (p. ej. quedó inactivo después de que la etiqueta lo tuviera asignado). Con el filtro,
+-- esas filas quedan en NULL: el revisor lo asigna de nuevo al revisar, en vez de heredar un aprobador
+-- roto.
 update public.requisiciones r set aprobador_id = e.aprobador_id
 from public.etiquetas e
-where e.id = r.etiqueta_id and r.aprobador_id is null;
+where e.id = r.etiqueta_id and r.aprobador_id is null and public.es_aprobador_elegible(e.aprobador_id);
 
 create index if not exists requisiciones_aprobador_idx on public.requisiciones(aprobador_id);
 
 -- Mismo contrato de elegibilidad que ya usa `validar_catalogos_activos_requisicion` para etiqueta_id
 -- (public.es_aprobador_elegible): usuario activo con rol aprobador/revisor/admin_sixteam. Dispara solo
 -- cuando aprobador_id cambia (insert, o update explícito de esa columna) — no en cada UPDATE de la fila.
+-- QA Postgres real (bloqueante 3): `UPDATE OF aprobador_id` en Postgres dispara el trigger en cuanto
+-- esa columna APARECE en el SET, cambie su valor o no — y `saveRequisition` (postgres-repositories.ts)
+-- siempre la menciona en el `on conflict do update`. Sin el guard de abajo, el día que un aprobador ya
+-- asignado deje de ser elegible, CUALQUIER guardado posterior de esa requisición (aunque no toque
+-- aprobador_id) revienta con 23514 — un guardado no debería poder fallar por un dato que no está
+-- cambiando. El guard compara contra old explícitamente: valida en INSERT siempre, y en UPDATE solo si
+-- el valor realmente cambió.
 create or replace function public.validar_aprobador_requisicion()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
+  if tg_op = 'UPDATE' and new.aprobador_id is not distinct from old.aprobador_id then
+    return new;
+  end if;
   if new.aprobador_id is not null and not public.es_aprobador_elegible(new.aprobador_id) then
     raise exception 'El aprobador asignado a una requisición debe ser un usuario activo y elegible' using errcode = '23514';
   end if;
@@ -32,6 +47,30 @@ end; $$;
 do $$ begin
   create trigger requisiciones_aprobador_elegible before insert or update of aprobador_id on public.requisiciones
     for each row execute function public.validar_aprobador_requisicion();
+exception when duplicate_object then null; end $$;
+
+-- Hermano de `validar_baja_usuario_con_etiquetas_activas` (202608240001_core_compras.sql, ~línea 586):
+-- esa función solo mira `etiquetas.aprobador_id` (el aprobador "por defecto" de una etiqueta). Desde
+-- esta migración el aprobador REAL de una requisición vive en `requisiciones.aprobador_id`, así que la
+-- baja de un usuario también debe revisar ahí — si no, se podía desactivar a alguien con
+-- requisiciones esperando exactamente su decisión y dejarlas huérfanas de aprobador sin aviso.
+create or replace function public.validar_baja_usuario_aprobador_requisiciones()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_pendientes integer; begin
+  if old.estado = 'activo' and new.estado = 'inactivo' then
+    select count(*) into v_pendientes from public.requisiciones
+      where aprobador_id = old.id and estado = 'en_aprobacion';
+    if v_pendientes > 0 then
+      raise exception 'No se puede desactivar: es aprobador de % requisición(es) en aprobación; reasígnelas antes de dar de baja' , v_pendientes
+        using errcode = '23514';
+    end if;
+  end if;
+  return new;
+end; $$;
+
+do $$ begin
+  create trigger usuarios_baja_aprobador_requisiciones before update of estado on public.usuarios
+    for each row execute function public.validar_baja_usuario_aprobador_requisiciones();
 exception when duplicate_object then null; end $$;
 
 -- `limitar_actualizacion_aprobador` (202608240001_core_compras.sql, ~línea 776): un aprobador que no es

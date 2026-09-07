@@ -31,28 +31,39 @@ export async function resolveAuthorizedRequesterName(phone: string, databaseUrl 
 
 /**
  * Reunión: la contraseña del portal público dejó de ser por obra (`obras.public_code_hash`, obsoleta)
- * y pasó a ser GLOBAL, guardada en `configuracion.acceso_publico_v1` (migración 202609070002). Este
- * repositorio administra ESA fila: nunca ve el hash en JS (extensions.crypt corre en la base) y nunca
- * lo devuelve (getStatus solo informa si hay uno configurado y cuándo cambió).
+ * y pasó a ser GLOBAL, guardada en la tabla singleton `acceso_publico` (migración 202609070002 —
+ * GRAVE del QA contra Postgres real: NO se guarda en `configuracion.valor` porque esa columna la
+ * comparte cualquier clave de configuración y `auditoria_campo_sensible` redacta por nombre de
+ * columna; con `configuracion` el hash habría quedado en texto plano en `auditoria` cada vez que se
+ * cambiara, o habría exigido redactar TODO `configuracion.valor` — incluidas claves de negocio sin
+ * nada secreto como `impuestos_v1`. La tabla propia con columna `public_code_hash` hereda la
+ * redacción por nombre que ya existe desde la migración base, sin ese costo colateral). Este
+ * repositorio administra esa fila única: nunca ve el hash en claro fuera de la base (extensions.crypt
+ * corre en la base) y nunca lo devuelve al llamador (getStatus solo informa si hay uno configurado y
+ * cuándo cambió).
  */
 export function createPublicAccessAdminRepository(databaseUrl = runtimeEnv().DATABASE_URL): PublicAccessAdminRepository {
   const sql = sharedPostgres(databaseUrl);
   return {
     async getStatus(): Promise<PublicAccessStatus> {
       const rows = await sql<{ configured: boolean; updated_at: string | null }[]>`
-        select (valor ->> 'codigo_hash') is not null as configured, updated_at
-        from configuracion where clave = 'acceso_publico_v1'`;
+        select public_code_hash is not null as configured, updated_at
+        from acceso_publico where id = '00000000-0000-0000-0000-000000000001'`;
       const row = rows[0];
       return { configured: row?.configured === true, updatedAt: row?.updated_at ? new Date(row.updated_at).toISOString() : null };
     },
-    // updated_at (columna) y actualizado_en (dentro del jsonb) se fijan al mismo now() de la base para
-    // que nunca queden desincronizados por el viaje de ida y vuelta con el servidor de aplicación.
+    // GRAVE (QA Postgres real): antes no se comprobaban las filas afectadas — un PATCH corriendo
+    // contra una fila singleton borrada/ausente (no debería pasar nunca en operación normal, pero una
+    // base mal migrada sí podría dejarla sin filas) devolvía 200 sin haber cambiado nada.
+    // `gen_salt('bf', 12)` fija el costo de bcrypt explícito (sin el argumento, sale en $2a$06$ — 2^6
+    // rondas, muy por debajo de lo razonable para una contraseña de portal público).
     async setPassword(code: string, actorId: string): Promise<void> {
-      await sql`
-        update configuracion
-        set valor = jsonb_build_object('codigo_hash', extensions.crypt(${code}, extensions.gen_salt('bf')), 'actualizado_en', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
+      const result = await sql`
+        update acceso_publico
+        set public_code_hash = extensions.crypt(${code}, extensions.gen_salt('bf', 12)),
             updated_at = now(), updated_by = ${actorId}
-        where clave = 'acceso_publico_v1'`;
+        where id = '00000000-0000-0000-0000-000000000001'`;
+      if (result.count === 0) throw new Error("No se pudo actualizar la contraseña del portal: la fila de configuración no existe");
     },
   };
 }

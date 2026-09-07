@@ -53,6 +53,10 @@ export type Database = {
       sesiones_pantalla: { Row: { id: string; nombre: string; token_hash: string; activa: boolean; creada_por: string; ultima_vez_usada: string | null; fecha_creacion: string; expira_at: string | null }; Insert: { nombre: string; token_hash: string; creada_por: string; activa?: boolean; expira_at?: string | null }; Update: Partial<{ activa: boolean; ultima_vez_usada: string | null; expira_at: string | null }> };
       requisicion_historial: { Row: { id: number; requisicion_id: string; estado_anterior: RequestStatus | null; estado_nuevo: RequestStatus; comentario: string | null; usuario_id: string | null; fecha: string }; Insert: never; Update: never };
       configuracion: { Row: { clave: string; valor: Json; updated_at: string; updated_by: string | null }; Insert: { clave: string; valor: Json; updated_by?: string | null }; Update: Partial<{ valor: Json; updated_by: string | null }> };
+      // Tabla singleton (id uuid fijo a '00000000-0000-0000-0000-000000000001') de la migración
+      // 202609070002_acceso_publico_global.sql: contraseña GLOBAL del portal público. public_code_hash
+      // nace en null (portal cerrado hasta fijarla).
+      acceso_publico: { Row: { id: string; public_code_hash: string | null; updated_at: string; updated_by: string | null }; Insert: never; Update: Partial<{ public_code_hash: string | null; updated_by: string | null }> };
     };
     Views: { gasto_distribucion: { Row: { gasto_id: string; obra_id: string; fecha: string | null; periodo: string | null; etiqueta_id: string | null; proveedor_id: string | null; origen: "requisicion" | "caja_menor"; valor: number } }; proveedor_historial_ordenes: { Row: { proveedor_id: string; orden_id: string; consecutivo: string; tipo: "OC" | "OP"; estado_cumplimiento: "generada" | "cumplida" | "no_cumplida" | "no_necesario"; fecha_generacion: string; requisicion_id: string; obra_id: string; cantidad_items: number; valor_base: number; iva: number; valor_total: number } } };
     Functions: {

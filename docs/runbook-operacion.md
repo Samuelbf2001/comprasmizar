@@ -5,9 +5,10 @@
 1. Ejecutar lint, typecheck, cobertura, build y E2E en CI.
 2. Construir una imagen inmutable con el SHA del commit.
 3. Aplicar migraciones primero en dev y ejecutar las verificaciones de RLS.
-4. Hacer respaldo pre-despliegue de producción.
-5. Desplegar la imagen, esperar `/api/health` y ejecutar smoke tests por rol.
-6. Conservar el tag anterior. Rollback de app significa volver al tag; nunca revertir una migración destructiva sin plan probado.
+4. **Obligatorio tras aplicar `202609070002_acceso_publico_global.sql` (contraseña global del portal):** fijar la contraseña del portal desde Catálogos › Acceso público (`PATCH /api/public-access`, solo admin_mizar/admin_sixteam). La tabla `acceso_publico` nace con el hash en `null` — hasta que alguien fije la contraseña, **el portal público rechaza todo código**, para toda obra con `public_submission_enabled = true`, sin excepción ni aviso visible del lado del solicitante (recibe un 202 neutro indistinguible del éxito). El panel de administración sí muestra un aviso prominente mientras tanto (`role="alert"`, "El portal de requisiciones está cerrado…") — no depender solo de que alguien recuerde este paso.
+5. Hacer respaldo pre-despliegue de producción.
+6. Desplegar la imagen, esperar `/api/health` y ejecutar smoke tests por rol.
+7. Conservar el tag anterior. Rollback de app significa volver al tag; nunca revertir una migración destructiva sin plan probado.
 
 ## Respaldo y restauración
 

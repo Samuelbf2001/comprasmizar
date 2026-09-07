@@ -122,6 +122,27 @@ describe("GET /api/pantalla", () => {
     expect(body.metrics.expenseByWork).toEqual([{ key: "work-1", total: 119_000 }]);
   });
 
+  // GRAVE 3 (QA reasignación, reunión 2026-09): esta ruta calculaba el periodo con
+  // `new Date().toISOString().slice(0,7)` — componentes UTC. El servidor corre con TZ de proceso
+  // desconocido (a menudo UTC), así que el último día del mes, después de las 19:00 hora Colombia,
+  // mostraba el mes SIGUIENTE en la pantalla de oficina. Ahora reutiliza `colombiaDateParts` (movida al
+  // dominio, mismo criterio que ya usa procurement-service.ts). Reloj congelado en la frontera exacta:
+  // 2026-09-01T03:30:00Z == 2026-08-31T22:30:00-05:00, debe seguir cayendo en agosto.
+  it("calcula el periodo en hora de Colombia, no en UTC (frontera 2026-09-01T03:30:00Z -> 2026-08)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T03:30:00.000Z"));
+    try {
+      const service = new ScreenSessionService(mocks.screenSessionDeps!);
+      const { token } = await service.create({ id: "admin-1", roles: ["admin_mizar"] }, { name: "TV oficina" });
+      const response = await GET(requestWithToken(token));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.period).toBe("2026-08");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("nunca incluye nombres, teléfonos, ids ni consecutivos de requisiciones individuales", async () => {
     const service = new ScreenSessionService(mocks.screenSessionDeps!);
     const { token } = await service.create({ id: "admin-1", roles: ["admin_mizar"] }, { name: "TV oficina" });

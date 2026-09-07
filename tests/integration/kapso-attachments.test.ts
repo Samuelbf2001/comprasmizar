@@ -24,7 +24,7 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
   const repositories: TransactionRepositories = {
     requisitions,
     orders: { save: unused, list: unused, listVisibleTo: unused, listByRequisition: unused, get: unused },
-    expenses: { get: unused, save: unused, markPaid: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused },
+    expenses: { get: unused, save: unused, markPaid: unused, deleteByReference: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused },
     pettyCash: { save: unused, list: unused },
     audit, consecutives,
     features: { isEnabled: unused },

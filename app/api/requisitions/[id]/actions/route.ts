@@ -20,6 +20,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       case "decide_items": return service.decideItems(id, input.decisions, requestContext);
       case "assign_suppliers": return service.assignSuppliers(id, input.assignments, requestContext);
       case "generate_orders": return service.generateOrders(id, requestContext);
+      case "reassign_approver": return service.reassignApprover(id, input.approverId, requestContext);
     }
   });
 }

@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 // `sharedPostgres` por un capturador de parámetros (mismo patrón que `fakeSql` en
 // postgres-repositories.test.ts) para verificar el valor EXACTO que viaja como filtro de la consulta.
 // Los tests de createPublicAccessAdminRepository (más abajo) reutilizan este mismo mock configurable.
-type SqlResult = unknown[];
+type SqlResult = unknown[] & { count?: number };
 let nextResult: SqlResult = [{ nombre: "Ana" }];
 const calls: unknown[][] = [];
 const textCalls: string[] = [];
@@ -35,19 +35,22 @@ describe("resolveAuthorizedRequesterName — normalización E.164 colombiana (GR
   });
 });
 
-// Reunión: la contraseña del portal público pasó de ser por obra a GLOBAL (configuracion.acceso_publico_v1,
-// migración 202609070002_acceso_publico_global.sql). Este repositorio nunca ve el hash en JS: getStatus
-// solo lee si hay uno configurado y cuándo, setPassword delega el cálculo a extensions.crypt en la base.
+// Reunión: la contraseña del portal público pasó de ser por obra a GLOBAL, guardada en la tabla
+// singleton `acceso_publico` (migración 202609070002_acceso_publico_global.sql — GRAVE del QA contra
+// Postgres real: NO vive en `configuracion.valor`, porque esa columna compartida no está redactada por
+// nombre en `auditoria_campo_sensible` y el hash quedaba en claro en `auditoria`; `acceso_publico.public_code_hash`
+// sí hereda esa redacción). Este repositorio nunca ve el hash en JS: getStatus solo lee si hay uno
+// configurado y cuándo, setPassword delega el cálculo a extensions.crypt en la base.
 describe("createPublicAccessAdminRepository — contraseña global del portal (nunca en claro en JS)", () => {
   it("getStatus lee configured/updatedAt sin exponer el hash", async () => {
     calls.length = 0; textCalls.length = 0;
     nextResult = [{ configured: true, updated_at: "2026-09-07T12:00:00.000Z" }];
     const repository = createPublicAccessAdminRepository("postgres://test");
     await expect(repository.getStatus()).resolves.toEqual({ configured: true, updatedAt: "2026-09-07T12:00:00.000Z" });
-    expect(textCalls[0]).toMatch(/from configuracion where clave = 'acceso_publico_v1'/);
+    expect(textCalls[0]).toMatch(/from acceso_publico where id/);
     // Las únicas columnas devueltas son "configured" (booleano) y "updated_at": el hash NUNCA viaja
     // como valor de retorno, solo se usa dentro de un "is not null" que jamás sale de la base.
-    expect(textCalls[0]).toMatch(/is not null as configured/);
+    expect(textCalls[0]).toMatch(/public_code_hash is not null as configured/);
   });
 
   it("getStatus informa 'sin configurar' cuando no hay fila o el hash es null", async () => {
@@ -58,17 +61,25 @@ describe("createPublicAccessAdminRepository — contraseña global del portal (n
     await expect(repository.getStatus()).resolves.toEqual({ configured: false, updatedAt: null });
   });
 
-  it("setPassword calcula el hash EN LA BASE (extensions.crypt + gen_salt) y nunca envía el código sin cifrar como columna", async () => {
+  it("setPassword calcula el hash EN LA BASE (extensions.crypt + gen_salt con coste explícito) y nunca envía el código sin cifrar como columna", async () => {
     calls.length = 0; textCalls.length = 0;
-    nextResult = [];
+    nextResult = Object.assign([], { count: 1 });
     const repository = createPublicAccessAdminRepository("postgres://test");
     await repository.setPassword("clave-de-prueba-larga", "actor-1");
     const [text, values] = [textCalls[0], calls[0]];
-    expect(text).toMatch(/extensions\.crypt\(.*extensions\.gen_salt\('bf'\)\)/);
-    expect(text).toMatch(/update configuracion/);
-    expect(text).toMatch(/where clave = 'acceso_publico_v1'/);
+    expect(text).toMatch(/extensions\.crypt\(.*extensions\.gen_salt\('bf', 12\)\)/);
+    expect(text).toMatch(/update acceso_publico/);
+    expect(text).toMatch(/where id/);
     // El código y el actor viajan como PARÁMETROS (placeholders `?`), nunca interpolados en el texto SQL.
     expect(values).toContain("clave-de-prueba-larga");
     expect(values).toContain("actor-1");
+  });
+
+  // GRAVE (QA Postgres real): antes no se comprobaban las filas afectadas, así que un UPDATE que no
+  // tocara ninguna fila (la singleton ausente/borrada) devolvía éxito silencioso.
+  it("setPassword falla si el UPDATE no afecta ninguna fila (la fila singleton no existe)", async () => {
+    nextResult = Object.assign([], { count: 0 });
+    const repository = createPublicAccessAdminRepository("postgres://test");
+    await expect(repository.setPassword("clave-de-prueba-larga", "actor-1")).rejects.toThrow();
   });
 });

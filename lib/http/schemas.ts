@@ -55,7 +55,11 @@ export const requisitionActionSchema = z.discriminatedUnion("action", [
   // review gana workId (obra la asigna el revisor), paymentTerms (forma de pago, capturada aquí) y
   // approverId (reunión 2026-09: el revisor lo elige, ya no lo deriva la etiqueta). Opcional aquí — un
   // borrador puede guardarse sin aprobador todavía — pero sendForApproval() lo exige antes de avanzar.
-  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.string().uuid().optional(), workId: z.string().uuid().optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
+  // M-6 (QA reasignación): approverId admite explícitamente `null` (además de ausente/string) para que el
+  // revisor pueda DESASIGNAR el aprobador ya elegido, no solo cambiarlo — ver ReviewInput en
+  // procurement-service.ts. Un `""` del cliente también debe poder desasignar: se acepta con el mismo
+  // significado que `null` en vez de rechazarlo con un error de formato UUID.
+  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), workId: z.string().uuid().optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
   z.object({ action: z.literal("send_for_approval") }).strict(),
   // "approve" pierde multiSupplier: aprobar ya no genera órdenes (eso es generate_orders, un paso propio).
   z.object({ action: z.literal("approve") }).strict(),
@@ -68,6 +72,10 @@ export const requisitionActionSchema = z.discriminatedUnion("action", [
   // proveedor. Shape acotado a {itemId, supplierId} a propósito — ver SupplierAssignment en procurement-service.ts.
   z.object({ action: z.literal("assign_suppliers"), assignments: z.array(z.object({ itemId: z.string().uuid(), supplierId: z.string().uuid() }).strict()).min(1).max(100) }).strict(),
   z.object({ action: z.literal("generate_orders") }).strict(),
+  // BLOQUEANTE (QA reasignación, reunión 2026-09): reasigna el aprobador de una requisición, incluida
+  // en_aprobacion — ver ProcurementService.reassignApprover. A diferencia de "review", approverId es
+  // obligatorio y no vacío: reasignar SIN indicar a quién no tiene sentido (para desasignar, ver "review").
+  z.object({ action: z.literal("reassign_approver"), approverId: z.string().uuid() }).strict(),
 ]);
 
 // Extiende la ruta existente app/api/orders/[id]/status/route.ts (ya auditada y probada) con el eje

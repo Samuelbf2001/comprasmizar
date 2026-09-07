@@ -17,13 +17,25 @@
 
 -- ---------------------------------------------------------------------------
 -- 1) gastos.fecha_orden: nace = fecha (el significado que `fecha` tenía HASTA esta migración).
---    `default current_date`: el servicio (ProcurementService) SIEMPRE la pasa explícita — el default
---    es solo la red de seguridad para un insert de bajo nivel que no la mencione (p. ej.
+--    TRAMPA (QA Postgres real, bloqueante): en Postgres >= 11, `ADD COLUMN ... DEFAULT <algo>` NO deja
+--    la columna en NULL para las filas existentes — las rellena TODAS con el default de inmediato
+--    (metadata-only backfill). Si esta columna naciera con `default current_date` puesto desde el
+--    ADD COLUMN, el UPDATE de backfill de abajo (`where fecha_orden is null`) nunca encontraría una
+--    sola fila que tocar: todo gasto histórico quedaría con `fecha_orden` = la fecha en que corrió
+--    ESTA migración, no la fecha real del gasto — y como el backfill de más abajo pone `fecha = NULL`
+--    para lo no pagado, esa fecha original se pierde SIN POSIBILIDAD de recuperarla después. Por eso
+--    el orden aquí no es cosmético: (a) añadir la columna SIN default, (b) backfillear desde `fecha`
+--    mientras esa columna sigue NULL de verdad, y SOLO ENTONCES (c) ponerle default y NOT NULL. No
+--    "simplificar" esto de vuelta a un único ADD COLUMN con DEFAULT + NOT NULL: es exactamente el bug
+--    que este comentario documenta. `default current_date` en el paso (c): el servicio
+--    (ProcurementService) SIEMPRE pasa `fecha_orden` explícita — el default es solo la red de
+--    seguridad para un insert de bajo nivel que no la mencione (p. ej.
 --    supabase/tests/schema_verification.sql, arnés existente que esta tarea tiene prohibido tocar y
 --    que inserta en `gastos` sin `fecha_orden`); sin él, esa fila NOT NULL rompería ese arnés.
 -- ---------------------------------------------------------------------------
-alter table public.gastos add column if not exists fecha_orden date default current_date;
+alter table public.gastos add column if not exists fecha_orden date;
 update public.gastos set fecha_orden = fecha where fecha_orden is null;
+alter table public.gastos alter column fecha_orden set default current_date;
 alter table public.gastos alter column fecha_orden set not null;
 
 -- ---------------------------------------------------------------------------
@@ -35,19 +47,29 @@ alter table public.gastos alter column fecha_orden set not null;
 -- ---------------------------------------------------------------------------
 alter table public.gastos alter column fecha drop not null;
 
--- Backfill de `origen = 'requisicion'`: fecha de pago (hora Colombia) si la orden que generó el gasto
--- ya está pagada; NULL si no. `at time zone 'America/Bogota'` sobre un timestamptz da la hora de pared
--- en Bogotá (UTC-5 fijo, sin horario de verano) — mismo criterio que `colombiaDateParts()`
--- (lib/services/procurement-service.ts), aquí en SQL porque el backfill corre una sola vez en la base.
-update public.gastos g
-   set fecha = (o.pagada_at at time zone 'America/Bogota')::date
-  from public.ordenes o
- where g.origen = 'requisicion' and g.referencia_id = o.id and o.estado_administrativo = 'pagada';
-
+-- Backfill de `origen = 'requisicion'`: en NULL por defecto (línea de abajo, cubre tanto "orden no
+-- pagada" como "referencia_id huérfana" — un gasto de requisición cuyo `referencia_id` no casa con
+-- ninguna fila de `ordenes`; QA Postgres real: la semántica vieja lo dejaba con `fecha` puesta porque
+-- nunca se tocaba, pero sin una orden real que lo respalde lo razonable es tratarlo como no pagado,
+-- igual que cualquier otro compromiso sin pagar), y solo se rellena con la fecha real de pago para las
+-- órdenes efectivamente `pagada`.
 update public.gastos g
    set fecha = null
+ where g.origen = 'requisicion'
+   and not exists (
+     select 1 from public.ordenes o where o.id = g.referencia_id and o.estado_administrativo = 'pagada'
+   );
+
+-- `at time zone 'America/Bogota'` sobre un timestamptz da la hora de pared en Bogotá (UTC-5 fijo, sin
+-- horario de verano) — mismo criterio que `colombiaDateParts()` (lib/services/procurement-service.ts),
+-- aquí en SQL porque el backfill corre una sola vez en la base. QA Postgres real: `pagada_at` es
+-- nullable a propósito (el esquema no ata `estado_administrativo = 'pagada'` a que `pagada_at` esté
+-- puesto, ver 202609010001 ~línea 163) — una orden pagada con `pagada_at` NULL no debe perder la
+-- fecha del gasto por eso; cae de vuelta a `fecha_orden` (su fecha de nacimiento) en vez de a NULL.
+update public.gastos g
+   set fecha = coalesce((o.pagada_at at time zone 'America/Bogota')::date, g.fecha_orden)
   from public.ordenes o
- where g.origen = 'requisicion' and g.referencia_id = o.id and o.estado_administrativo <> 'pagada';
+ where g.origen = 'requisicion' and g.referencia_id = o.id and o.estado_administrativo = 'pagada';
 
 -- `origen = 'caja_menor'` NO se toca: ya quedó en su valor correcto (= fecha_orden, backfilleada en el
 -- paso 1) porque la caja menor se paga en el acto.
