@@ -62,10 +62,25 @@ pg_dump --format=custom --no-owner --no-acl --schema=public --schema=auth -f miz
 Los archivos de Storage hay que bajarlos aparte — `pg_dump` no los incluye. Descarga los buckets
 `requisicion-adjuntos` y `proveedor-documentos-privados` desde el panel o con la CLI de Supabase.
 
-**Si está eliminado:** los datos no se recuperan. La plataforma arranca vacía: se aplican migraciones
-y `supabase/seed.sql`, se recargan los maestros con `scripts/import-master-data.ts` y se crean los
-usuarios de nuevo con contraseñas temporales. Es trabajo, pero con 17 obras y <30 usuarios es un día,
-no un proyecto.
+**Si está eliminado:** los datos no se recuperan y la plataforma arranca vacía. **Este es el camino
+elegido el 10-sep-2026.** Se aplican bootstrap y migraciones, y luego `ops/datos-demo.sh`:
+
+```bash
+ops/datos-demo.sh completo   # maestros + movimiento de demostración, para poder mostrarla
+ops/datos-demo.sh maestros   # solo los maestros, para operar de verdad
+```
+
+Los maestros reales (17 obras, proveedores, catálogo de ítems) se recargan después con
+`scripts/import-master-data.ts` desde los Excel del cliente, y los usuarios se crean con contraseña
+temporal vía `POST /api/usuarios/:id/clave`. Con 17 obras y menos de 30 usuarios es un día de
+trabajo, no un proyecto.
+
+> **Antes de operar de verdad, recrea la base.** Los datos de demostración no se pueden deshacer
+> del todo: `auditoria` es inmutable por diseño (un trigger rechaza UPDATE y DELETE), así que la
+> actividad inventada deja rastro permanente en el registro contable, y los consecutivos
+> `REQ-2026-0001` en adelante quedan consumidos. Mientras no haya datos reales, recrear es barato:
+> `docker compose down && docker volume rm <proyecto>_db_data && docker compose up -d db`, luego
+> `ops/apply-migrations.sh` y `ops/datos-demo.sh maestros`.
 
 ## Paso 2 — Levantar el Postgres propio
 

@@ -342,13 +342,22 @@ function removeFromSessionStore(
   }
 }
 
+// Solo la caché en memoria. DELIBERADAMENTE no mira sessionStorage: esta función alimenta el
+// estado inicial de ConnectedScreen, que se calcula también en el servidor (SSR). Si aquí se
+// leyera el respaldo persistido, el servidor pintaría el esqueleto (sin `window`) y el cliente, en
+// su primer render, el contenido con la barra de revalidación — React lo reporta como "Hydration
+// failed" y tira el árbol del servidor entero, que es justo lo que la fase de rendimiento quería
+// aprovechar. El respaldo se restaura después de montar, con `getPersistedRoute` (abajo).
 function getCachedRoute(pathname: string) {
-  const inMemory = routeCache.get(pathname);
-  if (inMemory) return inMemory;
-  // Respaldo de sessionStorage: solo cuando el Map en memoria está vacío del todo (primera
-  // lectura de la sesión — recarga de página o pestaña nueva) y la entrada tiene menos de 5
-  // minutos. Si el Map ya tiene algo, una ruta ausente ahí es un "no cacheada todavía" real, no
-  // un cold start: no tiene sentido resucitar sessionStorage en ese caso.
+  return routeCache.get(pathname);
+}
+
+// Respaldo de sessionStorage: solo cuando el Map en memoria está vacío del todo (primera lectura
+// de la sesión — recarga de página o pestaña nueva) y la entrada tiene menos de 5 minutos. Si el
+// Map ya tiene algo, una ruta ausente ahí es un "no cacheada todavía" real, no un cold start: no
+// tiene sentido resucitar sessionStorage en ese caso. Solo debe llamarse desde un efecto de
+// cliente (nunca durante el render): ver la nota de hidratación en `getCachedRoute`.
+export function getPersistedRoute(pathname: string): { kind: RouteKind; data: unknown } | undefined {
   if (routeCache.size > 0) return undefined;
   try {
     const entry = readSessionStore()[pathname];

@@ -48,16 +48,28 @@ describe("aprobacion.flow.json — estructura", () => {
     for (const screen of flow.screens) expect(screen.id).toMatch(/^[A-Z_]+$/);
   });
 
-  it("ningún label supera los 20 caracteres (límite duro de Meta)", () => {
+  // Límites verificados en la tabla de componentes de Meta (2026-09-10): el label de
+  // TextInput/TextArea/Dropdown admite 20 caracteres, el de CheckboxGroup/RadioButtonsGroup 30.
+  // Se comprueba el tope REAL de cada tipo y no el más estricto para todos, para no rechazar
+  // mañana un label perfectamente válido de 25 en un CheckboxGroup.
+  const LABEL_LIMITS: Record<string, number> = { TextInput: 20, TextArea: 20, Dropdown: 20, DatePicker: 20, PhotoPicker: 20, CheckboxGroup: 30, RadioButtonsGroup: 30 };
+  it("ningún label supera el límite de Meta para su tipo de componente", () => {
     const largos: string[] = [];
     for (const screen of flow.screens) {
       for (const component of screen.layout.children) {
-        if (["TextInput", "TextArea", "Dropdown", "DatePicker", "PhotoPicker", "CheckboxGroup", "RadioButtonsGroup"].includes(component.type) && component.label && component.label.length > 20) {
-          largos.push(`${screen.id}/${component.name}: "${component.label}" (${component.label.length})`);
+        const limit = LABEL_LIMITS[component.type];
+        if (limit && component.label && component.label.length > limit) {
+          largos.push(`${screen.id}/${component.name}: "${component.label}" (${component.label.length} > ${limit})`);
         }
       }
     }
-    expect(largos, `labels que superan 20: ${largos.join(", ")}`).toEqual([]);
+    expect(largos, `labels fuera de límite: ${largos.join(", ")}`).toEqual([]);
+  });
+
+  it("no ofrece más ítems de los que Meta admite en un CheckboxGroup (20)", () => {
+    // El Flow no fija el número (los ítems son dinámicos); quien lo garantiza es el emisor. Esta
+    // prueba ancla la constante al límite documentado para que nadie la suba sin darse cuenta.
+    expect(MAX_APPROVAL_ITEMS).toBeLessThanOrEqual(20);
   });
 
   it("REVISION recibe los ítems por data dinámica y los trae todos preseleccionados", () => {
@@ -180,6 +192,20 @@ describe("emisor del Flow de aprobación", () => {
       expect(body.to).toBe("573001112233");
       // El token del mensaje enviado es exactamente el que el receptor validará.
       expect(validateApprovalFlowToken(body.interactive.action.parameters.flow_token, "573001112233", REQ_A, SECRET, NOW)).toEqual({ ok: true });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("distingue la ventana de 24 h cerrada (422) de una avería, para poder caer a la plantilla", async () => {
+    vi.stubEnv("KAPSO_API_KEY", "k"); vi.stubEnv("WHATSAPP_APPROVAL_FLOW_ID", "FID");
+    vi.stubEnv("KAPSO_PHONE_NUMBER_ID", "PID"); vi.stubEnv("KAPSO_WEBHOOK_SECRET", SECRET);
+    try {
+      const source = { loadApprovalContext: async () => context };
+      // Respuesta literal del proxy de Kapso cuando la persona no ha escrito en 24 h.
+      const cerrada = vi.fn(async () => new Response(JSON.stringify({ error: "Cannot send non-template messages outside the 24-hour window." }), { status: 422 }));
+      await expect(sendApprovalFlow(REQ_A, { source, fetchImpl: cerrada as unknown as typeof fetch })).rejects.toThrow("APPROVAL_FLOW_SESSION_CLOSED");
+      // Un fallo de verdad conserva su código con el status, para que la cola lo reintente.
+      const rota = vi.fn(async () => new Response("boom", { status: 503 }));
+      await expect(sendApprovalFlow(REQ_A, { source, fetchImpl: rota as unknown as typeof fetch })).rejects.toThrow("APPROVAL_FLOW_SEND_FAILED_503");
     } finally { vi.unstubAllEnvs(); }
   });
 

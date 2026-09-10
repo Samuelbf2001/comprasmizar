@@ -374,15 +374,25 @@ Flow de captura llena sus dropdowns.
 
 Solo se muestran las líneas **no declinadas**: lo que el revisor ya descartó no reaparece.
 
-### Límites de la pantalla: números propios, no citados de Meta
+### Límites de la pantalla (verificados en la documentación de Meta, 2026-09-10)
 
-`MAX_APPROVAL_ITEMS = 20` (y los recortes de 30/80 caracteres en título y descripción de
-cada opción) son **topes conservadores decididos aquí**, no cifras verificadas de la
-documentación de Meta: el único límite de opciones comprobado en este repo es el de
-`Dropdown` (200/100, citado en `flow-sender.ts`) y no hay uno equivalente confirmado para
-`CheckboxGroup`. Una requisición con más ítems **no se aprueba por WhatsApp**: el
-despachador cae al aviso de plantilla de siempre y esa persona entra por la web. Si la
-validación de Meta al publicar resulta más laxa, subirlos es seguro; al revés no.
+Tabla de límites de `CheckboxGroup` en `whatsapp/flows/reference/components`:
+
+| Propiedad | Límite de Meta | Lo que usamos |
+|---|---|---|
+| Máx. opciones | **20** | `MAX_APPROVAL_ITEMS = 20` (el tope real, no una precaución) |
+| `title` de la opción | 30 | 30 |
+| `description` de la opción | 300 | 80, por legibilidad en teléfono |
+| `label` del componente | 30 | 15 (`Ítems a aprobar`) |
+
+Ojo con el label: **30** es el tope de `CheckboxGroup`/`RadioButtonsGroup`; los 20 caracteres
+que documenta la sección del Flow de captura aplican a `TextInput`/`TextArea`/`Dropdown`.
+
+Las 20 opciones son un techo de Meta, así que una requisición con más ítems vigentes **no se
+puede aprobar por WhatsApp** por más que se quiera: el despachador cae al aviso de plantilla
+y esa persona entra por la web. Otros límites relevantes del Flow JSON: el archivo no puede
+pasar de **10 MB** y el modelo de rutas admite hasta **10 ramas** (`reference/flowjson`);
+este Flow usa 2 pantallas y una sola rama, así que sobra margen.
 
 ## Contrato de `flow_token` — distinto al del Flow de captura
 
@@ -439,6 +449,35 @@ justamente porque no es ahí donde vive la autorización.
 | Reenvío manual | `POST /api/internal/send-approval-flow` |
 | Pruebas | `../../tests/unit/approval-flow.test.ts` |
 
+## La ventana de 24 h manda sobre todo esto (verificado en vivo, 2026-09-10)
+
+Un Flow es un mensaje **interactivo**, no una plantilla, y WhatsApp solo admite mensajes
+interactivos dentro de la ventana de servicio de 24 h que abre la propia persona al
+escribirle al negocio. Fuera de esa ventana el proxy responde:
+
+```
+422 {"error":"Cannot send non-template messages outside the 24-hour window.",
+     "next_steps":"Send a WhatsApp template message to reopen the session."}
+```
+
+**Esto no es un caso raro: es el caso normal.** Un aprobador rara vez le ha escrito al
+número de Mizar el mismo día en que le toca aprobar algo. Consecuencias de diseño, ya
+implementadas:
+
+- El emisor distingue ese 422 con su propio código (`APPROVAL_FLOW_SESSION_CLOSED`), no lo
+  mezcla con un fallo de red.
+- El despachador lo trata como "este envío no puede ir como Flow" y **cae a la plantilla de
+  texto**, que es exactamente el remedio que indica Meta: la plantilla llega igual, avisa a
+  la persona y reabre la sesión. No gasta reintentos ni marca la notificación como fallida.
+- Consecuencia práctica: **la primera vez el aprobador recibe la plantilla**, no el Flow. Si
+  responde cualquier cosa, la sesión queda abierta y a partir de ahí sí recibe el Flow.
+
+Para que el Flow sea el canal habitual y no la excepción hace falta una **plantilla de
+utilidad aprobada por Meta que contenga el botón del Flow** (una plantilla puede llevar un
+botón de Flow y sí puede enviarse fuera de la ventana). Eso está en los pendientes de
+`docs/ESTADO-Y-PENDIENTES.md` (§3.3, "Plantillas de mensaje") y no se ha hecho: hoy el
+código envía el Flow como mensaje interactivo suelto.
+
 ## Cómo se dispara
 
 `sendForApproval` ya encolaba una notificación `pendiente_aprobador` al aprobador por
@@ -473,16 +512,22 @@ Flow de captura, y nunca devuelven 5xx.
 
 ## Pendiente antes de que este canal funcione en real
 
-1. **Publicar/crear el borrador en Meta**: `npx tsx scripts/publish-whatsapp-flow.ts aprobacion`
-   y revisar `validation_errors`. **Esto no se ha corrido**: requiere credenciales reales
-   y crea un Flow en la WABA de Mizar, que es una decisión del operador, no del código.
-   Es también donde se comprueba de verdad que `CheckboxGroup` con `init-value` dinámico y
-   un arreglo en el payload del `complete` son válidos para Meta — la prueba unitaria
-   valida la estructura local, no las reglas de Meta.
-2. **Cargar `WHATSAPP_APPROVAL_FLOW_ID`** (y `WHATSAPP_APPROVAL_FLOW_MODE=draft` mientras
-   sea borrador).
+1. ~~Crear el borrador en Meta~~ **HECHO (2026-09-10)**: `flow_id 2249539985776722`,
+   estado `DRAFT`, `validation_errors: []`. Meta aceptó el JSON sin objeciones, lo que
+   confirma que `CheckboxGroup` con `data-source`/`init-value` dinámicos y un arreglo en el
+   payload del `complete` son válidos. Se recrea/actualiza con
+   `npx tsx scripts/publish-whatsapp-flow.ts aprobacion`.
+2. **Cargar `WHATSAPP_APPROVAL_FLOW_ID=2249539985776722`** en producción (en `.env.local` ya
+   está), con `WHATSAPP_APPROVAL_FLOW_MODE=draft` mientras el Flow siga siendo borrador.
 3. **Cargar el teléfono de cada aprobador** en `usuarios.telefono`. Sin él, el Flow no se
    envía y la notificación cae a la plantilla de texto.
-4. **Recorrido real de punta a punta**: no se pudo probar aquí. Kapso no alcanza
-   `localhost`, así que la vuelta completa (envío → respuesta → requisición aprobada)
-   solo se puede verificar con el sitio desplegado y el webhook conectado.
+4. **Plantilla de utilidad con botón de Flow**, si se quiere que el aprobador reciba el Flow
+   de entrada y no solo cuando ya tiene la sesión abierta — ver la sección de la ventana de
+   24 h arriba.
+5. **Publicar el Flow** cuando esté validado en uso real. Es irreversible (un Flow publicado
+   no se edita ni se borra, solo se "deprecia"), así que es decisión de Mizar. Comando en la
+   sección "El script NUNCA publica" de este mismo documento.
+6. **Recorrido real de punta a punta**: falta la vuelta de regreso. El envío ya se probó
+   contra la API real; la respuesta (webhook → requisición aprobada) no se puede probar
+   desde local porque Kapso no alcanza `localhost`, así que exige el sitio desplegado con el
+   webhook conectado.

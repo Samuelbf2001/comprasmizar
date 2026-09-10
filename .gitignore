@@ -32,3 +32,6 @@ interno/
 # Respaldos manuales de .env.local (el patrón .env.*.local no los cubre)
 .env.local.*
 .env.*.respaldo*
+
+# Guiones de trabajo temporales (prefijo _tmp-)
+scripts/_tmp-*

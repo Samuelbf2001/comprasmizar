@@ -7,12 +7,18 @@ export const runtime = "nodejs";
 const noStore = { "Cache-Control": "no-store" };
 
 /**
- * Errores del emisor del Flow de aprobación que significan "esta requisición concreta no se puede
- * decidir por WhatsApp", no "el canal está roto": la persona igual tiene que enterarse, así que se
- * cae al aviso de plantilla de siempre y ella entra por la web. Cualquier otro error (red, 5xx de
- * Kapso) se propaga para que la cola lo reintente con su backoff normal.
+ * Errores del emisor del Flow de aprobación que significan "este envío concreto no puede ir como
+ * Flow", no "el canal está roto": la persona igual tiene que enterarse, así que se cae al aviso de
+ * plantilla de siempre y ella entra por la web. Cualquier otro error (red, 5xx de Kapso) se
+ * propaga para que la cola lo reintente con su backoff normal.
+ *
+ * `APPROVAL_FLOW_SESSION_CLOSED` es el caso más frecuente en producción, no una rareza: WhatsApp
+ * solo admite mensajes interactivos dentro de la ventana de 24 h que abre la persona al escribirle
+ * al negocio, y un aprobador normalmente NO ha escrito ese día. Caer a la plantilla es además el
+ * remedio que indica Meta en el propio error ("Send a WhatsApp template message to reopen the
+ * session"): la plantilla llega, reabre la sesión, y a partir de ahí el Flow sí entra.
  */
-const FLOW_UNAVAILABLE = new Set(["APPROVAL_FLOW_NO_CONTEXT", "APPROVAL_FLOW_TOO_MANY_ITEMS", "APPROVAL_FLOW_NOT_CONFIGURED"]);
+const FLOW_UNAVAILABLE = new Set(["APPROVAL_FLOW_NO_CONTEXT", "APPROVAL_FLOW_TOO_MANY_ITEMS", "APPROVAL_FLOW_NOT_CONFIGURED", "APPROVAL_FLOW_SESSION_CLOSED"]);
 function isFlowUnavailable(error: unknown): boolean { return error instanceof Error && FLOW_UNAVAILABLE.has(error.message); }
 
 /**

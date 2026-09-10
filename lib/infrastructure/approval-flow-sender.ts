@@ -19,21 +19,20 @@ import { sharedPostgres } from "./postgres-repositories";
  */
 
 /**
- * Tope de ítems que el Flow muestra en una sola aprobación. **Número propio y conservador, NO citado
- * de la documentación de Meta**: el único límite de opciones verificado en este repo es el de
- * `Dropdown` (200/100, ver MAX_DROPDOWN_OPTIONS en flow-sender.ts, con su cita), y no hay una cifra
- * equivalente comprobada para `CheckboxGroup`. Se elige 20 porque además es el punto en que la
- * pantalla deja de ser usable en un teléfono. Una requisición con más ítems no se aprueba por
- * WhatsApp: el llamador debe caer al aviso de plantilla para que esa persona la apruebe en la web
- * (ver `sendApprovalNotification` en app/api/internal/dispatch-notifications/route.ts).
+ * Tope DURO de Meta, no una elección nuestra: `CheckboxGroup` admite un máximo de **20 opciones**
+ * ("Max # of options: 20", tabla de límites de CheckboxGroup en
+ * `whatsapp/flows/reference/components`, verificado 2026-09-10). Una requisición con más ítems
+ * vigentes NO se puede aprobar por WhatsApp por más que se quiera: el llamador cae al aviso de
+ * plantilla para que esa persona la apruebe en la web (ver el cableado en
+ * app/api/internal/dispatch-notifications/route.ts).
  */
 export const MAX_APPROVAL_ITEMS = 20;
 /**
- * Recortes de presentación, también conservadores y propios: se reutiliza como cota el único límite
- * de opciones documentado en el repo (30 caracteres para el `title` de una opción de `Dropdown`,
- * citado en flow-sender.ts) porque no está verificado que `CheckboxGroup` tenga el mismo tope. Si la
- * validación de Meta al publicar el borrador (ver README) resulta más laxa, subirlos es seguro; al
- * revés no.
+ * `title` de una opción: 30 caracteres es el tope documentado de Meta para CheckboxGroup (misma
+ * tabla). `description` admite hasta 300 según esa tabla; 80 es una decisión propia de legibilidad
+ * —la descripción es "400 bulto · $18.088.000", que cabe de sobra— para que la lista no se
+ * convierta en un muro de texto en un teléfono. Subirlo hasta 300 es seguro; bajar el título de 30
+ * no haría falta.
  */
 const MAX_OPTION_TITLE_LENGTH = 30;
 const MAX_OPTION_DESCRIPTION_LENGTH = 80;
@@ -336,6 +335,14 @@ export async function sendApprovalFlow(requisitionId: string, deps: ApprovalFlow
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+    // 422 = "Cannot send non-template messages outside the 24-hour window. Send a WhatsApp
+    // template message to reopen the session." (respuesta literal del proxy de Kapso, verificada en
+    // vivo el 2026-09-10). Un Flow es un mensaje INTERACTIVO, no una plantilla: WhatsApp solo lo
+    // admite si esa persona le escribió al negocio en las últimas 24 h. Es la condición NORMAL de
+    // un aprobador que no ha usado el chat hoy, no una avería — por eso lleva código propio y no
+    // se mezcla con los fallos de red: el llamador debe caer a la plantilla, que es exactamente el
+    // remedio que indica Meta (reabre la sesión y avisa igual a la persona).
+    if (response.status === 422) throw new Error("APPROVAL_FLOW_SESSION_CLOSED");
     if (!response.ok) throw new Error(`APPROVAL_FLOW_SEND_FAILED_${response.status}`);
     const data = (await response.json().catch(() => null)) as { messages?: Array<{ id?: string }> } | null;
     const messageId = data?.messages?.[0]?.id;

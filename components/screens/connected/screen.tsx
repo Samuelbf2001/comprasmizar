@@ -34,7 +34,7 @@ import {
   type OrdersBundle,
   type RequisitionsBundle,
 } from "./shared";
-import { initialLoadState, loadRoute, routeKind, setCachedRoute } from "./data";
+import { getPersistedRoute, initialLoadState, loadRoute, routeKind, setCachedRoute } from "./data";
 
 const ConnectedDashboard = dynamic(() =>
   import("./dashboard").then((mod) => mod.ConnectedDashboard),
@@ -98,6 +98,21 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
     );
     setVersion((value) => value + 1);
   };
+  // H6 (respaldo en sessionStorage) sin romper la hidratación: el estado inicial de arriba solo
+  // mira la caché en memoria, que en el servidor y en el primer render del cliente vale lo mismo
+  // (vacía tras una recarga). Aquí, ya montados y solo en cliente, se adopta la entrada persistida
+  // si la ruta sigue en "loading": pinta el contenido guardado y deja que el efecto de abajo
+  // revalide en segundo plano, igual que con la caché en memoria.
+  useEffect(() => {
+    if (!kind) return;
+    const persisted = getPersistedRoute(pathname);
+    if (!persisted) return;
+    setRouteState((current) =>
+      current.pathname === pathname && current.load.state === "loading"
+        ? { pathname, load: { state: "ready", data: persisted.data, revalidating: true } }
+        : current,
+    );
+  }, [pathname, kind]);
   useEffect(() => {
     if (!kind) return;
     let active = true;

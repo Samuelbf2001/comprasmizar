@@ -17,7 +17,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectedScreen, clearRouteCache } from "../../components/screens/connected";
-import { invalidateCatalogs } from "../../components/screens/connected/data";
+import { initialLoadState, invalidateCatalogs } from "../../components/screens/connected/data";
 
 afterEach(() => {
   cleanup();
@@ -221,4 +221,38 @@ describe("RF-1105: cache en memoria por ruta", () => {
       expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(5),
     );
   }, 20_000);
+});
+
+// Fase 3 (H6): el respaldo en sessionStorage no puede participar en el render inicial. El
+// servidor no tiene sessionStorage y pinta el esqueleto; si el cliente pintara el contenido
+// persistido en su PRIMER render, React reportaría "Hydration failed" y descartaría el HTML del
+// servidor (reproducido en el navegador el 2026-09-10). El primer render del cliente debe ser
+// idéntico al del servidor y el respaldo se adopta en un efecto, ya montados.
+describe("H6: el respaldo en sessionStorage no rompe la hidratación", () => {
+  it("con una entrada persistida, el primer render sigue siendo el esqueleto y el contenido llega tras montar", async () => {
+    window.sessionStorage.setItem(
+      "mizar-route-cache:v1",
+      JSON.stringify({
+        "/": {
+          kind: "dashboard",
+          savedAt: Date.now(),
+          data: { metrics: { byStatus: { en_revision: 7 } }, catalogs: catalogsPayload },
+        },
+      }),
+    );
+    try {
+      vi.spyOn(globalThis, "fetch").mockImplementation(pendingForever);
+      // Lo mismo que calcula el servidor: sin nada en memoria, la ruta arranca en "loading".
+      expect(initialLoadState("/", "dashboard").state).toBe("loading");
+
+      render(<ConnectedScreen pathname="/" role="Revisor" go={vi.fn()} />);
+      // Ya montado, el efecto adopta el respaldo: contenido persistido + revalidación en curso.
+      await screen.findByText("7", {}, { timeout: 8_000 });
+      const container = screen.getByText("7").closest("[aria-busy]");
+      expect(container).toHaveAttribute("aria-busy", "true");
+      expect(screen.queryByTestId("dashboard-skeleton")).toBeNull();
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
 });
