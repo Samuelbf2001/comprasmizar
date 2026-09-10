@@ -1,11 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, sumApprovedLines, sumLines, type AuditEvent, type Expense, type ExpenseShare, type Order, type PettyCash, type Requisition } from "../../lib/domain";
+import { DomainError, calculateDashboard, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumApprovedLines, sumLines, type AuditEvent, type Expense, type ExpenseShare, type Order, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
 import { ProcurementService, type ServiceDependencies } from "../../lib/services";
+
+const ZERO_BY_STATUS: Record<RequisitionStatus, number> = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
 
 function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; ordersData: Order[]; expensesData: Expense[]; pettyData: PettyCash[]; proposedItems: Map<string, string>; notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }>; audits: AuditEvent[]; shares: ExpenseShare[]; visibleActors: string[]; transactionCalls: number; inactiveSuppliers: Set<string> } {
   const req = new Map<string, Requisition>(), ordersData: Order[] = [], expensesData: Expense[] = [], petty: PettyCash[] = [], audits: AuditEvent[] = [], shares: ExpenseShare[] = [], visibleActors: string[] = []; let seq = 0;
-  const requisitions = { get: async (id: string) => req.get(id) ? structuredClone(req.get(id)!) : null, save: async (r: Requisition) => void req.set(r.id, structuredClone(r)), list: async () => [...req.values()].map((value) => structuredClone(value)), listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`req:${actor.id}`); return [...req.values()].filter((r) => actor.id === "daniel" || r.approverId === actor.id).map((value) => structuredClone(value)); } };
-  const orders = { save: async (o: Order) => { const i = ordersData.findIndex((x) => x.id === o.id); if (i >= 0) ordersData[i] = o; else ordersData.push(o); }, list: async () => ordersData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return actor.id === "daniel" ? ordersData : ordersData.filter((o) => o.requisitionId.includes(actor.id)); }, listByRequisition: async (id: string) => ordersData.filter((o) => o.requisitionId === id), get: async (id: string) => ordersData.find((o) => o.id === id) ?? null };
+  // H3 (docs/plan-rendimiento.md): mismo criterio de visibilidad que listVisibleTo (arriba), reutilizado
+  // por los métodos nuevos del dashboard (dashboardByStatus/listVisibleHeaders) — un solo lugar donde
+  // ese criterio vive en este arnés, para que ambos no puedan divergir por accidente.
+  const visibleRequisitions = (actorId: string) => [...req.values()].filter((r) => actorId === "daniel" || r.approverId === actorId);
+  const visibleOrders = (actorId: string) => actorId === "daniel" ? ordersData : ordersData.filter((o) => o.requisitionId.includes(actorId));
+  // H3: enriquece la orden con workId/requisitionConsecutive, igual que el join a requisiciones del
+  // adaptador Postgres real (ver order(row) en postgres-repositories.ts) — generateOrders() en memoria
+  // nunca los puebla, así que sin esto el backfill de ProcurementService.dashboard() (orderWorkById)
+  // nunca tendría nada que ejercitar en este arnés.
+  const withRequisitionJoin = (o: Order): Order => { const owner = req.get(o.requisitionId); return { ...o, workId: owner?.workId, requisitionConsecutive: owner?.consecutive }; };
+  const requisitions = {
+    get: async (id: string) => req.get(id) ? structuredClone(req.get(id)!) : null, save: async (r: Requisition) => void req.set(r.id, structuredClone(r)), list: async () => [...req.values()].map((value) => structuredClone(value)),
+    listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`req:${actor.id}`); return visibleRequisitions(actor.id).map((value) => structuredClone(value)); },
+    listVisibleHeaders: async (actor: { id: string }, options: { status?: RequisitionStatus[]; orderBy?: "created_at" | "updated_at"; limit?: number } = {}) => {
+      visibleActors.push(`req:${actor.id}`);
+      let visible = visibleRequisitions(actor.id);
+      if (options.status?.length) visible = visible.filter((r) => options.status!.includes(r.status));
+      if (options.limit) visible = visible.slice(0, options.limit);
+      return visible.map((r) => structuredClone({ ...r, items: [] }));
+    },
+    dashboardByStatus: async (actor: { id: string }) => { visibleActors.push(`req:${actor.id}`); const byStatus = { ...ZERO_BY_STATUS }; for (const r of visibleRequisitions(actor.id)) byStatus[r.status]++; return byStatus; },
+  };
+  const orders = {
+    save: async (o: Order) => { const i = ordersData.findIndex((x) => x.id === o.id); if (i >= 0) ordersData[i] = o; else ordersData.push(o); }, list: async () => ordersData,
+    listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id); },
+    listByRequisition: async (id: string) => ordersData.filter((o) => o.requisitionId === id), get: async (id: string) => ordersData.find((o) => o.id === id) ?? null,
+    listAttentionCandidates: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id).filter((o) => o.status === "generada" || o.status === "no_cumplida" || (o.adminStatus === "pendiente" && o.status !== "no_necesario")).map(withRequisitionJoin); },
+    listRecentlyUpdated: async (actor: { id: string }, limit: number) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id).slice(0, limit).map(withRequisitionJoin); },
+    dashboardPendingCount: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id).filter((o) => o.status === "generada" || o.status === "no_cumplida").length; },
+  };
   // markPaid: mismo criterio que el adaptador Postgres real (markExpensePaid) — solo actualiza `date`
   // de un gasto `origen: "requisicion"` ya existente; `saveExpense`/`save` nunca sirve para esto.
   // GRAVE 3 (QA reasignación): devuelve el número de filas afectadas, igual que markExpensePaid real
@@ -13,7 +43,29 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // para rechazar "pagada" en vez de dejarla pasar en silencio.
   // GRAVE 2 (QA reasignación): deleteByReference borra el gasto Y su reparto, igual que el adaptador
   // Postgres real (gastos_reparto primero, por la FK on delete restrict).
-  const expenses = { get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e), markPaid: async (referenceId: string, date: string) => { const entry = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === referenceId); if (!entry) return 0; entry.date = date; entry.period = date.slice(0, 7); return 1; }, deleteByReference: async (origin: Expense["origin"], referenceId: string) => { const toDelete = expensesData.filter((e) => e.origin === origin && e.referenceId === referenceId); for (const entry of toDelete) { for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === entry.id) shares.splice(index, 1); const i = expensesData.indexOf(entry); if (i >= 0) expensesData.splice(i, 1); } }, saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); }, list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return actor.id === "daniel" ? expensesData : []; }, listByReference: async (id: string) => expensesData.filter((e) => e.referenceId === id || ordersData.some((o) => o.id === e.referenceId && o.requisitionId === id)) };
+  const visibleExpenses = (actorId: string) => actorId === "daniel" ? expensesData : [];
+  const expenses = {
+    get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e),
+    markPaid: async (referenceId: string, date: string) => { const entry = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === referenceId); if (!entry) return 0; entry.date = date; entry.period = date.slice(0, 7); return 1; },
+    deleteByReference: async (origin: Expense["origin"], referenceId: string) => { const toDelete = expensesData.filter((e) => e.origin === origin && e.referenceId === referenceId); for (const entry of toDelete) { for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === entry.id) shares.splice(index, 1); const i = expensesData.indexOf(entry); if (i >= 0) expensesData.splice(i, 1); } },
+    saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); },
+    list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return visibleExpenses(actor.id); },
+    listByReference: async (id: string) => expensesData.filter((e) => e.referenceId === id || ordersData.some((o) => o.id === e.referenceId && o.requisitionId === id)),
+    // H3: reproduce EXACTAMENTE calculateDashboard (periodExpense/inProcessValue) y groupExpenseByWork/
+    // groupExpenseByTag/groupExpenseByPeriod (lib/domain/rules.ts, sin cambiar) sobre el mismo conjunto
+    // visible que listVisibleTo — mismas funciones de dominio que antes calculaba dashboard(), ahora
+    // sobre el resultado de este método en vez de sobre la colección completa.
+    dashboardAggregates: async (actor: { id: string }, period: string) => {
+      visibleActors.push(`expense:${actor.id}`);
+      const visible = visibleExpenses(actor.id);
+      return {
+        periodExpense: visible.filter((e) => e.period === period).reduce((sum, e) => sum + e.total, 0),
+        inProcessValue: visible.filter((e) => e.date === undefined).reduce((sum, e) => sum + e.total, 0),
+        expenseByWork: groupExpenseByWork(visible), expenseByTag: groupExpenseByTag(visible), expenseByPeriod: groupExpenseByPeriod(visible),
+      };
+    },
+    listRecentlyUpdated: async (actor: { id: string }, limit: number) => { visibleActors.push(`expense:${actor.id}`); return [...visibleExpenses(actor.id)].sort((a, b) => (b.date ?? b.orderDate).localeCompare(a.date ?? a.orderDate)).slice(0, limit); },
+  };
   const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
   // Reunión 2026-09: caja menor nace pagada — orderDate y date coinciden siempre con la fecha del movimiento.
   const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty };
@@ -451,6 +503,13 @@ describe("ProcurementService", () => {
       expect.objectContaining({ kind: "orden", id: approvedOrders[1].id, status: "generada", action: "Confirmar cumplimiento" }),
     ]));
     expect(dashboard.attentionQueue?.some((item) => item.id === forApproval.id)).toBe(false);
+    // H3: workId de una orden en la cola de atención se resuelve por join a su requisición dueña — esa
+    // requisición está SIEMPRE en estado "aprobada" (terminal), fuera de los 4 estados acotados que
+    // listVisibleHeaders trae para la cola de atención, así que buildAttentionQueue (sin cambiar) no
+    // podría resolverlo por sí sola; el backfill de dashboard() (orderWorkById) lo completa desde la
+    // propia fila de la orden. Sin ese backfill, este workId quedaría `undefined` — una regresión real.
+    const orderQueueItem = dashboard.attentionQueue?.find((item) => item.id === approvedOrders[0].id);
+    expect(orderQueueItem?.workId).toBe("work");
     // El doble de prueba nunca puebla updatedAt (solo lo hace el adaptador Postgres real): la actividad
     // reciente solo puede traer los gastos, que sí llevan fecha en el dominio.
     expect(dashboard.recentActivity).toHaveLength(2);
@@ -465,6 +524,38 @@ describe("ProcurementService", () => {
     // groupExpenseByPeriod las excluye a propósito, no inventa un bucket "sin periodo".
     expect(dashboard.expenseByPeriod).toEqual([]);
     expect(dashboard.inProcessValue).toBe(476);
+  });
+
+  // H3 (docs/plan-rendimiento.md, Fase 3): dashboard() ya NO llama a calculateDashboard/groupExpenseBy*
+  // (se reemplazaron por agregados SQL, ver dashboardByStatus/dashboardPendingCount/dashboardAggregates
+  // en postgres-repositories.ts) — esta prueba es la garantía de que el resultado agregado sigue siendo
+  // EXACTAMENTE el mismo que esas funciones de dominio (sin cambiar) producirían sobre el mismo
+  // fixture, calculado aquí de forma independiente sobre las mismas colecciones.
+  it("H3: dashboard() agregado da el mismo resultado que calculateDashboard/groupExpenseByWork/Tag/Period sobre el mismo fixture", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const baseReq = (id: string, status: Requisition["status"]): Requisition => ({ id, consecutive: `REQ-2026-${id}`, type: "compra", societyId: "soc", workId: "work", channel: "web", status, items: [] });
+    deps.req.set("r1", baseReq("r1", "en_revision"));
+    deps.req.set("r2", baseReq("r2", "en_aprobacion"));
+    deps.req.set("r3", baseReq("r3", "aprobada"));
+    const order1: Order = { id: "o1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "r3", itemIds: [], status: "generada", adminStatus: "pendiente" };
+    deps.ordersData.push(order1);
+    // e1: pagada en agosto (cuenta en periodExpense/expenseByWork/expenseByTag/expenseByPeriod).
+    // e2: sin pagar (cuenta solo en inProcessValue — "gasto" = pagado, ver GRAVE 3 en rules.ts).
+    const paidExpense: Expense = { id: "e1", workId: "work", origin: "requisicion", referenceId: "o1", tagId: "tag-a", orderDate: "2026-08-01", date: "2026-08-05", base: 1000, iva: 190, total: 1190, period: "2026-08" };
+    const unpaidExpense: Expense = { id: "e2", workId: "work", origin: "requisicion", referenceId: "o1", tagId: "tag-b", orderDate: "2026-08-02", base: 500, iva: 95, total: 595 };
+    deps.expensesData.push(paidExpense, unpaidExpense);
+
+    const dashboard = await service.dashboard("2026-08", reviewer); // "daniel": visible a todo en este fake
+
+    const fixtureExpenses = [paidExpense, unpaidExpense], fixtureOrders = [order1], fixtureStatuses = [...deps.req.values()].map((r) => r.status);
+    const expected = calculateDashboard(fixtureExpenses, fixtureOrders, fixtureStatuses, "2026-08");
+    expect(dashboard.byStatus).toEqual(expected.byStatus);
+    expect(dashboard.periodExpense).toBe(expected.periodExpense);
+    expect(dashboard.inProcessValue).toBe(expected.inProcessValue);
+    expect(dashboard.pendingOrders).toBe(expected.pendingOrders);
+    expect(dashboard.expenseByWork).toEqual(groupExpenseByWork(fixtureExpenses));
+    expect(dashboard.expenseByTag).toEqual(groupExpenseByTag(fixtureExpenses));
+    expect(dashboard.expenseByPeriod).toEqual(groupExpenseByPeriod(fixtureExpenses));
   });
 
   it("edita la cabecera de la requisición solo por revisor y solo mientras es editable", async () => {
@@ -599,5 +690,51 @@ describe("ProcurementService", () => {
     deps.expensesData.splice(index, 1); // simula el estado inconsistente: el gasto ya no existe
     await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
     await expect(service.updateOrderAdminStatus(orderA.id, "pagada", reviewer)).rejects.toMatchObject({ code: "ORDER_EXPENSE_MISSING" });
+  });
+
+  // H2 (docs/plan-rendimiento.md): getRequisition() ya no carga TODAS las requisiciones visibles para
+  // hacer un .find() (O(n) por detalle) — comprueba visibilidad POR FILA (assertVisibleRequisition),
+  // replicando exactamente la regla de listVisibleRequisitions en el adaptador Postgres real
+  // (isElevated + fallback aprobador/solicitante, ver postgres-repositories.ts).
+  it("H2: getRequisition — elevado ve cualquiera, aprobador solo la suya, solicitante solo la suya, sin permiso es FORBIDDEN", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service); // aprobador asignado: "nelson"
+    await expect(service.getRequisition(r.id, reviewer)).resolves.toMatchObject({ id: r.id }); // revisor: elevado
+    await expect(service.getRequisition(r.id, approver)).resolves.toMatchObject({ id: r.id }); // nelson es el aprobador asignado
+    await expect(service.getRequisition(r.id, otherApprover)).rejects.toMatchObject({ code: "NOT_FOUND" }); // sonia no es la asignada — NOT_FOUND, no FORBIDDEN (no revela existencia)
+    await expect(service.getRequisition(r.id, requester)).resolves.toMatchObject({ id: r.id }); // sol es quien la creó
+    await expect(service.getRequisition(r.id, { actor: { id: "otro-sol", roles: ["solicitante"] } })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(service.getRequisition(r.id, { actor: { id: "mizar", roles: ["admin_mizar"] } })).rejects.toMatchObject({ code: "FORBIDDEN" }); // admin_mizar no tiene ningún requisition:read*
+  });
+
+  // H2: endpoint compuesto del detalle — orders/expenses se degradan a [] sin el permiso correspondiente
+  // (un solicitante viendo su propia requisición no tumba el detalle completo por no poder leer órdenes),
+  // pero la requisición misma sigue exigiendo visibilidad (NOT_FOUND si no aplica).
+  it("H2: getRequisitionDetail agrupa requisición + órdenes + gastos + historial, degradando a [] sin permiso en vez de fallar", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    const orders = await service.generateOrders(r.id, reviewer);
+    const detail = await service.getRequisitionDetail(r.id, reviewer);
+    expect(detail.requisition.id).toBe(r.id);
+    expect(detail.orders.map((o) => o.id).sort()).toEqual(orders.map((o) => o.id).sort());
+    expect(detail.expenses.length).toBeGreaterThan(0);
+    expect(detail.history.map((e) => e.event)).toContain("creada");
+    const requesterDetail = await service.getRequisitionDetail(r.id, requester); // sol: sin order:read/expense:read
+    expect(requesterDetail).toMatchObject({ orders: [], expenses: [] });
+    expect(requesterDetail.requisition.id).toBe(r.id);
+    await expect(service.getRequisitionDetail(r.id, otherApprover)).rejects.toMatchObject({ code: "NOT_FOUND" }); // sonia: visible ni siquiera la requisición
+  });
+
+  // H2: respaldan `?requisitionId=`/`?referenceId=` en /api/orders y /api/expenses — permiso de
+  // lectura del recurso PRIMERO (FORBIDDEN sin gastar una consulta), visibilidad de la requisición
+  // dueña después (NOT_FOUND si no aplica, aun con el permiso).
+  it("H2: listOrdersByRequisition/listExpensesByReference filtran por requisición respetando permiso + visibilidad", async () => {
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
+    await service.approve(r.id, approver);
+    const orders = await service.generateOrders(r.id, reviewer);
+    expect((await service.listOrdersByRequisition(r.id, reviewer)).map((o) => o.id).sort()).toEqual(orders.map((o) => o.id).sort());
+    expect((await service.listExpensesByReference(r.id, reviewer)).length).toBeGreaterThan(0);
+    await expect(service.listOrdersByRequisition(r.id, requester)).rejects.toMatchObject({ code: "FORBIDDEN" }); // solicitante: sin order:read
+    await expect(service.listExpensesByReference(r.id, requester)).rejects.toMatchObject({ code: "FORBIDDEN" }); // sin expense:read
+    await expect(service.listOrdersByRequisition(r.id, otherApprover)).rejects.toMatchObject({ code: "NOT_FOUND" }); // sonia tiene order:read pero no está asignada a esta requisición
   });
 });

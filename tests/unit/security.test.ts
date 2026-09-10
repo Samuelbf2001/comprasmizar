@@ -14,9 +14,9 @@ import type { ServiceDependencies } from "../../lib/services";
 function fakeReportDeps(expenses: Expense[]): ServiceDependencies {
   const notUsed = (): never => { throw new Error("no debería usarse en esta prueba"); };
   return {
-    requisitions: { get: notUsed, save: notUsed, list: notUsed, listVisibleTo: notUsed },
-    orders: { save: notUsed, list: notUsed, listVisibleTo: notUsed, listByRequisition: notUsed, get: notUsed },
-    expenses: { get: notUsed, save: notUsed, saveShares: notUsed, list: notUsed, listVisibleTo: async () => expenses, listByReference: notUsed, markPaid: notUsed, deleteByReference: notUsed },
+    requisitions: { get: notUsed, save: notUsed, list: notUsed, listVisibleTo: notUsed, listVisibleHeaders: notUsed, dashboardByStatus: notUsed },
+    orders: { save: notUsed, list: notUsed, listVisibleTo: notUsed, listByRequisition: notUsed, get: notUsed, listAttentionCandidates: notUsed, listRecentlyUpdated: notUsed, dashboardPendingCount: notUsed },
+    expenses: { get: notUsed, save: notUsed, saveShares: notUsed, list: notUsed, listVisibleTo: async () => expenses, listByReference: notUsed, markPaid: notUsed, deleteByReference: notUsed, dashboardAggregates: notUsed, listRecentlyUpdated: notUsed },
     pettyCash: { save: notUsed, list: notUsed },
     audit: { append: async () => {}, list: async () => [] },
     consecutives: { take: notUsed },
@@ -84,7 +84,7 @@ describe("security boundaries", () => {
     expect(expensesReportFiltersSchema.safeParse({ period: "2026-8" }).success).toBe(false);
     expect(expensesReportFiltersSchema.parse({ period: "2026-08", societyId: "11111111-1111-4111-8111-111111111111", format: "pdf" })).toMatchObject({ format: "pdf", period: "2026-08" });
   });
-  it("separates core, public, Kapso and MCP runtime gates", () => { const core = { DATABASE_URL: "https://db.example.test", NEXT_PUBLIC_SUPABASE_URL: "https://supabase.example.test", NEXT_PUBLIC_SUPABASE_ANON_KEY: "a".repeat(20), SUPABASE_SERVICE_ROLE_KEY: "s".repeat(20) }; expect(isRuntimeConfigured(core)).toBe(true); expect(isPublicConfigured({ ...core, PUBLIC_FORM_CODE_PEPPER: "p".repeat(32) })).toBe(true); expect(isKapsoConfigured({ ...core, PUBLIC_FORM_CODE_PEPPER: "p".repeat(32) })).toBe(false); expect(isMcpConfigured({ ...core, PUBLIC_FORM_CODE_PEPPER: "p".repeat(32) })).toBe(false); expect(isKapsoConfigured({ ...core, KAPSO_WEBHOOK_SECRET: "k".repeat(32) })).toBe(true); expect(isMcpConfigured({ ...core, MCP_KEY_PEPPER: "m".repeat(32) })).toBe(true); });
+  it("separates core, public, Kapso and MCP runtime gates", () => { const core = { DATABASE_URL: "https://db.example.test", STORAGE_ROOT: "/var/lib/mizar/storage", STORAGE_SIGNING_SECRET: "t".repeat(32) }; expect(isRuntimeConfigured(core)).toBe(true); expect(isPublicConfigured({ ...core, PUBLIC_FORM_CODE_PEPPER: "p".repeat(32) })).toBe(true); expect(isKapsoConfigured({ ...core, PUBLIC_FORM_CODE_PEPPER: "p".repeat(32) })).toBe(false); expect(isMcpConfigured({ ...core, PUBLIC_FORM_CODE_PEPPER: "p".repeat(32) })).toBe(false); expect(isKapsoConfigured({ ...core, KAPSO_WEBHOOK_SECRET: "k".repeat(32) })).toBe(true); expect(isMcpConfigured({ ...core, MCP_KEY_PEPPER: "m".repeat(32) })).toBe(true); });
   it("caps public code attempts against one obra in aggregate, closing the multi-IP evasion of the per-IP limiter", () => {
     // publicWorkRateLimiter solo limita por ip:workId: un atacante que reparte sus intentos entre muchas IPs
     // recibe un cupo de 10/60s por cada IP nueva, sin techo agregado. Simulamos 5 IPs distintas agotando su

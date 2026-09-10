@@ -94,3 +94,11 @@ export const requisitionHeaderSchema = z.object({
   requiredDate: z.string().date().optional(),
   observations: z.string().trim().max(1024).nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "Debe cambiar al menos un campo");
+
+// H3 (docs/plan-rendimiento.md, Fase 3): valores válidos de `status` por entidad, para
+// `parseListQuery` (lib/http/api.ts) — `RequisitionStatus`/`OrderStatus` en lib/domain/model.ts son la
+// fuente de verdad; estas listas se repiten aquí a propósito (zod no puede derivar un enum desde un
+// `type` de TypeScript en tiempo de ejecución) y deben mantenerse en sincronía si el dominio cambia.
+// Gastos y caja menor no tienen columna de estado: sus rutas no ofrecen `status` en absoluto.
+export const REQUISITION_STATUS_VALUES = ["enviada", "en_revision", "en_aprobacion", "aprobada", "devuelta", "declinada"] as const;
+export const ORDER_STATUS_VALUES = ["generada", "cumplida", "no_cumplida", "no_necesario"] as const;

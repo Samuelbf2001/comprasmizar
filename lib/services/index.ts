@@ -1,4 +1,5 @@
 export * from "./contracts";
+export * from "./list-query";
 export * from "./kapso-contracts";
 export * from "./procurement-service";
 export * from "./catalog-service";

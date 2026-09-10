@@ -14,6 +14,11 @@ import {
 import type { Role } from "../../lib/demo-data";
 import { SectionTitle } from "./screen-primitives";
 import { apiRequest, friendlyErrorText } from "../../lib/http/friendly-error";
+// H2/H6 (docs/plan-rendimiento.md): esta pantalla escribe con su propio `apiRequest` (no el
+// `mutate` de connected/data.ts, que invalida por afectación según la URL) — así que tiene que
+// invalidar los catálogos a mano tras cada escritura. Import liviano: data.ts no arrastra
+// recharts ni ninguna pantalla pesada (ver tests/unit/bundle-boundaries.test.ts).
+import { invalidateCatalogs } from "./connected/data";
 
 type CatalogKind =
   | "works"
@@ -204,11 +209,16 @@ function canViewKind(
   return canManageKind(kind, role, data, featureEnabled);
 }
 async function writeCatalog(method: "POST" | "PATCH", body: unknown) {
-  return apiRequest<CatalogRecord>("/api/catalogs", {
+  const result = await apiRequest<CatalogRecord>("/api/catalogs", {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  // H2/H6: sin esto, otras pantallas (detail.tsx, new-requisition.tsx, requisitions.tsx…) que
+  // leen `catalogs` de su propia caché de sesión seguirían mostrando obras/etiquetas/ítems/
+  // proveedores viejos hasta que expirara el TTL de 5 minutos.
+  invalidateCatalogs();
+  return result;
 }
 
 function payloadFor(

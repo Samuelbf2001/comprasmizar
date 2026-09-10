@@ -7,6 +7,8 @@ import { ProcurementService, type KapsoWebhookEvent } from "../../../lib/service
 import { verifyKapsoSignature } from "../../../lib/security/crypto";
 import { isKapsoConfigured, kapsoEnv } from "../../../lib/security/env";
 import { adaptNfmReply, createPostgresNfmReplyRejectionRecorder, isNfmReplyWebhookPayload, resolveKapsoMediaDownloadUrl } from "../../../lib/infrastructure/nfm-reply-adapter";
+import { adaptApprovalReply, createPostgresApproverResolver, isApprovalNfmReply } from "../../../lib/infrastructure/approval-reply-adapter";
+import { applyApprovalDecision } from "../../../lib/infrastructure/approval-processor";
 import { resolveAuthorizedRequesterName } from "../../../lib/infrastructure/public-access";
 
 export const runtime = "nodejs";
@@ -71,6 +73,36 @@ export async function POST(request: Request) {
   // Este bloque traduce ese caso concreto y reescribe `payload` con el evento normalizado antes de
   // seguir; cualquier otro payload (incluido el shape ya normalizado que usan los fixtures/pruebas
   // existentes) sigue el camino de siempre sin cambios.
+  // Los dos WhatsApp Flows (captura y aprobación) llegan igual, como `nfm_reply`. El de aprobación
+  // se reconoce por su discriminador `kind` y se atiende PRIMERO, porque `isNfmReplyWebhookPayload`
+  // aceptaría los dos. No pasa por `kapsoWebhookSchema` ni por `processKapsoEvent`: no crea nada,
+  // ejecuta una decisión sobre una requisición que ya existe (ver lib/infrastructure/approval-processor.ts).
+  if (isApprovalNfmReply(payload)) {
+    const adapted = await adaptApprovalReply(payload, { secret: kapsoEnv().KAPSO_WEBHOOK_SECRET, resolveApprover: createPostgresApproverResolver() });
+    if (!adapted.ok) {
+      try {
+        await createPostgresNfmReplyRejectionRecorder().record({ wamid: adapted.wamid, phone: adapted.phone, reason: adapted.reason, rawPayload: payload });
+      } catch {
+        // Best-effort, igual que en el camino de captura: un rechazo neutro nunca es un 500.
+      }
+      return Response.json({ received: true, status: "rejected", reason: adapted.reason });
+    }
+    const dependencies = createPostgresDependencies();
+    const requisition = await dependencies.requisitions.get(adapted.decision.requisitionId);
+    // Sin requisición no hay nada que decidir. Se responde como "ignorado" y no como error: el
+    // token ya demostró que el mensaje es legítimo, así que lo que ocurrió es que la requisición
+    // desapareció o cambió de estado entre el envío y la respuesta.
+    if (!requisition) return Response.json({ received: true, status: "ignored", reason: "not_found" });
+    try {
+      const outcome = await applyApprovalDecision(new ProcurementService(dependencies), requisition, adapted.decision);
+      return Response.json({ received: true, ...outcome });
+    } catch {
+      // Incluye el rechazo legítimo del dominio (p. ej. NOT_ASSIGNED_APPROVER): 503 para que Kapso
+      // reintente sería mentira, pero tampoco se filtra el detalle del error al canal.
+      return Response.json({ received: true, status: "rejected", reason: "domain_rejected" });
+    }
+  }
+
   if (isNfmReplyWebhookPayload(payload)) {
     const adapted = await adaptNfmReply(payload, { secret: kapsoEnv().KAPSO_WEBHOOK_SECRET, resolveAttachmentUrl: resolveKapsoMediaDownloadUrl, resolveRequester: resolveAuthorizedRequesterName });
     if (!adapted.ok) {

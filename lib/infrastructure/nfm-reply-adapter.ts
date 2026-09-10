@@ -374,7 +374,10 @@ export async function resolveKapsoMediaDownloadUrl(mediaId: string): Promise<str
 // ---------------------------------------------------------------------------------------------
 
 export interface NfmReplyRejectionRecorder {
-  record(input: { wamid?: string; phone?: string; reason: NfmReplyRejectionReason; rawPayload: unknown }): Promise<void>;
+  /** `reason` es `string` y no `NfmReplyRejectionReason` porque el mismo registro sirve al Flow de
+   * aprobación (`ApprovalRejectionReason` en approval-reply-adapter.ts), que tiene su propio
+   * conjunto de motivos. Es una auditoría de entradas inválidas, no un enum de dominio. */
+  record(input: { wamid?: string; phone?: string; reason: string; rawPayload: unknown }): Promise<void>;
 }
 
 export function createPostgresNfmReplyRejectionRecorder(databaseUrl = runtimeEnv().DATABASE_URL): NfmReplyRejectionRecorder {

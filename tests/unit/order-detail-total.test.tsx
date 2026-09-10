@@ -33,18 +33,6 @@ const bulkItem = {
   ivaRate: 0.19,
 };
 
-const requisitions = [
-  {
-    id: "req-1",
-    consecutive: "RQ-001",
-    type: "compra" as const,
-    workId: "work-1",
-    channel: "web",
-    requiredDate: "2026-08-10",
-    status: "aprobada",
-    items: [bulkItem],
-  },
-];
 const orderRows = [
   {
     id: "order-1",
@@ -55,6 +43,16 @@ const orderRows = [
     status: "generada",
     adminStatus: "pendiente" as const,
     itemIds: ["item-1"],
+    // H2/H3 (docs/plan-rendimiento.md): ya vienen del servidor en el mismo SELECT — no hace
+    // falta descargar TODAS las requisiciones para pintar consecutivo/obra en la tabla.
+    requisitionConsecutive: "RQ-001",
+    workId: "work-1",
+    // Revisión (corrección tras QA, docs/plan-rendimiento.md Fase 3): `requiredDate`/`lines` viajan
+    // directo en la orden (mismo join que resuelve requisitionConsecutive/workId, ver `order(row)`
+    // en postgres-repositories.ts) — ya no hace falta cargar la requisición de origen bajo demanda
+    // (loadLinkedRequisition) para pintar la ficha, así que el fixture las trae de una vez.
+    requiredDate: "2026-08-10",
+    lines: [bulkItem],
   },
 ];
 
@@ -65,11 +63,13 @@ describe("BLOQUEANTE 1: el total de la ficha de la orden coincide con el del PDF
   });
 
   it("400 bultos a $38.000 con IVA 19% dan $18.088.000, no $38.000", async () => {
+    // Revisión (corrección tras QA): la ficha ya no pide la requisición de origen — solo el
+    // expediente del proveedor (GET /api/suppliers/:id) sigue siendo una carga bajo demanda.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "supplier-1", documents: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(
-      <ConnectedOrders data={{ rows: orderRows, requisitions, catalogs }} role="Revisor" refresh={vi.fn()} go={vi.fn()} />,
+      <ConnectedOrders data={{ rows: orderRows, catalogs }} role="Revisor" refresh={vi.fn()} go={vi.fn()} />,
     );
     fireEvent.click(screen.getByText("OC-001"));
 

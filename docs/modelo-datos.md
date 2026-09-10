@@ -53,7 +53,7 @@ Un usuario con `estado='inactivo'` no supera `is_active_user()` y las políticas
 
 La división de órdenes por proveedor no depende de un booleano confiado al cliente: aunque el contrato HTTP la solicite, el servicio exige que `modulos.ordenes_multi_proveedor` esté activo dentro de la misma transacción. La migración lo deja desactivado hasta habilitar el alcance Completo.
 
-El backend debe usar la sesión del usuario para operaciones normales; el `SUPABASE_SERVICE_ROLE_KEY` vive exclusivamente en el proceso servidor para flujos técnicos (generación de órdenes/gastos, importación aprobada, webhooks) y nunca llega al navegador, reporte o log. `crear_requisicion_publica` y la consulta pública están concedidas únicamente a `service_role`; el endpoint Next aplica rate limiting antes de invocarlas.
+El backend debe usar la sesión del usuario para operaciones normales; la conexión de la aplicación (`DATABASE_URL`) vive exclusivamente en el proceso servidor y nunca llega al navegador, reporte o log. Desde la [migración a autoalojado](migracion-autoalojado.md) no existe un `service_role` de PostgREST: los flujos técnicos (generación de órdenes/gastos, importación aprobada, webhooks) entran por la misma capa de servicio que la web, con su misma autorización y auditoría. `crear_requisicion_publica` y la consulta pública están concedidas únicamente a `service_role`; el endpoint Next aplica rate limiting antes de invocarlas.
 
 ## Storage
 
@@ -78,7 +78,7 @@ npx tsx scripts/import-master-data.ts --entity items --file .\entrada\items.xlsx
 npx tsx scripts/import-master-data.ts --entity proveedores --file .\entrada\proveedores.csv --apply
 ```
 
-`--apply` requiere `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` ya cargadas en el entorno. El script no imprime esos valores. Solo ejecutar `--apply` después de revisar el reporte sin errores; si hay filas inválidas, no aplica nada. `obras --apply` está deliberadamente deshabilitado: sociedades y obras requieren una RPC transaccional aprobada para no dejar una carga parcial. El dry-run entrega JSON listo para la revisión y carga controlada.
+`--apply` requiere `DATABASE_URL` ya cargada en el entorno y escribe por SQL directo, en una sola transacción por corrida (una importación a medias deja el catálogo en un estado que nadie revisó). El script no imprime esos valores. Solo ejecutar `--apply` después de revisar el reporte sin errores; si hay filas inválidas, no aplica nada. `obras --apply` está deliberadamente deshabilitado: sociedades y obras requieren una RPC transaccional aprobada para no dejar una carga parcial. El dry-run entrega JSON listo para la revisión y carga controlada.
 
 ## Verificación ejecutable
 

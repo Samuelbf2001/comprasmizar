@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Sql } from "postgres";
 import { DomainError } from "../../lib/domain";
 import { PostgresPorts } from "../../lib/infrastructure/postgres-repositories";
+import { decodeCursor, encodeCursor } from "../../lib/services/list-query";
 
 /**
  * `PostgresPorts` habla directamente con `postgres.js` via tagged-template (`this.sql\`...\``).
@@ -9,17 +10,49 @@ import { PostgresPorts } from "../../lib/infrastructure/postgres-repositories";
  * importa: una función invocable como plantilla etiquetada que recibe (strings, ...values).
  * Cada llamada queda registrada en `calls` para poder inspeccionar qué SQL se emitió y con
  * qué parámetros — eso es "capturar las sentencias emitidas" sin tocar una base real.
+ *
+ * H3 (docs/plan-rendimiento.md, Fase 3): los fragmentos condicionales (`this.sql\`\`` / `this.sql\`and
+ * ...\``) que ahora usa el adaptador para filtros/paginación son "Fragments" perezosos en postgres.js
+ * real — un `sql\`...\`` sin `await` no ejecuta nada por sí solo; se INLINEA (texto + parámetros, en
+ * orden) dentro del `sql\`...\`` que lo recibe como valor interpolado, y solo el `await` de la plantilla
+ * EXTERNA dispara una única llamada. `fakeSql` reproduce exactamente ese mecanismo: cada invocación
+ * produce un objeto "fragmento" perezoso (con `strings`/`values` propios) que es a la vez thenable (para
+ * que `await this.sql\`...\`` siga funcionando igual que antes) y aplanable (para que un fragmento
+ * usado como valor interpolado en OTRA plantilla se inserte en su texto en vez de quedar como un
+ * parámetro opaco). Con una plantilla sin fragmentos anidados esto colapsa exactamente al
+ * comportamiento anterior (`strings.join("?")` + `values` tal cual), así que ningún test existente que
+ * use `fakeSql` cambia de comportamiento.
  */
 interface Call { text: string; values: unknown[]; }
+interface Fragment { __fragment: true; flatten(): Call; then: Promise<unknown>["then"]; }
+function isFragment(value: unknown): value is Fragment { return typeof value === "object" && value !== null && (value as { __fragment?: unknown }).__fragment === true; }
 function fakeSql(onQuery: (call: Call) => unknown = () => []) {
   const calls: Call[] = [];
-  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-    const call: Call = { text: strings.join("?"), values };
-    calls.push(call);
-    return Promise.resolve(onQuery(call));
+  const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const flatten = (): Call => {
+      let text = strings[0];
+      const flatValues: unknown[] = [];
+      for (let index = 0; index < values.length; index++) {
+        const value = values[index];
+        if (isFragment(value)) { const inner = value.flatten(); text += inner.text; flatValues.push(...inner.values); }
+        else { text += "?"; flatValues.push(value); }
+        text += strings[index + 1];
+      }
+      return { text, values: flatValues };
+    };
+    const fragment: Fragment = {
+      __fragment: true,
+      flatten,
+      then: (onFulfilled, onRejected) => {
+        const call = flatten();
+        calls.push(call);
+        return Promise.resolve(onQuery(call)).then(onFulfilled, onRejected);
+      },
+    };
+    return fragment;
   }) as unknown as Sql & { calls: Call[] };
-  (sql as unknown as { calls: Call[] }).calls = calls;
-  return sql as unknown as Sql & { calls: Call[] };
+  (tag as unknown as { calls: Call[] }).calls = calls;
+  return tag as unknown as Sql & { calls: Call[] };
 }
 
 /** Imita la forma de un error de Postgres real expuesta por postgres.js (code + constraint_name). */
@@ -254,5 +287,227 @@ describe("PostgresPorts.saveOrder — proveedor_id persistido y sin huérfanos e
 
     await ports.saveOrder({ id: "o1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "req-1", supplierId: "sup-1", itemIds: ["a"], status: "generada", adminStatus: "pendiente" });
     expect([...pares].sort()).toEqual(["o1:a"]);
+  });
+});
+
+// H3 (docs/plan-rendimiento.md, Fase 3): filtros y paginación por cursor. `uuid(n)` produce ids con
+// forma válida de UUID v4 (versión "4", variante "8") — decodeCursor los valida con esa forma estricta,
+// así que un fixture con ids como "1"/"2" rompería la propia prueba al decodificar el cursor que ella
+// misma generó.
+const uuid = (n: number) => `${String(n).padStart(8, "0")}-0000-4000-8000-000000000000`;
+
+describe("PostgresPorts.listVisibleRequisitions con query — filtros y paginación por cursor (H3)", () => {
+  const row = (n: number, overrides: Record<string, unknown> = {}) => ({ id: uuid(n), consecutivo: `REQ-2026-000${n}`, tipo: "compra", sociedad_id: "soc-1", obra_id: "work-1", solicitante_id: "user-1", canal: "web", estado: "enviada", created_at: `2026-09-0${n}T10:00:00.000Z`, ...overrides });
+  // .at(-1), no .find(): varias pruebas de este describe reutilizan el mismo `ports`/`sql` para varias
+  // llamadas consecutivas (p.ej. la de visibilidad por rol) — `calls` acumula TODAS, así que hay que
+  // pedir la última, no la primera.
+  const selectOf = (sql: ReturnType<typeof fakeSql>) => sql.calls.filter((call) => /^select r\.\* from requisiciones/i.test(call.text)).at(-1);
+
+  it("sin query, el SELECT no lleva límite ni fragmentos de filtro — comportamiento intacto", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [row(1)] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] });
+    const select = selectOf(sql)!;
+    expect(select.text).not.toMatch(/limit/i);
+    expect(select.text).not.toMatch(/estado::text/);
+  });
+
+  it("aplica el filtro de estado (any) y de obra en el SELECT principal", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { status: ["enviada", "en_revision"], workId: "work-1" });
+    const select = selectOf(sql)!;
+    expect(select.text).toMatch(/r\.estado::text = any\(\?\)/);
+    expect(select.values).toContainEqual(["enviada", "en_revision"]);
+    expect(select.text).toMatch(/r\.obra_id = \?/);
+    expect(select.values).toContain("work-1");
+  });
+
+  it("aplica from/to como rango inclusivo en ambos extremos sobre created_at", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { from: "2026-09-01", to: "2026-09-05" });
+    const select = selectOf(sql)!;
+    expect(select.text).toMatch(/r\.created_at >= \?::date/);
+    expect(select.text).toMatch(/r\.created_at < \(\?::date \+ 1\)/);
+    expect(select.values).toEqual(expect.arrayContaining(["2026-09-01", "2026-09-05"]));
+  });
+
+  it("visibilidad por rol: aprobador filtra por r.aprobador_id, solicitante por r.solicitante_id, elevado sin filtro", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    const ports = new PostgresPorts(sql);
+    await ports.listVisibleRequisitions({ id: "nelson", roles: ["aprobador"] }, { limit: 10 });
+    expect(selectOf(sql)!.text).toMatch(/r\.aprobador_id = \?/);
+    await ports.listVisibleRequisitions({ id: "sol", roles: ["solicitante"] }, { limit: 10 });
+    expect(selectOf(sql)!.text).toMatch(/r\.solicitante_id = \?/);
+    await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    expect(selectOf(sql)!.text).not.toMatch(/aprobador_id = \?|solicitante_id = \?/);
+  });
+
+  it("decodifica el cursor entrante y lo aplica como comparación de tupla (created_at, id) < (cursor)", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    const cursor = encodeCursor("2026-09-01T10:00:00.000Z", uuid(1));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { cursor });
+    const select = selectOf(sql)!;
+    expect(select.text).toMatch(/\(r\.created_at, r\.id\) < \(\?::timestamptz, \?::uuid\)/);
+    expect(select.values).toEqual(expect.arrayContaining(["2026-09-01T10:00:00.000Z", uuid(1)]));
+  });
+
+  it("un cursor con forma inválida se rechaza como INVALID_INPUT antes de tocar la base", async () => {
+    const sql = fakeSql();
+    await expect(new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { cursor: "no-es-base64url-valido!!" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
+  it("cursor estable: nextCursor decodifica exactamente al created_at/id de la última fila de la página, cuando hay más", async () => {
+    const page = [row(1), row(2), row(3)]; // 3 filas para limit=2 -> hay más
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? page : /^select \* from requisicion_items/i.test(call.text) ? [] : []));
+    const result = await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { limit: 2 });
+    if (Array.isArray(result)) throw new Error("se esperaba una Page");
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows.map((r) => r.id)).toEqual([uuid(1), uuid(2)]);
+    expect(result.nextCursor).not.toBeNull();
+    expect(decodeCursor(result.nextCursor!)).toEqual({ at: new Date(page[1].created_at).toISOString(), id: uuid(2) });
+  });
+
+  it("nextCursor es null cuando la página no llena el límite — última página", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [row(1)] : []));
+    const result = await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    if (Array.isArray(result)) throw new Error("se esperaba una Page");
+    expect(result.rows).toHaveLength(1);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("limit se acota a 200 y usa 100 por defecto cuando no viene (pageLimit)", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    const ports = new PostgresPorts(sql);
+    await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { limit: 5000 });
+    expect(selectOf(sql)!.values).toContain(201); // 200 + 1 (hasMore)
+    await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, {});
+    expect(selectOf(sql)!.values).toContain(101); // 100 + 1
+  });
+});
+
+describe("PostgresPorts.listVisibleOrders con query — filtros, join a requisiciones y paginación (H3)", () => {
+  it("aplica el filtro de estado y de obra (vía join a requisiciones), y trae requisicion_consecutivo/requisicion_obra_id", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleOrders({ id: "daniel", roles: ["revisor"] }, { status: ["generada"], workId: "work-1" });
+    const select = sql.calls.find((call) => /^select o\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/join requisiciones r on r\.id=o\.requisicion_id/);
+    expect(select.text).toMatch(/r\.consecutivo as requisicion_consecutivo/);
+    expect(select.text).toMatch(/o\.estado_cumplimiento::text = any\(\?\)/);
+    expect(select.text).toMatch(/r\.obra_id = \?/);
+    expect(select.values).toContainEqual(["generada"]);
+  });
+
+  // Revisión (corrección tras QA, docs/plan-rendimiento.md Fase 3): la pantalla de órdenes necesita,
+  // en el MISMO SELECT, la fecha requerida de la requisición de origen y sus líneas con precio (para
+  // restaurar la columna "Valor" y el filtro por fecha requerida sin volver a descargar TODAS las
+  // requisiciones) — ver orderSelectColumns()/orderFromJoins() en postgres-repositories.ts.
+  it("trae fecha_requerida (aliada) y un json_agg de las líneas de la orden, unido por orden_items", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleOrders({ id: "daniel", roles: ["revisor"] });
+    const select = sql.calls.find((call) => /^select o\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/r\.fecha_requerida as requisicion_fecha_requerida/);
+    expect(select.text).toMatch(/left join requisicion_items ri on ri\.id=oi\.requisicion_item_id/);
+    expect(select.text).toMatch(/coalesce\(json_agg\(json_build_object\(/);
+    expect(select.text).toMatch(/filter \(where ri\.id is not null\), '\[\]'\) as lines/);
+    // BLOQUEANTE 1 (QA 2026-08-31): el total NUNCA se calcula en SQL — el json_build_object solo
+    // transporta las columnas crudas de requisicion_items, sin ninguna suma/multiplicación.
+    expect(select.text).not.toMatch(/sum\(|valor_base\s*\*|valor_base\s*\+/);
+  });
+
+  it("pagina por fecha_generacion desc, id desc — nextCursor null en la última página", async () => {
+    const sql = fakeSql((call) =>
+      (/^select o\.\*/i.test(call.text)
+        ? [{
+            id: uuid(1), consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: uuid(9), estado_cumplimiento: "generada", estado_administrativo: "pendiente",
+            fecha_generacion: "2026-09-01T10:00:00.000Z", requisicion_consecutivo: "REQ-2026-0001", requisicion_obra_id: "work-1",
+            // Revisión (corrección tras QA): simula lo que postgres.js entrega ya decodificado para una
+            // columna `date` (Date) y un `json_agg` (array de objetos) — order(row) debe parsear ambos.
+            requisicion_fecha_requerida: new Date("2026-08-10T00:00:00.000Z"),
+            lines: [{ id: "li-1", item_id: null, descripcion_libre: "Cemento gris", cantidad: 10, unidad: "bulto", posible_proveedor_texto: null, link_producto: null, proveedor_final_id: null, valor_base: 1000, iva: 190, estado: "pendiente", motivo_declinacion: null, iva_tasa: 0.19, descuento_tasa: 0 }],
+          }]
+        : []));
+    const result = await new PostgresPorts(sql).listVisibleOrders({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    if (Array.isArray(result)) throw new Error("se esperaba una Page");
+    expect(result.nextCursor).toBeNull();
+    expect(result.rows[0]).toMatchObject({
+      requisitionConsecutive: "REQ-2026-0001", workId: "work-1", requiredDate: "2026-08-10",
+      lines: [{ id: "li-1", description: "Cemento gris", quantity: 10, unit: "bulto", unitBase: 1000, unitIva: 190, ivaRate: 0.19, discountRate: 0 }],
+    });
+    const select = sql.calls.find((call) => /^select o\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/order by o\.fecha_generacion desc, o\.id desc/);
+  });
+});
+
+describe("PostgresPorts.listVisibleExpenses con query — filtros y paginación por fecha_orden, no por fecha (H3)", () => {
+  it("aplica el filtro de obra y de rango de fechas sobre g.fecha (fecha de PAGO), ignora status (gastos no tiene estado)", async () => {
+    const sql = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    // "status" no existe en ListQuery para gastos en la práctica (las rutas no lo ofrecen), pero si
+    // llegara igual el adaptador no debe reventar: se ignora en vez de fallar.
+    await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { workId: "work-1", from: "2026-09-01", to: "2026-09-05", status: ["ignorar-me"] });
+    const select = sql.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
+    expect(select.text).toMatch(/g\.obra_id = \?/);
+    expect(select.text).toMatch(/g\.fecha >= \?::date/);
+    expect(select.text).toMatch(/g\.fecha < \(\?::date \+ 1\)/);
+    expect(select.text).not.toMatch(/estado/);
+  });
+
+  it("pagina por fecha_orden (NOT NULL), no por fecha (nullable mientras no se paga)", async () => {
+    const sql = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    const select = sql.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
+    expect(select.text).toMatch(/order by g\.fecha_orden desc, g\.id desc/);
+  });
+
+  // `periodo` es `date` (columna generada) y postgres.js la entrega como Date: `String(Date)` da
+  // "Tue Sep 01 2026 ..." y el antiguo `.slice(0, 7)` producía "Tue Sep", que nunca coincidía con
+  // el "YYYY-MM" que comparan el filtro por periodo de la pantalla de gastos y calculateDashboard.
+  it("mapea `periodo` (Date de la BD) a 'YYYY-MM' y deja undefined cuando el gasto no está pagado", async () => {
+    const row = { id: "g1", obra_id: "work-1", origen: "requisicion", referencia_id: "o1", fecha_orden: new Date(Date.UTC(2026, 8, 3)), fecha: new Date(Date.UTC(2026, 8, 5)), periodo: new Date(Date.UTC(2026, 8, 1)), valor_base: "100", iva: "19", valor_total: "119" };
+    const sql = fakeSql((call) => (/^select \* from gastos/i.test(call.text) ? [row, { ...row, id: "g2", fecha: null, periodo: null }] : []));
+    const [paid, unpaid] = await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }) as Array<{ period?: string; date?: string }>;
+    expect(paid.period).toBe("2026-09");
+    expect(paid.date).toBe("2026-09-05");
+    expect(unpaid.period).toBeUndefined();
+  });
+});
+
+describe("PostgresPorts.listPettyCash con query — filtros y paginación (H3)", () => {
+  it("filtra por obra y rango de fechas, sin fragmento de visibilidad (caja menor no tiene visibilidad por actor)", async () => {
+    const sql = fakeSql((call) => (/^select c\.\* from caja_menor/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listPettyCash({ workId: "work-1", from: "2026-09-01", to: "2026-09-05" });
+    const select = sql.calls.find((call) => /^select c\.\* from caja_menor/i.test(call.text))!;
+    expect(select.text).toMatch(/c\.obra_id = \?/);
+    expect(select.text).toMatch(/c\.fecha >= \?::date/);
+    expect(select.text).toMatch(/order by c\.fecha desc, c\.id desc/);
+  });
+});
+
+describe("PostgresPorts — agregados del dashboard (H3): byStatus, pendingOrders, expenseByWork/Tag/Period", () => {
+  it("dashboardByStatus agrupa por estado con la misma visibilidad que listVisibleRequisitions", async () => {
+    const sql = fakeSql((call) => (/^select r\.estado, count/i.test(call.text) ? [{ estado: "enviada", total: "2" }, { estado: "aprobada", total: "1" }] : []));
+    const byStatus = await new PostgresPorts(sql).dashboardByStatus({ id: "nelson", roles: ["aprobador"] });
+    expect(byStatus).toEqual({ enviada: 2, en_revision: 0, en_aprobacion: 0, aprobada: 1, devuelta: 0, declinada: 0 });
+    const select = sql.calls.find((call) => /^select r\.estado, count/i.test(call.text))!;
+    expect(select.text).toMatch(/r\.aprobador_id = \?/);
+  });
+
+  it("dashboardPendingCount cuenta órdenes generada/no_cumplida con visibilidad por actor", async () => {
+    const sql = fakeSql((call) => (/^select count\(\*\) as total from ordenes/i.test(call.text) ? [{ total: "3" }] : []));
+    const count = await new PostgresPorts(sql).dashboardPendingCount({ id: "daniel", roles: ["revisor"] });
+    expect(count).toBe(3);
+    const select = sql.calls.find((call) => /^select count\(\*\) as total from ordenes/i.test(call.text))!;
+    expect(select.text).toMatch(/estado_cumplimiento in \('generada', 'no_cumplida'\)/);
+  });
+
+  it("dashboardAggregates compara periodo contra (period || '-01')::date, no con to_char en el WHERE", async () => {
+    const sql = fakeSql((call) => {
+      if (/^select coalesce\(sum/i.test(call.text)) return [{ period_expense: "500", in_process_value: "476" }];
+      return [];
+    });
+    const aggregates = await new PostgresPorts(sql).dashboardAggregates({ id: "daniel", roles: ["revisor"] }, "2026-08");
+    expect(aggregates.periodExpense).toBe(500);
+    expect(aggregates.inProcessValue).toBe(476);
+    const totals = sql.calls.find((call) => /^select coalesce\(sum/i.test(call.text))!;
+    expect(totals.values).toContain("2026-08-01");
+    expect(totals.text).toMatch(/g\.periodo = \?::date/);
   });
 });

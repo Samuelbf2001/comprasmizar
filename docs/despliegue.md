@@ -1,6 +1,6 @@
 # Despliegue
 
-La aplicación se despliega como **imagen Docker** publicada por CI en GitHub Container Registry (GHCR) y consumida por EasyPanel en el VPS. Los datos (Postgres, Auth, Storage) viven en Supabase gestionado; el VPS solo sirve la aplicación.
+La aplicación se despliega como **imagen Docker** publicada por CI en GitHub Container Registry (GHCR) y consumida por EasyPanel en el VPS. Desde la [migración a autoalojado](migracion-autoalojado.md) del 10 de septiembre de 2026, **los datos también viven en el VPS**: Postgres en un contenedor sin puerto público, sesiones propias y adjuntos en un volumen. Supabase ya no interviene.
 
 ```
   push a main ──► GitHub Actions ──► ghcr.io/samuelbf2001/comprasmizar:<sha>
@@ -12,7 +12,7 @@ La aplicación se despliega como **imagen Docker** publicada por CI en GitHub Co
                                               contenedor :3000 + TLS
                                                           │
                                                           ▼
-                                         Supabase (Postgres/Auth/Storage)
+                                    Postgres + volumen de adjuntos (mismo VPS)
 ```
 
 Por qué imagen y no build en el servidor: la imagen que se despliega es **exactamente** la que pasó CI, la etiqueta por commit permite revertir a una versión concreta, y el VPS no necesita toolchain de Node ni recursos para compilar.
@@ -34,10 +34,10 @@ Distinción crítica de Next.js. Las `NEXT_PUBLIC_*` se **incrustan en el bundle
 
 | Variable | Notas |
 |---|---|
-| `DATABASE_URL` | Session pooler de Supabase. La contraseña va **URL-encoded** (`!` → `%21`) |
-| `NEXT_PUBLIC_SUPABASE_URL` | Solo se usa server-side; aun así defínela aquí |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave publicable |
-| `SUPABASE_SERVICE_ROLE_KEY` | **Secreto fuerte.** Acceso total a los datos |
+| `DATABASE_URL` | `postgresql://mizar:<contraseña>@db:5432/mizar`. La contraseña va **URL-encoded** (`!` → `%21`) |
+| `POSTGRES_PASSWORD` | Contraseña del Postgres del compose. Solo circula por la red interna de Docker |
+| `STORAGE_ROOT` | `/var/lib/mizar/storage` (volumen `storage_data`). Obligatoria, sin default |
+| `STORAGE_SIGNING_SECRET` | ≥32 caracteres. Firma los enlaces de subida/descarga de adjuntos |
 | `PUBLIC_FORM_CODE_PEPPER` | ≥32 caracteres. Generar con `crypto.randomBytes(32)` |
 | `MCP_KEY_PEPPER` | ≥32 caracteres |
 | `KAPSO_API_KEY` | Clave del proyecto Kapso |
@@ -86,9 +86,10 @@ Ninguno de estos pasos requiere datos reales de Mizar:
 
 1. `GET /api/health` responde configurado (no `unconfigured`).
 2. `GET /` sin sesión redirige a `/login` (fallo cerrado de Auth).
-3. Con la clave publicable, ninguna tabla devuelve filas: debe dar `42501 permission denied`. Script: [`tmp/probe-rls-anon.mjs`](../tmp/probe-rls-anon.mjs) del checkout local.
+3. La base no es alcanzable desde fuera: `nc -z <ip-del-vps> 5432` debe fallar. El servicio `db` no publica puerto a propósito; si responde, revisa que nadie le haya añadido un `ports:`.
 4. El arnés SQL pasa contra la base desplegada (revierte sin dejar datos).
-5. Login con un usuario real creado en Supabase Auth y vinculado en `public.usuarios`.
+5. Login con un usuario real de `auth.users` vinculado en `public.usuarios`. Si los datos vienen del volcado de Supabase, la contraseña de siempre funciona sin cambios (ver [migración](migracion-autoalojado.md)).
+6. Subir un adjunto y volver a descargarlo: prueba de punta a punta del almacenamiento propio.
 
 ## 6. Reversión
 
@@ -100,4 +101,6 @@ Cambiar la etiqueta del servicio en EasyPanel al `<sha>` anterior y redesplegar.
 
 ## 7. Respaldo
 
-Supabase hace backups automáticos diarios. Además, [`ops/backup-postgres.ps1`](../ops/backup-postgres.ps1) genera la copia fría propia y [`ops/restore-verify.ps1`](../ops/restore-verify.ps1) verifica que se pueda restaurar. **Ninguno está programado todavía**: falta el cron. Un backup que nunca se restauró no es un backup — la primera restauración de prueba es requisito antes de considerar el sistema en producción.
+Ya no hay respaldo gestionado por un tercero: lo hacemos nosotros. [`ops/backup-daily.sh`](../ops/backup-daily.sh) corre por cron a las 03:00 hora Colombia, vuelca la base, empaqueta los adjuntos del volumen, cifra ambos con AES-256-GCM y los sube a Google Drive con retención de 35 días. La instalación paso a paso está en [docs/migracion-autoalojado.md](migracion-autoalojado.md); el detalle operativo, en [docs/runbook-operacion.md](runbook-operacion.md).
+
+Dos reglas que no se negocian: la `BACKUP_PASSPHRASE` vive **fuera** del VPS (si se pierde con el servidor, los respaldos cifrados no sirven de nada), y [`ops/restore-verify.sh`](../ops/restore-verify.sh) debe ejecutarse antes de considerar el sistema en producción y luego cada trimestre. Un backup que nunca se restauró no es un backup.

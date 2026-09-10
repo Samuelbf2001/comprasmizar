@@ -103,7 +103,12 @@ describe("RF-1102: cola de atención y actividad reciente en el dashboard conect
     expect(go).toHaveBeenCalledWith("/gastos");
   });
 
-  it("renders the expense-by-work chart's accessible text alternative with the exact totals", () => {
+  // Fase 2 (rendimiento, H4): DashboardBarChart/DashboardPeriodChart ahora se cargan con
+  // next/dynamic (recharts diferido, ver components/screens/connected/dashboard.tsx) — en
+  // jsdom/vitest esa resolución es asíncrona, así que el primer assert que depende del
+  // gráfico pasa de `getBy...` a `findBy...` (los asserts posteriores, ya con el gráfico
+  // montado, se quedan síncronos).
+  it("renders the expense-by-work chart's accessible text alternative with the exact totals", async () => {
     render(
       <ConnectedDashboard
         data={{
@@ -120,7 +125,7 @@ describe("RF-1102: cola de atención y actividad reciente en el dashboard conect
       />,
     );
     expect(
-      screen.getByRole("img", { name: /Gasto por obra/ }),
+      await screen.findByRole("img", { name: /Gasto por obra/ }),
     ).toBeInTheDocument();
     const rows = screen.getAllByRole("row");
     expect(rows.some((row) => row.textContent?.includes("Obra Norte"))).toBe(
@@ -129,7 +134,7 @@ describe("RF-1102: cola de atención y actividad reciente en el dashboard conect
     expect(screen.getByText(/1\.500\.000/)).toBeInTheDocument();
   });
 
-  it("resolves a missing tag as 'Sin etiqueta' in the expense-by-tag breakdown", () => {
+  it("resolves a missing tag as 'Sin etiqueta' in the expense-by-tag breakdown", async () => {
     render(
       <ConnectedDashboard
         data={{
@@ -139,7 +144,7 @@ describe("RF-1102: cola de atención y actividad reciente en el dashboard conect
         go={vi.fn()}
       />,
     );
-    expect(screen.getByText("Sin etiqueta")).toBeInTheDocument();
+    expect(await screen.findByText("Sin etiqueta")).toBeInTheDocument();
   });
 
   it("still renders the four scoped stat cards unchanged", () => {

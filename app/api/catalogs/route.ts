@@ -5,6 +5,7 @@ import { sharedPostgres } from "../../../lib/infrastructure/postgres-repositorie
 import { runtimeEnv } from "../../../lib/security/env";
 import { CatalogService } from "../../../lib/services";
 import { createPostgresDependencies } from "../../../lib/infrastructure/postgres-repositories";
+import { invalidateActorCache } from "../../../lib/infrastructure/actor-cache";
 
 export const runtime = "nodejs";
 
@@ -90,7 +91,12 @@ export function POST(request: Request) {
     assertSameOrigin(request);
     const input = await parseJson(request, createCatalogSchema);
     const data = { ...input.data, active: input.data.active ?? true };
-    return new CatalogService(createPostgresDependencies()).create(input.kind, data, actor);
+    const created = await new CatalogService(createPostgresDependencies()).create(input.kind, data, actor);
+    // H1 (docs/plan-rendimiento.md): el caché de actor.ts tiene 60 s de TTL — sin esto, un usuario
+    // recién dado de alta con rol podría seguir viendo ROLE_REQUIRED (o, peor, uno reactivado seguir
+    // ACCOUNT_INACTIVE) hasta que expire, en vez de al siguiente request.
+    if (input.kind === "users") invalidateActorCache(created.id);
+    return created;
   }, 201);
 }
 
@@ -98,6 +104,9 @@ export function PATCH(request: Request) {
   return authenticatedJson(async (actor) => {
     assertSameOrigin(request);
     const input = await parseJson(request, patchCatalogSchema);
-    return new CatalogService(createPostgresDependencies()).patch(input.kind, input.id, input.data, actor);
+    const patched = await new CatalogService(createPostgresDependencies()).patch(input.kind, input.id, input.data, actor);
+    // H1: desactivar una cuenta o cambiar sus roles debe surtir efecto de inmediato, no esperar el TTL.
+    if (input.kind === "users") invalidateActorCache(input.id);
+    return patched;
   });
 }

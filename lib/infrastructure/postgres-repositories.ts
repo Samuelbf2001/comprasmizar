@@ -1,6 +1,7 @@
 import postgres, { type Sql } from "postgres";
-import { DomainError, normalizeItemName, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type Role } from "../domain";
-import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, ConsecutiveRepository, IdGenerator, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
+import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
+import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
+import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
 import { hmacSha256, safeEqual } from "../security/crypto";
 import { publicEnv, runtimeEnv } from "../security/env";
 import { asJsonb } from "./jsonb";
@@ -22,7 +23,16 @@ const asNumber = (value: unknown) => Number(value ?? 0);
  * los rangos de filtro (`row.requiredDate >= dateFrom`) y en el PDF como si fuera una fecha real.
  */
 const asIsoDate = (value: unknown): string | undefined => (value instanceof Date ? value.toISOString().slice(0, 10) : value == null ? undefined : String(value));
+/** H3: instante ISO completo de una columna `timestamptz` (created_at, fecha_generacion, updated_at) para
+ *  codificar el cursor de paginación — a diferencia de `asIsoDate`, aquí SÍ es correcto usar `toISOString()`
+ *  directo: un `timestamptz` es un instante absoluto, no una fecha de calendario, así que no sufre el
+ *  corrimiento de día por zona horaria que `asIsoDate` existe para evitar. */
+const toIsoInstant = (value: unknown): string => (value instanceof Date ? value : new Date(String(value))).toISOString();
 const isElevated = (actor: Actor) => actor.roles.some((role) => ["revisor", "contabilidad", "admin_mizar", "admin_sixteam"].includes(role));
+/** H3 (docs/plan-rendimiento.md): `calculateDashboard` (lib/domain/rules.ts) inicializa estas 6 claves en
+ *  0 antes de contar; el agregado SQL de `dashboardByStatus` solo devuelve filas para estados con al
+ *  menos una requisición, así que se parte siempre de esta plantilla para no dejar ninguna en `undefined`. */
+const ZERO_BY_STATUS: Record<RequisitionStatus, number> = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
 function item(row: DbRow): ItemLine {
   return {
     id: String(row.id), itemId: row.item_id ? String(row.item_id) : undefined, description: row.descripcion_libre ? String(row.descripcion_libre) : undefined,
@@ -44,6 +54,15 @@ function requisition(row: DbRow, items: ItemLine[]): Requisition {
     paymentTerms: row.forma_pago ? String(row.forma_pago) : undefined,
   };
 }
+// H3 (docs/plan-rendimiento.md): requisicion_consecutivo/requisicion_obra_id son alias deliberados (no
+// "consecutivo"/"obra_id" a secas): `ordenes` ya tiene su PROPIA columna `consecutivo` (el consecutivo de
+// la orden, p.ej. "OC-2026-0001") — sin el alias, el `select r.consecutivo ...` de la requisición dueña
+// pisaría esa columna en la misma fila y `order(row)` leería el consecutivo equivocado en `consecutive`.
+// Revisión (corrección tras QA): `requisicion_fecha_requerida` sigue el mismo patrón de alias por la
+// misma razón (aunque hoy `ordenes` no tenga una columna `fecha_requerida` propia, es el nombre que ya
+// usa `orderSelectColumns()` más abajo, para no tener que recordar dos convenciones distintas). `lines`
+// NO necesita alias: es un alias de columna calculado (`json_agg(...) as lines`), no una columna real de
+// ninguna de las dos tablas, así que no hay nada que pueda pisar.
 function order(row: DbRow): Order {
   return {
     id: String(row.id), consecutive: String(row.consecutivo), type: row.tipo as Order["type"], requisitionId: String(row.requisicion_id), supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined,
@@ -51,13 +70,29 @@ function order(row: DbRow): Order {
     adminStatus: (row.estado_administrativo as OrderAdminStatus | undefined) ?? "pendiente", generatedAt: row.fecha_generacion ? new Date(String(row.fecha_generacion)).toISOString() : undefined,
     accountedAt: row.contabilizada_at ? new Date(String(row.contabilizada_at)).toISOString() : undefined, paidAt: row.pagada_at ? new Date(String(row.pagada_at)).toISOString() : undefined,
     paymentTerms: row.forma_pago ? String(row.forma_pago) : undefined, updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : undefined,
+    requisitionConsecutive: row.requisicion_consecutivo != null ? String(row.requisicion_consecutivo) : undefined,
+    workId: row.requisicion_obra_id != null ? String(row.requisicion_obra_id) : undefined,
+    // Revisión (corrección tras QA): `requiredDate`/`lines` restauran la columna "Valor" y el filtro por
+    // fecha requerida de la pantalla de órdenes sin volver a descargar TODAS las requisiciones — ver el
+    // comentario largo en `Order` (lib/domain/model.ts). `lines` reutiliza el mismo mapeador `item()` que
+    // ya usa `requisicion(row, items)` arriba: cada elemento del `json_agg` trae exactamente las mismas
+    // columnas crudas de `requisicion_items` (mismos nombres), así que no hace falta un mapeador aparte.
+    // Ausentes (undefined) cuando la consulta no hizo el join (fakes de test, lecturas que no pasan por
+    // orderSelectColumns()) — nunca `[]`/"" falsos que insinúen "sin fecha"/"sin ítems" cuando en realidad
+    // es "no se preguntó".
+    requiredDate: asIsoDate(row.requisicion_fecha_requerida),
+    lines: Array.isArray(row.lines) ? (row.lines as DbRow[]).map(item) : undefined,
   };
 }
 // Reunión 2026-09: `fecha` (fecha de pago) y `periodo` (mes de `fecha`) son NULL en la BD mientras la
 // orden que originó el gasto no se ha pagado — `asIsoDate` ya devuelve `undefined` para NULL, así que
 // NO se fuerza `as string`: un gasto sin pagar debe poder representarse en memoria sin fecha de pago.
 // `fecha_orden` (nace con el registro, NOT NULL en la BD) sí es obligatoria.
-function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: row.periodo != null ? String(row.periodo).slice(0, 7) : undefined }; }
+function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7) }; }
+// `periodo` es una columna `date` (generada, ver migración core_compras): la librería `postgres` la
+// entrega como Date, y `String(fecha)` da "Tue Sep 01 2026 ..." — el `.slice(0, 7)` anterior producía
+// "Tue Sep" en vez de "2026-09", con lo que el filtro por periodo de la pantalla de gastos y el
+// `periodExpense` del dominio nunca coincidían. `asIsoDate` ya resuelve Date/NULL igual que `fecha`.
 function catalogRecord(kind: CatalogKind, row: DbRow): CatalogRecord {
   if (kind === "works") return { id: String(row.id), name: String(row.nombre), societyId: String(row.sociedad_id), active: row.estado === "activa" };
   if (kind === "tags") return { id: String(row.id), name: String(row.nombre), approverId: row.aprobador_id ? String(row.aprobador_id) : undefined, active: row.activa === true };
@@ -111,25 +146,71 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
       throw error;
     }
   }
-  async listRequisitions(): Promise<Requisition[]> { return this.listVisibleRequisitions({ id: "", roles: ["admin_sixteam"] }); }
+  async listRequisitions(): Promise<Requisition[]> { return this.listVisibleRequisitions({ id: "", roles: ["admin_sixteam"] }) as Promise<Requisition[]>; }
   // Los ítems se traen en UNA sola consulta con `any(...)` y se agrupan en memoria.
   // Antes se hacía una consulta por requisición (N+1): con la base en us-east-2 cada
   // viaje cuesta ~100 ms, así que 200 requisiciones eran ~200 viajes. Ahora son 2.
-  async listVisibleRequisitions(actor: Actor): Promise<Requisition[]> {
-    // Filtro de visibilidad del rol aprobador por r.aprobador_id directo (reunión 2026-09): ya no hace
-    // falta el join con etiquetas para resolver ni para filtrar quién ve qué.
-    const rows = isElevated(actor) ? await this.sql<DbRow[]>`select r.* from requisiciones r order by r.created_at desc` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select r.* from requisiciones r where r.aprobador_id=${actor.id} order by r.created_at desc` : await this.sql<DbRow[]>`select r.* from requisiciones r where r.solicitante_id=${actor.id} order by r.created_at desc`;
-    if (!rows.length) return [];
-    const ids = rows.map((row) => String(row.id));
-    const itemRows = await this.sql<DbRow[]>`select * from requisicion_items where requisicion_id = any(${ids}::uuid[]) order by created_at`;
-    const porRequisicion = new Map<string, ItemLine[]>();
-    for (const row of itemRows) {
-      const clave = String(row.requisicion_id);
-      const lista = porRequisicion.get(clave);
-      if (lista) lista.push(item(row));
-      else porRequisicion.set(clave, [item(row)]);
+  // H3 (docs/plan-rendimiento.md, Fase 3): `query` opcional y aditivo. Sin `query`, exactamente el
+  // comportamiento de siempre (sin límite). Con `query`, filtros + paginación por cursor en SQL —
+  // devuelve `Page<Requisition>` (unión de retorno, ver el porqué en contracts.ts). El cast final en
+  // `listRequisitions()` de arriba es seguro: esa llamada NUNCA pasa `query`, así que el resultado real
+  // siempre es `Requisition[]`, aunque el tipo estático de este método sea la unión.
+  async listVisibleRequisitions(actor: Actor, query?: ListQuery): Promise<Requisition[] | Page<Requisition>> {
+    if (!query) {
+      // Filtro de visibilidad del rol aprobador por r.aprobador_id directo (reunión 2026-09): ya no hace
+      // falta el join con etiquetas para resolver ni para filtrar quién ve qué.
+      const rows = isElevated(actor) ? await this.sql<DbRow[]>`select r.* from requisiciones r order by r.created_at desc` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select r.* from requisiciones r where r.aprobador_id=${actor.id} order by r.created_at desc` : await this.sql<DbRow[]>`select r.* from requisiciones r where r.solicitante_id=${actor.id} order by r.created_at desc`;
+      if (!rows.length) return [];
+      const ids = rows.map((row) => String(row.id));
+      const itemRows = await this.sql<DbRow[]>`select * from requisicion_items where requisicion_id = any(${ids}::uuid[]) order by created_at`;
+      const porRequisicion = new Map<string, ItemLine[]>();
+      for (const row of itemRows) {
+        const clave = String(row.requisicion_id);
+        const lista = porRequisicion.get(clave);
+        if (lista) lista.push(item(row));
+        else porRequisicion.set(clave, [item(row)]);
+      }
+      return rows.map((row) => requisition(row, porRequisicion.get(String(row.id)) ?? []));
     }
-    return rows.map((row) => requisition(row, porRequisicion.get(String(row.id)) ?? []));
+    const limit = pageLimit(query.limit);
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const statusFilter = query.status?.length ? this.sql`and r.estado::text = any(${query.status})` : this.sql``;
+    const workFilter = query.workId ? this.sql`and r.obra_id = ${query.workId}` : this.sql``;
+    const fromFilter = query.from ? this.sql`and r.created_at >= ${query.from}::date` : this.sql``;
+    const toFilter = query.to ? this.sql`and r.created_at < (${query.to}::date + 1)` : this.sql``;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+    const cursorFilter = cursor ? this.sql`and (r.created_at, r.id) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : this.sql``;
+    const rows = await this.sql<DbRow[]>`select r.* from requisiciones r where true ${visibility} ${statusFilter} ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by r.created_at desc, r.id desc limit ${limit + 1}`;
+    const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const ids = pageRows.map((row) => String(row.id));
+    const itemRows = ids.length ? await this.sql<DbRow[]>`select * from requisicion_items where requisicion_id = any(${ids}::uuid[]) order by created_at` : [];
+    const porRequisicion = new Map<string, ItemLine[]>();
+    for (const row of itemRows) { const clave = String(row.requisicion_id); const lista = porRequisicion.get(clave); if (lista) lista.push(item(row)); else porRequisicion.set(clave, [item(row)]); }
+    const last = pageRows.at(-1);
+    const nextCursor = hasMore && last ? encodeCursor(toIsoInstant(last.created_at), String(last.id)) : null;
+    return { rows: pageRows.map((row) => requisition(row, porRequisicion.get(String(row.id)) ?? [])), nextCursor };
+  }
+  // H3: cabeceras SIN ítems para el dashboard (RF-1102) — buildAttentionQueue/buildRecentActivity nunca
+  // los usan (lib/domain/rules.ts), así que cargarlos aquí sería trabajo desperdiciado. `orderBy` por
+  // defecto created_at (cola de atención, sin límite estricto salvo el tope defensivo); "updated_at"
+  // es el que usa la actividad reciente, siempre con `limit` explícito.
+  async listVisibleHeaders(actor: Actor, options: { status?: RequisitionStatus[]; orderBy?: "created_at" | "updated_at"; limit?: number } = {}): Promise<Requisition[]> {
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const statusFilter = options.status?.length ? this.sql`and r.estado::text = any(${options.status})` : this.sql``;
+    const orderColumn = options.orderBy === "updated_at" ? this.sql`r.updated_at` : this.sql`r.created_at`;
+    const limit = options.limit ?? 500;
+    const rows = await this.sql<DbRow[]>`select r.* from requisiciones r where true ${visibility} ${statusFilter} order by ${orderColumn} desc, r.id desc limit ${limit}`;
+    return rows.map((row) => requisition(row, []));
+  }
+  // H3: conteo por estado con la MISMA visibilidad de listVisibleRequisitions, para que dashboard() no
+  // tenga que cargar la colección completa solo para contar (mismas 6 claves que calculateDashboard en
+  // lib/domain/rules.ts — ZERO_BY_STATUS ya las inicializa en 0, el agregado solo llena las que aplican).
+  async dashboardByStatus(actor: Actor): Promise<Record<RequisitionStatus, number>> {
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const rows = await this.sql<{ estado: RequisitionStatus; total: string }[]>`select r.estado, count(*) as total from requisiciones r where true ${visibility} group by r.estado`;
+    const byStatus: Record<RequisitionStatus, number> = { ...ZERO_BY_STATUS };
+    for (const row of rows) byStatus[row.estado] = Number(row.total);
+    return byStatus;
   }
   // El delete final de orden_items nunca puede violar orden_items_requisicion_item_id_fkey (esa FK
   // vive en esta misma tabla, no en la referenciada), así que no hace falta try/catch aquí: solo
@@ -145,10 +226,84 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     for (const itemId of value.itemIds) await this.sql`insert into orden_items (orden_id, requisicion_item_id) values (${value.id}, ${itemId}) on conflict do nothing`;
     await this.sql`delete from orden_items where orden_id = ${value.id} and requisicion_item_id <> all(${value.itemIds}::uuid[])`;
   }
-  async listOrders(): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o left join orden_items oi on oi.orden_id=o.id group by o.id`; return rows.map(order); }
-  async listVisibleOrders(actor: Actor): Promise<Order[]> { const rows = isElevated(actor) ? await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o left join orden_items oi on oi.orden_id=o.id group by o.id` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id where r.aprobador_id=${actor.id} group by o.id` : await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id where r.solicitante_id=${actor.id} group by o.id`; return rows.map(order); }
-  async listByRequisition(requisitionId: string): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o left join orden_items oi on oi.orden_id=o.id where o.requisicion_id=${requisitionId} group by o.id`; return rows.map(order); }
-  async getOrder(id: string): Promise<Order | null> { const rows = await this.sql<DbRow[]>`select o.*, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o left join orden_items oi on oi.orden_id=o.id where o.id=${id} group by o.id`; return rows[0] ? order(rows[0]) : null; }
+  // H3: todas las lecturas de orden hacen ahora `join requisiciones r` (INNER: requisicion_id es NOT
+  // NULL) para traer requisicion_consecutivo/requisicion_obra_id en la misma fila (ver `order(row)`) —
+  // la pantalla de órdenes dejaba de descargar TODAS las requisiciones solo para resolver esos dos
+  // datos. `group by o.id, r.id` basta (sin listar r.consecutivo/r.obra_id): Postgres permite omitir del
+  // GROUP BY columnas funcionalmente dependientes de la llave primaria de una tabla ya agrupada por ella.
+  // Revisión (corrección tras QA, docs/plan-rendimiento.md Fase 3): `orderSelectColumns()`/
+  // `orderFromJoins()` extraen las columnas y los joins comunes a las 5 lecturas de abajo (antes
+  // repetidos literalmente en cada una) para sumar, en el MISMO SELECT, `requisicion_fecha_requerida` y
+  // `lines` (json_agg de `requisicion_items`) — ver los comentarios largos junto a `order(row)` y junto a
+  // `Order` en lib/domain/model.ts. `listAttentionCandidates`/`listOrdersRecentlyUpdated`, más abajo, NO
+  // usan este fragmento: alimentan el dashboard (RF-1102), que no consume ni `requiredDate` ni `lines`,
+  // así que agregarles el `json_agg` sería trabajo desperdiciado en cada carga del dashboard.
+  private orderSelectColumns() {
+    // BLOQUEANTE 1 (QA 2026-08-31): `lines` solo transporta las columnas CRUDAS de `requisicion_items`
+    // (los mismos nombres que ya lee `item(row)`, arriba) — ningún total se calcula aquí; sigue viviendo
+    // en `calculateLineTotal`/`sumLines` (lib/domain/rules.ts), la única fuente de verdad también usada
+    // por el PDF. `filter (where ri.id is not null)` deja `lines: '[]'` en vez de una fila fantasma con
+    // todo NULL cuando la orden no tiene (o no debería tener) ítems.
+    return this.sql`o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.fecha_requerida as requisicion_fecha_requerida, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids, coalesce(json_agg(json_build_object('id', ri.id, 'item_id', ri.item_id, 'descripcion_libre', ri.descripcion_libre, 'cantidad', ri.cantidad, 'unidad', ri.unidad, 'posible_proveedor_texto', ri.posible_proveedor_texto, 'link_producto', ri.link_producto, 'proveedor_final_id', ri.proveedor_final_id, 'valor_base', ri.valor_base, 'iva', ri.iva, 'estado', ri.estado, 'motivo_declinacion', ri.motivo_declinacion, 'iva_tasa', ri.iva_tasa, 'descuento_tasa', ri.descuento_tasa) order by ri.created_at) filter (where ri.id is not null), '[]') as lines`;
+  }
+  // `ri` cuelga del mismo `left join orden_items oi` que ya resolvía `item_ids`: si algún día ambos joins
+  // dejan de compartir la misma fila, `lines` y `item_ids` dejarían de corresponder al mismo conjunto de
+  // ítems — no separar esta cadena sin revisar ese acoplamiento.
+  private orderFromJoins() {
+    return this.sql`from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id left join requisicion_items ri on ri.id=oi.requisicion_item_id`;
+  }
+  async listOrders(): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} group by o.id, r.id`; return rows.map(order); }
+  async listVisibleOrders(actor: Actor, query?: ListQuery): Promise<Order[] | Page<Order>> {
+    if (!query) {
+      const rows = isElevated(actor) ? await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} group by o.id, r.id` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} where r.aprobador_id=${actor.id} group by o.id, r.id` : await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} where r.solicitante_id=${actor.id} group by o.id, r.id`;
+      return rows.map(order);
+    }
+    // H3: fragmentos condicionales anidados (misma técnica documentada en el README de `postgres`, ver
+    // "Building queries" — sql`` vacío para el caso "sin filtro"). Orden estable fecha_generacion desc,
+    // id desc: mismas columnas que `ordenes_requisicion_idx`/`ordenes_estado_idx` ya usan, más id como
+    // desempate para que el cursor sea determinístico con fecha_generacion repetida.
+    const limit = pageLimit(query.limit);
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const statusFilter = query.status?.length ? this.sql`and o.estado_cumplimiento::text = any(${query.status})` : this.sql``;
+    const workFilter = query.workId ? this.sql`and r.obra_id = ${query.workId}` : this.sql``;
+    const fromFilter = query.from ? this.sql`and o.fecha_generacion >= ${query.from}::date` : this.sql``;
+    const toFilter = query.to ? this.sql`and o.fecha_generacion < (${query.to}::date + 1)` : this.sql``;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+    const cursorFilter = cursor ? this.sql`and (o.fecha_generacion, o.id) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : this.sql``;
+    const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} where true ${visibility} ${statusFilter} ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} group by o.id, r.id order by o.fecha_generacion desc, o.id desc limit ${limit + 1}`;
+    const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
+    const nextCursor = hasMore && last ? encodeCursor(toIsoInstant(last.fecha_generacion), String(last.id)) : null;
+    return { rows: pageRows.map(order), nextCursor };
+  }
+  async listByRequisition(requisitionId: string): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} where o.requisicion_id=${requisitionId} group by o.id, r.id`; return rows.map(order); }
+  async getOrder(id: string): Promise<Order | null> { const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} where o.id=${id} group by o.id, r.id`; return rows[0] ? order(rows[0]) : null; }
+  // H3: candidatos acotados para el dashboard (RF-1102) — superconjunto de lo que buildAttentionQueue
+  // podría necesitar para CUALQUIER rol (revisor: estado_cumplimiento generada/no_cumplida; contabilidad:
+  // estado_administrativo pendiente, salvo no_necesario — assertAdminTransition ya la excluye de
+  // contabilizar/pagar para siempre). Tope de 500 filas: protege el peor caso sin fingir que hace falta
+  // paginar una cola de atención, que por diseño es pequeña.
+  async listAttentionCandidates(actor: Actor): Promise<Order[]> {
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const rows = await this.sql<DbRow[]>`select o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id where (o.estado_cumplimiento in ('generada', 'no_cumplida') or (o.estado_administrativo = 'pendiente' and o.estado_cumplimiento <> 'no_necesario')) ${visibility} group by o.id, r.id order by o.fecha_generacion desc limit 500`;
+    return rows.map(order);
+  }
+  // H3: las `limit` órdenes visibles más recientes por `updated_at`, para buildRecentActivity. Nombrado
+  // "listOrdersRecentlyUpdated" (no "listRecentlyUpdated" a secas) para no chocar con el método
+  // homónimo de gastos más abajo en esta misma clase — cada uno se expone bajo el mismo nombre
+  // `listRecentlyUpdated` pero en su propia interfaz (OrderRepository/ExpenseRepository, ver el
+  // `.bind()` en `transactionRepositories`/`createPostgresDependencies`).
+  async listOrdersRecentlyUpdated(actor: Actor, limit: number): Promise<Order[]> {
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const rows = await this.sql<DbRow[]>`select o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id where true ${visibility} group by o.id, r.id order by o.updated_at desc, o.id desc limit ${limit}`;
+    return rows.map(order);
+  }
+  // H3: mismo criterio que `calculateDashboard` (lib/domain/rules.ts) para pendingOrders — estado_cumplimiento
+  // en generada|no_cumplida — resuelto en SQL con la misma visibilidad por actor que listVisibleOrders.
+  async dashboardPendingCount(actor: Actor): Promise<number> {
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const rows = await this.sql<{ total: string }[]>`select count(*) as total from ordenes o join requisiciones r on r.id=o.requisicion_id where o.estado_cumplimiento in ('generada', 'no_cumplida') ${visibility}`;
+    return Number(rows[0]?.total ?? 0);
+  }
   // `fecha` (fecha de pago) viaja nullable: un gasto recién nacido de una orden generada (aún sin
   // pagar) se guarda con `date` ausente en memoria -> NULL en la BD -> `periodo` NULL (columna
   // generada). `fecha_orden` sí siempre viaja (obligatoria en el dominio).
@@ -175,10 +330,84 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   async getExpense(id: string): Promise<Expense | null> { const rows = await this.sql<DbRow[]>`select * from gastos where id=${id}`; return rows[0] ? expense(rows[0]) : null; }
   async saveShares(shares: ExpenseShare[]): Promise<void> { if (!shares.length) return; await this.sql`delete from gastos_reparto where gasto_id=${shares[0].expenseId}`; for (const share of shares) await this.sql`insert into gastos_reparto (gasto_id, obra_id, valor) values (${share.expenseId}, ${share.workId}, ${share.amount})`; }
   async listExpenses(): Promise<Expense[]> { return (await this.sql<DbRow[]>`select * from gastos`).map(expense); }
-  async listVisibleExpenses(actor: Actor): Promise<Expense[]> { const rows = isElevated(actor) ? await this.sql<DbRow[]>`select * from gastos` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where r.aprobador_id=${actor.id}` : await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where r.solicitante_id=${actor.id}`; return rows.map(expense); }
+  // H3: `query` opcional y aditivo — mismo contrato que listVisibleRequisitions/listVisibleOrders.
+  // `status` de ListQuery NO aplica a gastos (no hay columna de estado en `gastos`): se ignora a
+  // propósito en vez de fallar, ver el comentario de ListQuery en lib/services/list-query.ts.
+  // NOTA para el revisor: la paginación de gastos ordena por `fecha_orden` (nace con el registro, NUNCA
+  // nula) en vez de `fecha` (fecha de PAGO, nula mientras la orden no se ha pagado) — un cursor de
+  // teclado sobre una columna nullable rompe la comparación de tupla `(a,b) < (cursor)` en SQL (NULL
+  // hace que la fila entera compare a UNKNOWN, nunca "menor que"), así que ordenar/paginar por `fecha`
+  // dejaría FUERA para siempre cualquier compromiso sin pagar. `from`/`to` sí filtran sobre `fecha`
+  // (fecha de pago), tal como se pidió: un rango de fechas sobre "cuándo se pagó" es la pregunta de
+  // negocio real, y excluye a los no pagados de forma correcta (no accidental).
+  async listVisibleExpenses(actor: Actor, query?: ListQuery): Promise<Expense[] | Page<Expense>> {
+    if (!query) {
+      const rows = isElevated(actor) ? await this.sql<DbRow[]>`select * from gastos` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where r.aprobador_id=${actor.id}` : await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where r.solicitante_id=${actor.id}`;
+      return rows.map(expense);
+    }
+    const limit = pageLimit(query.limit);
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const workFilter = query.workId ? this.sql`and g.obra_id = ${query.workId}` : this.sql``;
+    const fromFilter = query.from ? this.sql`and g.fecha >= ${query.from}::date` : this.sql``;
+    const toFilter = query.to ? this.sql`and g.fecha < (${query.to}::date + 1)` : this.sql``;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+    const cursorFilter = cursor ? this.sql`and (g.fecha_orden, g.id) < (${cursor.at}::date, ${cursor.id}::uuid)` : this.sql``;
+    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by g.fecha_orden desc, g.id desc limit ${limit + 1}`;
+    const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
+    const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha_orden) as string, String(last.id)) : null;
+    return { rows: pageRows.map(expense), nextCursor };
+  }
   async listByReference(referenceId: string): Promise<Expense[]> { return (await this.sql<DbRow[]>`select g.* from gastos g where g.referencia_id=${referenceId} or exists (select 1 from ordenes o where o.id=g.referencia_id and o.requisicion_id=${referenceId})`).map(expense); }
+  // H3: agregados en SQL que reproducen exactamente calculateDashboard/groupExpenseByWork/
+  // groupExpenseByTag/groupExpenseByPeriod (lib/domain/rules.ts) sobre la MISMA visibilidad por actor
+  // que listVisibleExpenses (join a ordenes/requisiciones para aprobador/solicitante; sin filtro para
+  // elevados). `g.periodo = (period || '-01')::date` en vez de `to_char(...) = period`: compara
+  // directamente contra la columna (permite usar los índices existentes sobre `periodo`); el `to_char`
+  // solo se usa para FORMATEAR la clave de salida de expenseByPeriod, nunca en un WHERE.
+  async dashboardAggregates(actor: Actor, period: string): Promise<{ periodExpense: number; inProcessValue: number; expenseByWork: DashboardAmountByKey[]; expenseByTag: DashboardAmountByKey[]; expenseByPeriod: DashboardAmountByKey[] }> {
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const periodStart = `${period}-01`;
+    const totalsRows = await this.sql<{ period_expense: string; in_process_value: string }[]>`select coalesce(sum(g.valor_total) filter (where g.periodo = ${periodStart}::date), 0) as period_expense, coalesce(sum(g.valor_total) filter (where g.fecha is null), 0) as in_process_value from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility}`;
+    const byWorkRows = await this.sql<{ key: string; total: string }[]>`select g.obra_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.obra_id order by total desc`;
+    const byTagRows = await this.sql<{ key: string | null; total: string }[]>`select g.etiqueta_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.etiqueta_id order by total desc`;
+    // order by periodo desc limit 6, invertido en JS: mismo resultado final que groupExpenseByPeriod
+    // (que ordena cronológico ascendente y se queda con los últimos `monthsBack`).
+    const byPeriodRows = await this.sql<{ key: string; total: string }[]>`select to_char(g.periodo, 'YYYY-MM') as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.periodo is not null ${visibility} group by g.periodo order by g.periodo desc limit 6`;
+    const totals = totalsRows[0];
+    return {
+      periodExpense: asNumber(totals?.period_expense), inProcessValue: asNumber(totals?.in_process_value),
+      expenseByWork: byWorkRows.map((row) => ({ key: String(row.key), total: asNumber(row.total) })),
+      expenseByTag: byTagRows.map((row) => ({ key: row.key ? String(row.key) : "", total: asNumber(row.total) })),
+      expenseByPeriod: byPeriodRows.map((row) => ({ key: row.key, total: asNumber(row.total) })).reverse(),
+    };
+  }
+  // H3: los `limit` gastos visibles más recientes, para buildRecentActivity — mismo fallback que la
+  // función de dominio (`expense.date ?? expense.orderDate`): coalesce(fecha, fecha_orden) desc.
+  // Nombrado "listExpensesRecentlyUpdated" para no chocar con el de órdenes — ver esa nota.
+  async listExpensesRecentlyUpdated(actor: Actor, limit: number): Promise<Expense[]> {
+    const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and r.aprobador_id = ${actor.id}` : this.sql`and r.solicitante_id = ${actor.id}`;
+    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} order by coalesce(g.fecha, g.fecha_orden) desc, g.id desc limit ${limit}`;
+    return rows.map(expense);
+  }
   async savePettyCash(value: PettyCash): Promise<Expense> { const inserted = await this.sql<DbRow[]>`insert into caja_menor (id, obra_id, fecha, concepto, etiqueta_id, valor, registrado_por) values (${value.id}, ${value.workId}, ${value.date}, ${value.concept}, ${value.tagId}, ${value.amount}, ${value.registeredBy}) returning gasto_id`; const expenseRows = await this.sql<DbRow[]>`select * from gastos where id=${String(inserted[0]?.gasto_id ?? "")}`; if (!expenseRows[0]) throw new Error("PETTY_CASH_EXPENSE_MISSING"); return expense(expenseRows[0]); }
-  async listPettyCash(): Promise<PettyCash[]> { const rows = await this.sql<DbRow[]>`select * from caja_menor`; return rows.map((row) => ({ id: String(row.id), workId: String(row.obra_id), date: asIsoDate(row.fecha) as string, concept: String(row.concepto), tagId: String(row.etiqueta_id), amount: asNumber(row.valor), registeredBy: String(row.registrado_por) })); }
+  // H3: `query` opcional y aditivo, mismo contrato que los demás. Caja menor no tiene visibilidad por
+  // actor (ver PettyCashRepository en contracts.ts), así que solo filtra/pagina, sin fragmento de
+  // visibilidad. `fecha` es NOT NULL aquí (se paga en el acto, reunión 2026-09): a diferencia de
+  // gastos, filtrar/paginar por la misma columna `fecha` no tiene el problema de NULLs del cursor.
+  async listPettyCash(query?: ListQuery): Promise<PettyCash[] | Page<PettyCash>> {
+    const mapRow = (row: DbRow) => ({ id: String(row.id), workId: String(row.obra_id), date: asIsoDate(row.fecha) as string, concept: String(row.concepto), tagId: String(row.etiqueta_id), amount: asNumber(row.valor), registeredBy: String(row.registrado_por) });
+    if (!query) { const rows = await this.sql<DbRow[]>`select * from caja_menor`; return rows.map(mapRow); }
+    const limit = pageLimit(query.limit);
+    const workFilter = query.workId ? this.sql`and c.obra_id = ${query.workId}` : this.sql``;
+    const fromFilter = query.from ? this.sql`and c.fecha >= ${query.from}::date` : this.sql``;
+    const toFilter = query.to ? this.sql`and c.fecha < (${query.to}::date + 1)` : this.sql``;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+    const cursorFilter = cursor ? this.sql`and (c.fecha, c.id) < (${cursor.at}::date, ${cursor.id}::uuid)` : this.sql``;
+    const rows = await this.sql<DbRow[]>`select c.* from caja_menor c where true ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by c.fecha desc, c.id desc limit ${limit + 1}`;
+    const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
+    const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha) as string, String(last.id)) : null;
+    return { rows: pageRows.map(mapRow), nextCursor };
+  }
   async append(event: AuditEvent): Promise<void> { await this.sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin ?? "web"}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(this.sql, event.data ?? {})})`; }
   async list(entity: string, entityId: string): Promise<AuditEvent[]> { const rows = await this.sql<DbRow[]>`select entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json from auditoria where entidad=${entity} and entidad_id=${entityId} order by fecha, id`; return rows.map((row) => ({ entity: String(row.entidad), entityId: String(row.entidad_id), event: String(row.evento).toLocaleLowerCase(), actorId: row.usuario_id ? String(row.usuario_id) : undefined, at: new Date(String(row.fecha)), data: row.datos_json && typeof row.datos_json === "object" ? row.datos_json as Record<string, unknown> : {}, origin: row.origen as AuditEvent["origin"] })); }
   async take(prefix: "REQ" | "OC" | "OP", year: number): Promise<string> { const rows = await this.sql<DbRow[]>`insert into consecutivos (tipo_documento, anio, siguiente) values (${prefix}, ${year}, 2) on conflict (tipo_documento, anio) do update set siguiente=consecutivos.siguiente+1 returning siguiente-1 as value`; return `${prefix}-${year}-${String(rows[0].value).padStart(4, "0")}`; }
@@ -282,7 +511,20 @@ class PostgresTransactionManager implements TransactionManager {
   constructor(private readonly sql: Sql) {}
   async transaction<T>(lockKey: string | undefined, work: (repositories: TransactionRepositories) => Promise<T>): Promise<T> { return this.sql.begin(async (tx) => { const [kind, id] = lockKey?.includes(":") ? lockKey.split(":", 2) : ["requisition", lockKey]; if (id && kind === "requisition") await tx`select id from requisiciones where id=${id} for update`; else if (id && kind === "order") await tx`select id from ordenes where id=${id} for update`; else if (id && kind === "expense") await tx`select id from gastos where id=${id} for update`; return work(transactionRepositories(new PostgresPorts(tx as unknown as Sql))); }) as Promise<T>; }
 }
-function transactionRepositories(ports: PostgresPorts): TransactionRepositories { return { requisitions: { get: ports.getRequisition.bind(ports), save: ports.saveRequisition.bind(ports), list: ports.listRequisitions.bind(ports), listVisibleTo: ports.listVisibleRequisitions.bind(ports) }, orders: { save: ports.saveOrder.bind(ports), list: ports.listOrders.bind(ports), listVisibleTo: ports.listVisibleOrders.bind(ports), listByRequisition: ports.listByRequisition.bind(ports), get: ports.getOrder.bind(ports) }, expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), deleteByReference: ports.deleteExpenseByReference.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports) }, pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) }, audit: ports, consecutives: ports, features: ports, items: ports, catalogs: ports, notifications: ports }; }
+// H3: los métodos nuevos (listVisibleHeaders/dashboardByStatus/listAttentionCandidates/
+// listRecentlyUpdated/dashboardPendingCount/dashboardAggregates) son de SOLO LECTURA — se exponen aquí
+// igual que los demás para que el shape de TransactionRepositories/ServiceDependencies sea uno solo,
+// pero en la práctica el dashboard y las listas paginadas siempre usan `createPostgresDependencies()`
+// directamente (fuera de una transacción explícita), nunca `deps.transactions.transaction(...)`.
+function transactionRepositories(ports: PostgresPorts): TransactionRepositories {
+  return {
+    requisitions: { get: ports.getRequisition.bind(ports), save: ports.saveRequisition.bind(ports), list: ports.listRequisitions.bind(ports), listVisibleTo: ports.listVisibleRequisitions.bind(ports), listVisibleHeaders: ports.listVisibleHeaders.bind(ports), dashboardByStatus: ports.dashboardByStatus.bind(ports) },
+    orders: { save: ports.saveOrder.bind(ports), list: ports.listOrders.bind(ports), listVisibleTo: ports.listVisibleOrders.bind(ports), listByRequisition: ports.listByRequisition.bind(ports), get: ports.getOrder.bind(ports), listAttentionCandidates: ports.listAttentionCandidates.bind(ports), listRecentlyUpdated: ports.listOrdersRecentlyUpdated.bind(ports), dashboardPendingCount: ports.dashboardPendingCount.bind(ports) },
+    expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), deleteByReference: ports.deleteExpenseByReference.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports), dashboardAggregates: ports.dashboardAggregates.bind(ports), listRecentlyUpdated: ports.listExpensesRecentlyUpdated.bind(ports) },
+    pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) },
+    audit: ports, consecutives: ports, features: ports, items: ports, catalogs: ports, notifications: ports,
+  };
+}
 export function createPostgresDependencies(databaseUrl = runtimeEnv().DATABASE_URL): ServiceDependencies {
   const sql = sharedPostgres(databaseUrl), ports = new PostgresPorts(sql);
   const publicAccess: PublicAccessVerifier = { verify: async (workId, linkToken, code) => { const env = publicEnv(); if (!safeEqual(hmacSha256(workId, env.PUBLIC_FORM_CODE_PEPPER), linkToken)) return false; const rows = await sql<DbRow[]>`select o.public_submission_enabled and public.verificar_codigo_publico(${code}) as valid from obras o where o.id=${workId}`; return rows[0]?.valid === true; } };

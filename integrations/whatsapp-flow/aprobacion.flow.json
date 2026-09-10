@@ -1,0 +1,153 @@
+{
+  "version": "7.3",
+  "screens": [
+    {
+      "id": "REVISION",
+      "title": "Aprobación",
+      "data": {
+        "requisitionId": {
+          "type": "string",
+          "__example__": "11111111-1111-1111-1111-111111111111"
+        },
+        "encabezado": {
+          "type": "string",
+          "__example__": "REQ-2026-0004 · Obra La Pradera"
+        },
+        "resumen": {
+          "type": "string",
+          "__example__": "Solicita: Daniel Gómez\nTotal vigente: $18.088.000"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "22222222-2222-2222-2222-222222222222",
+              "title": "Cemento gris 50kg",
+              "description": "400 bulto · $18.088.000"
+            },
+            {
+              "id": "33333333-3333-3333-3333-333333333333",
+              "title": "Varilla 1/2\" x 6m",
+              "description": "50 unidad · $1.250.000"
+            }
+          ]
+        },
+        "preseleccion": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "__example__": [
+            "22222222-2222-2222-2222-222222222222",
+            "33333333-3333-3333-3333-333333333333"
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "${data.encabezado}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.resumen}"
+          },
+          {
+            "type": "CheckboxGroup",
+            "name": "aprobados",
+            "label": "Ítems a aprobar",
+            "description": "Vienen todos marcados. Desmarca el que NO apruebes.",
+            "required": false,
+            "data-source": "${data.items}",
+            "init-value": "${data.preseleccion}"
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DECISION"
+              },
+              "payload": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "DECISION",
+      "title": "Tu decisión",
+      "terminal": true,
+      "success": true,
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Confirma tu decisión"
+          },
+          {
+            "type": "TextBody",
+            "text": "Aprobar aplica lo que marcaste. Devolver regresa toda la requisición al revisor."
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "accion",
+            "label": "Decisión",
+            "required": true,
+            "data-source": [
+              {
+                "id": "aprobar",
+                "title": "Aprobar"
+              },
+              {
+                "id": "devolver",
+                "title": "Devolver al revisor"
+              }
+            ]
+          },
+          {
+            "type": "TextArea",
+            "name": "motivo",
+            "label": "Motivo",
+            "required": false,
+            "max-length": 500,
+            "helper-text": "Obligatorio para devolver. Explica también lo que desmarcaste."
+          },
+          {
+            "type": "Footer",
+            "label": "Enviar decisión",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "kind": "aprobacion",
+                "requisitionId": "${screen.REVISION.data.requisitionId}",
+                "aprobados": "${screen.REVISION.form.aprobados}",
+                "accion": "${form.accion}",
+                "motivo": "${form.motivo}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

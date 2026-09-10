@@ -36,7 +36,10 @@ const DATA_DIR = path.join(ROOT, ".embedded-postgres-verify");
 const PORT = 55987; // puerto alto, poco probable que choque con un Postgres local de verdad.
 const DB_NAME = "mizar_verify";
 
-const PRELUDE = path.join(ROOT, "supabase", "tests", "embedded_postgres_prelude.sql");
+// El mismo bootstrap que se aplica al Postgres autoalojado en producción (ver
+// docs/migracion-autoalojado.md). Deliberadamente NO es una copia: CI debe arrancar desde el mismo
+// punto de partida que el servidor real, o dejaría de probar lo que se despliega.
+const PRELUDE = path.join(ROOT, "supabase", "bootstrap", "00_compat_autoalojado.sql");
 const MIGRATIONS_DIR = path.join(ROOT, "supabase", "migrations");
 const LEGACY_DIR = path.join(ROOT, "supabase", "tests", "legacy");
 const SEED = path.join(ROOT, "supabase", "seed.sql");
@@ -49,6 +52,11 @@ const HARNESSES = [
   path.join(ROOT, "supabase", "tests", "aprobador_elegido_verification.sql"),
   path.join(ROOT, "supabase", "tests", "acceso_publico_verification.sql"),
   path.join(ROOT, "supabase", "tests", "gasto_fecha_pago_verification.sql"),
+  // Migración a autoalojado (2026-09-10): sesiones propias en reemplazo del JWT de Supabase.
+  path.join(ROOT, "supabase", "tests", "sesiones_verification.sql"),
+  // Fase 3 del plan de rendimiento (2026-09-10, hallazgo H3): índices para las consultas paginadas y
+  // los agregados del dashboard.
+  path.join(ROOT, "supabase", "tests", "indices_rendimiento_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

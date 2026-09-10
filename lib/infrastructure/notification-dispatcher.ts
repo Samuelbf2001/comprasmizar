@@ -4,7 +4,33 @@ import { sharedPostgres } from "./postgres-repositories";
 import { asJsonb } from "./jsonb";
 
 /** Only `sendTemplate` is needed to dispatch; no webhook secret or event store required. */
-export type NotificationSendAdapter = Pick<KapsoAdapter, "sendTemplate">;
+export type NotificationSendAdapter = Pick<KapsoAdapter, "sendTemplate"> & {
+  /**
+   * Opcional: entrega la notificación del aprobador como el WhatsApp Flow de aprobación en vez de
+   * una plantilla de texto, para que decida sin salir del chat. Solo se usa para el template
+   * `pendiente_aprobador` (el único cuya acción cabe en un Flow) y solo cuando el llamador lo
+   * inyecta — sin él, o si su Flow no está configurado, esta cola se comporta exactamente como
+   * antes. Debe resolver los mismos fallos que `sendTemplate` (el reintento/backoff no cambia).
+   *
+   * `fallback` es exactamente el envío de plantilla que el despachador habría hecho: se entrega
+   * para que la política de "cuándo NO se puede usar el Flow" (requisición con demasiados ítems,
+   * ya no está en aprobación) viva en el cableado y no aquí, sin que este módulo tenga que saber
+   * qué errores del emisor son recuperables.
+   */
+  sendApprovalFlow?(input: { to: string; requisitionId: string; fallback: () => Promise<{ messageId: string }> }): Promise<{ messageId: string }>;
+};
+
+/** Template cuya notificación puede entregarse como Flow. Vive aquí, junto al despachador, porque
+ * es él quien decide el canal; quien la encola (`sendForApproval`) no sabe nada de Flows. */
+const APPROVAL_TEMPLATE = "pendiente_aprobador";
+/**
+ * Devuelve la requisición sobre la que va la notificación cuando ESTA notificación puede salir como
+ * Flow de aprobación; `null` para todo lo demás (y entonces se envía la plantilla de siempre).
+ */
+function approvalFlowTarget(notification: PendingNotification, adapter: NotificationSendAdapter): string | null {
+  if (!adapter.sendApprovalFlow || notification.template !== APPROVAL_TEMPLATE) return null;
+  return extractRequisitionId(notification.payload);
+}
 
 export interface PendingNotification {
   id: string;
@@ -93,7 +119,11 @@ export async function dispatchPendingNotifications(store: NotificationDispatchSt
       continue;
     }
     try {
-      const { messageId } = await adapter.sendTemplate({ to: notification.phone, template: notification.template, payload: toTemplatePayload(notification.payload) });
+      const sendAsTemplate = () => adapter.sendTemplate({ to: notification.phone, template: notification.template, payload: toTemplatePayload(notification.payload) });
+      const approvalRequisitionId = approvalFlowTarget(notification, adapter);
+      const { messageId } = approvalRequisitionId
+        ? await adapter.sendApprovalFlow!({ to: notification.phone, requisitionId: approvalRequisitionId, fallback: sendAsTemplate })
+        : await sendAsTemplate();
       await store.markSent(notification.id, { messageId, phone: notification.phone, template: notification.template, payload: notification.payload }, now());
       outcome.sent++;
     } catch (error) {

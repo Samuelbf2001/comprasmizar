@@ -6,7 +6,8 @@
  * exacto en integrations/whatsapp-flow/README.md.
  *
  * Uso:
- *   npx tsx scripts/publish-whatsapp-flow.ts
+ *   npx tsx scripts/publish-whatsapp-flow.ts             # Flow de captura (por defecto)
+ *   npx tsx scripts/publish-whatsapp-flow.ts aprobacion  # Flow de aprobación
  *
  * Variables de entorno requeridas (ver .env.local):
  *   KAPSO_API_KEY        - header X-API-Key contra el proxy de Kapso
@@ -25,8 +26,23 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const FLOW_NAME = "Requisición de obra – Mizar";
-const FLOW_JSON_PATH = resolve("integrations/whatsapp-flow/requisicion.flow.json");
+/**
+ * Los dos Flows del proyecto. El nombre es la CLAVE de búsqueda contra la WABA (por eso debe ser
+ * estable: cambiarlo haría que el script cree un Flow nuevo en vez de actualizar el existente).
+ * `requisicion` sigue siendo el valor por defecto para no romper el comando ya documentado.
+ */
+const FLOWS = {
+  requisicion: { name: "Requisición de obra – Mizar", path: "integrations/whatsapp-flow/requisicion.flow.json" },
+  aprobacion: { name: "Aprobación de requisición – Mizar", path: "integrations/whatsapp-flow/aprobacion.flow.json" },
+} as const;
+type FlowKey = keyof typeof FLOWS;
+const requestedFlow = (process.argv[2]?.trim() || "requisicion") as FlowKey;
+if (!(requestedFlow in FLOWS)) {
+  process.stderr.write(`Flow desconocido: "${requestedFlow}". Opciones: ${Object.keys(FLOWS).join(", ")}\n`);
+  process.exit(1);
+}
+const FLOW_NAME = FLOWS[requestedFlow].name;
+const FLOW_JSON_PATH = resolve(FLOWS[requestedFlow].path);
 
 type FlowListItem = { id: string; name: string; status: string; categories?: string[]; validation_errors?: unknown[] };
 type FlowListResponse = { data: FlowListItem[] };
@@ -95,7 +111,7 @@ async function main(): Promise<void> {
     validationErrors = created.validation_errors ?? [];
   }
 
-  process.stdout.write(`${JSON.stringify({ action, flow_id: flowId, validation_errors: validationErrors }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ flow: requestedFlow, action, flow_id: flowId, validation_errors: validationErrors }, null, 2)}\n`);
   if (validationErrors.length > 0) {
     process.stderr.write("La API de Meta reportó errores de validación en el Flow JSON. Corrígelos antes de publicar.\n");
     process.exitCode = 1;

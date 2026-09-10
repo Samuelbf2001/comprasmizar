@@ -2,7 +2,7 @@ import { type Sql } from "postgres";
 import type { AttachmentEntity, PrivateAttachment, RequisitionStatus } from "../domain";
 import type { PrivateAttachmentRepository, PrivateAttachmentServiceDependencies, PrivateAttachmentTransaction, PrivateAttachmentTransactionManager } from "../services/attachment-service";
 import { PRIVATE_ATTACHMENT_BUCKET } from "../services/attachment-service";
-import { createSupabaseServiceClient } from "./supabase";
+import { createLocalBucketStorage } from "./local-storage";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 import { asJsonb } from "./jsonb";
@@ -26,16 +26,27 @@ class PostgresAttachmentRepository implements PrivateAttachmentRepository {
   }
   async list(entity: AttachmentEntity, entityId: string): Promise<PrivateAttachment[]> { return (await this.sql<Row[]>`select id, entidad, entidad_id, tipo, nombre_original, mime_type, tamano_bytes, subido_por, fecha, url_storage from adjuntos where entidad=${entity} and entidad_id=${entityId} and storage_bucket=${PRIVATE_ATTACHMENT_BUCKET} order by fecha desc`).map(attachment); }
   async get(entity: AttachmentEntity, entityId: string, attachmentId: string): Promise<PrivateAttachment | null> { const rows = await this.sql<Row[]>`select id, entidad, entidad_id, tipo, nombre_original, mime_type, tamano_bytes, subido_por, fecha, url_storage from adjuntos where id=${attachmentId} and entidad=${entity} and entidad_id=${entityId} and storage_bucket=${PRIVATE_ATTACHMENT_BUCKET}`; return rows[0] ? attachment(rows[0]) : null; }
+  // H2 (docs/plan-rendimiento.md): adjuntos de la requisición y de TODOS sus ítems en una sola
+  // consulta (dos ramas del `or`, sin N+1 por ítem).
+  async listForRequisition(requisitionId: string): Promise<PrivateAttachment[]> {
+    return (await this.sql<Row[]>`
+      select id, entidad, entidad_id, tipo, nombre_original, mime_type, tamano_bytes, subido_por, fecha, url_storage
+      from adjuntos
+      where storage_bucket=${PRIVATE_ATTACHMENT_BUCKET}
+        and (
+          (entidad='requisicion' and entidad_id=${requisitionId})
+          or (entidad='requisicion_item' and entidad_id in (select id from requisicion_items where requisicion_id=${requisitionId}))
+        )
+      order by fecha desc`).map(attachment);
+  }
+  // H2: adjuntos de varias filas del MISMO tipo de entidad en una sola consulta (`any(...)`).
+  async listMany(entity: AttachmentEntity, entityIds: string[]): Promise<PrivateAttachment[]> {
+    return (await this.sql<Row[]>`select id, entidad, entidad_id, tipo, nombre_original, mime_type, tamano_bytes, subido_por, fecha, url_storage from adjuntos where storage_bucket=${PRIVATE_ATTACHMENT_BUCKET} and entidad=${entity} and entidad_id = any(${entityIds}::uuid[]) order by fecha desc`).map(attachment);
+  }
   async insert(value: PrivateAttachment): Promise<PrivateAttachment> { const rows = await this.sql<Row[]>`insert into adjuntos (id, entidad, entidad_id, storage_bucket, url_storage, tipo, nombre_original, mime_type, tamano_bytes, subido_por, fecha) values (${value.id}, ${value.entity}, ${value.entityId}, ${PRIVATE_ATTACHMENT_BUCKET}, ${value.storagePath}, ${value.type}, ${value.name}, ${value.mimeType}, ${value.sizeBytes}, ${value.uploadedBy ?? null}, ${value.uploadedAt}) returning id, entidad, entidad_id, tipo, nombre_original, mime_type, tamano_bytes, subido_por, fecha, url_storage`; return attachment(rows[0]); }
 }
 class PostgresAttachmentTransactions implements PrivateAttachmentTransactionManager {
   constructor(private readonly sql: Sql) {}
   async transaction<T>(entity: AttachmentEntity, entityId: string, work: (tx: PrivateAttachmentTransaction) => Promise<T>): Promise<T> { return this.sql.begin(async (sql) => { await sql.unsafe(attachmentLockStatement(entity), [entityId]); const repository = new PostgresAttachmentRepository(sql as unknown as Sql); return work({ attachments: repository, audit: { append: async (event) => { await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(sql, event.data ?? {})})`; } } }); }) as Promise<T>; }
 }
-class SupabaseAttachmentStorage {
-  private readonly client = createSupabaseServiceClient();
-  async createUploadUrl(path: string): Promise<{ url: string }> { const result = await this.client.storage.from(PRIVATE_ATTACHMENT_BUCKET).createSignedUploadUrl(path, { upsert: false }); if (result.error || !result.data?.signedUrl) throw new Error("ATTACHMENT_STORAGE_UPLOAD_URL_FAILED"); return { url: result.data.signedUrl }; }
-  async info(path: string): Promise<{ sizeBytes: number; mimeType: string } | null> { const bucket = this.client.storage.from(PRIVATE_ATTACHMENT_BUCKET) as unknown as { info(path: string): Promise<{ data: { metadata?: { size?: number | string; mimetype?: string; contentType?: string }; size?: number | string; mimetype?: string; content_type?: string } | null; error: unknown }> }; const result = await bucket.info(path); if (result.error || !result.data) return null; const metadata = result.data.metadata ?? {}, size = Number(metadata.size ?? result.data.size), mimeType = String(metadata.mimetype ?? metadata.contentType ?? result.data.mimetype ?? result.data.content_type ?? ""); return Number.isInteger(size) && size >= 0 && mimeType ? { sizeBytes: size, mimeType } : null; }
-  async createDownloadUrl(path: string, expiresInSeconds: number): Promise<string> { const result = await this.client.storage.from(PRIVATE_ATTACHMENT_BUCKET).createSignedUrl(path, expiresInSeconds); if (result.error || !result.data?.signedUrl) throw new Error("ATTACHMENT_STORAGE_DOWNLOAD_URL_FAILED"); return result.data.signedUrl; }
-}
-export function createPrivateAttachmentServiceDependencies(databaseUrl = runtimeEnv().DATABASE_URL): PrivateAttachmentServiceDependencies { return { transactions: new PostgresAttachmentTransactions(sharedPostgres(databaseUrl)), storage: new SupabaseAttachmentStorage(), clock: { now: () => new Date() }, ids: { next: () => crypto.randomUUID() } }; }
+export function createPrivateAttachmentServiceDependencies(databaseUrl = runtimeEnv().DATABASE_URL): PrivateAttachmentServiceDependencies { return { transactions: new PostgresAttachmentTransactions(sharedPostgres(databaseUrl)), storage: createLocalBucketStorage(PRIVATE_ATTACHMENT_BUCKET), clock: { now: () => new Date() }, ids: { next: () => crypto.randomUUID() } }; }

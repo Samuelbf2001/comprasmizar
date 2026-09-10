@@ -1,9 +1,43 @@
-import type { Actor, AuditEvent, Expense, ExpenseShare, Order, PettyCash, Requisition, Role } from "../domain";
+import type { Actor, AuditEvent, DashboardAmountByKey, Expense, ExpenseShare, Order, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
+import type { ListQuery, Page } from "./list-query";
 
 /** Persistence ports. Infrastructure adapters (e.g. Supabase) implement these; domain services do not depend on them. */
-/** `listVisibleTo` is mandatory: adapters must apply the actor's server-side/RLS scope, never a service-role global list. */
-export interface RequisitionRepository { get(id: string): Promise<Requisition | null>; save(requisition: Requisition): Promise<void>; list(): Promise<Requisition[]>; listVisibleTo(actor: Actor): Promise<Requisition[]>; }
-export interface OrderRepository { save(order: Order): Promise<void>; list(): Promise<Order[]>; listVisibleTo(actor: Actor): Promise<Order[]>; listByRequisition(requisitionId: string): Promise<Order[]>; get(id: string): Promise<Order | null>; }
+/**
+ * H3 (docs/plan-rendimiento.md, Fase 3): `listVisibleTo` acepta un `ListQuery` opcional. Sin `query`
+ * (`undefined`) el comportamiento es EXACTAMENTE el de siempre: `Requisition[]` sin límite, ítems
+ * cargados por lote. Con `query` aplica filtros y paginación por cursor en SQL y devuelve
+ * `Page<Requisition>` — la unión de retorno es deliberada (en vez de sobrecargas + `.bind()`, que no
+ * componen bien con el tipo de `Function.prototype.bind`); el servicio (`ProcurementService`) es quien
+ * expone la firma limpia y separada (`listRequisitions` vs `listRequisitionsPage`).
+ * `listVisibleHeaders`: variante SIN ítems para el dashboard (RF-1102) — la cola de atención y la
+ * actividad reciente no los usan (ver `buildAttentionQueue`/`buildRecentActivity` en `lib/domain/rules.ts`),
+ * así que cargarlos ahí sería trabajo desperdiciado. `orderBy` por defecto es `created_at`; `updated_at`
+ * es el que usa la actividad reciente.
+ * `dashboardByStatus`: conteo por estado con la MISMA visibilidad por actor que `listVisibleTo`, para
+ * que `dashboard()` no tenga que cargar la colección completa solo para contar (H3).
+ */
+export interface RequisitionRepository {
+  get(id: string): Promise<Requisition | null>; save(requisition: Requisition): Promise<void>; list(): Promise<Requisition[]>;
+  listVisibleTo(actor: Actor, query?: ListQuery): Promise<Requisition[] | Page<Requisition>>;
+  listVisibleHeaders(actor: Actor, options?: { status?: RequisitionStatus[]; orderBy?: "created_at" | "updated_at"; limit?: number }): Promise<Requisition[]>;
+  dashboardByStatus(actor: Actor): Promise<Record<RequisitionStatus, number>>;
+}
+/**
+ * `listAttentionCandidates`: superconjunto acotado (no la colección completa) de órdenes que
+ * `buildAttentionQueue` podría necesitar para CUALQUIER rol — `estado_cumplimiento in ('generada',
+ * 'no_cumplida')` o `estado_administrativo = 'pendiente'` (y no `no_necesario`) —, con la visibilidad
+ * por actor de `listVisibleOrders`. `listRecentlyUpdated`: las `limit` órdenes más recientes por
+ * `updated_at`, para `buildRecentActivity`. `dashboardPendingCount`: cuenta de `pendingOrders`
+ * (mismo criterio que `calculateDashboard` en `lib/domain/rules.ts`) resuelta en SQL.
+ */
+export interface OrderRepository {
+  save(order: Order): Promise<void>; list(): Promise<Order[]>;
+  listVisibleTo(actor: Actor, query?: ListQuery): Promise<Order[] | Page<Order>>;
+  listByRequisition(requisitionId: string): Promise<Order[]>; get(id: string): Promise<Order | null>;
+  listAttentionCandidates(actor: Actor): Promise<Order[]>;
+  listRecentlyUpdated(actor: Actor, limit: number): Promise<Order[]>;
+  dashboardPendingCount(actor: Actor): Promise<number>;
+}
 /**
  * `save` inserta con `on conflict (origen, referencia_id) do nothing` (ver adaptador Postgres): nunca
  * sirve para actualizar un gasto ya existente. `markPaid` es el método dedicado para fijar la fecha de
@@ -16,10 +50,33 @@ export interface OrderRepository { save(order: Order): Promise<void>; list(): Pr
  * `on delete restrict`, por eso el reparto se borra PRIMERO) en la MISMA transacción del llamador — usado
  * cuando una orden `contabilizada` pasa a `no_necesario` y su gasto (aún sin pagar) debe anularse por
  * completo, no solo dejarlo huérfano sin fecha para siempre.
+ *
+ * H3: `dashboardAggregates` reproduce EXACTAMENTE lo que `calculateDashboard`/`groupExpenseByWork`/
+ * `groupExpenseByTag`/`groupExpenseByPeriod` (lib/domain/rules.ts) calculaban sobre la colección
+ * completa — `periodExpense`/`inProcessValue` sobre `gastos.fecha` (fecha de PAGO, nullable: NULL =
+ * compromiso sin pagar; ver 202609070003_gasto_fecha_pago.sql), `expenseByWork`/`expenseByTag`/
+ * `expenseByPeriod` solo gastos PAGADOS (`fecha is not null`), mismo criterio "gasto = pagado" que el
+ * dominio — pero agregado en SQL con la visibilidad por actor de `listVisibleExpenses`, sin traer una
+ * sola fila de `gastos` a memoria. `listRecentlyUpdated` ordena por `coalesce(fecha, fecha_orden)
+ * desc` (mismo fallback que `buildRecentActivity`: un compromiso sin pagar usa su fecha de nacimiento),
+ * para las 8 más recientes de la actividad reciente.
  */
-export interface ExpenseRepository { get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string): Promise<number>; deleteByReference(origin: Expense["origin"], referenceId: string): Promise<void>; saveShares(shares: ExpenseShare[]): Promise<void>; list(): Promise<Expense[]>; listVisibleTo(actor: Actor): Promise<Expense[]>; listByReference(referenceId: string): Promise<Expense[]>; }
-/** Persistence returns the expense created by the database trigger in the same transaction. */
-export interface PettyCashRepository { save(entry: PettyCash): Promise<Expense>; list(): Promise<PettyCash[]>; }
+export interface ExpenseRepository {
+  get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string): Promise<number>;
+  deleteByReference(origin: Expense["origin"], referenceId: string): Promise<void>; saveShares(shares: ExpenseShare[]): Promise<void>; list(): Promise<Expense[]>;
+  listVisibleTo(actor: Actor, query?: ListQuery): Promise<Expense[] | Page<Expense>>;
+  listByReference(referenceId: string): Promise<Expense[]>;
+  dashboardAggregates(actor: Actor, period: string): Promise<{ periodExpense: number; inProcessValue: number; expenseByWork: DashboardAmountByKey[]; expenseByTag: DashboardAmountByKey[]; expenseByPeriod: DashboardAmountByKey[] }>;
+  listRecentlyUpdated(actor: Actor, limit: number): Promise<Expense[]>;
+}
+/**
+ * Persistence returns the expense created by the database trigger in the same transaction.
+ * H3: `list` acepta un `ListQuery` opcional (mismo contrato que los demás — sin `query`, comportamiento
+ * intacto). La caja menor NO tiene visibilidad por actor propia (ver `ProcurementService.listPettyCash`:
+ * cualquier actor con permiso `petty_cash:read` ve toda la caja menor), así que a diferencia de los
+ * otros tres repositorios este método no recibe `Actor`.
+ */
+export interface PettyCashRepository { save(entry: PettyCash): Promise<Expense>; list(query?: ListQuery): Promise<PettyCash[] | Page<PettyCash>>; }
 export interface AuditRepository { append(event: AuditEvent): Promise<void>; list(entity: string, entityId: string): Promise<AuditEvent[]>; }
 export interface ConsecutiveRepository { take(prefix: "REQ" | "OC" | "OP", year: number): Promise<string>; }
 /** Verifies a public link and code without exposing storage or clear-text comparison to the service. */

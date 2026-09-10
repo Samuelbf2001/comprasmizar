@@ -2,7 +2,7 @@ import { type Sql } from "postgres";
 import type { Supplier, SupplierDocument, SupplierOrderHistory } from "../domain";
 import type { SupplierRepository, SupplierServiceDependencies, SupplierTransaction, SupplierTransactionManager } from "../services/supplier-service";
 import { SUPPLIER_DOCUMENT_BUCKET } from "../services/supplier-service";
-import { createSupabaseServiceClient } from "./supabase";
+import { createLocalBucketStorage } from "./local-storage";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 import { asJsonb } from "./jsonb";
@@ -29,13 +29,7 @@ class PostgresSupplierTransactions implements SupplierTransactionManager {
   constructor(private readonly sql: Sql) {}
   async transaction<T>(supplierId: string | undefined, work: (tx: SupplierTransaction) => Promise<T>): Promise<T> { return this.sql.begin(async (sql) => { if (supplierId) await sql`select id from proveedores where id=${supplierId} for update`; const repository = new PostgresSupplierRepository(sql as unknown as Sql); const tx: SupplierTransaction = { suppliers: repository, features: { isEnabled: async (name) => (await sql<{ activo: boolean }[]>`select activo from modulos where nombre=${name} for share`)[0]?.activo === true }, audit: { append: async (event) => { await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(sql, event.data ?? {})})`; } } }; return work(tx); }) as Promise<T>; }
 }
-class SupabaseSupplierStorage {
-  private readonly client = createSupabaseServiceClient();
-  async createUploadUrl(path: string): Promise<{ url: string }> { const bucket = this.client.storage.from(SUPPLIER_DOCUMENT_BUCKET), result = await bucket.createSignedUploadUrl(path, { upsert: false }); if (result.error || !result.data?.signedUrl) throw new Error("SUPPLIER_STORAGE_UPLOAD_URL_FAILED"); return { url: result.data.signedUrl }; }
-  async info(path: string): Promise<{ sizeBytes: number; mimeType: string } | null> { const bucket = this.client.storage.from(SUPPLIER_DOCUMENT_BUCKET) as unknown as { info(path: string): Promise<{ data: { metadata?: { size?: number | string; mimetype?: string; contentType?: string }; size?: number | string; mimetype?: string; content_type?: string } | null; error: unknown }> }; const result = await bucket.info(path); if (result.error || !result.data) return null; const metadata = result.data.metadata ?? {}, size = Number(metadata.size ?? result.data.size), mimeType = String(metadata.mimetype ?? metadata.contentType ?? result.data.mimetype ?? result.data.content_type ?? ""); return Number.isInteger(size) && size >= 0 && mimeType ? { sizeBytes: size, mimeType } : null; }
-  async createDownloadUrl(path: string, expiresInSeconds: number): Promise<string> { const result = await this.client.storage.from(SUPPLIER_DOCUMENT_BUCKET).createSignedUrl(path, expiresInSeconds); if (result.error || !result.data?.signedUrl) throw new Error("SUPPLIER_STORAGE_DOWNLOAD_URL_FAILED"); return result.data.signedUrl; }
-}
-export function createSupplierServiceDependencies(databaseUrl = runtimeEnv().DATABASE_URL): SupplierServiceDependencies { const sql = sharedPostgres(databaseUrl); return { transactions: new PostgresSupplierTransactions(sql), storage: new SupabaseSupplierStorage(), clock: { now: () => new Date() }, ids: { next: () => crypto.randomUUID() } }; }
+export function createSupplierServiceDependencies(databaseUrl = runtimeEnv().DATABASE_URL): SupplierServiceDependencies { const sql = sharedPostgres(databaseUrl); return { transactions: new PostgresSupplierTransactions(sql), storage: createLocalBucketStorage(SUPPLIER_DOCUMENT_BUCKET), clock: { now: () => new Date() }, ids: { next: () => crypto.randomUUID() } }; }
 
 /**
  * Lectura directa de un proveedor con su `contact` completo (nombre de contacto, teléfono, correo,

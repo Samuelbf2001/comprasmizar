@@ -104,34 +104,17 @@ describe("RF-302: filtros en la bandeja de revisión", () => {
 });
 
 describe("RF-506: filtros en el panel de órdenes", () => {
-  const requisitions = [
-    {
-      id: "req-1",
-      consecutive: "RQ-001",
-      type: "compra" as const,
-      workId: "work-1",
-      channel: "web",
-      requiredDate: "2026-08-05",
-      status: "aprobada",
-      items: [],
-    },
-    {
-      id: "req-2",
-      consecutive: "RQ-002",
-      type: "compra" as const,
-      workId: "work-2",
-      channel: "web",
-      requiredDate: "2026-08-15",
-      status: "aprobada",
-      items: [],
-    },
-  ];
+  // H2/H3 (docs/plan-rendimiento.md): la orden ya no se une en cliente con TODAS las
+  // requisiciones para saber su obra — `workId`/`requisitionConsecutive` ya viajan en cada fila
+  // (join del servidor, ver OrderRow en shared.tsx), así que el fixture los trae directo.
   const orderRows = [
     {
       id: "order-1",
       consecutive: "OC-001",
       type: "OC" as const,
       requisitionId: "req-1",
+      requisitionConsecutive: "RQ-001",
+      workId: "work-1",
       supplierId: "supplier-1",
       status: "generada",
     },
@@ -140,15 +123,17 @@ describe("RF-506: filtros en el panel de órdenes", () => {
       consecutive: "OC-002",
       type: "OC" as const,
       requisitionId: "req-2",
+      requisitionConsecutive: "RQ-002",
+      workId: "work-2",
       supplierId: "supplier-2",
       status: "no_cumplida",
     },
   ];
 
-  it("filtra por obra usando la requisición vinculada (la orden no guarda obra propia)", () => {
+  it("filtra por obra usando el workId que ya viaja en la orden (join del servidor)", () => {
     render(
       <ConnectedOrders
-        data={{ rows: orderRows, requisitions, catalogs }}
+        data={{ rows: orderRows, catalogs }}
         role="Contabilidad"
         refresh={vi.fn()}
        go={vi.fn()} />,
@@ -166,7 +151,7 @@ describe("RF-506: filtros en el panel de órdenes", () => {
   it("RF-505: el acceso directo a pendientes muestra solo no_cumplida sin perder ninguna", () => {
     render(
       <ConnectedOrders
-        data={{ rows: orderRows, requisitions, catalogs }}
+        data={{ rows: orderRows, catalogs }}
         role="Contabilidad"
         refresh={vi.fn()}
        go={vi.fn()} />,
@@ -187,7 +172,7 @@ describe("RF-506: filtros en el panel de órdenes", () => {
   it("filtra por proveedor", () => {
     render(
       <ConnectedOrders
-        data={{ rows: orderRows, requisitions, catalogs }}
+        data={{ rows: orderRows, catalogs }}
         role="Contabilidad"
         refresh={vi.fn()}
        go={vi.fn()} />,

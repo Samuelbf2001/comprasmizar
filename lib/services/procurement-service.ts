@@ -1,5 +1,13 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
+import type { ListQuery, Page } from "./list-query";
+
+// H3 (docs/plan-rendimiento.md, Fase 3): los repositorios de listas devuelven `T[]` sin `query` o
+// `Page<T>` con `query` (unión de retorno, ver contracts.ts). `isPage` estrecha ese tipo en tiempo de
+// ejecución para los métodos `*Page` de abajo, que SIEMPRE pasan `query` y por lo tanto SIEMPRE reciben
+// una `Page<T>` — pero el tipo estático del repositorio no lo sabe a partir de la sola presencia del
+// argumento, así que se estrecha explícitamente en vez de forzarlo con un cast.
+function isPage<T>(value: T[] | Page<T>): value is Page<T> { return !Array.isArray(value); }
 
 // GRAVE 1/QA reasignación: `colombiaDateParts` (fecha/periodo en hora de Colombia, no UTC) se movió a
 // lib/domain/rules.ts — vivía duplicada aquí y en app/api/pantalla/route.ts (que además la tenía MAL,
@@ -333,9 +341,69 @@ export class ProcurementService {
   }
   async redistribute(expenseId: string, total: number, shares: ExpenseShare[], context: RequestContext): Promise<void> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); if (shares.some((share) => share.expenseId !== expenseId)) throw new DomainError("INVALID_SHARE", "Todas las líneas deben pertenecer al gasto"); await this.transaction(`expense:${expenseId}`, async (tx) => { const expense = await tx.expenses.get(expenseId); if (!expense) throw new DomainError("NOT_FOUND", "Gasto no encontrado"); if (expense.total !== total) throw new DomainError("EXPENSE_TOTAL_MISMATCH", "El total del reparto no coincide con el gasto"); validateShares(expense.total, shares); await tx.expenses.saveShares(shares); await this.audit("gasto", expenseId, "repartido", actor, { total: expense.total }, this.origin(context), tx.audit); }); }
   async registerPettyCash(input: PettyCashInput, context: RequestContext): Promise<{ entry: PettyCash; expense: Expense }> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:create", this.authOrigin(context)); if (!input.workId || !input.concept.trim() || !input.tagId) throw new DomainError("INVALID_INPUT", "Campos de caja menor obligatorios"); assertCop(input.amount, "Valor"); if (input.amount === 0) throw new DomainError("INVALID_MONEY", "El valor debe ser mayor a cero"); const entry: PettyCash = { id: this.deps.ids.next(), ...input, registeredBy: actor.id }; return this.transaction(undefined, async (tx) => { const expense = await tx.pettyCash.save(entry); await this.audit("caja_menor", entry.id, "registrada", actor, { expenseId: expense.id }, this.origin(context), tx.audit); await this.audit("gasto", expense.id, "registrado", actor, { origin: "caja_menor" }, this.origin(context), tx.audit); return { entry, expense }; }); }
-  async listRequisitions(context: RequestContext): Promise<Requisition[]> { const actor = this.actor(context); if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor.roles, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones"); return this.deps.requisitions.listVisibleTo(actor); }
-  async getRequisition(id: string, context: RequestContext): Promise<Requisition> { const visible = await this.listRequisitions(context), requisition = visible.find((entry) => entry.id === id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); return requisition; }
+  private assertCanReadRequisitions(context: RequestContext): Actor { const actor = this.actor(context); if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor.roles, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones"); return actor; }
+  async listRequisitions(context: RequestContext): Promise<Requisition[]> { const actor = this.assertCanReadRequisitions(context); return this.deps.requisitions.listVisibleTo(actor) as Promise<Requisition[]>; }
+  /**
+   * H3: contraparte paginada de `listRequisitions` — `query` siempre viene informado (la ruta HTTP
+   * decide cuándo llamar a esta vs. a `listRequisitions`, ver app/api/requisitions/route.ts), así que el
+   * repositorio SIEMPRE devuelve `Page<Requisition>`; `isPage` lo confirma en tiempo de ejecución en vez
+   * de forzarlo con un cast.
+   */
+  async listRequisitionsPage(query: ListQuery, context: RequestContext): Promise<Page<Requisition>> {
+    const actor = this.assertCanReadRequisitions(context);
+    const result = await this.deps.requisitions.listVisibleTo(actor, query);
+    return isPage(result) ? result : { rows: result, nextCursor: null };
+  }
+  /**
+   * H2 (docs/plan-rendimiento.md): antes esto era `listRequisitions(context).find(...)` — cargaba
+   * TODAS las requisiciones visibles del actor (con sus ítems) solo para descartar todas menos una,
+   * O(n) por cada consulta de detalle. Ahora es una única fila por id (`deps.requisitions.get`, que ya
+   * trae los ítems — ver PostgresPorts.getRequisition en postgres-repositories.ts) más una
+   * comprobación de visibilidad en memoria que replica EXACTAMENTE la regla de `listVisibleRequisitions`
+   * del adaptador Postgres (isElevated + fallback aprobador/solicitante): si esa regla cambia allá,
+   * debe cambiar aquí también. El gate de permiso (¿puede leer requisiciones EN ABSOLUTO?) se conserva
+   * igual que antes, antes de tocar la base — un actor sin ningún `requisition:read*` sigue viendo
+   * FORBIDDEN, no NOT_FOUND.
+   */
+  async getRequisition(id: string, context: RequestContext): Promise<Requisition> {
+    const actor = this.actor(context);
+    if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor.roles, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones");
+    const requisition = await this.requisition(id);
+    this.assertVisibleRequisition(actor, requisition);
+    return requisition;
+  }
+  /** Mismo criterio que `isElevated` en lib/infrastructure/postgres-repositories.ts: elevados ven
+   *  cualquier requisición; el aprobador solo la suya (aprobador_id); el solicitante solo la suya
+   *  (solicitante_id). NOT_FOUND en vez de FORBIDDEN — igual que el `.find()` que reemplaza — para no
+   *  revelar la existencia de una requisición ajena. */
+  private assertVisibleRequisition(actor: Actor, requisition: Requisition): void {
+    const elevated = actor.roles.some((role) => ["revisor", "contabilidad", "admin_mizar", "admin_sixteam"].includes(role));
+    if (elevated) return;
+    if (actor.roles.includes("aprobador")) { if (requisition.approverId === actor.id) return; throw new DomainError("NOT_FOUND", "Requisición no encontrada"); }
+    if (requisition.requesterId === actor.id) return;
+    throw new DomainError("NOT_FOUND", "Requisición no encontrada");
+  }
   async getRequisitionHistory(id: string, context: RequestContext): Promise<AuditEvent[]> { await this.getRequisition(id, context); return this.deps.audit.list("requisicion", id); }
+  /**
+   * H2: endpoint compuesto para el detalle (`GET /api/requisitions/:id/detail`) — antes el cliente
+   * pedía la requisición, TODAS las órdenes y TODOS los gastos por separado (`orders.listByRequisition`
+   * y `expenses.listByReference` ya existían sin usarse desde aquí) más el historial: 4+ peticiones y
+   * viajes redundantes. `getRequisition` ya deja la visibilidad resuelta (NOT_FOUND si no aplica); orders/
+   * expenses se devuelven vacíos (no FORBIDDEN) cuando el actor no tiene el permiso de lectura
+   * correspondiente — mismo criterio de "degradar en vez de fallar" que ya usa el bootstrap de catálogos,
+   * para que un solicitante viendo su propia requisición no tumbe el detalle completo por no poder leer
+   * órdenes/gastos.
+   */
+  async getRequisitionDetail(id: string, context: RequestContext): Promise<{ requisition: Requisition; orders: Order[]; expenses: Expense[]; history: AuditEvent[] }> {
+    const requisition = await this.getRequisition(id, context);
+    const actor = this.actor(context), origin = this.authOrigin(context);
+    const [orders, expenses, history] = await Promise.all([
+      hasPermission(actor.roles, "order:read", origin) ? this.deps.orders.listByRequisition(id) : Promise.resolve([]),
+      hasPermission(actor.roles, "expense:read", origin) ? this.deps.expenses.listByReference(id) : Promise.resolve([]),
+      this.deps.audit.list("requisicion", id),
+    ]);
+    return { requisition, orders, expenses, history };
+  }
   /**
    * Edita la cabecera de una requisición (ficha editable): fecha requerida y observaciones (`destination`
    * queda fuera: el campo se fusionó en observaciones y ya no se lee ni se escribe desde el dominio).
@@ -359,24 +427,99 @@ export class ProcurementService {
       return requisition;
     });
   }
-  async listOrders(context: RequestContext): Promise<Order[]> { const actor = this.actor(context); assertPermission(actor.roles, "order:read", this.authOrigin(context)); return this.deps.orders.listVisibleTo(actor); }
-  async listExpenses(context: RequestContext): Promise<Expense[]> { const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context)); return this.deps.expenses.listVisibleTo(actor); }
-  async listPettyCash(context: RequestContext): Promise<PettyCash[]> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:read", this.authOrigin(context)); return this.deps.pettyCash.list(); }
-  async dashboard(period: string, context: RequestContext) {
+  async listOrders(context: RequestContext): Promise<Order[]> { const actor = this.actor(context); assertPermission(actor.roles, "order:read", this.authOrigin(context)); return this.deps.orders.listVisibleTo(actor) as Promise<Order[]>; }
+  /** H3: contraparte paginada de `listOrders` — mismo criterio que `listRequisitionsPage`. */
+  async listOrdersPage(query: ListQuery, context: RequestContext): Promise<Page<Order>> {
+    const actor = this.actor(context); assertPermission(actor.roles, "order:read", this.authOrigin(context));
+    const result = await this.deps.orders.listVisibleTo(actor, query);
+    return isPage(result) ? result : { rows: result, nextCursor: null };
+  }
+  async listExpenses(context: RequestContext): Promise<Expense[]> { const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context)); return this.deps.expenses.listVisibleTo(actor) as Promise<Expense[]>; }
+  /** H3: contraparte paginada de `listExpenses` — mismo criterio que `listRequisitionsPage`. */
+  async listExpensesPage(query: ListQuery, context: RequestContext): Promise<Page<Expense>> {
+    const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context));
+    const result = await this.deps.expenses.listVisibleTo(actor, query);
+    return isPage(result) ? result : { rows: result, nextCursor: null };
+  }
+  /**
+   * H2: respalda `GET /api/orders?requisitionId=` — `orders.listByRequisition` no aplica ninguna
+   * visibilidad por sí solo (a diferencia de `listVisibleOrders`), así que la comprobación viene de
+   * `getRequisition` (permiso + visibilidad por fila de la requisición dueña). `order:read` se exige
+   * ANTES de tocar la requisición para que quien no puede leer órdenes en absoluto siga viendo
+   * FORBIDDEN y no gaste una consulta.
+   */
+  async listOrdersByRequisition(requisitionId: string, context: RequestContext): Promise<Order[]> {
+    const actor = this.actor(context);
+    assertPermission(actor.roles, "order:read", this.authOrigin(context));
+    await this.getRequisition(requisitionId, context);
+    return this.deps.orders.listByRequisition(requisitionId);
+  }
+  /** H2: respalda `GET /api/expenses?referenceId=` — `referenceId` es el id de la requisición dueña
+   *  (directa o vía una de sus órdenes, ver `listByReference` en postgres-repositories.ts); mismo
+   *  criterio que listOrdersByRequisition. */
+  async listExpensesByReference(referenceId: string, context: RequestContext): Promise<Expense[]> {
+    const actor = this.actor(context);
+    assertPermission(actor.roles, "expense:read", this.authOrigin(context));
+    await this.getRequisition(referenceId, context);
+    return this.deps.expenses.listByReference(referenceId);
+  }
+  async listPettyCash(context: RequestContext): Promise<PettyCash[]> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:read", this.authOrigin(context)); return this.deps.pettyCash.list() as Promise<PettyCash[]>; }
+  /** H3: contraparte paginada de `listPettyCash` — mismo criterio que `listRequisitionsPage`. La caja
+   *  menor no tiene visibilidad por actor propia (ver PettyCashRepository en contracts.ts). */
+  async listPettyCashPage(query: ListQuery, context: RequestContext): Promise<Page<PettyCash>> {
+    const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:read", this.authOrigin(context));
+    const result = await this.deps.pettyCash.list(query);
+    return isPage(result) ? result : { rows: result, nextCursor: null };
+  }
+  /**
+   * H3 (docs/plan-rendimiento.md, Fase 3): antes este método cargaba las TRES colecciones completas
+   * (`listVisibleTo` sin límite, con ítems) y calculaba `calculateDashboard`/`groupExpenseBy*` en JS —
+   * funciona con cientos de filas, se degrada linealmente con el histórico (meta: `/api/dashboard` <
+   * 300 ms con 5 000 requisiciones). Ahora:
+   *  1. `byStatus`/`pendingOrders`/`periodExpense`/`inProcessValue`/`expenseByWork`/`expenseByTag`/
+   *     `expenseByPeriod` se agregan en SQL (dashboardByStatus/dashboardPendingCount/dashboardAggregates)
+   *     con la MISMA visibilidad por actor que `listVisibleTo` — nunca se trae una fila de detalle solo
+   *     para sumar o contar.
+   *  2. `buildAttentionQueue`/`buildRecentActivity` (lib/domain/rules.ts, SIN cambiar) siguen recibiendo
+   *     arreglos en memoria, pero acotados: la cola de atención solo pide requisiciones en los 4 estados
+   *     que le interesan (sin ítems, `listVisibleHeaders`) y órdenes candidatas a alguna acción
+   *     (`listAttentionCandidates`); la actividad reciente pide las 8 más recientes de cada colección
+   *     (`listVisibleHeaders`/`listRecentlyUpdated`) en vez de ordenar/cortar un arreglo completo.
+   *  3. `workByRequisition` (dentro de buildAttentionQueue/buildRecentActivity) resuelve `workId` de una
+   *     orden buscando su requisición dueña en el arreglo de requisiciones que se le pasó — pero TODA
+   *     orden nace de una requisición YA `aprobada` (estado terminal), que nunca cae dentro de los 4
+   *     estados acotados de arriba ni, casi nunca, dentro del top-8 por `updated_at`. Sin corrección, el
+   *     `workId` de cualquier orden en estas dos vistas quedaría vacío — una regresión real frente al
+   *     comportamiento actual (que sí lo resuelve, porque hoy carga TODAS las requisiciones). El
+   *     `orderWorkById` de abajo lo rellena desde la propia fila de la orden, que desde H3 ya trae su
+   *     `workId` por el join a requisiciones (ver `order(row)` en postgres-repositories.ts) — sin volver
+   *     a tocar rules.ts.
+   * El resultado final tiene EXACTAMENTE la misma forma que antes (`DashboardMetrics`).
+   */
+  async dashboard(period: string, context: RequestContext): Promise<DashboardMetrics> {
     const actor = this.actor(context); assertPermission(actor.roles, "dashboard:read", this.authOrigin(context)); if (!/^\d{4}-\d{2}$/.test(period)) throw new DomainError("INVALID_INPUT", "Periodo inválido");
-    const [requisitions, expenses, orders] = await Promise.all([this.deps.requisitions.listVisibleTo(actor), this.deps.expenses.listVisibleTo(actor), this.deps.orders.listVisibleTo(actor)]);
-    // inProcessValue ya lo calcula calculateDashboard (reunión 2026-09: suma de gastos sin fecha de
-    // pago, "comprometido sin pagar") — antes este método lo sobrescribía aquí mismo con el valor de
-    // las líneas de requisiciones en revisión/aprobación, dejando el cálculo de calculateDashboard como
-    // dead code (siempre pisado antes de que nadie lo viera). Se retira la sobrescritura para que quede
-    // un solo significado del campo, el que de verdad llega hasta la UI.
-    const metrics = calculateDashboard(expenses, orders, requisitions.map((r) => r.status), period);
-    // RF-1102/RF-706/RF-1103: agregados adicionales sobre las mismas colecciones ya autorizadas por listVisibleTo.
-    metrics.attentionQueue = buildAttentionQueue(requisitions, orders, actor);
-    metrics.recentActivity = buildRecentActivity(requisitions, orders, expenses);
-    metrics.expenseByWork = groupExpenseByWork(expenses);
-    metrics.expenseByTag = groupExpenseByTag(expenses);
-    metrics.expenseByPeriod = groupExpenseByPeriod(expenses);
+    const [byStatus, pendingOrders, expenseAggregates] = await Promise.all([
+      this.deps.requisitions.dashboardByStatus(actor),
+      this.deps.orders.dashboardPendingCount(actor),
+      this.deps.expenses.dashboardAggregates(actor, period),
+    ]);
+    const metrics: DashboardMetrics = {
+      byStatus, pendingOrders, periodExpense: expenseAggregates.periodExpense, inProcessValue: expenseAggregates.inProcessValue,
+      expenseByWork: expenseAggregates.expenseByWork, expenseByTag: expenseAggregates.expenseByTag, expenseByPeriod: expenseAggregates.expenseByPeriod,
+    };
+    const attentionStatuses: Requisition["status"][] = ["enviada", "en_revision", "en_aprobacion", "devuelta"];
+    const [attentionRequisitions, attentionOrders, recentRequisitions, recentOrders, recentExpenses] = await Promise.all([
+      this.deps.requisitions.listVisibleHeaders(actor, { status: attentionStatuses }),
+      this.deps.orders.listAttentionCandidates(actor),
+      this.deps.requisitions.listVisibleHeaders(actor, { orderBy: "updated_at", limit: 8 }),
+      this.deps.orders.listRecentlyUpdated(actor, 8),
+      this.deps.expenses.listRecentlyUpdated(actor, 8),
+    ]);
+    metrics.attentionQueue = buildAttentionQueue(attentionRequisitions, attentionOrders, actor);
+    metrics.recentActivity = buildRecentActivity(recentRequisitions, recentOrders, recentExpenses);
+    const orderWorkById = new Map<string, string | undefined>();
+    for (const candidate of [...attentionOrders, ...recentOrders]) if (candidate.workId !== undefined) orderWorkById.set(candidate.id, candidate.workId);
+    for (const queueItem of [...metrics.attentionQueue, ...metrics.recentActivity]) if (queueItem.kind === "orden" && !queueItem.workId) { const workId = orderWorkById.get(queueItem.id); if (workId) queueItem.workId = workId; }
     return metrics;
   }
   calculateQuotedValue(base: number, ivaRate: number) { return calculateTax(base, ivaRate); }

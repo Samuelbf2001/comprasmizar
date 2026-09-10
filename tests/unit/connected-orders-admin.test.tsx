@@ -17,24 +17,16 @@ const catalogs = {
   items: [],
   features: {},
 };
-const requisitions = [
-  {
-    id: "req-1",
-    consecutive: "RQ-001",
-    type: "compra" as const,
-    workId: "work-1",
-    channel: "web",
-    requiredDate: "2026-08-10",
-    status: "aprobada",
-    items: [],
-  },
-];
+// H2/H3 (docs/plan-rendimiento.md): la orden ya trae workId/requisitionConsecutive del servidor,
+// no hace falta un array de requisiciones aparte para estos tests (ninguno filtra por obra).
 const orderRows = [
   {
     id: "order-1",
     consecutive: "OC-001",
     type: "OC" as const,
     requisitionId: "req-1",
+    requisitionConsecutive: "RQ-001",
+    workId: "work-1",
     supplierId: "supplier-1",
     status: "generada",
     adminStatus: "contabilizada" as const,
@@ -43,7 +35,7 @@ const orderRows = [
 
 function renderOrders(role: "Revisor" | "Contabilidad" | "Administrador Sixteam") {
   return render(
-    <ConnectedOrders data={{ rows: orderRows, requisitions, catalogs }} role={role} refresh={vi.fn()} go={vi.fn()} />,
+    <ConnectedOrders data={{ rows: orderRows, catalogs }} role={role} refresh={vi.fn()} go={vi.fn()} />,
   );
 }
 
@@ -95,5 +87,67 @@ describe("dos ejes de estado de la orden, visibles a la vez", () => {
     // y tampoco tiene order:pay para marcar pagada.
     expect(screen.queryByRole("button", { name: "Marcar contabilizada" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Marcar pagada" })).toBeNull();
+  });
+});
+
+// Revisión (corrección tras QA, docs/plan-rendimiento.md Fase 3): un agente anterior quitó la
+// columna "Valor" y cambió el filtro de fecha de "requerida de la requisición" a "generación de la
+// orden" para poder descartar el N+1 sobre /api/requisitions — el revisor rechazó ambos cambios.
+// Este bloque prueba que, restauradas, ambas dependen únicamente de `OrderRow.lines`/
+// `OrderRow.requiredDate` (join del servidor, sin descargar TODAS las requisiciones).
+describe("columna Valor y filtro por fecha requerida (restaurados tras la corrección)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  // 10 unidades a $1.000, IVA 19%, sin descuento -> base 10.000, iva 1.900, total 11.900.
+  const pricedLine = { id: "item-1", description: "Cemento", quantity: 10, unit: "bulto", unitBase: 1_000, ivaRate: 0.19 };
+  const pricedRows = [
+    {
+      id: "order-1",
+      consecutive: "OC-001",
+      type: "OC" as const,
+      requisitionId: "req-1",
+      requisitionConsecutive: "RQ-001",
+      workId: "work-1",
+      supplierId: "supplier-1",
+      status: "generada",
+      adminStatus: "pendiente" as const,
+      requiredDate: "2026-08-10",
+      lines: [pricedLine],
+    },
+    {
+      id: "order-2",
+      consecutive: "OC-002",
+      type: "OC" as const,
+      requisitionId: "req-2",
+      requisitionConsecutive: "RQ-002",
+      workId: "work-1",
+      supplierId: "supplier-1",
+      status: "generada",
+      adminStatus: "pendiente" as const,
+      requiredDate: "2026-09-05",
+      lines: [pricedLine],
+    },
+  ];
+
+  it("la tabla muestra el importe de cada orden (sumLines sobre row.lines, sin llamada aparte)", () => {
+    render(<ConnectedOrders data={{ rows: pricedRows, catalogs }} role="Revisor" refresh={vi.fn()} go={vi.fn()} />);
+    expect(screen.getByText("Fecha requerida")).toBeInTheDocument();
+    expect(screen.getByText("Valor")).toBeInTheDocument();
+    // Dos filas con el mismo importe. Se compara por dígitos (no el string exacto de
+    // Intl.NumberFormat) por la misma razón que order-detail-total.test.tsx: no depender de si el
+    // espacio entre "$" y el número es un espacio normal o un NBSP.
+    expect(screen.getAllByText(/11\.900/).length).toBe(2);
+  });
+
+  it('el filtro "Desde/Hasta" acota por row.requiredDate (fecha requerida de la requisición)', () => {
+    render(<ConnectedOrders data={{ rows: pricedRows, catalogs }} role="Revisor" refresh={vi.fn()} go={vi.fn()} />);
+    expect(screen.getByText("OC-001")).toBeInTheDocument();
+    expect(screen.getByText("OC-002")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Desde"), { target: { value: "2026-09-01" } });
+    expect(screen.queryByText("OC-001")).toBeNull();
+    expect(screen.getByText("OC-002")).toBeInTheDocument();
   });
 });

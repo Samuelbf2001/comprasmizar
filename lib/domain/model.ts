@@ -42,6 +42,31 @@ export interface Order {
   /** Reunión 2026-08-31: eje administrativo/contable, independiente de `status` (cumplimiento). */
   adminStatus: OrderAdminStatus; generatedAt?: string; accountedAt?: string; paidAt?: string; paymentTerms?: string;
   /** RF-1102: ver Requisition.updatedAt. */ updatedAt?: string;
+  /**
+   * H3 (docs/plan-rendimiento.md): consecutivo y obra de la requisición dueña, resueltos por join en el
+   * mismo SELECT del adaptador Postgres (ver `order(row)` en postgres-repositories.ts). Aditivos y
+   * opcionales para no romper ningún consumidor existente: la pantalla de órdenes descargaba TODAS las
+   * requisiciones solo para mostrar estos dos datos (H2); ahora viajan en la propia fila de la orden.
+   * Ausentes cuando el llamador usa un camino que no hace ese join (p. ej. los fakes en memoria de los
+   * tests, o cualquier lectura de orden que no pase por listVisibleOrders/listByRequisition/getOrder).
+   */
+  requisitionConsecutive?: string; workId?: string;
+  /**
+   * Revisión (corrección tras QA, docs/plan-rendimiento.md Fase 3): la pantalla de órdenes necesita la
+   * fecha REQUERIDA de la requisición de origen (para el filtro "Desde/Hasta" que ya existía) y sus
+   * líneas CON PRECIO (para la columna "Valor" y el total de la ficha) sin volver a descargar TODAS las
+   * requisiciones (la razón de ser de H2/H3). Ambas viajan por el mismo join que ya resuelve
+   * `requisitionConsecutive`/`workId` arriba — ver `order(row)` en postgres-repositories.ts, que arma
+   * `lines` con un `json_agg` de `requisicion_items` sobre las líneas de ESTA orden (vía `orden_items`).
+   * Aditivos y opcionales por la misma razón que los dos campos de arriba: ausentes en los caminos que
+   * no hacen ese join (fakes en memoria de los tests, o cualquier lectura que no pase por
+   * listVisibleOrders/listByRequisition/getOrder/listOrders).
+   * BLOQUEANTE 1 (QA 2026-08-31): `lines` transporta los mismos campos crudos que persiste
+   * `requisicion_items` (valorBase/ivaRate/descuentoRate/cantidad…) — el total NUNCA se calcula en SQL;
+   * lo sigue calculando `calculateLineTotal`/`sumLines` (lib/domain/rules.ts), la única fuente de verdad,
+   * también usada por el PDF.
+   */
+  requiredDate?: string; lines?: ItemLine[];
 }
 /**
  * Decisión del cliente (reunión 2026-09, literal): "que quede como fechas aparte cuándo se sube y

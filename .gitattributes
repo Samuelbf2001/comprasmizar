@@ -1,0 +1,12 @@
+# Los guiones de ops/ se escriben en Windows pero se EJECUTAN en el VPS Linux. Con finales de línea
+# CRLF, bash falla con un error desconcertante (`\r: command not found` o `bad interpreter`) que no
+# apunta al problema real. Forzar LF aquí lo evita de raíz, sin depender de la configuración
+# core.autocrlf de cada máquina.
+#
+# Añadido con la migración a Postgres autoalojado (docs/migracion-autoalojado.md), cuando ops/ pasó
+# de dos scripts de PowerShell para uso manual a los guiones que sostienen el respaldo diario.
+*.sh text eol=lf
+ops/*.mjs text eol=lf
+
+# El bootstrap y las migraciones los aplica psql dentro del contenedor Linux.
+*.sql text eol=lf
