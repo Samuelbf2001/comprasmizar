@@ -25,7 +25,7 @@ const createCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("items"), data: z.object({ name, specification: z.string().trim().min(1).max(1_000).optional(), unit: z.string().trim().min(1).max(40), category: z.string().trim().min(1).max(100).optional(), active }).strict() }),
   z.object({ kind: z.literal("suppliers"), data: z.object({ name, nit: nit.optional(), phone: phone.optional(), email: z.string().trim().email().max(254).optional(), address: z.string().trim().min(1).max(300).optional(), active }).strict() }),
   z.object({ kind: z.literal("societies"), data: z.object({ name, nit: nit.optional(), active }).strict() }),
-  // RF-004: `id` es obligatorio y debe ser el id ya existente en Supabase Auth (auth.users) del usuario a
+  // RF-004: `id` es obligatorio y debe ser el id ya existente en auth.users del usuario a
   // vincular; esta plataforma nunca crea la cuenta de Auth. Al menos un rol es obligatorio en el alta.
   z.object({ kind: z.literal("users"), data: z.object({ id: uuid, name, email: z.string().trim().email().max(254), phone: phone.optional(), roles: z.array(roleLiteral).min(1).max(6), active }).strict() }),
   // HUECO 1: lista blanca global de solicitantes autorizados por WhatsApp (RF-902). `phone` es

@@ -9,5 +9,7 @@ export const attachmentUploadSchema = z.object({ type: z.enum(["soporte", "cotiz
 function service() { return new PrivateAttachmentService(createPrivateAttachmentServiceDependencies()); }
 
 export function GET(_request: Request, { params }: { params: Promise<{ entity: string; entityId: string }> }) { return authenticatedJson(async (actor) => { const { entity, entityId } = await parsePathParams(params, attachmentParamsSchema); return service().list(entity, entityId, actor); }); }
-/** Returns the signed PUT contract expected by Supabase uploadToSignedUrl (FormData file field). */
+/** Contrato de subida firmada: PUT con FormData. Lo servía Supabase Storage; desde la migración a
+ *  autoalojado lo atiende /api/storage/object (lib/infrastructure/local-storage.ts) con el mismo
+ *  contrato, para no tocar el cliente. */
 export function POST(request: Request, { params }: { params: Promise<{ entity: string; entityId: string }> }) { return authenticatedJson(async (actor) => { const { entity, entityId } = await parsePathParams(params, attachmentParamsSchema); assertSameOrigin(request); return service().prepare(entity, entityId, await parseJson(request, attachmentUploadSchema), actor); }, 201); }

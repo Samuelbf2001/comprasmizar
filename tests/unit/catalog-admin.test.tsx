@@ -377,7 +377,7 @@ describe("ConnectedCatalogAdmin", () => {
       );
     });
 
-    it("creates a user with an existing Supabase Auth id, email and at least one role", async () => {
+    it("creates a user with an existing auth.users id, email and at least one role", async () => {
       const fetchMock = mockFetch(
         new Response(
           JSON.stringify({

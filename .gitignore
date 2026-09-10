@@ -23,3 +23,12 @@ playwright-report-visual/
 
 # Interno Sixteam (horas, costos): no se comparte con el cliente
 interno/
+
+# Cluster Postgres local de desarrollo (scripts/dev-db.ts)
+.dev-postgres/
+# Adjuntos del almacenamiento local de desarrollo
+.dev-storage/
+
+# Respaldos manuales de .env.local (el patrón .env.*.local no los cubre)
+.env.local.*
+.env.*.respaldo*

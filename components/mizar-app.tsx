@@ -167,7 +167,7 @@ function IntegrationGate({ role }: { role: Role }) {
           operación.
         </p>
         <ul>
-          <li>Supabase/Auth y permisos por rol</li>
+          <li>Autenticación y permisos por rol</li>
           <li>Servicios de requisiciones, órdenes y gastos</li>
           <li>Auditoría y exportación contable</li>
         </ul>

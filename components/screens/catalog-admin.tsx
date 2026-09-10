@@ -254,7 +254,7 @@ function payloadFor(
   // nunca se envía como null: sin teléfono la fila no tiene ninguna función.
   if (kind === "requesters") data.phone = String(values.phone || "").trim();
   if (kind === "users") {
-    // RF-004: id/correo son inmutables tras el alta (el correo vive en Supabase Auth, no en este
+    // RF-004: id/correo son inmutables tras el alta (el correo vive en auth.users, no en este
     // catálogo); el esquema de PATCH ni siquiera acepta esas claves, así que solo se envían al crear.
     if (!editing) {
       data.id = String(values.id || "").trim();
@@ -401,11 +401,11 @@ export function ConnectedCatalogAdmin({
     )
       return "Ingresa un correo válido o deja el campo vacío.";
     if (kind === "users" && !editing) {
-      // RF-004: el id debe ser el de una cuenta que ya existe en Supabase Auth; esta plataforma nunca
+      // RF-004: el id debe ser el de una cuenta que ya existe en auth.users; esta plataforma nunca
       // la crea. El servicio vuelve a validarlo (AUTH_ACCOUNT_NOT_FOUND) — esto solo evita un viaje
       // redondo con un valor que ni siquiera tiene forma de UUID.
       if (!UUID_RE.test(String(form.id || "").trim()))
-        return "El id de usuario debe ser el UUID de una cuenta existente en Supabase Auth.";
+        return "El id de usuario debe ser el UUID de una cuenta de acceso existente.";
       if (!/^\S+@\S+\.\S+$/.test(String(form.email || "")))
         return "Ingresa un correo válido.";
     }
@@ -1248,7 +1248,7 @@ function CatalogForm({
             {!editing && (
               <label className="field field-wide">
                 <span>
-                  Id de usuario (Supabase Auth) <em>*</em>
+                  Id de usuario (cuenta de acceso) <em>*</em>
                 </span>
                 <input
                   value={String(values.id || "")}
@@ -1261,7 +1261,7 @@ function CatalogForm({
                   onChange={(event) => update("id", event.target.value)}
                 />
                 <small>
-                  Debe existir previamente en Supabase Auth; esta plataforma
+                  Debe existir previamente como cuenta de acceso; esta plataforma
                   nunca crea la cuenta, solo la vincula.
                 </small>
               </label>
