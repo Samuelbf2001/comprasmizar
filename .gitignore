@@ -35,3 +35,7 @@ interno/
 
 # Guiones de trabajo temporales (prefijo _tmp-)
 scripts/_tmp-*
+
+# Entorno de ejecución de compose (contiene secretos; .env solo cubre el archivo exacto)
+.env.production
+.env.production.*
