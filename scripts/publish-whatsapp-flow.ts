@@ -33,6 +33,11 @@ import { resolve } from "node:path";
  */
 const FLOWS = {
   requisicion: { name: "Requisición de obra – Mizar", path: "integrations/whatsapp-flow/requisicion.flow.json" },
+  // v2: ocho artículos bajo demanda y resumen que pinta valores en vez de llaves. Va como Flow
+  // NUEVO y no como actualización del anterior porque Meta no deja editar un Flow ya publicado, y
+  // `1972861836748301` lo está desde el 2026-09-11. El JSON lo genera
+  // `integrations/whatsapp-flow/build-requisicion-flow.mjs`; no se edita a mano.
+  requisicion_v2: { name: "Requisición de obra – Mizar v2", path: "integrations/whatsapp-flow/requisicion-v2.flow.json" },
   aprobacion: { name: "Aprobación de requisición – Mizar", path: "integrations/whatsapp-flow/aprobacion.flow.json" },
 } as const;
 type FlowKey = keyof typeof FLOWS;

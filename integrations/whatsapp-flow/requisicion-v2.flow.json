@@ -1,0 +1,3456 @@
+{
+  "version": "7.3",
+  "screens": [
+    {
+      "id": "TIPO_Y_EMPRESA",
+      "title": "Nueva requisición",
+      "data": {
+        "sociedades": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "¿Qué necesitas?"
+          },
+          {
+            "type": "TextBody",
+            "text": "Elige el tipo de solicitud y la empresa. La obra la asigna Compras."
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "tipo_solicitud",
+            "label": "Tipo de solicitud",
+            "required": true,
+            "data-source": [
+              {
+                "id": "compra",
+                "title": "Compra de material"
+              },
+              {
+                "id": "pago",
+                "title": "Solicitud de pago"
+              }
+            ]
+          },
+          {
+            "type": "Dropdown",
+            "name": "empresa",
+            "label": "Empresa",
+            "required": true,
+            "data-source": "${data.sociedades}"
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_UNO"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${form.tipo_solicitud}",
+                "empresa": "${form.empresa}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_UNO",
+      "title": "Artículo 1",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 1"
+          },
+          {
+            "type": "TextBody",
+            "text": "Elígelo del catálogo o descríbelo. Es el único obligatorio."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": true,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": true,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": true,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Agregar otro artículo",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_DOS"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${form.catalogo}",
+                "item_1_descripcion": "${form.descripcion}",
+                "item_1_cantidad": "${form.cantidad}",
+                "item_1_unidad": "${form.unidad}",
+                "item_1_proveedor": "${form.proveedor}",
+                "item_1_link": "${form.link}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${form.catalogo}",
+                "item_1_descripcion": "${form.descripcion}",
+                "item_1_cantidad": "${form.cantidad}",
+                "item_1_unidad": "${form.unidad}",
+                "item_1_proveedor": "${form.proveedor}",
+                "item_1_link": "${form.link}",
+                "item_2_catalogo": "",
+                "item_2_descripcion": "",
+                "item_2_cantidad": "",
+                "item_2_unidad": "",
+                "item_2_proveedor": "",
+                "item_2_link": "",
+                "item_3_catalogo": "",
+                "item_3_descripcion": "",
+                "item_3_cantidad": "",
+                "item_3_unidad": "",
+                "item_3_proveedor": "",
+                "item_3_link": "",
+                "item_4_catalogo": "",
+                "item_4_descripcion": "",
+                "item_4_cantidad": "",
+                "item_4_unidad": "",
+                "item_4_proveedor": "",
+                "item_4_link": "",
+                "item_5_catalogo": "",
+                "item_5_descripcion": "",
+                "item_5_cantidad": "",
+                "item_5_unidad": "",
+                "item_5_proveedor": "",
+                "item_5_link": "",
+                "item_6_catalogo": "",
+                "item_6_descripcion": "",
+                "item_6_cantidad": "",
+                "item_6_unidad": "",
+                "item_6_proveedor": "",
+                "item_6_link": "",
+                "item_7_catalogo": "",
+                "item_7_descripcion": "",
+                "item_7_cantidad": "",
+                "item_7_unidad": "",
+                "item_7_proveedor": "",
+                "item_7_link": "",
+                "item_8_catalogo": "",
+                "item_8_descripcion": "",
+                "item_8_cantidad": "",
+                "item_8_unidad": "",
+                "item_8_proveedor": "",
+                "item_8_link": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_DOS",
+      "title": "Artículo 2 · opcional",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 2 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Si ya no necesitas más, pulsa Continuar y pasamos al resumen."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Agregar otro artículo",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_TRES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${form.catalogo}",
+                "item_2_descripcion": "${form.descripcion}",
+                "item_2_cantidad": "${form.cantidad}",
+                "item_2_unidad": "${form.unidad}",
+                "item_2_proveedor": "${form.proveedor}",
+                "item_2_link": "${form.link}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${form.catalogo}",
+                "item_2_descripcion": "${form.descripcion}",
+                "item_2_cantidad": "${form.cantidad}",
+                "item_2_unidad": "${form.unidad}",
+                "item_2_proveedor": "${form.proveedor}",
+                "item_2_link": "${form.link}",
+                "item_3_catalogo": "",
+                "item_3_descripcion": "",
+                "item_3_cantidad": "",
+                "item_3_unidad": "",
+                "item_3_proveedor": "",
+                "item_3_link": "",
+                "item_4_catalogo": "",
+                "item_4_descripcion": "",
+                "item_4_cantidad": "",
+                "item_4_unidad": "",
+                "item_4_proveedor": "",
+                "item_4_link": "",
+                "item_5_catalogo": "",
+                "item_5_descripcion": "",
+                "item_5_cantidad": "",
+                "item_5_unidad": "",
+                "item_5_proveedor": "",
+                "item_5_link": "",
+                "item_6_catalogo": "",
+                "item_6_descripcion": "",
+                "item_6_cantidad": "",
+                "item_6_unidad": "",
+                "item_6_proveedor": "",
+                "item_6_link": "",
+                "item_7_catalogo": "",
+                "item_7_descripcion": "",
+                "item_7_cantidad": "",
+                "item_7_unidad": "",
+                "item_7_proveedor": "",
+                "item_7_link": "",
+                "item_8_catalogo": "",
+                "item_8_descripcion": "",
+                "item_8_cantidad": "",
+                "item_8_unidad": "",
+                "item_8_proveedor": "",
+                "item_8_link": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_TRES",
+      "title": "Artículo 3 · opcional",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 3 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Si ya no necesitas más, pulsa Continuar y pasamos al resumen."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Agregar otro artículo",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_CUATRO"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${form.catalogo}",
+                "item_3_descripcion": "${form.descripcion}",
+                "item_3_cantidad": "${form.cantidad}",
+                "item_3_unidad": "${form.unidad}",
+                "item_3_proveedor": "${form.proveedor}",
+                "item_3_link": "${form.link}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${form.catalogo}",
+                "item_3_descripcion": "${form.descripcion}",
+                "item_3_cantidad": "${form.cantidad}",
+                "item_3_unidad": "${form.unidad}",
+                "item_3_proveedor": "${form.proveedor}",
+                "item_3_link": "${form.link}",
+                "item_4_catalogo": "",
+                "item_4_descripcion": "",
+                "item_4_cantidad": "",
+                "item_4_unidad": "",
+                "item_4_proveedor": "",
+                "item_4_link": "",
+                "item_5_catalogo": "",
+                "item_5_descripcion": "",
+                "item_5_cantidad": "",
+                "item_5_unidad": "",
+                "item_5_proveedor": "",
+                "item_5_link": "",
+                "item_6_catalogo": "",
+                "item_6_descripcion": "",
+                "item_6_cantidad": "",
+                "item_6_unidad": "",
+                "item_6_proveedor": "",
+                "item_6_link": "",
+                "item_7_catalogo": "",
+                "item_7_descripcion": "",
+                "item_7_cantidad": "",
+                "item_7_unidad": "",
+                "item_7_proveedor": "",
+                "item_7_link": "",
+                "item_8_catalogo": "",
+                "item_8_descripcion": "",
+                "item_8_cantidad": "",
+                "item_8_unidad": "",
+                "item_8_proveedor": "",
+                "item_8_link": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_CUATRO",
+      "title": "Artículo 4 · opcional",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 4 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Si ya no necesitas más, pulsa Continuar y pasamos al resumen."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Agregar otro artículo",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_CINCO"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${form.catalogo}",
+                "item_4_descripcion": "${form.descripcion}",
+                "item_4_cantidad": "${form.cantidad}",
+                "item_4_unidad": "${form.unidad}",
+                "item_4_proveedor": "${form.proveedor}",
+                "item_4_link": "${form.link}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${form.catalogo}",
+                "item_4_descripcion": "${form.descripcion}",
+                "item_4_cantidad": "${form.cantidad}",
+                "item_4_unidad": "${form.unidad}",
+                "item_4_proveedor": "${form.proveedor}",
+                "item_4_link": "${form.link}",
+                "item_5_catalogo": "",
+                "item_5_descripcion": "",
+                "item_5_cantidad": "",
+                "item_5_unidad": "",
+                "item_5_proveedor": "",
+                "item_5_link": "",
+                "item_6_catalogo": "",
+                "item_6_descripcion": "",
+                "item_6_cantidad": "",
+                "item_6_unidad": "",
+                "item_6_proveedor": "",
+                "item_6_link": "",
+                "item_7_catalogo": "",
+                "item_7_descripcion": "",
+                "item_7_cantidad": "",
+                "item_7_unidad": "",
+                "item_7_proveedor": "",
+                "item_7_link": "",
+                "item_8_catalogo": "",
+                "item_8_descripcion": "",
+                "item_8_cantidad": "",
+                "item_8_unidad": "",
+                "item_8_proveedor": "",
+                "item_8_link": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_CINCO",
+      "title": "Artículo 5 · opcional",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 5 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Si ya no necesitas más, pulsa Continuar y pasamos al resumen."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Agregar otro artículo",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_SEIS"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${form.catalogo}",
+                "item_5_descripcion": "${form.descripcion}",
+                "item_5_cantidad": "${form.cantidad}",
+                "item_5_unidad": "${form.unidad}",
+                "item_5_proveedor": "${form.proveedor}",
+                "item_5_link": "${form.link}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${form.catalogo}",
+                "item_5_descripcion": "${form.descripcion}",
+                "item_5_cantidad": "${form.cantidad}",
+                "item_5_unidad": "${form.unidad}",
+                "item_5_proveedor": "${form.proveedor}",
+                "item_5_link": "${form.link}",
+                "item_6_catalogo": "",
+                "item_6_descripcion": "",
+                "item_6_cantidad": "",
+                "item_6_unidad": "",
+                "item_6_proveedor": "",
+                "item_6_link": "",
+                "item_7_catalogo": "",
+                "item_7_descripcion": "",
+                "item_7_cantidad": "",
+                "item_7_unidad": "",
+                "item_7_proveedor": "",
+                "item_7_link": "",
+                "item_8_catalogo": "",
+                "item_8_descripcion": "",
+                "item_8_cantidad": "",
+                "item_8_unidad": "",
+                "item_8_proveedor": "",
+                "item_8_link": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_SEIS",
+      "title": "Artículo 6 · opcional",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 6 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Si ya no necesitas más, pulsa Continuar y pasamos al resumen."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Agregar otro artículo",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_SIETE"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${data.item_5_catalogo}",
+                "item_5_descripcion": "${data.item_5_descripcion}",
+                "item_5_cantidad": "${data.item_5_cantidad}",
+                "item_5_unidad": "${data.item_5_unidad}",
+                "item_5_proveedor": "${data.item_5_proveedor}",
+                "item_5_link": "${data.item_5_link}",
+                "item_6_catalogo": "${form.catalogo}",
+                "item_6_descripcion": "${form.descripcion}",
+                "item_6_cantidad": "${form.cantidad}",
+                "item_6_unidad": "${form.unidad}",
+                "item_6_proveedor": "${form.proveedor}",
+                "item_6_link": "${form.link}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${data.item_5_catalogo}",
+                "item_5_descripcion": "${data.item_5_descripcion}",
+                "item_5_cantidad": "${data.item_5_cantidad}",
+                "item_5_unidad": "${data.item_5_unidad}",
+                "item_5_proveedor": "${data.item_5_proveedor}",
+                "item_5_link": "${data.item_5_link}",
+                "item_6_catalogo": "${form.catalogo}",
+                "item_6_descripcion": "${form.descripcion}",
+                "item_6_cantidad": "${form.cantidad}",
+                "item_6_unidad": "${form.unidad}",
+                "item_6_proveedor": "${form.proveedor}",
+                "item_6_link": "${form.link}",
+                "item_7_catalogo": "",
+                "item_7_descripcion": "",
+                "item_7_cantidad": "",
+                "item_7_unidad": "",
+                "item_7_proveedor": "",
+                "item_7_link": "",
+                "item_8_catalogo": "",
+                "item_8_descripcion": "",
+                "item_8_cantidad": "",
+                "item_8_unidad": "",
+                "item_8_proveedor": "",
+                "item_8_link": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_SIETE",
+      "title": "Artículo 7 · opcional",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 7 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Si ya no necesitas más, pulsa Continuar y pasamos al resumen."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Agregar otro artículo",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "ARTICULO_OCHO"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${data.item_5_catalogo}",
+                "item_5_descripcion": "${data.item_5_descripcion}",
+                "item_5_cantidad": "${data.item_5_cantidad}",
+                "item_5_unidad": "${data.item_5_unidad}",
+                "item_5_proveedor": "${data.item_5_proveedor}",
+                "item_5_link": "${data.item_5_link}",
+                "item_6_catalogo": "${data.item_6_catalogo}",
+                "item_6_descripcion": "${data.item_6_descripcion}",
+                "item_6_cantidad": "${data.item_6_cantidad}",
+                "item_6_unidad": "${data.item_6_unidad}",
+                "item_6_proveedor": "${data.item_6_proveedor}",
+                "item_6_link": "${data.item_6_link}",
+                "item_7_catalogo": "${form.catalogo}",
+                "item_7_descripcion": "${form.descripcion}",
+                "item_7_cantidad": "${form.cantidad}",
+                "item_7_unidad": "${form.unidad}",
+                "item_7_proveedor": "${form.proveedor}",
+                "item_7_link": "${form.link}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${data.item_5_catalogo}",
+                "item_5_descripcion": "${data.item_5_descripcion}",
+                "item_5_cantidad": "${data.item_5_cantidad}",
+                "item_5_unidad": "${data.item_5_unidad}",
+                "item_5_proveedor": "${data.item_5_proveedor}",
+                "item_5_link": "${data.item_5_link}",
+                "item_6_catalogo": "${data.item_6_catalogo}",
+                "item_6_descripcion": "${data.item_6_descripcion}",
+                "item_6_cantidad": "${data.item_6_cantidad}",
+                "item_6_unidad": "${data.item_6_unidad}",
+                "item_6_proveedor": "${data.item_6_proveedor}",
+                "item_6_link": "${data.item_6_link}",
+                "item_7_catalogo": "${form.catalogo}",
+                "item_7_descripcion": "${form.descripcion}",
+                "item_7_cantidad": "${form.cantidad}",
+                "item_7_unidad": "${form.unidad}",
+                "item_7_proveedor": "${form.proveedor}",
+                "item_7_link": "${form.link}",
+                "item_8_catalogo": "",
+                "item_8_descripcion": "",
+                "item_8_cantidad": "",
+                "item_8_unidad": "",
+                "item_8_proveedor": "",
+                "item_8_link": ""
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ARTICULO_OCHO",
+      "title": "Artículo 8 · opcional",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Artículo 8 · opcional"
+          },
+          {
+            "type": "TextBody",
+            "text": "Si ya no necesitas más, pulsa Continuar y pasamos al resumen."
+          },
+          {
+            "type": "Dropdown",
+            "name": "catalogo",
+            "label": "Del catálogo",
+            "required": false,
+            "data-source": "${data.catalogo}"
+          },
+          {
+            "type": "TextInput",
+            "name": "descripcion",
+            "label": "Descripción",
+            "required": false,
+            "max-chars": 500,
+            "helper-text": "Si no está en el catálogo, descríbelo aquí"
+          },
+          {
+            "type": "TextInput",
+            "name": "cantidad",
+            "label": "Cantidad",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 12,
+            "pattern": "^[0-9]+(\\.[0-9]+)?$",
+            "helper-text": "Solo números; punto para decimales (ej. 2.5)"
+          },
+          {
+            "type": "Dropdown",
+            "name": "unidad",
+            "label": "Unidad",
+            "required": false,
+            "data-source": [
+              {
+                "id": "unidad",
+                "title": "Unidad"
+              },
+              {
+                "id": "bulto",
+                "title": "Bulto"
+              },
+              {
+                "id": "kg",
+                "title": "Kilogramo (kg)"
+              },
+              {
+                "id": "lt",
+                "title": "Litro (L)"
+              },
+              {
+                "id": "m",
+                "title": "Metro (m)"
+              },
+              {
+                "id": "m2",
+                "title": "Metro cuadrado (m²)"
+              },
+              {
+                "id": "m3",
+                "title": "Metro cúbico (m³)"
+              },
+              {
+                "id": "gal",
+                "title": "Galón"
+              },
+              {
+                "id": "rollo",
+                "title": "Rollo"
+              },
+              {
+                "id": "caja",
+                "title": "Caja"
+              },
+              {
+                "id": "juego",
+                "title": "Juego"
+              },
+              {
+                "id": "viaje",
+                "title": "Viaje"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "proveedor",
+            "label": "Posible proveedor",
+            "required": false,
+            "max-chars": 240
+          },
+          {
+            "type": "TextInput",
+            "name": "link",
+            "label": "Enlace del producto",
+            "input-type": "text",
+            "required": false,
+            "max-chars": 2048,
+            "helper-text": "Opcional, debe empezar por https://"
+          },
+          {
+            "type": "PhotoPicker",
+            "name": "foto",
+            "label": "Foto del artículo",
+            "description": "Opcional",
+            "photo-source": "camera_gallery",
+            "max-uploaded-photos": 1,
+            "max-file-size-kb": 10240
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "DETALLES"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${data.item_5_catalogo}",
+                "item_5_descripcion": "${data.item_5_descripcion}",
+                "item_5_cantidad": "${data.item_5_cantidad}",
+                "item_5_unidad": "${data.item_5_unidad}",
+                "item_5_proveedor": "${data.item_5_proveedor}",
+                "item_5_link": "${data.item_5_link}",
+                "item_6_catalogo": "${data.item_6_catalogo}",
+                "item_6_descripcion": "${data.item_6_descripcion}",
+                "item_6_cantidad": "${data.item_6_cantidad}",
+                "item_6_unidad": "${data.item_6_unidad}",
+                "item_6_proveedor": "${data.item_6_proveedor}",
+                "item_6_link": "${data.item_6_link}",
+                "item_7_catalogo": "${data.item_7_catalogo}",
+                "item_7_descripcion": "${data.item_7_descripcion}",
+                "item_7_cantidad": "${data.item_7_cantidad}",
+                "item_7_unidad": "${data.item_7_unidad}",
+                "item_7_proveedor": "${data.item_7_proveedor}",
+                "item_7_link": "${data.item_7_link}",
+                "item_8_catalogo": "${form.catalogo}",
+                "item_8_descripcion": "${form.descripcion}",
+                "item_8_cantidad": "${form.cantidad}",
+                "item_8_unidad": "${form.unidad}",
+                "item_8_proveedor": "${form.proveedor}",
+                "item_8_link": "${form.link}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "DETALLES",
+      "title": "Detalles",
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_link": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Últimos detalles"
+          },
+          {
+            "type": "DatePicker",
+            "name": "fecha_requerida",
+            "label": "¿Para cuándo la necesitas?",
+            "required": false
+          },
+          {
+            "type": "TextArea",
+            "name": "observaciones",
+            "label": "Observaciones",
+            "required": false,
+            "max-length": 1024,
+            "helper-text": "Di a dónde va o cualquier instrucción de entrega"
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "RESUMEN"
+              },
+              "payload": {
+                "catalogo": "${data.catalogo}",
+                "tipo_solicitud": "${data.tipo_solicitud}",
+                "empresa": "${data.empresa}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${data.item_5_catalogo}",
+                "item_5_descripcion": "${data.item_5_descripcion}",
+                "item_5_cantidad": "${data.item_5_cantidad}",
+                "item_5_unidad": "${data.item_5_unidad}",
+                "item_5_proveedor": "${data.item_5_proveedor}",
+                "item_5_link": "${data.item_5_link}",
+                "item_6_catalogo": "${data.item_6_catalogo}",
+                "item_6_descripcion": "${data.item_6_descripcion}",
+                "item_6_cantidad": "${data.item_6_cantidad}",
+                "item_6_unidad": "${data.item_6_unidad}",
+                "item_6_proveedor": "${data.item_6_proveedor}",
+                "item_6_link": "${data.item_6_link}",
+                "item_7_catalogo": "${data.item_7_catalogo}",
+                "item_7_descripcion": "${data.item_7_descripcion}",
+                "item_7_cantidad": "${data.item_7_cantidad}",
+                "item_7_unidad": "${data.item_7_unidad}",
+                "item_7_proveedor": "${data.item_7_proveedor}",
+                "item_7_link": "${data.item_7_link}",
+                "item_8_catalogo": "${data.item_8_catalogo}",
+                "item_8_descripcion": "${data.item_8_descripcion}",
+                "item_8_cantidad": "${data.item_8_cantidad}",
+                "item_8_unidad": "${data.item_8_unidad}",
+                "item_8_proveedor": "${data.item_8_proveedor}",
+                "item_8_link": "${data.item_8_link}",
+                "fecha_requerida": "${form.fecha_requerida}",
+                "observaciones": "${form.observaciones}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "RESUMEN",
+      "title": "Resumen",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "catalogo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_solicitud": {
+          "type": "string",
+          "__example__": "compra"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "20000000-0000-4000-8000-000000000001"
+        },
+        "item_1_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_1_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_2_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_3_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_4_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_5_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_6_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_7_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_catalogo": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_descripcion": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_cantidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_unidad": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_proveedor": {
+          "type": "string",
+          "__example__": ""
+        },
+        "item_8_link": {
+          "type": "string",
+          "__example__": ""
+        },
+        "fecha_requerida": {
+          "type": "string",
+          "__example__": ""
+        },
+        "observaciones": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Revisa antes de enviar"
+          },
+          {
+            "type": "TextBody",
+            "text": "Empresa: ${data.empresa}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Tipo: ${data.tipo_solicitud}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Fecha requerida: ${data.fecha_requerida}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 1: ${data.item_1_descripcion} (${data.item_1_cantidad} ${data.item_1_unidad})"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 2: ${data.item_2_descripcion} (${data.item_2_cantidad} ${data.item_2_unidad})"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 3: ${data.item_3_descripcion} (${data.item_3_cantidad} ${data.item_3_unidad})"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 4: ${data.item_4_descripcion} (${data.item_4_cantidad} ${data.item_4_unidad})"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 5: ${data.item_5_descripcion} (${data.item_5_cantidad} ${data.item_5_unidad})"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 6: ${data.item_6_descripcion} (${data.item_6_cantidad} ${data.item_6_unidad})"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 7: ${data.item_7_descripcion} (${data.item_7_cantidad} ${data.item_7_unidad})"
+          },
+          {
+            "type": "TextBody",
+            "text": "Artículo 8: ${data.item_8_descripcion} (${data.item_8_cantidad} ${data.item_8_unidad})"
+          },
+          {
+            "type": "Footer",
+            "label": "Enviar solicitud",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "type": "${data.tipo_solicitud}",
+                "societyId": "${data.empresa}",
+                "requiredDate": "${data.fecha_requerida}",
+                "observations": "${data.observaciones}",
+                "item_1_catalogo": "${data.item_1_catalogo}",
+                "item_1_descripcion": "${data.item_1_descripcion}",
+                "item_1_cantidad": "${data.item_1_cantidad}",
+                "item_1_unidad": "${data.item_1_unidad}",
+                "item_1_proveedor": "${data.item_1_proveedor}",
+                "item_1_link": "${data.item_1_link}",
+                "item_2_catalogo": "${data.item_2_catalogo}",
+                "item_2_descripcion": "${data.item_2_descripcion}",
+                "item_2_cantidad": "${data.item_2_cantidad}",
+                "item_2_unidad": "${data.item_2_unidad}",
+                "item_2_proveedor": "${data.item_2_proveedor}",
+                "item_2_link": "${data.item_2_link}",
+                "item_3_catalogo": "${data.item_3_catalogo}",
+                "item_3_descripcion": "${data.item_3_descripcion}",
+                "item_3_cantidad": "${data.item_3_cantidad}",
+                "item_3_unidad": "${data.item_3_unidad}",
+                "item_3_proveedor": "${data.item_3_proveedor}",
+                "item_3_link": "${data.item_3_link}",
+                "item_4_catalogo": "${data.item_4_catalogo}",
+                "item_4_descripcion": "${data.item_4_descripcion}",
+                "item_4_cantidad": "${data.item_4_cantidad}",
+                "item_4_unidad": "${data.item_4_unidad}",
+                "item_4_proveedor": "${data.item_4_proveedor}",
+                "item_4_link": "${data.item_4_link}",
+                "item_5_catalogo": "${data.item_5_catalogo}",
+                "item_5_descripcion": "${data.item_5_descripcion}",
+                "item_5_cantidad": "${data.item_5_cantidad}",
+                "item_5_unidad": "${data.item_5_unidad}",
+                "item_5_proveedor": "${data.item_5_proveedor}",
+                "item_5_link": "${data.item_5_link}",
+                "item_6_catalogo": "${data.item_6_catalogo}",
+                "item_6_descripcion": "${data.item_6_descripcion}",
+                "item_6_cantidad": "${data.item_6_cantidad}",
+                "item_6_unidad": "${data.item_6_unidad}",
+                "item_6_proveedor": "${data.item_6_proveedor}",
+                "item_6_link": "${data.item_6_link}",
+                "item_7_catalogo": "${data.item_7_catalogo}",
+                "item_7_descripcion": "${data.item_7_descripcion}",
+                "item_7_cantidad": "${data.item_7_cantidad}",
+                "item_7_unidad": "${data.item_7_unidad}",
+                "item_7_proveedor": "${data.item_7_proveedor}",
+                "item_7_link": "${data.item_7_link}",
+                "item_8_catalogo": "${data.item_8_catalogo}",
+                "item_8_descripcion": "${data.item_8_descripcion}",
+                "item_8_cantidad": "${data.item_8_cantidad}",
+                "item_8_unidad": "${data.item_8_unidad}",
+                "item_8_proveedor": "${data.item_8_proveedor}",
+                "item_8_link": "${data.item_8_link}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
