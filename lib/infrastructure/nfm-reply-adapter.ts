@@ -134,17 +134,31 @@ function isHttpsUrl(value: string): boolean { try { return new URL(value).protoc
 interface CompactedItem { itemId?: string; proposedDescription?: string; quantity: number; unit: string; possibleSupplier?: string; productLink?: string; attachmentUrl?: string; }
 
 /**
- * Compacta las 3 franjas fijas del Flow (`item_N_*`, N=1..3) en un arreglo de ítems, aplicando las
- * reglas del ticket: una franja sin descripción NI itemId de catálogo se ignora en silencio; una
- * franja presente con cantidad inválida (no numérica o <=0) o sin unidad invalida el evento
- * completo — no se envía una requisición a medias.
+ * Número de franjas de artículo que puede traer el Flow de captura.
+ *
+ * Debe coincidir con `MAX_ITEMS` de `integrations/whatsapp-flow/build-requisicion-flow.mjs`, que es
+ * quien genera las pantallas. Subió de 3 a 8 en el Flow v2: Ernesto, probando desde su celular,
+ * avisó de que tres se le quedaban cortos («me preocupa querer agregar más y no poder»). Las ocho
+ * pantallas existen siempre pero solo se visitan bajo demanda, así que lo normal es que lleguen
+ * casi todas vacías — y vacías se descartan aquí mismo, sin ruido.
+ *
+ * Leer de más es inocuo con el Flow v1 (las claves 4..8 sencillamente no vienen), así que el
+ * adaptador sirve a los dos mientras convivan.
+ */
+const MAX_ITEM_SLOTS = 8;
+
+/**
+ * Compacta las franjas fijas del Flow (`item_N_*`, N=1..MAX_ITEM_SLOTS) en un arreglo de ítems,
+ * aplicando las reglas del ticket: una franja sin descripción NI itemId de catálogo se ignora en
+ * silencio; una franja presente con cantidad inválida (no numérica o <=0) o sin unidad invalida el
+ * evento completo — no se envía una requisición a medias.
  */
 function compactItems(fields: Record<string, unknown>): { ok: true; items: CompactedItem[]; fotoMediaIds: (string | null)[] } | { ok: false; reason: "invalid_item" | "no_items" } {
   const items: CompactedItem[] = [];
   // Media id de la foto de CADA ítem presente, en el mismo orden que `items` (tras compactar las
   // franjas vacías). Cada foto se adjunta a SU ítem, no una sola evidencia al primero.
   const fotoMediaIds: (string | null)[] = [];
-  for (const n of [1, 2, 3] as const) {
+  for (let n = 1; n <= MAX_ITEM_SLOTS; n += 1) {
     const catalogo = asString(fields[`item_${n}_catalogo`]);
     const descripcion = asString(fields[`item_${n}_descripcion`]);
     const present = catalogo !== "" || descripcion !== "";

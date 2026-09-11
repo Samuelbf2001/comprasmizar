@@ -348,6 +348,63 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.event.submission?.requesterName).toBe("Nelson Materiales");
     });
+
+    // Flow v2 (2026-09-11): las franjas de artículo pasaron de 3 a 8 porque Ernesto, probando desde
+    // su celular, avisó de que tres se le quedaban cortos. Las ocho pantallas existen siempre pero
+    // solo se visitan bajo demanda, así que lo NORMAL es que lleguen casi todas vacías — y encima
+    // rellenas de cadenas vacías a propósito, porque Meta exige que el payload de un `navigate`
+    // traiga todas las claves que declara la pantalla destino.
+    describe("ocho franjas de artículo (Flow v2)", () => {
+      /** Rellena las franjas `desde`..8 con cadenas vacías, como hace el Flow al saltar al resumen. */
+      const enBlanco = (desde: number) => {
+        const campos: Record<string, unknown> = {};
+        for (let n = desde; n <= 8; n += 1) {
+          for (const campo of ["catalogo", "descripcion", "cantidad", "unidad", "proveedor", "link"]) campos[`item_${n}_${campo}`] = "";
+        }
+        return campos;
+      };
+      /** Una franja completa y válida. */
+      const franja = (n: number, descripcion: string) => ({
+        [`item_${n}_catalogo`]: "", [`item_${n}_descripcion`]: descripcion,
+        [`item_${n}_cantidad`]: "2", [`item_${n}_unidad`]: "bulto",
+        [`item_${n}_proveedor`]: "", [`item_${n}_link`]: "",
+      });
+      const descripciones = async (payload: Parameters<typeof adaptNfmReply>[0]) => {
+        const result = await adaptNfmReply(payload, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
+        expect(result.ok, "el evento debería ser válido").toBe(true);
+        return result.ok ? result.event.submission!.items.map((item) => item.proposedDescription) : [];
+      };
+
+      it("un solo artículo, con las otras siete franjas vacías", async () => {
+        const payload = withResponseFields(fixture, { ...franja(1, "Cemento gris"), ...enBlanco(2) });
+        expect(await descripciones(payload)).toEqual(["Cemento gris"]);
+      });
+
+      it("tres artículos, como el Flow v1", async () => {
+        const payload = withResponseFields(fixture, { ...franja(1, "Cemento"), ...franja(2, "Arena"), ...franja(3, "Varilla"), ...enBlanco(4) });
+        expect(await descripciones(payload)).toEqual(["Cemento", "Arena", "Varilla"]);
+      });
+
+      it("los ocho, que es el tope nuevo", async () => {
+        const campos = Object.assign({}, ...Array.from({ length: 8 }, (_, i) => franja(i + 1, `Material ${i + 1}`)));
+        expect(await descripciones(withResponseFields(fixture, campos))).toHaveLength(8);
+      });
+
+      it("las franjas vacías INTERMEDIAS se descartan sin desplazar a las siguientes", async () => {
+        // El caso que rompería en silencio: si un hueco intermedio cortara el recorrido, el
+        // artículo 8 se perdería y nadie se enteraría — la requisición llegaría incompleta y
+        // parecería correcta.
+        const payload = withResponseFields(fixture, { ...franja(1, "Cemento"), ...enBlanco(2), ...franja(5, "Arena"), ...franja(8, "Varilla") });
+        expect(await descripciones(payload)).toEqual(["Cemento", "Arena", "Varilla"]);
+      });
+
+      it("una franja tardía con cantidad inválida invalida el evento entero", async () => {
+        // No se manda media requisición: la regla del v1 sigue valiendo en las franjas nuevas.
+        const payload = withResponseFields(fixture, { ...franja(1, "Cemento"), ...enBlanco(2), ...franja(7, "Arena"), item_7_cantidad: "cero" });
+        const result = await adaptNfmReply(payload, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
+        expect(result).toMatchObject({ ok: false, reason: "invalid_item" });
+      });
+    });
   });
 
   describe("normalizePhoneForToken", () => {
