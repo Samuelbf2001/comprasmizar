@@ -59,7 +59,102 @@ Distinción crítica de Next.js. Las `NEXT_PUBLIC_*` se **incrustan en el bundle
 
 El validador ([lib/security/env.ts](../lib/security/env.ts)) exige estas formas y **falla cerrado**: sin variables completas, `/api/health` responde `unconfigured` y los endpoints rechazan sin filtrar secretos.
 
-## 2. Publicar la imagen
+## 2. Cómo se despliega de verdad en el VPS
+
+**Léase esto antes que las secciones 3 y 4.** Describen un servicio tipo Compose gestionado por
+EasyPanel que se planificó pero **no es lo que corre**. Lo que hay en producción desde el 11-sep-2026
+es una pila `docker compose -p mizar` en `/opt/mizar`, construida **en el propio VPS**, con EasyPanel
+limitándose a ser dueño de Traefik. La imagen de GHCR que publica CI existe y sirve para revertir,
+pero el despliegue no la usa.
+
+### La receta, exacta
+
+Desde la máquina de desarrollo, con la llave SSH de despliegue:
+
+```bash
+# 1. El código. /opt/mizar NO es un repo git: se sincroniza volcando el árbol de un commit.
+SHA=$(git rev-parse origin/main)
+git archive --format=tar origin/main | ssh root@<vps> 'cd /opt/mizar && tar -x -f -'
+
+# 2. Migraciones. Idempotente: lleva registro en public.migraciones_aplicadas.
+ssh root@<vps> 'cd /opt/mizar && bash ops/apply-migrations.sh'
+
+# 3. Imagen, con los TRES build-args. Ver más abajo por qué no son opcionales.
+ssh root@<vps> "cd /opt/mizar && docker compose -p mizar build \
+  --build-arg NEXT_PUBLIC_APP_URL=https://comprasmizar.sixteam.pro \
+  --build-arg NEXT_PUBLIC_DEMO_MODE=false \
+  --build-arg APP_COMMIT=$SHA app"
+
+# 4. Arrancar y volver a enganchar Traefik (el connect se pierde en cada recreación).
+ssh root@<vps> 'cd /opt/mizar && docker compose -p mizar up -d app \
+  && docker network connect easypanel mizar-app-1'
+```
+
+### Verificación, y qué mira cada comprobación
+
+```bash
+curl -s https://comprasmizar.sixteam.pro/api/health
+```
+
+Tienen que cumplirse las tres:
+
+- `"status":"ok"` — el entorno base valida.
+- `"origin":true` — se puede ESCRIBIR (ver la trampa 1). Sin esto la plataforma queda de solo lectura.
+- `"commit":"<sha>"` — coincide con `git rev-parse origin/main`. Es lo que convierte «qué hay
+  desplegado» en un dato comprobable en vez de una suposición.
+
+Y una escritura de verdad, porque el health no la ejercita:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  https://comprasmizar.sixteam.pro/api/requisitions/<id>/actions \
+  -H 'content-type: application/json' -H 'Origin: https://comprasmizar.sixteam.pro' \
+  -d '{"action":"approve"}'
+```
+
+**401 es el resultado correcto** sin sesión: `assertSameOrigin` corre dentro de `authenticatedJson`,
+así que sin cookie se rechaza antes de mirar la transición. Lo que NO puede salir es **503**: eso es
+exactamente la trampa 1. Con una sesión válida sobre una requisición que no admita la transición,
+sale un 422 de dominio.
+
+### Las dos trampas que costaron un día entero
+
+**1. Sin `--build-arg NEXT_PUBLIC_APP_URL`, la plataforma queda en SOLO LECTURA.**
+Next sustituye `process.env.NEXT_PUBLIC_*` por un literal en tiempo de compilación, **también en el
+código de servidor**. Si la build no recibe el valor, ahí no queda una variable que leer sino la
+constante `undefined`, y `assertSameOrigin` ([lib/http/api.ts](../lib/http/api.ts)) lanza siempre.
+Resultado: **todo POST y PATCH responden 503 mientras las lecturas siguen funcionando con
+normalidad**. Navegando no se nota: el panel pinta datos reales y solo falla al guardar. Pasó el
+11-sep-2026 y la plataforma estuvo así en producción sin que nadie lo viera.
+
+El respaldo en ejecución es `APP_ORIGIN` (sin prefijo `NEXT_PUBLIC_`, por eso sí se lee al arrancar
+y se puede corregir sin reconstruir). Está en `/opt/mizar/.env.production`. Pero el arreglo bueno es
+pasar el build-arg; `APP_ORIGIN` es la red, no el suelo.
+
+**2. `git archive` restaura los modos del índice, así que un guion puede llegar sin permiso de
+ejecución.** Un fichero de `ops/` creado desde Windows —que no tiene bit de ejecución que git pueda
+observar— se registra como `100644`. Al desplegar, el `chmod` que se le hubiera puesto a mano
+desaparece y el cron pasa a fallar **cada minuto** con `Permission denied`, sin avisar a nadie: cron
+no manda correo si no hay `MAILTO`, y el propio log solo recoge esa línea. Se perdieron 13 ciclos
+antes de que se notara.
+
+Regla: **todo guion de `ops/` va `100755` en el índice**. Comprobarlo con
+`git ls-tree origin/main -- ops/`; si alguno sale `100644`, corregirlo con
+`git update-index --chmod=+x <ruta>`.
+
+### Otras cosas que conviene saber
+
+- **El `docker network connect easypanel` hay que rehacerlo tras cada recreación** del contenedor.
+  Sin él Traefik deja de enrutar el dominio y sale el «Service is not reachable» de EasyPanel, que
+  parece una caída de la aplicación y no lo es.
+- **`docker compose exec -T` consume stdin.** Un guion canalizado por `ssh 'bash -s'` que contenga un
+  `docker compose exec` se corta a sí mismo: el exec se traga el resto del script. O se copia el
+  guion con `scp` y se ejecuta, o cada `exec` lleva `< /dev/null`.
+- Los secretos viven en `/opt/mizar/.env.production` (modo 600). Se generan **en el servidor**
+  (`openssl rand -base64 32`) y no viajan por ningún otro sitio. Antes de tocar el fichero, copia de
+  respaldo con marca de tiempo.
+
+## 3. Publicar la imagen (respaldo y reversión)
 
 Ya automatizado: cada push a `main` que pase calidad y E2E publica `ghcr.io/samuelbf2001/comprasmizar` con dos etiquetas — `:<sha>` (inmutable, para revertir) y `:main` (móvil).
 
@@ -67,7 +162,7 @@ El workflow trae `https://comprasmizar.sixteam.pro` como valor por defecto de `N
 
 El paquete de GHCR nace privado: hay que dar acceso de lectura al VPS con un token, o marcarlo público si no hay inconveniente (la imagen no contiene secretos, pero sí todo el código).
 
-## 3. Servicio en EasyPanel
+## 4. Servicio en EasyPanel (planificado, NO en uso)
 
 El VPS aloja otros proyectos (`postgres`, `whatsfull`, `whatsful`). **Crear un proyecto nuevo y aislado** — no reutilizar los existentes.
 
@@ -99,9 +194,9 @@ Los scripts de operación localizan el contenedor con `docker compose exec` desd
 Dos cosas dejan de estar garantizadas al quitar Caddy. Los demás encabezados de seguridad (CSP, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-Content-Type-Options`) los pone Next.js en [next.config.ts](../next.config.ts) y siguen intactos.
 
 1. **`Strict-Transport-Security` (HSTS)** lo añadía solo Caddy. Configurarlo en EasyPanel, o añadirlo a `next.config.ts`.
-2. **La sobrescritura de `X-Real-IP`, que es de seguridad, no cosmética.** El limitador de intentos de login, el del formulario público ([app/api/public/requisitions/route.ts](../app/api/public/requisitions/route.ts)) y el del MCP ([app/mcp/route.ts](../app/mcp/route.ts)) confían en ese encabezado. El código lo dice explícitamente: *"Caddy must overwrite X-Real-IP; never parse a client-supplied X-Forwarded-For chain here"*. Si el proxy de EasyPanel **no** lo sobrescribe, un atacante manda su propio `X-Real-IP` y se salta esos tres límites rotando el valor. **Hay que comprobarlo con la prueba del paso 5.4, no darlo por hecho.**
+2. **La sobrescritura de `X-Real-IP`, que es de seguridad, no cosmética.** El limitador de intentos de login, el del formulario público ([app/api/public/requisitions/route.ts](../app/api/public/requisitions/route.ts)) y el del MCP ([app/mcp/route.ts](../app/mcp/route.ts)) confían en ese encabezado. El código lo dice explícitamente: *"Caddy must overwrite X-Real-IP; never parse a client-supplied X-Forwarded-For chain here"*. Si el proxy de EasyPanel **no** lo sobrescribe, un atacante manda su propio `X-Real-IP` y se salta esos tres límites rotando el valor. **Hay que comprobarlo con la prueba del paso 6.4, no darlo por hecho.**
 
-## 4. Webhook de Kapso
+## 5. Webhook de Kapso
 
 Una vez el dominio esté en pie:
 
@@ -111,7 +206,7 @@ Una vez el dominio esté en pie:
 
 Nota: los adjuntos del Flow ya se copian server-side: el webhook descarga cada `attachmentUrl` desde Kapso (bearer `KAPSO_API_KEY`), valida la firma binaria real (pdf/jpeg/png/webp) y el tamaño, y guarda el archivo en el bucket privado `requisicion-adjuntos`. Si la descarga o la copia falla, la requisición se crea igual y el fallo queda registrado en `whatsapp_eventos` y `auditoria` (evento `ADJUNTO_KAPSO_FALLIDO`) para reintento manual — no hay reintento automático vía webhook.
 
-## 5. Verificación posterior al despliegue
+## 6. Verificación posterior al despliegue
 
 Ninguno de estos pasos requiere datos reales de Mizar:
 
@@ -127,7 +222,7 @@ Ninguno de estos pasos requiere datos reales de Mizar:
 6. Login con un usuario real de `auth.users` vinculado en `public.usuarios`. Si los datos vienen del volcado de Supabase, la contraseña de siempre funciona sin cambios (ver [migración](migracion-autoalojado.md)).
 7. Subir un adjunto y volver a descargarlo: prueba de punta a punta del almacenamiento propio.
 
-## 6. Reversión
+## 7. Reversión
 
 ```bash
 docker pull ghcr.io/samuelbf2001/comprasmizar:<sha-anterior>
@@ -135,7 +230,7 @@ docker pull ghcr.io/samuelbf2001/comprasmizar:<sha-anterior>
 
 Cambiar la etiqueta del servicio en EasyPanel al `<sha>` anterior y redesplegar. Como las migraciones son aditivas, revertir la imagen no exige revertir el esquema; si una migración futura fuera destructiva, hay que planear su reversión aparte.
 
-## 7. Respaldo
+## 8. Respaldo
 
 Ya no hay respaldo gestionado por un tercero: lo hacemos nosotros. [`ops/backup-daily.sh`](../ops/backup-daily.sh) corre por cron a las 03:00 hora Colombia, vuelca la base, empaqueta los adjuntos del volumen, cifra ambos con AES-256-GCM y los sube a Google Drive con retención de 35 días. La instalación paso a paso está en [docs/migracion-autoalojado.md](migracion-autoalojado.md); el detalle operativo, en [docs/runbook-operacion.md](runbook-operacion.md).
 
