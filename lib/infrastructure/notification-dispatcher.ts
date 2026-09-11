@@ -20,7 +20,7 @@ export type NotificationSendAdapter = Pick<KapsoAdapter, "sendTemplate"> & {
    * ya no está en aprobación) viva en el cableado y no aquí, sin que este módulo tenga que saber
    * qué errores del emisor son recuperables.
    */
-  sendApprovalFlow?(input: { to: string; requisitionId: string; fallback: () => Promise<{ messageId: string }> }): Promise<{ messageId: string }>;
+  sendApprovalFlow?(input: { to: string; requisitionId: string; approverId?: string; fallback: () => Promise<{ messageId: string }> }): Promise<{ messageId: string }>;
 };
 
 /** Template cuya notificación puede entregarse como Flow. Vive aquí, junto al despachador, porque
@@ -33,6 +33,16 @@ const APPROVAL_TEMPLATE = "pendiente_aprobador";
 function approvalFlowTarget(notification: PendingNotification, adapter: NotificationSendAdapter): string | null {
   if (!adapter.sendApprovalFlow || notification.template !== APPROVAL_TEMPLATE) return null;
   return extractRequisitionId(notification.payload);
+}
+/**
+ * A qué aprobador va esta notificación. Lo escribe el servicio al encolar (una notificación por
+ * aprobador con ítems pendientes) y aquí solo se transporta: el emisor lo usa para elegir el contexto
+ * con LOS ÍTEMS DE ESA PERSONA. Ausente en las notificaciones de antes de este cambio, y entonces el
+ * emisor cae al caso de siempre — un solo aprobador, un solo contexto.
+ */
+function approvalApproverId(payload: Record<string, unknown>): string | undefined {
+  const value = payload.approverId;
+  return typeof value === "string" && UUID_RE.test(value) ? value : undefined;
 }
 
 export interface PendingNotification {
@@ -168,7 +178,7 @@ export async function dispatchPendingNotifications(store: NotificationDispatchSt
       const sendAsTemplate = () => adapter.sendTemplate({ to: notification.phone, template: notification.template, payload: toTemplatePayload(notification.template, notification.payload) });
       const approvalRequisitionId = approvalFlowTarget(notification, adapter);
       const { messageId } = approvalRequisitionId
-        ? await adapter.sendApprovalFlow!({ to: notification.phone, requisitionId: approvalRequisitionId, fallback: sendAsTemplate })
+        ? await adapter.sendApprovalFlow!({ to: notification.phone, requisitionId: approvalRequisitionId, approverId: approvalApproverId(notification.payload), fallback: sendAsTemplate })
         : await sendAsTemplate();
       await store.markSent(notification.id, { messageId, phone: notification.phone, template: notification.template, payload: notification.payload }, now());
       outcome.sent++;

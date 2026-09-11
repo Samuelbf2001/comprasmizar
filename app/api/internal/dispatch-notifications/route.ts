@@ -53,14 +53,14 @@ export async function POST(request: Request): Promise<Response> {
       // solo si el Flow no cabe de ninguna forma, el aviso de texto para que entre por la web.
       // Nunca al revés: invertirlo pagaría una conversación cada vez, incluso con el chat abierto.
       ...(isApprovalFlowConfigured() ? {
-        sendApprovalFlow: async ({ requisitionId, fallback }) => {
+        sendApprovalFlow: async ({ requisitionId, approverId, fallback }) => {
           try {
-            return await sendApprovalFlow(requisitionId);
+            return await sendApprovalFlow(requisitionId, {}, approverId);
           } catch (error) {
             if (isFlowImpossible(error)) return fallback();
             if (!isSessionClosed(error)) throw error;
           }
-          try { return await sendApprovalTemplate(requisitionId); }
+          try { return await sendApprovalTemplate(requisitionId, {}, approverId); }
           catch (error) { if (isFlowImpossible(error)) return fallback(); throw error; }
         },
       } : {}),

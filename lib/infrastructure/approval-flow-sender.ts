@@ -55,7 +55,9 @@ export function formatCop(value: number): string {
 export interface ApprovalFlowOption { id: string; title: string; description: string; }
 export interface ApprovalFlowContext {
   requisitionId: string;
-  /** Teléfono del aprobador asignado, tal como está en `usuarios.telefono`. */
+  /** Id del aprobador al que va ESTE mensaje: el de cabecera o el de sus ítems. */
+  approverId: string;
+  /** Teléfono de ese aprobador, tal como está en `usuarios.telefono`. */
   approverPhone: string;
   /** Campos sueltos para las variables de la plantilla ({{1}}..{{4}}), que no admite saltos de
    * línea ni texto compuesto. `heading`/`summary` son la versión ya compuesta para las pantallas
@@ -73,28 +75,44 @@ export interface ApprovalFlowContext {
 
 /** Inyectable para pruebas; la BD real la da `createPostgresApprovalFlowSource`. */
 export interface ApprovalFlowSource {
-  /** `null` cuando la requisición no existe, no está `en_aprobacion`, no tiene aprobador asignado
-   * o su aprobador no tiene teléfono cargado: en todos esos casos no hay nada que enviar. */
-  loadApprovalContext(requisitionId: string): Promise<ApprovalFlowContext | null>;
+  /**
+   * UN CONTEXTO POR APROBADOR con ítems pendientes, cada uno con los suyos. Lista VACÍA cuando no hay
+   * nada que enviar: la requisición no existe, no está `en_aprobacion`, nadie tiene ítems pendientes
+   * o a quien los tiene no se le conoce el teléfono.
+   *
+   * En plural desde el aprobador por ítem (11-sep-2026). Con un solo aprobador devuelve un elemento y
+   * el mensaje es idéntico al de siempre.
+   */
+  loadApprovalContexts(requisitionId: string): Promise<ApprovalFlowContext[]>;
 }
 
 interface ApprovalContextRow {
   requisicion_id: string; consecutivo: string; obra: string | null; solicitante: string | null;
-  fecha_requerida: string | null; telefono: string | null; aprobador: string | null;
+  fecha_requerida: string | null; aprobador_id: string; telefono: string | null; aprobador: string | null;
   items: Array<{ id: string; nombre: string | null; descripcion: string | null; cantidad: string; unidad: string; total: string }> | null;
 }
 
 /**
- * Solo líneas NO declinadas (`estado <> 'declinado'`), que son las que el dominio considera vigentes
- * (`approvedLines` en lib/domain/rules.ts): lo que el revisor ya descartó no vuelve a aparecerle al
- * aprobador. El total mostrado se calcula en SQL con la MISMA aritmética por línea que
- * `calculateLineAmounts` (bruto → descuento → base → IVA), para que la cifra del WhatsApp no
- * contradiga la de la ficha web.
+ * Solo líneas PENDIENTES, y AGRUPADAS POR APROBADOR.
+ *
+ * Antes eran «las no declinadas» y todas para una sola persona, porque una requisición tenía un solo
+ * aprobador. Desde el aprobador por ítem (11-sep-2026) cada quien recibe lo suyo: agrupar por
+ * `coalesce(ri.aprobador_id, r.aprobador_id)` es la misma herencia que aplica `itemApproverId` en el
+ * dominio, resuelta en SQL para no traerse la requisición entera.
+ *
+ * PENDIENTES y no «no declinadas»: a quien ya decidió no se le vuelve a preguntar. En el momento del
+ * envío —que es cuando la requisición entra en aprobación— las dos condiciones coinciden, así que con
+ * un solo aprobador el mensaje es idéntico al de siempre; la diferencia solo aparece al reenviar.
+ *
+ * El total de cada mensaje es el de LOS ÍTEMS DE ESA PERSONA, no el de la requisición: enseñarle a
+ * alguien un total que incluye ítems que no decide invita a aprobar pensando en una cifra que no es
+ * la suya. Se calcula en SQL con la MISMA aritmética por línea que `calculateLineAmounts` (bruto →
+ * descuento → base → IVA), para que la cifra del WhatsApp no contradiga la de la ficha web.
  */
 export function createPostgresApprovalFlowSource(databaseUrl = runtimeEnv().DATABASE_URL): ApprovalFlowSource {
   const sql = sharedPostgres(databaseUrl);
   return {
-    async loadApprovalContext(requisitionId) {
+    async loadApprovalContexts(requisitionId) {
       const rows = await sql<ApprovalContextRow[]>`
         select
           r.id as requisicion_id,
@@ -102,6 +120,7 @@ export function createPostgresApprovalFlowSource(databaseUrl = runtimeEnv().DATA
           o.nombre as obra,
           coalesce(u.nombre, r.solicitante_nombre_externo) as solicitante,
           to_char(r.fecha_requerida, 'YYYY-MM-DD') as fecha_requerida,
+          ap.id::text as aprobador_id,
           ap.telefono,
           ap.nombre as aprobador,
           (
@@ -118,47 +137,74 @@ export function createPostgresApprovalFlowSource(databaseUrl = runtimeEnv().DATA
               )::text
             ) order by ri.created_at)
             from requisicion_items ri
-            left join items it on it.id = ri.item_id
-            where ri.requisicion_id = r.id and ri.estado <> 'declinado'
+            where ri.requisicion_id = r.id and ri.estado = 'pendiente'
+              and coalesce(ri.aprobador_id, r.aprobador_id) = ap.id
           ) as items
         from requisiciones r
         left join obras o on o.id = r.obra_id
         left join usuarios u on u.id = r.solicitante_id
-        left join usuarios ap on ap.id = r.aprobador_id
-        where r.id = ${requisitionId} and r.estado = 'en_aprobacion'`;
-      const row = rows[0];
-      if (!row) return null;
-      const phone = (row.telefono ?? "").trim();
-      const rawItems = row.items ?? [];
-      if (!phone || rawItems.length === 0) return null;
+        -- Un renglón por APROBADOR con algo pendiente aquí. La herencia la resuelve
+        -- public.aprobadores_pendientes (migración 202609110004), que es la MISMA definición que
+        -- comprueba el arnés SQL: copiarla aquí sería pedir que las dos se separen algún día.
+        join usuarios ap on ap.id in (select public.aprobadores_pendientes(r.id))
+        where r.id = ${requisitionId} and r.estado = 'en_aprobacion'
+        order by ap.nombre`;
 
-      const total = rawItems.reduce((sum, item) => sum + Number(item.total ?? 0), 0);
-      const summaryLines = [
-        row.solicitante ? `Solicita: ${row.solicitante}` : null,
-        row.fecha_requerida ? `Requerido: ${row.fecha_requerida}` : null,
-        `Total vigente: ${formatCop(total)}`,
-      ].filter((line): line is string => line !== null);
+      return rows.flatMap((row) => {
+        const phone = (row.telefono ?? "").trim();
+        const rawItems = row.items ?? [];
+        // Sin teléfono no hay a quién escribir, y sin ítems no hay qué preguntar. Se descarta ESE
+        // aprobador, no el envío entero: que a uno le falte el número no puede dejar a los demás sin
+        // su mensaje.
+        if (!phone || rawItems.length === 0) return [];
 
-      // Las variables de plantilla no admiten vacío: Meta rechaza el envío. Cuando un dato falta se
-      // usa un texto honesto ("sin obra") en vez de "" — la requisición sí llega a su aprobador.
-      const work = row.obra?.trim() || "sin obra asignada";
-      return {
-        requisitionId: row.requisicion_id,
-        approverPhone: phone,
-        approverName: row.aprobador?.trim() || "aprobador",
-        consecutive: row.consecutivo,
-        work,
-        totalText: formatCop(total),
-        heading: truncate([row.consecutivo, work].filter(Boolean).join(" · "), 80),
-        summary: summaryLines.join("\n"),
-        items: rawItems.map((item) => ({
-          id: item.id,
-          title: truncate(item.nombre ?? item.descripcion ?? "Ítem", MAX_OPTION_TITLE_LENGTH),
-          description: truncate(`${Number(item.cantidad)} ${item.unidad} · ${formatCop(Number(item.total ?? 0))}`, MAX_OPTION_DESCRIPTION_LENGTH),
-        })),
-      };
+        const total = rawItems.reduce((sum, item) => sum + Number(item.total ?? 0), 0);
+        const summaryLines = [
+          row.solicitante ? `Solicita: ${row.solicitante}` : null,
+          row.fecha_requerida ? `Requerido: ${row.fecha_requerida}` : null,
+          `Total vigente: ${formatCop(total)}`,
+        ].filter((line): line is string => line !== null);
+
+        // Las variables de plantilla no admiten vacío: Meta rechaza el envío. Cuando un dato falta se
+        // usa un texto honesto ("sin obra") en vez de "" — la requisición sí llega a su aprobador.
+        const work = row.obra?.trim() || "sin obra asignada";
+        return [{
+          requisitionId: row.requisicion_id,
+          approverId: row.aprobador_id,
+          approverPhone: phone,
+          approverName: row.aprobador?.trim() || "aprobador",
+          consecutive: row.consecutivo,
+          work,
+          totalText: formatCop(total),
+          heading: truncate([row.consecutivo, work].filter(Boolean).join(" · "), 80),
+          summary: summaryLines.join("\n"),
+          items: rawItems.map((item) => ({
+            id: item.id,
+            title: truncate(item.nombre ?? item.descripcion ?? "Ítem", MAX_OPTION_TITLE_LENGTH),
+            description: truncate(`${Number(item.cantidad)} ${item.unidad} · ${formatCop(Number(item.total ?? 0))}`, MAX_OPTION_DESCRIPTION_LENGTH),
+          })),
+        }];
+      });
     },
   };
+}
+
+/**
+ * A cuál de los contextos va ESTE envío.
+ *
+ * Con `approverId` se elige el suyo: es lo que hace que, con varios aprobadores, cada uno reciba sus
+ * ítems y no los del otro. El id sale de la fila de `notificaciones` que encoló el servicio, nunca de
+ * quien llama a la API — igual que el teléfono, que se sigue leyendo de `usuarios` y no del cuerpo de
+ * la petición.
+ *
+ * SIN `approverId` solo vale si hay exactamente uno: es el caso de toda la vida y el mensaje sale
+ * idéntico al de antes de este cambio. Con varios y sin decir a cuál, NO se elige por el llamador: se
+ * devuelve `undefined` y el emisor falla con `APPROVAL_FLOW_NO_CONTEXT`. Mandarle a uno cualquiera
+ * los ítems que le tocan a otro sería peor que no mandar nada, y en silencio.
+ */
+export function elegirContexto(contexts: readonly ApprovalFlowContext[], approverId?: string): ApprovalFlowContext | undefined {
+  if (approverId) return contexts.find((context) => context.approverId === approverId);
+  return contexts.length === 1 ? contexts[0] : undefined;
 }
 
 /**
@@ -337,7 +383,7 @@ export interface ApprovalFlowSenderDeps { source?: ApprovalFlowSource; fetchImpl
  *    teléfono, o no le queda ningún ítem vigente.
  *  - `APPROVAL_FLOW_TOO_MANY_ITEMS`: supera MAX_APPROVAL_ITEMS (ver su nota).
  */
-export async function sendApprovalFlow(requisitionId: string, deps: ApprovalFlowSenderDeps = {}): Promise<{ messageId: string; to: string }> {
+export async function sendApprovalFlow(requisitionId: string, deps: ApprovalFlowSenderDeps = {}, approverId?: string): Promise<{ messageId: string; to: string }> {
   const config = approvalSendConfig();
   if (!config) throw new Error("APPROVAL_FLOW_NOT_CONFIGURED");
 
@@ -345,7 +391,7 @@ export async function sendApprovalFlow(requisitionId: string, deps: ApprovalFlow
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date());
 
-  const context = await source.loadApprovalContext(requisitionId);
+  const context = elegirContexto(await source.loadApprovalContexts(requisitionId), approverId);
   if (!context) throw new Error("APPROVAL_FLOW_NO_CONTEXT");
   if (context.items.length > MAX_APPROVAL_ITEMS) throw new Error("APPROVAL_FLOW_TOO_MANY_ITEMS");
 
@@ -477,7 +523,7 @@ export function buildApprovalTemplatePayload(input: {
  * No puede devolver `APPROVAL_FLOW_SESSION_CLOSED`: es justamente el camino que no depende de la
  * ventana.
  */
-export async function sendApprovalTemplate(requisitionId: string, deps: ApprovalFlowSenderDeps = {}): Promise<{ messageId: string; to: string }> {
+export async function sendApprovalTemplate(requisitionId: string, deps: ApprovalFlowSenderDeps = {}, approverId?: string): Promise<{ messageId: string; to: string }> {
   const config = approvalSendConfig();
   if (!config) throw new Error("APPROVAL_FLOW_NOT_CONFIGURED");
 
@@ -485,7 +531,7 @@ export async function sendApprovalTemplate(requisitionId: string, deps: Approval
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date());
 
-  const context = await source.loadApprovalContext(requisitionId);
+  const context = elegirContexto(await source.loadApprovalContexts(requisitionId), approverId);
   if (!context) throw new Error("APPROVAL_FLOW_NO_CONTEXT");
   if (context.items.length > MAX_APPROVAL_ITEMS) throw new Error("APPROVAL_FLOW_TOO_MANY_ITEMS");
   const to = normalizeApprovalPhone(context.approverPhone);

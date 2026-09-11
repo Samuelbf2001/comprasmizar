@@ -203,6 +203,50 @@ begin
     raise exception 'RLS: un aprobador ajeno lee el historial de una requisición que no decide';
   end if;
   execute 'reset role';
+  -- SE DEVUELVE LA IDENTIDAD, no solo el rol. `reset role` quita el rol pero deja puesto el GUC que
+  -- lee auth.uid(), así que los bloques siguientes seguirían corriendo "como" este aprobador y
+  -- dispararían `limitar_actualizacion_aprobador` en updates que no tienen nada que ver. Pasó.
+  perform set_config('request.jwt.claim.sub', '', true);
+end $$;
+
+
+-- 7. `aprobadores_pendientes`: a quién se le espera todavía. Es la MISMA función que usa el emisor de
+--    WhatsApp para agrupar los mensajes (lib/infrastructure/approval-flow-sender.ts), no una copia del
+--    predicado: si se comprobara aquí una versión propia, este arnés podría dar verde sobre la misma
+--    equivocación que debe cazar — que es lo que ya pasó una vez con `rango_estado_entrega`.
+do $$
+declare
+  v_req uuid; v_l1 uuid; v_l2 uuid; v_pendientes uuid[];
+  c_cabecera constant uuid := '10000000-0000-4000-8000-000000000003'; -- Nelson
+  c_por_item constant uuid := '10000000-0000-4000-8000-000000000007'; -- Juliana
+begin
+  insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
+    returning id into v_req;
+  update public.requisiciones set aprobador_id = c_cabecera where id = v_req;
+  insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad, aprobador_id)
+    values (v_req, 'Arena', 3, 'm3', c_por_item) returning id into v_l1;
+  insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad)
+    values (v_req, 'Cemento', 20, 'bulto') returning id into v_l2; -- sin aprobador: hereda a Nelson
+
+  select array_agg(a order by a) into v_pendientes from public.aprobadores_pendientes(v_req) a;
+  if v_pendientes <> array(select unnest(array[c_cabecera, c_por_item]) order by 1) then
+    raise exception 'aprobadores_pendientes no agrupa cabecera + ítem: %', v_pendientes;
+  end if;
+
+  -- Decidido lo de Juliana, deja de esperarse a Juliana: a quien ya decidió no se le vuelve a escribir.
+  update public.requisicion_items set estado = 'aprobado' where id = v_l1;
+  select array_agg(a) into v_pendientes from public.aprobadores_pendientes(v_req) a;
+  if v_pendientes <> array[c_cabecera] then
+    raise exception 'aprobadores_pendientes sigue esperando a quien ya decidió: %', v_pendientes;
+  end if;
+
+  -- Un ítem DECLINADO también está decidido: no puede reabrir el aviso.
+  update public.requisicion_items set estado = 'declinado', motivo_declinacion = 'sin presupuesto' where id = v_l2;
+  select array_agg(a) into v_pendientes from public.aprobadores_pendientes(v_req) a;
+  if v_pendientes is not null then
+    raise exception 'aprobadores_pendientes devuelve gente con todo decidido: %', v_pendientes;
+  end if;
 end $$;
 
 rollback;

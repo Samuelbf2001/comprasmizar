@@ -35,6 +35,23 @@ returns boolean language sql stable security definer set search_path = public as
   );
 $$;
 
+-- ¿A QUIÉN SE LE ESPERA TODAVÍA en esta requisición? Uno por persona, resolviendo la herencia.
+--
+-- Vive en la base y no en el emisor de WhatsApp a propósito. El emisor la usa para mandar un mensaje
+-- por aprobador con SUS ítems, y el arnés SQL la usa para comprobar el agrupamiento: una sola
+-- definición, imposible que las dos discrepen. Copiar el predicado en el arnés es exactamente cómo se
+-- consigue un arnés verde sobre la misma equivocación que debía cazar (ver la nota de
+-- `rango_estado_entrega` en el arnés de 202609110003).
+create or replace function public.aprobadores_pendientes(p_requisicion uuid)
+returns setof uuid language sql stable set search_path = public as $$
+  select distinct coalesce(ri.aprobador_id, r.aprobador_id)
+  from public.requisicion_items ri
+  join public.requisiciones r on r.id = ri.requisicion_id
+  where ri.requisicion_id = p_requisicion
+    and ri.estado = 'pendiente'
+    and coalesce(ri.aprobador_id, r.aprobador_id) is not null;
+$$;
+
 -- Mismo listón que el aprobador de cabecera (`validar_aprobador_requisicion`, 202609070001): activo y
 -- elegible. Sin esto, por ítem se podría designar a alguien sin rol aprobador — justo el control que la
 -- cabecera sí tiene, evitado por la puerta de al lado.
