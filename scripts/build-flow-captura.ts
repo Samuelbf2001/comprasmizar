@@ -263,10 +263,14 @@ function pantallaResumen() {
   }
 
   const hijos: ComponenteFlow[] = [
+    // Los textos con datos van entre acentos graves: en Flow JSON una cadena normal con ${data.x}
+    // dentro se muestra LITERAL (así salían las llaves en el teléfono, en el v1 y en el v2) y el
+    // validador de Meta no lo detecta porque para él es solo texto. La interpolación es la
+    // "concatenación de cadenas" de Flow JSON ≥ 6.3, y exige el texto entero entre acentos graves.
     { type: "TextHeading", text: "Revisa antes de enviar" },
-    { type: "TextBody", text: "Empresa: ${data.empresa}" },
-    { type: "TextBody", text: "Tipo: ${data.tipo_solicitud}" },
-    { type: "TextBody", text: "Fecha requerida: ${data.fecha_requerida}" },
+    { type: "TextBody", text: "`Empresa: ${data.empresa}`" },
+    { type: "TextBody", text: "`Tipo: ${data.tipo_solicitud}`" },
+    { type: "TextBody", text: "`Fecha requerida: ${data.fecha_requerida}`" },
   ];
   // Una línea por artículo, pero solo las que existen.
   //

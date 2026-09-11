@@ -3346,15 +3346,15 @@
           },
           {
             "type": "TextBody",
-            "text": "Empresa: ${data.empresa}"
+            "text": "`Empresa: ${data.empresa}`"
           },
           {
             "type": "TextBody",
-            "text": "Tipo: ${data.tipo_solicitud}"
+            "text": "`Tipo: ${data.tipo_solicitud}`"
           },
           {
             "type": "TextBody",
-            "text": "Fecha requerida: ${data.fecha_requerida}"
+            "text": "`Fecha requerida: ${data.fecha_requerida}`"
           },
           {
             "type": "TextBody",
