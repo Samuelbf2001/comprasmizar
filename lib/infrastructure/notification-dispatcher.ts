@@ -238,7 +238,12 @@ export function createPostgresNotificationDispatchStore(databaseUrl = runtimeEnv
     },
     markSent: async (id, sent, sentAt) => {
       await sql.begin(async (tx) => {
-        await tx`update notificaciones set estado_envio='enviado', enviado_at=${sentAt}, ultimo_error=null, bloqueada_hasta=null where id=${id}`;
+        // `kapso_message_id` es la ÚNICA forma de traer luego el acuse de entrega hasta esta fila
+        // (ver lib/infrastructure/whatsapp-delivery-status.ts). Sin él, la cola se quedaría diciendo
+        // `enviado` para un mensaje que Meta descartó — el mismo engaño que este trabajo viene a
+        // arreglar, una capa más arriba. La fila de `whatsapp_eventos` de abajo ya guardaba el wamid;
+        // lo que faltaba era dejarlo también aquí.
+        await tx`update notificaciones set estado_envio='enviado', enviado_at=${sentAt}, ultimo_error=null, bloqueada_hasta=null, kapso_message_id=${sent.messageId} where id=${id}`;
         await tx`insert into whatsapp_eventos (direccion, telefono, requisicion_id, tipo, payload_json, estado_entrega, kapso_message_id, fecha)
           values ('salida', ${sent.phone}, ${extractRequisitionId(sent.payload)}, 'plantilla', ${asJsonb(tx, { template: sent.template, payload: sent.payload })}, 'enviado', ${sent.messageId}, ${sentAt})
           on conflict (kapso_message_id) where kapso_message_id is not null do nothing`;

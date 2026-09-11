@@ -71,6 +71,9 @@ const HARNESSES = [
   // Cola de notificaciones (2026-09-11): que se pueda ACTUALIZAR, y que ninguna tabla lleve el
   // disparador set_updated_at sin la columna que ese disparador escribe.
   path.join(ROOT, "supabase", "tests", "notificaciones_cola_verification.sql"),
+  // Acuses de entrega (2026-09-11): el avance monotónico del estado. No se puede probar en unidad
+  // —vive en el `where` de la consulta— y protege contra el desorden de entrega que Kapso anuncia.
+  path.join(ROOT, "supabase", "tests", "estado_entrega_verification.sql"),
 ];
 
 function migrationFiles(): string[] {
