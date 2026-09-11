@@ -43,6 +43,14 @@ La bandeja embebida acepta **filtros iniciales por query string**, que se aplica
 
 Lo documentado y por tanto estable para acercarse a una conversación es `search`, que **prerrellena el buscador** con lo que se le pase (por ejemplo el teléfono); no selecciona la conversación, deja la bandeja filtrada por ese texto.
 
+## Comprobar si un mensaje llegó (API de plataforma, no la bandeja)
+
+Distinto de los enlaces de la bandeja de arriba: esto es la API REST (`{KAPSO_API_URL}/whatsapp/...`, cabecera `X-API-Key`), y es la única forma de saber qué hizo Meta con un envío hasta que el webhook reciba los acuses (`whatsapp.message.sent|delivered|read|failed`).
+
+- `GET /whatsapp/messages?conversation_id=<uuid>&per_page=50` devuelve los mensajes de esa conversación con `kapso.status` (`sent` / `delivered` / `read` / `failed`) y, en los fallidos, `kapso.statuses[].errors[]` con `code` y `title`. Verificado en vivo el 11-sep-2026: las siete salidas al número sin indicativo aparecían `failed` con `131026 Message undeliverable`.
+- `GET /whatsapp/conversations` lista las conversaciones (con `phone_number`); `GET /whatsapp/conversations/<uuid>` devuelve una.
+- **`?wamid=` en `/whatsapp/messages` NO filtra**: responde 200 con la lista general paginada, sin error. Comprobado con un wamid inventado, que devolvió mensajes ajenos; ese día llevó a «confirmar» como entregados mensajes que Meta había descartado, porque `data[0]` era siempre el más reciente. Regla que lo habría evitado: **todo filtro se prueba primero con un valor imposible; si devuelve datos, el filtro no existe.**
+
 ## Estado y seguridad
 
 La pantalla actual muestra un estado seguro sin iframe cuando falta una URL pública HTTPS válida. No hay cuenta, número, plantilla, webhook ni credencial real en este manual. El onboarding, número dedicado, sandbox, plantillas aprobadas y costos son gates externos; ver [gates-externos.md](../gates-externos.md).
