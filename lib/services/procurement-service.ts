@@ -359,6 +359,16 @@ export class ProcurementService {
     });
   }
   // M-5: mismo bypass de admin_sixteam que approve()/decideItems() — ver justificación junto a buildAttentionQueue en lib/domain/rules.ts.
+  /**
+   * DEVOLVER ES DE LA CABECERA, y es un límite pensado, no un olvido del aprobador por ítem.
+   *
+   * Devolver manda la requisición ENTERA de vuelta a revisión. Si pudiera hacerlo quien decide un ítem
+   * de cinco, tumbaría de paso las decisiones de los otros cuatro aprobadores sin que se enteraran.
+   * Quien decide solo unos ítems y ve algo mal tiene su salida: declinarlos con motivo.
+   *
+   * La devolución POR ÍTEM quedó fuera de v1 a propósito (reunión 11-sep-2026). Si algún día entra,
+   * este es el sitio, y entonces sí habrá que decidir qué pasa con lo ya decidido por los demás.
+   */
   async returnForCorrection(id: string, comment: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:return", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado"); await this.transition(requisition, "devuelta", actor, "devuelta", comment.trim(), this.origin(context), tx.audit); requisition.returnReason = comment.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_devuelta", tx); return requisition; }); }
   /**
    * GRAVE 2 (QA reasignación, reunión 2026-09): el eje administrativo (adminStatus) y el de cumplimiento
