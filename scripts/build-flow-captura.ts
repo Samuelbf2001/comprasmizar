@@ -263,14 +263,20 @@ function pantallaResumen() {
   }
 
   const hijos: ComponenteFlow[] = [
-    // Los textos con datos van entre acentos graves: en Flow JSON una cadena normal con ${data.x}
-    // dentro se muestra LITERAL (así salían las llaves en el teléfono, en el v1 y en el v2) y el
-    // validador de Meta no lo detecta porque para él es solo texto. La interpolación es la
-    // "concatenación de cadenas" de Flow JSON ≥ 6.3, y exige el texto entero entre acentos graves.
+    // Cómo se muestran los datos en un Flow, aprendido a golpes el 11-sep-2026:
+    //  - una cadena normal con ${data.x} dentro se muestra LITERAL (así salían las llaves en el
+    //    teléfono, en el v1 y en el v2), y el validador de Meta no lo detecta: para él es texto;
+    //  - la "concatenación" entre acentos graves existe (Flow JSON ≥ 6.3) pero su parser rechaza
+    //    signos como ":" o paréntesis dentro ("Unexpected ':' at character 15"), así que solo
+    //    sirve para unir bindings con espacios, como en el ejemplo de Meta `${data.a} ${data.b}`.
+    // Por eso: etiqueta estática en un TextCaption y valor como binding PURO en el TextBody.
     { type: "TextHeading", text: "Revisa antes de enviar" },
-    { type: "TextBody", text: "`Empresa: ${data.empresa}`" },
-    { type: "TextBody", text: "`Tipo: ${data.tipo_solicitud}`" },
-    { type: "TextBody", text: "`Fecha requerida: ${data.fecha_requerida}`" },
+    { type: "TextCaption", text: "Empresa" },
+    { type: "TextBody", text: "${data.empresa}" },
+    { type: "TextCaption", text: "Tipo de solicitud" },
+    { type: "TextBody", text: "${data.tipo_solicitud}" },
+    { type: "TextCaption", text: "Fecha requerida" },
+    { type: "TextBody", text: "${data.fecha_requerida}" },
   ];
   // Una línea por artículo, pero solo las que existen.
   //
@@ -285,8 +291,14 @@ function pantallaResumen() {
   // porque `visible` quiere un booleano ya resuelto, no una expresión. `If` existe justamente para
   // condicionar, y su `condition` sí admite la comparación.
   for (let k = 1; k <= MAX_ITEMS; k += 1) {
-    const linea: ComponenteFlow = { type: "TextBody", text: `Artículo ${k}: \${data.item_${k}_descripcion} (\${data.item_${k}_cantidad} \${data.item_${k}_unidad})` };
-    hijos.push(k === 1 ? linea : { type: "If", condition: `\${data.item_${k}_descripcion} != ''`, then: [linea] });
+    // Tres componentes por artículo: el rótulo (estático), la descripción (binding puro) y
+    // cantidad + unidad, el único sitio con concatenación, en la forma segura del ejemplo de Meta.
+    const bloque: ComponenteFlow[] = [
+      { type: "TextCaption", text: `Artículo ${k}` },
+      { type: "TextBody", text: `\${data.item_${k}_descripcion}` },
+      { type: "TextCaption", text: `\`\${data.item_${k}_cantidad} \${data.item_${k}_unidad}\`` },
+    ];
+    if (k === 1) hijos.push(...bloque); else hijos.push({ type: "If", condition: `\${data.item_${k}_descripcion} != ''`, then: bloque });
   }
   hijos.push({ type: "Footer", label: "Enviar solicitud", "on-click-action": { name: "complete", payload } });
   return { id: "RESUMEN", title: "Resumen", terminal: true, success: true, data, layout: { type: "SingleColumnLayout", children: hijos } };

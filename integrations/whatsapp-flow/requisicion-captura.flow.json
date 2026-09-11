@@ -3345,28 +3345,56 @@
             "text": "Revisa antes de enviar"
           },
           {
-            "type": "TextBody",
-            "text": "`Empresa: ${data.empresa}`"
+            "type": "TextCaption",
+            "text": "Empresa"
           },
           {
             "type": "TextBody",
-            "text": "`Tipo: ${data.tipo_solicitud}`"
+            "text": "${data.empresa}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Tipo de solicitud"
           },
           {
             "type": "TextBody",
-            "text": "`Fecha requerida: ${data.fecha_requerida}`"
+            "text": "${data.tipo_solicitud}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Fecha requerida"
           },
           {
             "type": "TextBody",
-            "text": "Artículo 1: ${data.item_1_descripcion} (${data.item_1_cantidad} ${data.item_1_unidad})"
+            "text": "${data.fecha_requerida}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Artículo 1"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.item_1_descripcion}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "`${data.item_1_cantidad} ${data.item_1_unidad}`"
           },
           {
             "type": "If",
             "condition": "${data.item_2_descripcion} != ''",
             "then": [
               {
+                "type": "TextCaption",
+                "text": "Artículo 2"
+              },
+              {
                 "type": "TextBody",
-                "text": "Artículo 2: ${data.item_2_descripcion} (${data.item_2_cantidad} ${data.item_2_unidad})"
+                "text": "${data.item_2_descripcion}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "`${data.item_2_cantidad} ${data.item_2_unidad}`"
               }
             ]
           },
@@ -3375,8 +3403,16 @@
             "condition": "${data.item_3_descripcion} != ''",
             "then": [
               {
+                "type": "TextCaption",
+                "text": "Artículo 3"
+              },
+              {
                 "type": "TextBody",
-                "text": "Artículo 3: ${data.item_3_descripcion} (${data.item_3_cantidad} ${data.item_3_unidad})"
+                "text": "${data.item_3_descripcion}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "`${data.item_3_cantidad} ${data.item_3_unidad}`"
               }
             ]
           },
@@ -3385,8 +3421,16 @@
             "condition": "${data.item_4_descripcion} != ''",
             "then": [
               {
+                "type": "TextCaption",
+                "text": "Artículo 4"
+              },
+              {
                 "type": "TextBody",
-                "text": "Artículo 4: ${data.item_4_descripcion} (${data.item_4_cantidad} ${data.item_4_unidad})"
+                "text": "${data.item_4_descripcion}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "`${data.item_4_cantidad} ${data.item_4_unidad}`"
               }
             ]
           },
@@ -3395,8 +3439,16 @@
             "condition": "${data.item_5_descripcion} != ''",
             "then": [
               {
+                "type": "TextCaption",
+                "text": "Artículo 5"
+              },
+              {
                 "type": "TextBody",
-                "text": "Artículo 5: ${data.item_5_descripcion} (${data.item_5_cantidad} ${data.item_5_unidad})"
+                "text": "${data.item_5_descripcion}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "`${data.item_5_cantidad} ${data.item_5_unidad}`"
               }
             ]
           },
@@ -3405,8 +3457,16 @@
             "condition": "${data.item_6_descripcion} != ''",
             "then": [
               {
+                "type": "TextCaption",
+                "text": "Artículo 6"
+              },
+              {
                 "type": "TextBody",
-                "text": "Artículo 6: ${data.item_6_descripcion} (${data.item_6_cantidad} ${data.item_6_unidad})"
+                "text": "${data.item_6_descripcion}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "`${data.item_6_cantidad} ${data.item_6_unidad}`"
               }
             ]
           },
@@ -3415,8 +3475,16 @@
             "condition": "${data.item_7_descripcion} != ''",
             "then": [
               {
+                "type": "TextCaption",
+                "text": "Artículo 7"
+              },
+              {
                 "type": "TextBody",
-                "text": "Artículo 7: ${data.item_7_descripcion} (${data.item_7_cantidad} ${data.item_7_unidad})"
+                "text": "${data.item_7_descripcion}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "`${data.item_7_cantidad} ${data.item_7_unidad}`"
               }
             ]
           },
@@ -3425,8 +3493,16 @@
             "condition": "${data.item_8_descripcion} != ''",
             "then": [
               {
+                "type": "TextCaption",
+                "text": "Artículo 8"
+              },
+              {
                 "type": "TextBody",
-                "text": "Artículo 8: ${data.item_8_descripcion} (${data.item_8_cantidad} ${data.item_8_unidad})"
+                "text": "${data.item_8_descripcion}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "`${data.item_8_cantidad} ${data.item_8_unidad}`"
               }
             ]
           },

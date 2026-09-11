@@ -66,14 +66,15 @@ describe("defecto 1 — el resumen pinta valores, no llaves", () => {
     for (const [indice, bloque] of lineas.entries()) {
       const k = indice + 2;
       expect(bloque.condition, `el artículo ${k} debe condicionarse por SU propia descripción`).toBe(`\${data.item_${k}_descripcion} != ''`);
-      expect(String(bloque.then[0].text)).toContain(`Artículo ${k}:`);
+      expect(bloque.then[0]).toMatchObject({ type: "TextCaption", text: `Artículo ${k}` });
+      expect(String(bloque.then[1].text)).toBe(`\${data.item_${k}_descripcion}`);
     }
   });
 
   it("el primer artículo NO se condiciona: es obligatorio y siempre está", () => {
-    const sueltos = resumen.layout.children.filter((c) => c.type === "TextBody" && String(c.text).startsWith("Artículo "));
+    const sueltos = resumen.layout.children.filter((c) => c.type === "TextCaption" && String(c.text).startsWith("Artículo "));
     expect(sueltos).toHaveLength(1);
-    expect(String(sueltos[0].text)).toContain("Artículo 1:");
+    expect(String(sueltos[0].text)).toBe("Artículo 1");
   });
 
   it("el `complete` entrega EXACTAMENTE las claves de artículo que el adaptador sabe leer", () => {
