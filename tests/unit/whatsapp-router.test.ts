@@ -212,6 +212,18 @@ describe("atenderMensajeEntrante", () => {
     expect(enviados).toHaveLength(1);
   });
 
+  it("también se descarta si la otra línea viene solo en conversation", async () => {
+    // La raíz es lo normal, pero si algún día llegara un evento que solo informe la línea dentro de
+    // `conversation`, el filtro tiene que seguir cerrando. Con el respaldo apuntando a `metadata`
+    // —que no existe en la envoltura v2— este caso pasaba de largo.
+    const { enviados, impl } = fetchEspia();
+    const espia = registroEspia();
+    const resultado = await atenderMensajeEntrante({ ...entranteTexto(), conversation: { phone_number_id: LINEA_SIXTEAM } }, { fetchImpl: impl, registro: espia.registro });
+    expect(resultado).toEqual({ atendido: false, motivo: "otra_linea" });
+    expect(enviados).toHaveLength(0);
+    expect(espia.cerrados).toHaveLength(0);
+  });
+
   it("un mensaje a la línea interna de Sixteam se ignora sin responder ni registrar", async () => {
     // Decisión de Ernesto (2026-09-11): la plataforma opera solo con la línea de Mizar. Si ambas
     // líneas apuntaran al mismo webhook, un "hola" a la interna de Sixteam dispararía el menú de
@@ -224,8 +236,10 @@ describe("atenderMensajeEntrante", () => {
     expect(espia.cerrados).toHaveLength(0);
   });
 
-  it("la línea de Mizar sí pasa, venga en la raíz o en metadata", async () => {
-    for (const payload of [{ ...entranteTexto(), phone_number_id: LINEA_MIZAR }, { ...entranteTexto(), metadata: { phone_number_id: LINEA_MIZAR } }]) {
+  it("la línea de Mizar sí pasa, venga en la raíz o en conversation", async () => {
+    // Los dos sitios donde la envoltura v2 informa la línea. El respaldo miraba antes en
+    // `metadata.phone_number_id`, que en esa envoltura no existe.
+    for (const payload of [{ ...entranteTexto(), phone_number_id: LINEA_MIZAR }, { ...entranteTexto(), conversation: { phone_number_id: LINEA_MIZAR } }]) {
       const { enviados, impl } = fetchEspia();
       const resultado = await atenderMensajeEntrante(payload, { fetchImpl: impl, registro: registroEspia().registro });
       expect(resultado.atendido).toBe(true);
