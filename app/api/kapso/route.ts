@@ -10,6 +10,7 @@ import { adaptNfmReply, createPostgresNfmReplyRejectionRecorder, isNfmReplyWebho
 import { adaptApprovalReply, createPostgresApproverResolver, isApprovalNfmReply } from "../../../lib/infrastructure/approval-reply-adapter";
 import { applyApprovalDecision } from "../../../lib/infrastructure/approval-processor";
 import { resolveAuthorizedRequesterName } from "../../../lib/infrastructure/public-access";
+import { atenderMensajeEntrante, esMensajeEnrutable } from "../../../lib/infrastructure/whatsapp-router";
 
 export const runtime = "nodejs";
 const MAX_BODY_BYTES = 100_000;
@@ -114,6 +115,16 @@ export async function POST(request: Request) {
       return Response.json({ received: true, status: "rejected", reason: adapted.reason });
     }
     payload = adapted.event;
+  }
+
+  // Mensajes de conversación (texto suelto o pulsación de botón). Van DESPUÉS de las dos ramas de
+  // Flow, que son más específicas, y ANTES de `kapsoWebhookSchema`, que es donde hasta ahora morían
+  // con `400 invalid_event` sin responder nada ni dejar rastro. El router siempre devuelve, nunca
+  // lanza: se responde 200 aunque el envío falle, porque hacer que Kapso reintente un "hola" en
+  // bucle no arregla nada. Ver lib/infrastructure/whatsapp-router.ts.
+  if (esMensajeEnrutable(payload)) {
+    const outcome = await atenderMensajeEntrante(payload);
+    return Response.json({ received: true, status: outcome.atendido ? "routed" : "ignored", ...(outcome.atendido ? { action: outcome.accion } : { reason: outcome.motivo }) });
   }
 
   const parsed = kapsoWebhookSchema.safeParse(payload);
