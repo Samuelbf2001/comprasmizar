@@ -58,7 +58,7 @@ const ConnectedCatalogAdmin = dynamic(() =>
   import("../catalog-admin").then((mod) => mod.ConnectedCatalogAdmin),
 );
 
-export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
+export function ConnectedScreen({ pathname, role, viewingAs = null, go }: ConnectedProps) {
   const kind = useMemo(() => routeKind(pathname), [pathname]);
   const [version, setVersion] = useState(0);
   const [routeState, setRouteState] = useState(() => ({
@@ -235,6 +235,7 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
           <ConnectedOrders
             data={load.data as OrdersBundle}
             role={role}
+            viewingAs={viewingAs}
             refresh={refresh}
             go={go}
           />

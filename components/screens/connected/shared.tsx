@@ -19,6 +19,15 @@ export type LoadState =
 export type ConnectedProps = {
   pathname: string;
   role: Role;
+  /**
+   * Rol de la lente "Ver como" cuando está puesta, y `null` cuando se mira con el rol propio.
+   *
+   * `role` ya viene siendo el de la lente (mizar-app.tsx la resuelve antes de bajar la prop), así
+   * que las pantallas no pueden distinguir "no puedes" de "este rol no puede". Sin ese matiz, un
+   * Administrador Sixteam mirando Órdenes como Contabilidad lee "Tu rol no puede cambiar el estado
+   * de entrega" y entiende que su cuenta está mal configurada, cuando solo está mirando prestado.
+   */
+  viewingAs?: Role | null;
   go: (path: string) => void;
 };
 export type NamedOption = { id: string; name: string };

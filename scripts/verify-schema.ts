@@ -43,6 +43,15 @@ const PRELUDE = path.join(ROOT, "supabase", "bootstrap", "00_compat_autoalojado.
 const MIGRATIONS_DIR = path.join(ROOT, "supabase", "migrations");
 const LEGACY_DIR = path.join(ROOT, "supabase", "tests", "legacy");
 const SEED = path.join(ROOT, "supabase", "seed.sql");
+// El seed de DEMOSTRACIÓN, que hasta ahora no verificaba nadie: verify-schema solo cargaba seed.sql,
+// así que el archivo que se usa para enseñar el producto —y el que se carga en el servidor— no
+// pasaba por ningún arnés. Ahí sobrevivió el defecto de las órdenes sin orden_items: la ficha
+// lateral decía "0 ítems de esta orden" y solo se veía mirando la pantalla.
+// Se carga DESPUÉS de los arneses de arriba, no antes: esos afirman sobre lo que deja seed.sql, y
+// sembrarles encima requisiciones, órdenes y gastos de demostración cambiaría lo que cuentan.
+const SEED_DEMO = path.join(ROOT, "supabase", "seed-demo.sql");
+// Arneses que EXIGEN el seed de demostración cargado (órdenes reales sobre las que afirmar).
+const DEMO_HARNESSES = [path.join(ROOT, "supabase", "tests", "orden_items_verification.sql")];
 const HARNESSES = [
   path.join(ROOT, "supabase", "tests", "schema_verification.sql"),
   path.join(ROOT, "supabase", "tests", "generic_attachments_verification.sql"),
@@ -102,23 +111,63 @@ async function main(): Promise<void> {
   await pg.start();
   let ok = false;
   try {
-    await pg.createDatabase(DB_NAME);
-    const client = pg.getPgClient(DB_NAME);
-    await client.connect();
-    try {
-      await runFile(client, PRELUDE);
-      for (const migration of migrationFiles()) {
-        const { pre, post } = legacyPairFor(migration);
-        if (pre) await runFile(client, pre);
-        await runFile(client, migration);
-        if (post) await runFile(client, post);
+    // La base de pruebas se crea explícitamente en UTF8, no con pg.createDatabase(), que hereda la
+    // codificación del clúster. En Windows con configuración regional española initdb la deja en
+    // WIN1252, y entonces el arnés NO verifica lo mismo que producción: cualquier carácter fuera de
+    // WIN1252 revienta aquí y pasa en CI (Linux, UTF8) y en el servidor. Lo descubrió el seed de
+    // demostración al entrar al arnés — sus separadores de sección usan U+2500 ("──") y el servidor
+    // los rechazó con "has no equivalent in encoding WIN1252".
+    // template0 + LC_COLLATE/LC_CTYPE "C" es lo que permite cambiar de codificación sobre un clúster
+    // que nació en otra: template1 impone la del clúster.
+    const crearBase = async (nombre: string) => {
+      const bootstrapClient = pg.getPgClient("postgres");
+      await bootstrapClient.connect();
+      try {
+        await bootstrapClient.query(`create database "${nombre}" with encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
+      } finally {
+        await bootstrapClient.end();
       }
-      await runFile(client, SEED);
-      for (const harness of HARNESSES) await runFile(client, harness);
-      ok = true;
-    } finally {
-      await client.end();
-    }
+      const client = pg.getPgClient(nombre);
+      await client.connect();
+      return client;
+    };
+
+    await crearBase(DB_NAME).then(async (client) => {
+      try {
+        await runFile(client, PRELUDE);
+        for (const migration of migrationFiles()) {
+          const { pre, post } = legacyPairFor(migration);
+          if (pre) await runFile(client, pre);
+          await runFile(client, migration);
+          if (post) await runFile(client, post);
+        }
+        await runFile(client, SEED);
+        for (const harness of HARNESSES) await runFile(client, harness);
+      } finally {
+        await client.end();
+      }
+    });
+
+    // El seed de demostración va en su PROPIA base, y sin los fixtures legados. No es manía de
+    // aislamiento: `seed-demo.sql` empieza con un guardián —"ya hay requisiciones, no se siembra de
+    // nuevo"— que existe para que nadie mezcle datos inventados con datos reales en producción. Los
+    // fixtures legados dejan requisiciones a propósito (simulan la base vieja para probar los
+    // backfills), así que en la base de arriba ese guardián se dispara y el seed de demostración se
+    // salta ENTERO, en silencio. Verificarlo ahí sería verificar que no se cargó nada.
+    // Las migraciones se repiten en esta segunda base; son segundos y evitan tener que borrar los
+    // fixtures legados a mano, que es justo lo que no debe hacer un arnés.
+    await crearBase(`${DB_NAME}_demo`).then(async (client) => {
+      try {
+        await runFile(client, PRELUDE);
+        for (const migration of migrationFiles()) await runFile(client, migration);
+        await runFile(client, SEED);
+        await runFile(client, SEED_DEMO);
+        for (const harness of DEMO_HARNESSES) await runFile(client, harness);
+      } finally {
+        await client.end();
+      }
+    });
+    ok = true;
   } finally {
     await pg.stop().catch((error: unknown) => {
       // El cleanup interno de embedded-postgres a veces choca con locks de archivo de Windows
@@ -139,7 +188,7 @@ async function main(): Promise<void> {
 main().then(
   () => {
     const legacyPairs = migrationFiles().filter((m) => { const { pre, post } = legacyPairFor(m); return pre ?? post; }).length;
-    console.log(`\nTodo verde: prelude + ${migrationFiles().length} migraciones (${legacyPairs} con .pre/.post de datos legado) + seed + ${HARNESSES.length} arneses SQL pasaron contra Postgres real.`);
+    console.log(`\nTodo verde: prelude + ${migrationFiles().length} migraciones (${legacyPairs} con .pre/.post de datos legado) + seed + seed-demo + ${HARNESSES.length + DEMO_HARNESSES.length} arneses SQL pasaron contra Postgres real.`);
     process.exit(0);
   },
   (error) => { console.error("\nArnés de esquema FALLÓ:", error); process.exit(1); },
