@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DomainError } from "../../lib/domain";
-import { reviewedItemSchema } from "../../lib/http/schemas";
+import { reviewedItemSchema, requisitionActionSchema } from "../../lib/http/schemas";
 
 // H8 (docs/plan-rendimiento.md): authenticatedJson() llama a requireServerActor() — se mockea igual que
 // tests/unit/public-access-route.test.ts para probar SOLO la cabecera Server-Timing, sin Supabase/Postgres.
@@ -170,5 +170,31 @@ describe("reviewedItemSchema — declinado exige motivo (MENOR, QA Postgres real
     expect(reviewedItemSchema.safeParse({ ...base, status: "declinado", declineReason: "No disponible" }).success).toBe(true);
     expect(reviewedItemSchema.safeParse({ ...base, status: "aprobado" }).success).toBe(true);
     expect(reviewedItemSchema.safeParse({ ...base }).success).toBe(true);
+  });
+  // Aprobador por ítem: la ficha de revisión manda `approverId` por línea al repartir la aprobación.
+  // Cruza el esquema HTTP a propósito — el hueco que dejó pasar el defecto era que ningún test lo hacía:
+  // `.strict()` lo habría rechazado y la función entera caía en la frontera antes de llegar al servicio.
+  it("acepta approverId por ítem (uuid) y rechaza uno que no sea uuid", () => {
+    expect(reviewedItemSchema.safeParse({ ...base, approverId: "33333333-3333-4333-8333-333333333333" }).success).toBe(true);
+    expect(reviewedItemSchema.safeParse({ ...base, approverId: "no-uuid" }).success).toBe(false);
+  });
+});
+
+describe("requisitionActionSchema — review reparte aprobador por ítem", () => {
+  it("un review con approverId por ítem pasa el esquema y conserva el reparto", () => {
+    const parsed = requisitionActionSchema.safeParse({
+      action: "review",
+      tagId: "c4867c2a-397d-4a66-b961-6e33cd551615",
+      approverId: "10000000-0000-4000-8000-000000000006",
+      items: [
+        { id: "11111111-1111-4111-8111-111111111111", itemId: "22222222-2222-4222-8222-222222222222", quantity: 1, unit: "und", unitBase: 1000, approverId: "44444444-4444-4444-8444-444444444444" },
+        { id: "55555555-5555-4555-8555-555555555555", itemId: "66666666-6666-4666-8666-666666666666", quantity: 2, unit: "und", unitBase: 2000 },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.action === "review") {
+      expect(parsed.data.items[0].approverId).toBe("44444444-4444-4444-8444-444444444444");
+      expect(parsed.data.items[1].approverId).toBeUndefined(); // sin reparto: hereda el de cabecera
+    }
   });
 });
