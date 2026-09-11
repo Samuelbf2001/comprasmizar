@@ -122,6 +122,13 @@ export async function POST(request: Request) {
   // con `400 invalid_event` sin responder nada ni dejar rastro. El router siempre devuelve, nunca
   // lanza: se responde 200 aunque el envío falle, porque hacer que Kapso reintente un "hola" en
   // bucle no arregla nada. Ver lib/infrastructure/whatsapp-router.ts.
+  // DECISIÓN DE ERNESTO, 2026-09-11: el menú responde a CUALQUIER número que escriba a la línea de
+  // Mizar. Preguntado si debía limitarse a los teléfonos de `solicitantes_autorizados`, respondió
+  // "cualquiera". No es un descuido: saludar y ofrecer el menú no autoriza nada. La lista blanca
+  // sigue filtrando donde importa —al radicar por el Flow, en `resolveAuthorizedRequesterName`—, así
+  // que un número desconocido puede ver el menú pero no crear una requisición.
+  // Si algún día esto parece un hueco y se añade un filtro aquí, que sea por una decisión nueva y no
+  // por creer que se olvidó.
   if (esMensajeEnrutable(payload)) {
     const outcome = await atenderMensajeEntrante(payload);
     return Response.json({ received: true, status: outcome.atendido ? "routed" : "ignored", ...(outcome.atendido ? { action: outcome.accion } : { reason: outcome.motivo }) });
