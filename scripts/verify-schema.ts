@@ -74,6 +74,7 @@ const HARNESSES = [
   // Acuses de entrega (2026-09-11): el avance monotónico del estado. No se puede probar en unidad
   // —vive en el `where` de la consulta— y protege contra el desorden de entrega que Kapso anuncia.
   path.join(ROOT, "supabase", "tests", "estado_entrega_verification.sql"),
+  path.join(ROOT, "supabase", "tests", "aprobador_por_item_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

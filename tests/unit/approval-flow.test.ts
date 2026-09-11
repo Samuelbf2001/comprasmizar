@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildApprovalFlowSendPayload, buildApprovalTemplatePayload, DEFAULT_APPROVAL_TEMPLATE, DEFAULT_APPROVAL_TEMPLATE_LANGUAGE, formatCop, issueApprovalFlowToken,
-  MAX_APPROVAL_ITEMS, sendApprovalFlow, sendApprovalTemplate, validateApprovalFlowToken,
+  MAX_APPROVAL_ITEMS, sendApprovalFlow, sendApprovalTemplate, validateApprovalFlowToken, elegirContexto,
   type ApprovalFlowContext,
 } from "../../lib/infrastructure/approval-flow-sender";
 import { adaptApprovalReply, isApprovalNfmReply } from "../../lib/infrastructure/approval-reply-adapter";
@@ -192,8 +192,10 @@ describe("flow_token de aprobación", () => {
 // Emisor
 // ---------------------------------------------------------------------------------------------
 
+const APROBADOR_A = "10000000-0000-4000-8000-000000000003";
 const context: ApprovalFlowContext = {
   requisitionId: REQ_A,
+  approverId: APROBADOR_A,
   approverPhone: "+57 300 111 2233",
   approverName: "Nelson",
   consecutive: "REQ-2026-0004",
@@ -226,9 +228,9 @@ describe("emisor del Flow de aprobación", () => {
   });
 
   it("falla cerrado sin configuración y sin consultar la BD", async () => {
-    const source = { loadApprovalContext: vi.fn() };
+    const source = { loadApprovalContexts: vi.fn() };
     await expect(sendApprovalFlow(REQ_A, { source })).rejects.toThrow("APPROVAL_FLOW_NOT_CONFIGURED");
-    expect(source.loadApprovalContext).not.toHaveBeenCalled();
+    expect(source.loadApprovalContexts).not.toHaveBeenCalled();
   });
 
   it("envía al teléfono del aprobador de la BD, nunca a uno que elija el llamador", async () => {
@@ -236,7 +238,7 @@ describe("emisor del Flow de aprobación", () => {
     vi.stubEnv("KAPSO_PHONE_NUMBER_ID", "PID"); vi.stubEnv("KAPSO_WEBHOOK_SECRET", SECRET);
     try {
       const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "wamid.1" }] }), { status: 200 }));
-      const result = await sendApprovalFlow(REQ_A, { source: { loadApprovalContext: async () => context }, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW });
+      const result = await sendApprovalFlow(REQ_A, { source: { loadApprovalContexts: async () => [context] }, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW });
       expect(result).toEqual({ messageId: "wamid.1", to: "573001112233" });
       const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
       const body = JSON.parse(String(init.body));
@@ -250,7 +252,7 @@ describe("emisor del Flow de aprobación", () => {
     vi.stubEnv("KAPSO_API_KEY", "k"); vi.stubEnv("WHATSAPP_APPROVAL_FLOW_ID", "FID");
     vi.stubEnv("KAPSO_PHONE_NUMBER_ID", "PID"); vi.stubEnv("KAPSO_WEBHOOK_SECRET", SECRET);
     try {
-      const source = { loadApprovalContext: async () => context };
+      const source = { loadApprovalContexts: async () => [context] };
       // Respuesta literal del proxy de Kapso cuando la persona no ha escrito en 24 h.
       const cerrada = vi.fn(async () => new Response(JSON.stringify({ error: "Cannot send non-template messages outside the 24-hour window." }), { status: 422 }));
       await expect(sendApprovalFlow(REQ_A, { source, fetchImpl: cerrada as unknown as typeof fetch })).rejects.toThrow("APPROVAL_FLOW_SESSION_CLOSED");
@@ -284,7 +286,7 @@ describe("emisor del Flow de aprobación", () => {
     vi.stubEnv("KAPSO_PHONE_NUMBER_ID", "PID"); vi.stubEnv("KAPSO_WEBHOOK_SECRET", SECRET);
     try {
       const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "wamid.2" }] }), { status: 200 }));
-      const result = await sendApprovalTemplate(REQ_A, { source: { loadApprovalContext: async () => context }, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW });
+      const result = await sendApprovalTemplate(REQ_A, { source: { loadApprovalContexts: async () => [context] }, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW });
       expect(result).toEqual({ messageId: "wamid.2", to: "573001112233" });
       const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
       const sent = JSON.parse(String(init.body));
@@ -301,7 +303,7 @@ describe("emisor del Flow de aprobación", () => {
     vi.stubEnv("KAPSO_PHONE_NUMBER_ID", "PID"); vi.stubEnv("KAPSO_WEBHOOK_SECRET", SECRET);
     try {
       const many = { ...context, items: Array.from({ length: MAX_APPROVAL_ITEMS + 1 }, (_, index) => ({ id: `id-${index}`, title: "x", description: "y" })) };
-      await expect(sendApprovalFlow(REQ_A, { source: { loadApprovalContext: async () => many } })).rejects.toThrow("APPROVAL_FLOW_TOO_MANY_ITEMS");
+      await expect(sendApprovalFlow(REQ_A, { source: { loadApprovalContexts: async () => [many] } })).rejects.toThrow("APPROVAL_FLOW_TOO_MANY_ITEMS");
     } finally { vi.unstubAllEnvs(); }
   });
 });
@@ -507,5 +509,116 @@ describe("aprobacion_requisicion: el emisor y el script que la publica no pueden
     });
     const body = payload.template.components.find((componente) => componente.type === "body");
     expect(body?.parameters.map((parametro) => (parametro as { text: string }).text)).toEqual(ejemplo);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Emisor CON APROBADOR POR ÍTEM: un mensaje por aprobador, cada uno con lo suyo
+// ---------------------------------------------------------------------------------------------
+//
+// Lo que se vigila aquí es lo que se ve en el teléfono. El control de acceso de verdad está en el
+// servicio (decideItems comprueba línea por línea), pero si el mensaje enseña ítems ajenos ya hemos
+// filtrado información a alguien que no tenía por qué verla — y encima le hemos invitado a decidir
+// sobre ellos.
+const APROBADOR_B = "10000000-0000-4000-8000-000000000007";
+const contextB: ApprovalFlowContext = {
+  ...context,
+  approverId: APROBADOR_B,
+  approverPhone: "+57 300 444 5566",
+  approverName: "Juliana",
+  totalText: "$ 500.000",
+  summary: "Solicita: Ana\nTotal vigente: $ 500.000",
+  items: [{ id: "item-b", title: "Arena", description: "3 m³ · $ 500.000" }],
+};
+
+function entorno<T>(work: () => Promise<T>): Promise<T> {
+  vi.stubEnv("KAPSO_API_KEY", "k"); vi.stubEnv("WHATSAPP_APPROVAL_FLOW_ID", "FID");
+  vi.stubEnv("KAPSO_PHONE_NUMBER_ID", "PID"); vi.stubEnv("KAPSO_WEBHOOK_SECRET", SECRET);
+  return work().finally(() => vi.unstubAllEnvs());
+}
+const respuestaOk = () => vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "wamid.1" }] }), { status: 200 }));
+
+describe("emisor por aprobador", () => {
+  it("con UN solo aprobador manda exactamente el mismo mensaje que antes de este cambio", async () => {
+    // La prueba de equivalencia: el 99 % de las requisiciones tiene un aprobador, y este cambio no
+    // puede alterarles nada. Sin `approverId` y con un solo contexto, se elige ese.
+    await entorno(async () => {
+      const fetchImpl = respuestaOk();
+      const result = await sendApprovalFlow(REQ_A, { source: { loadApprovalContexts: async () => [context] }, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW });
+      expect(result).toEqual({ messageId: "wamid.1", to: "573001112233" });
+      const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(String(init.body));
+      expect(body.to).toBe("573001112233");
+      expect(body.interactive.action.parameters.flow_action_payload.data.items).toEqual(context.items);
+    });
+  });
+
+  it("cada aprobador recibe SUS ítems, en su número, con un token que solo vale para él", async () => {
+    await entorno(async () => {
+      const source = { loadApprovalContexts: async () => [context, contextB] };
+      const fetchA = respuestaOk();
+      await sendApprovalFlow(REQ_A, { source, fetchImpl: fetchA as unknown as typeof fetch, now: () => NOW }, APROBADOR_A);
+      const fetchB = respuestaOk();
+      await sendApprovalFlow(REQ_A, { source, fetchImpl: fetchB as unknown as typeof fetch, now: () => NOW }, APROBADOR_B);
+
+      const cuerpo = (llamada: ReturnType<typeof respuestaOk>) => JSON.parse(String((llamada.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+      const a = cuerpo(fetchA), b = cuerpo(fetchB);
+      expect(a.to).toBe("573001112233");
+      expect(b.to).toBe("573004445566");
+      // Lo importante: ninguno ve el ítem del otro.
+      expect(a.interactive.action.parameters.flow_action_payload.data.items).toEqual(context.items);
+      expect(b.interactive.action.parameters.flow_action_payload.data.items).toEqual(contextB.items);
+
+      // Y el token de cada uno NO vale para el número del otro: la identidad va firmada sobre el
+      // teléfono, que es el dato que Meta verifica y devuelve cuando la persona responde.
+      const tokenB = b.interactive.action.parameters.flow_token;
+      expect(validateApprovalFlowToken(tokenB, "573004445566", REQ_A, SECRET, NOW)).toEqual({ ok: true });
+      expect(validateApprovalFlowToken(tokenB, "573001112233", REQ_A, SECRET, NOW)).toMatchObject({ ok: false });
+    });
+  });
+
+  it("con varios aprobadores y sin decir a cuál, NO manda nada", async () => {
+    // Elegir "el primero" sería mandarle a alguien los ítems de otro, y en silencio. Fallar es la
+    // única respuesta honesta: la cola reintenta y el fallo se ve.
+    await entorno(async () => {
+      const fetchImpl = respuestaOk();
+      await expect(sendApprovalFlow(REQ_A, { source: { loadApprovalContexts: async () => [context, contextB] }, fetchImpl: fetchImpl as unknown as typeof fetch }))
+        .rejects.toThrow("APPROVAL_FLOW_NO_CONTEXT");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  it("un aprobador que ya no tiene nada pendiente tampoco recibe mensaje", async () => {
+    await entorno(async () => {
+      const fetchImpl = respuestaOk();
+      await expect(sendApprovalFlow(REQ_A, { source: { loadApprovalContexts: async () => [context] }, fetchImpl: fetchImpl as unknown as typeof fetch }, APROBADOR_B))
+        .rejects.toThrow("APPROVAL_FLOW_NO_CONTEXT");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  it("la plantilla (fuera de la ventana de 24 h) elige el mismo contexto que el Flow", async () => {
+    // Si el Flow y su plantilla de respaldo eligieran distinto, el aprobador vería unos ítems por un
+    // camino y otros por el otro según hubiera escrito o no en las últimas 24 h.
+    await entorno(async () => {
+      const fetchImpl = respuestaOk();
+      await sendApprovalTemplate(REQ_A, { source: { loadApprovalContexts: async () => [context, contextB] }, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW }, APROBADOR_B);
+      const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      expect(JSON.parse(String(init.body)).to).toBe("573004445566");
+    });
+  });
+});
+
+describe("elegirContexto", () => {
+  it("sin id y con uno solo, ese; sin id y con varios, ninguno", () => {
+    expect(elegirContexto([context])).toBe(context);
+    expect(elegirContexto([context, contextB])).toBeUndefined();
+  });
+  it("con id, el suyo; con un id que no está, ninguno", () => {
+    expect(elegirContexto([context, contextB], APROBADOR_B)).toBe(contextB);
+    expect(elegirContexto([context, contextB], "10000000-0000-4000-8000-00000000ffff")).toBeUndefined();
+  });
+  it("sin contextos, ninguno", () => {
+    expect(elegirContexto([], APROBADOR_A)).toBeUndefined();
   });
 });

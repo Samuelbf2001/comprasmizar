@@ -1,4 +1,4 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
@@ -103,6 +103,13 @@ export class ProcurementService {
       // M-6: solo se valida cuando el revisor manda un aprobador de verdad (string no vacío) — `null`/`""`
       // es una desasignación explícita, no un valor a validar contra el catálogo.
       if (input.approverId && !(await tx.catalogs.isEligibleApprover(input.approverId))) throw new DomainError("INVALID_INPUT", "El aprobador debe ser un usuario activo y elegible");
+      // MISMO LISTÓN PARA EL APROBADOR POR ÍTEM. La base también lo exige (trigger
+      // `requisicion_items_aprobador_elegible`, migración 202609110004), pero un fallo de constraint
+      // sube como error de infraestructura: el revisor vería "algo falló" en vez de "ese aprobador no
+      // sirve". Comprobarlo aquí es lo que convierte el segundo cinturón en un mensaje entendible.
+      for (const aprobadorDeItem of new Set(input.items.map((line) => line.approverId).filter((id): id is string => Boolean(id)))) {
+        if (!(await tx.catalogs.isEligibleApprover(aprobadorDeItem))) throw new DomainError("INVALID_INPUT", "El aprobador de un ítem debe ser un usuario activo y elegible");
+      }
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       if (requisition.status === "devuelta") await this.transition(requisition, "en_revision", actor, "retomada_revision", undefined, this.origin(context), tx.audit);
       if (requisition.status !== "en_revision") throw new DomainError("INVALID_STATE", "La requisición no está en revisión");
@@ -178,11 +185,32 @@ export class ProcurementService {
       return requisition;
     });
   }
-  async decline(id: string, reason: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); await this.transition(requisition, "declinada", actor, "declinada", reason.trim(), this.origin(context), tx.audit); requisition.declineReason = reason.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_declinada", tx); return requisition; }); }
+  /**
+   * Declinar de REVISOR, que no es lo mismo que declinar todos los ítems.
+   *
+   * La precondición de estado es EXPLÍCITA desde el aprobador por ítem (11-sep-2026) y ya no se apoya
+   * en la tabla de transiciones. Al abrir `en_aprobacion -> declinada` —que hace falta para cerrar una
+   * requisición cuyos ítems se declinaron todos— este método se quedó, sin querer, pudiendo matar una
+   * requisición que ya está en manos de su aprobador. Eso es quitarle la decisión a quien le toca, y la
+   * salida para una requisición atascada sigue siendo `reassignApprover`, no declinarla por la espalda.
+   *
+   * O sea: la transición es legal para el APROBADOR; la acción del revisor conserva su propio límite.
+   */
+  async decline(id: string, reason: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.status === "en_aprobacion") throw new DomainError("INVALID_TRANSITION", "La requisición ya está en aprobación: la decide su aprobador o se reasigna"); await this.transition(requisition, "declinada", actor, "declinada", reason.trim(), this.origin(context), tx.audit); requisition.declineReason = reason.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_declinada", tx); return requisition; }); }
   // "sendForApproval" ya NO exige proveedor final por ítem (decisión de la reunión: aprobar y designar
   // proveedor son roles distintos). Sí exige obra: gastos.obra_id es NOT NULL y sin obra generateOrders
   // reventaría al registrar el gasto. Las líneas declinadas no cuentan como "vigentes" (approvedLines).
-  async sendForApproval(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0); if (!requisition.workId || !requisition.tagId || !requisition.approverId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra, etiqueta y valor cotizado mayor a cero son obligatorios en cada ítem vigente"); await this.transition(requisition, "en_aprobacion", actor, "enviada_aprobacion", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition); await tx.notifications.enqueue({ userId: requisition.approverId, channel: "whatsapp", template: "pendiente_aprobador", payload: { requisitionId: requisition.id, consecutive: requisition.consecutive } }); return requisition; }); }
+  async sendForApproval(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0); if (!requisition.workId || !requisition.tagId || !requisition.approverId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra, etiqueta y valor cotizado mayor a cero son obligatorios en cada ítem vigente"); await this.transition(requisition, "en_aprobacion", actor, "enviada_aprobacion", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition);
+    // UN AVISO POR APROBADOR, no uno por requisición. Con aprobadores por ítem hay varias personas a
+    // las que les toca algo, y cada una tiene que recibir SU mensaje con SUS ítems. El `approverId`
+    // viaja en el payload porque es lo que luego deja al emisor elegir el contexto correcto: el
+    // teléfono lo sigue sacando de `usuarios`, nunca del cuerpo de una petición.
+    //
+    // Con un solo aprobador esto encola exactamente una notificación, igual que siempre.
+    for (const aprobador of pendingApproverIds(requisition.items, requisition.approverId)) {
+      await tx.notifications.enqueue({ userId: aprobador, channel: "whatsapp", template: "pendiente_aprobador", payload: { requisitionId: requisition.id, consecutive: requisition.consecutive, approverId: aprobador } });
+    }
+    return requisition; }); }
   /** Reunión 2026-08-31: decisión por ítem del aprobador (aprobar/declinar/ajustar cantidad). No cambia el estado de la requisición: eso lo sigue haciendo approve(). */
   async decideItems(id: string, decisions: readonly ItemDecision[], context: RequestContext): Promise<Requisition> {
     const actor = this.actor(context); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
@@ -190,11 +218,24 @@ export class ProcurementService {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       // M-5: admin_sixteam puede decidir CUALQUIER requisición en aprobación, no solo las asignadas —
       // ver la justificación completa junto a buildAttentionQueue en lib/domain/rules.ts.
-      if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
+      //
+      // APROBADOR POR ÍTEM (11-sep-2026): «es el aprobador asignado» dejó de ser una pregunta sobre la
+      // requisición y pasó a serlo sobre CADA ÍTEM. Aquí solo se comprueba que al actor le toque algo;
+      // qué ítems concretos puede tocar se comprueba línea por línea más abajo, que es donde importa.
+      const omnipotente = actor.roles.includes("admin_sixteam");
+      if (!omnipotente && requisition.approverId !== actor.id && !requisition.items.some((line) => line.approverId === actor.id)) {
+        throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
+      }
       if (requisition.status !== "en_aprobacion") throw new DomainError("INVALID_STATE", "La requisición no está en aprobación");
       const byId = new Map(requisition.items.map((line) => [line.id, line]));
       for (const decision of decisions) {
         const line = byId.get(decision.itemId); if (!line) throw new DomainError("NOT_FOUND", "Ítem no encontrado");
+        // EL CONTROL QUE DE VERDAD IMPORTA: nadie decide un ítem que no es suyo. Sin esto, bastaba con
+        // ser aprobador de UN ítem para decidir los de los demás — y por WhatsApp, donde el token dice
+        // quién eres pero el cuerpo lo arma el remitente, eso es una puerta abierta.
+        if (!omnipotente && itemApproverId(line, requisition.approverId) !== actor.id) {
+          throw new DomainError("NOT_ASSIGNED_APPROVER", "Ese ítem lo decide otro aprobador");
+        }
         if (decision.status === "declinado" && !decision.declineReason?.trim()) throw new DomainError("COMMENT_REQUIRED", "Se requiere motivo para declinar un ítem");
         line.status = decision.status; line.declineReason = decision.status === "declinado" ? decision.declineReason!.trim() : undefined;
         if (decision.quantity !== undefined) { if (!Number.isFinite(decision.quantity) || decision.quantity <= 0) throw new DomainError("INVALID_QUANTITY", "La cantidad debe ser mayor que cero"); line.quantity = decision.quantity; }
@@ -213,8 +254,29 @@ export class ProcurementService {
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       // M-5: mismo bypass de decideItems() — ver justificación junto a buildAttentionQueue en lib/domain/rules.ts.
-      if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
-      if (requisition.status === "aprobada") return requisition;
+      const omnipotente = actor.roles.includes("admin_sixteam");
+      if (!omnipotente && requisition.approverId !== actor.id && !requisition.items.some((line) => line.approverId === actor.id)) {
+        throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
+      }
+      if (requisition.status === "aprobada" || requisition.status === "declinada") return requisition;
+      // CIERRA EL ÚLTIMO, no el primero. Con aprobadores por ítem, quien termina lo suyo pulsa
+      // "Completar aprobación" y no puede cerrar por los demás: la requisición sigue `en_aprobacion`
+      // mientras quede un ítem sin decidir. Con un solo aprobador —el caso de siempre— no cambia nada,
+      // porque la pantalla manda todas las decisiones juntas y no queda ninguno pendiente.
+      const pendientes = pendingApproverIds(requisition.items, requisition.approverId).filter((aprobador) => aprobador !== actor.id);
+      if (pendientes.length && !omnipotente) throw new DomainError("APPROVAL_PENDING_OTHERS", `Faltan ${pendientes.length} aprobador(es) por decidir sus ítems`);
+      // TODOS DECLINADOS = requisición declinada, no aprobada sin nada dentro. Antes este camino ni
+      // existía (`assertHasApprovedLine` reventaba con NO_APPROVED_ITEMS y la requisición se quedaba
+      // en aprobación para siempre); ahora se cierra diciendo la verdad, con los motivos de los ítems
+      // arrastrados a la cabecera porque la base los exige y el solicitante los necesita.
+      if (approvedLines(requisition.items).length === 0) {
+        const motivo = combinedDeclineReason(requisition.items);
+        requisition.declineReason = motivo;
+        await this.transition(requisition, "declinada", actor, "declinada", motivo, this.origin(context), tx.audit);
+        await tx.requisitions.save(requisition);
+        await this.notifyRequester(requisition, "requisicion_declinada", tx);
+        return requisition;
+      }
       assertHasApprovedLine(requisition.items);
       await this.transition(requisition, "aprobada", actor, "aprobada", undefined, this.origin(context), tx.audit);
       await tx.requisitions.save(requisition);
