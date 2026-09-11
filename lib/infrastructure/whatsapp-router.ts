@@ -110,8 +110,15 @@ export function esDeLineaConfigurada(payload: unknown): boolean {
   if (!esperado) return true;
   if (!payload || typeof payload !== "object") return true;
   const objeto = payload as Record<string, unknown>;
-  const metadata = objeto.metadata as Record<string, unknown> | undefined;
-  const declarado = objeto.phone_number_id ?? metadata?.phone_number_id;
+  // En la envoltura v2 la línea viaja en la raíz, y además dentro de `conversation`. Se miran las
+  // dos: la raíz es la fuente normal, `conversation.phone_number_id` el respaldo real.
+  //
+  // Antes el respaldo leía `metadata.phone_number_id`, que NO existe en esa envoltura — era código
+  // muerto apuntando a un sitio equivocado. No rompía nada, porque al no encontrar la clave se
+  // acepta el mensaje y la raíz siempre la trae, pero daba una falsa sensación de tener dos
+  // caminos cuando en realidad solo había uno.
+  const conversacion = objeto.conversation as Record<string, unknown> | undefined;
+  const declarado = objeto.phone_number_id ?? conversacion?.phone_number_id;
   if (declarado === undefined || declarado === null || declarado === "") return true;
   return String(declarado) === esperado;
 }
