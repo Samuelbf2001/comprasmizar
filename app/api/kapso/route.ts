@@ -11,6 +11,7 @@ import { adaptApprovalReply, createPostgresApproverResolver, isApprovalNfmReply 
 import { applyApprovalDecision } from "../../../lib/infrastructure/approval-processor";
 import { resolveAuthorizedRequesterName } from "../../../lib/infrastructure/public-access";
 import { atenderMensajeEntrante, esMensajeEnrutable } from "../../../lib/infrastructure/whatsapp-router";
+import { createPostgresRegistroAcuses, leerAcuseEntrega } from "../../../lib/infrastructure/whatsapp-delivery-status";
 
 export const runtime = "nodejs";
 const MAX_BODY_BYTES = 100_000;
@@ -145,6 +146,25 @@ export async function POST(request: Request) {
   if (esMensajeEnrutable(payload)) {
     const outcome = await atenderMensajeEntrante(payload);
     return Response.json({ received: true, status: outcome.atendido ? "routed" : "ignored", ...(outcome.atendido ? { action: outcome.accion } : { reason: outcome.motivo }) });
+  }
+
+  // Acuses de entrega (`whatsapp.message.sent|delivered|read|failed`). Van DESPUÉS de las ramas de
+  // Flow y del router —lo que sabemos atender ya se atendió— y ANTES de `kapsoWebhookSchema`, que es
+  // donde morirían con un 400. Ver lib/infrastructure/whatsapp-delivery-status.ts: hasta ahora
+  // `estado_entrega = 'enviado'` solo decía "Kapso aceptó", y eso nos hizo creer durante horas que
+  // los avisos salían mientras Meta los descartaba.
+  //
+  // Un wamid desconocido responde 200 y no 4xx a propósito: Kapso entrega at-least-once y reintenta
+  // ante un error, así que devolver 4xx por un mensaje que no es nuestro provocaría reintentos
+  // eternos de algo que nunca vamos a reconocer.
+  const acuse = leerAcuseEntrega(payload);
+  if (acuse) {
+    try {
+      const aplicado = await createPostgresRegistroAcuses().aplicar(acuse);
+      return Response.json({ received: true, status: aplicado ? "status_updated" : "status_ignored" });
+    } catch {
+      return Response.json({ received: true, status: "status_ignored" });
+    }
   }
 
   const parsed = kapsoWebhookSchema.safeParse(payload);
