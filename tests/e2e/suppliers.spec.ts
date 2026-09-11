@@ -20,10 +20,18 @@ test.describe("catálogo de proveedores", () => {
     await page.goto("/proveedores");
     await page.getByRole("button", { name: "Nuevo proveedor" }).click();
     await expect(page.getByRole("dialog", { name: "Nuevo proveedor" })).toBeVisible();
-    await page.getByRole("textbox", { name: "Razón social" }).fill("Proveedor E2E Mizar");
+    // Nombre propio de cada proyecto: "desktop" y "mobile" corren EN PARALELO contra el mismo
+    // servidor (fullyParallel), y dos pruebas creando el mismo registro es una trampa latente.
+    // AVISO: esto NO arregla la intermitencia que se ve en local. Medido el 2026-09-11, esa
+    // intermitencia viene del servidor de desarrollo compilando rutas bajo demanda mientras los dos
+    // navegadores golpean a la vez: falla el clic que abre un diálogo o el que avanza el portal, en
+    // cualquiera de los dos proyectos. En CI no muerde porque el servidor arranca limpio y
+    // playwright.config.ts reintenta 2 veces.
+    const razonSocial = `Proveedor E2E ${testInfo.project.name}`;
+    await page.getByRole("textbox", { name: "Razón social" }).fill(razonSocial);
     await page.getByRole("button", { name: "Crear proveedor" }).click();
     await expect(page.getByRole("status")).toContainText("Proveedor creado correctamente");
-    await expect(page.getByText("Proveedor E2E Mizar")).toBeVisible();
+    await expect(page.getByText(razonSocial)).toBeVisible();
 
     if (testInfo.project.name === "mobile") {
       const documentOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
