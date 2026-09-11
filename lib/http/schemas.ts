@@ -30,6 +30,13 @@ export const reviewedItemSchema = z.object({
   id: z.string().uuid(),
   ...itemIdentity,
   finalSupplierId: z.string().uuid().optional(),
+  // Aprobador POR ÍTEM (11-sep-2026): la ficha de revisión lo manda por línea cuando se reparte la
+  // aprobación. Sin esta clave, `.strict()` rechazaba TODA la revisión en cuanto la pantalla asignaba
+  // un aprobador a un ítem — la función entera caía en la frontera HTTP sin que ningún test la cruzara
+  // (los de servicio pasan ItemLine directo; los de componente leen el body, no lo validan aquí).
+  // Solo uuid: la pantalla omite la clave cuando está vacía (el ítem hereda el aprobador de cabecera),
+  // y el servicio valida que sea un aprobador elegible con el mismo isEligibleApprover del de cabecera.
+  approverId: z.string().uuid().optional(),
   unitBase: z.number().int().nonnegative(),
   status: z.enum(["pendiente", "aprobado", "declinado"]).optional(),
   declineReason: z.string().trim().min(1).max(2_000).optional(),
