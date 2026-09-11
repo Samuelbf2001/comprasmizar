@@ -218,5 +218,36 @@ begin
     (v_obra3, current_date - 9, 'Alquiler de andamio por un día', v_et_serv, v_prov3, 220000, v_contab),
     (v_obra2, current_date - 33, 'Combustible planta eléctrica', v_et_serv, null, 310000, v_contab);
 
+  -- ── 12. Enlace orden ↔ ítems (public.orden_items) ─────────────────────────────────────────
+  --
+  -- Faltaba. Este seed creaba las cinco órdenes y NINGUNA fila de enlace, así que la ficha lateral
+  -- de cualquier orden decía "0 ítems de esta orden · No fue posible cargar los ítems de esta
+  -- orden". No era un fallo de carga: listVisibleOrders sí hidrata `lines` (el json_agg de
+  -- requisicion_items de orderSelectColumns), pero el `left join orden_items` no encontraba nada y
+  -- el `filter (where ri.id is not null)` dejaba `lines: []`. Las órdenes REALES nunca lo tuvieron
+  -- — generateOrders (postgres-repositories.ts) escribe estas filas al generarlas —, así que el
+  -- defecto solo se veía con los datos de demostración, que es justo donde se enseña el producto.
+  --
+  -- Criterio, el mismo que aplica generateOrders: los ítems VIGENTES de la requisición de origen
+  -- (todo lo que no esté declinado, igual que approvedLines en lib/domain/rules.ts) cuyo proveedor
+  -- final sea el de la orden. Si en esa requisición ningún ítem tiene proveedor asignado, entran
+  -- todos los vigentes: de otro modo una requisición sin proveedor por ítem se quedaría con la
+  -- orden vacía, que es el defecto que esto corrige.
+  --
+  -- Una sola sentencia al final, en vez de repetirla tras cada orden: es LA MISMA que aplica
+  -- ops/rellenar-orden-items.sql sobre una base ya cargada, y conviene que no puedan divergir.
+  -- El `not exists` la hace idempotente y, sobre todo, impide tocar una orden que ya tenga sus
+  -- ítems: nunca añade líneas a una orden creada desde la plataforma.
+  insert into public.orden_items (orden_id, requisicion_item_id)
+  select o.id, ri.id
+    from public.ordenes o
+    join public.requisicion_items ri on ri.requisicion_id = o.requisicion_id
+   where ri.estado <> 'declinado'
+     and (ri.proveedor_final_id = o.proveedor_id
+          or not exists (select 1 from public.requisicion_items x
+                          where x.requisicion_id = o.requisicion_id and x.proveedor_final_id is not null))
+     and not exists (select 1 from public.orden_items oi where oi.orden_id = o.id)
+  on conflict do nothing;
+
   raise notice 'seed-demo: datos de demostración cargados';
 end $$;

@@ -30,14 +30,22 @@ import { mutate } from "./data";
 export function ConnectedOrders({
   data,
   role,
+  viewingAs = null,
   refresh,
   go,
 }: {
   data: OrdersBundle;
   role: Role;
+  /** Rol de la lente "Ver como" si está puesta; `null` si se mira con el rol propio. Ver ConnectedProps. */
+  viewingAs?: Role | null;
   refresh: () => void;
   go: (href: string) => void;
 }) {
+  // "Tu rol no puede…" es cierto pero engañoso bajo la lente "Ver como": quien mira es
+  // Administrador Sixteam y SÍ puede — solo está viendo con los ojos de otro rol. Decírselo tal cual
+  // parece un problema de su cuenta. Cuando hay lente, la frase nombra el rol prestado.
+  const sinPermiso = (accion: string) =>
+    viewingAs ? `Estás viendo como ${viewingAs}; ese rol no ${accion}.` : `Tu rol no ${accion}.`;
   const rows = Array.isArray(data?.rows) ? data.rows : [],
     catalogs = data?.catalogs ?? emptyCatalogs,
     [feedback, setFeedback] = useState(""),
@@ -507,7 +515,7 @@ export function ConnectedOrders({
                       <button className="button button-secondary" type="button" onClick={() => void setStatus(order.id, "no_necesario", order.consecutive)}>No necesaria</button>
                     </div>
                   ) : (
-                    <p className="supplier-muted">{order.status === "generada" ? "Tu rol no puede cambiar el estado de entrega de la orden." : `Esta orden ya está marcada como "${estadoLabel(order.status)}". El estado de entrega es definitivo.`}</p>
+                    <p className="supplier-muted">{order.status === "generada" ? sinPermiso("puede cambiar el estado de entrega de la orden") : `Esta orden ya está marcada como "${estadoLabel(order.status)}". El estado de entrega es definitivo.`}</p>
                   )}
                 </section>
                 {/* GRAVE 2 (QA 2026-08-31): "eje administrativo" es vocabulario del equipo de
@@ -533,7 +541,7 @@ export function ConnectedOrders({
                     <p className="supplier-muted">
                       {order.adminStatus === "pagada"
                         ? "Esta orden ya está pagada. El estado de contabilidad es definitivo."
-                        : `Tu rol no puede avanzar la contabilidad desde "${estadoLabel(order.adminStatus ?? "pendiente")}".`}
+                        : sinPermiso(`puede avanzar la contabilidad desde "${estadoLabel(order.adminStatus ?? "pendiente")}"`)}
                     </p>
                   )}
                 </section>

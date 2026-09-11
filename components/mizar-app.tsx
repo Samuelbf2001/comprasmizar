@@ -323,7 +323,7 @@ export default function MizarApp({
   else if (pathname.startsWith("/proveedores"))
     content = <SuppliersScreen role={role} demoMode={demoMode} />;
   else if (!demoMode && isConnectedReadRoute(pathname))
-    content = <ConnectedScreen pathname={pathname} role={role} go={go} />;
+    content = <ConnectedScreen pathname={pathname} role={role} viewingAs={role === realRole ? null : role} go={go} />;
   else if (!demoMode) content = <IntegrationGate role={role} />;
   else if (pathname === "/" || pathname === "/inicio")
     content = <DashboardScreen go={go} />;
