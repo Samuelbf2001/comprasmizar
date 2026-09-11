@@ -36,12 +36,13 @@ Cuando Meta responde que la plantilla no existe (código `132001`), la cola **no
 
 La bandeja embebida acepta **filtros iniciales por query string**, que se aplican al cargar el iframe. Los que Kapso documenta son exactamente estos y ningún otro: `status` (`active`/`ended`/`all`), `search`, `whatsapp_config_id` (UUID del número o `all`), `unread`, `handoff`, `contact_properties` (JSON codificado, hasta 3 entradas), y aparte `mode` para el tema y `language`.
 
-**No hay parámetro para abrir una conversación concreta**, y conviene saberlo antes de intentarlo:
+**Ni `wamid` ni `conversation_id` están en esa lista**, así que no hay forma documentada de abrir una conversación concreta desde el enlace.
 
-- `?wamid=` **no filtra nada**. El identificador de mensaje de Meta no es una clave que la bandeja entienda. Lo importante es cómo falla: la URL carga igual, sin error y sin filtro, así que parece que funcionó. Un enlace así llevaría a quien lo siga a la bandeja completa creyendo que está viendo una conversación concreta.
-- `?conversation_id=` sí acota la vista, pero **no está documentado**. Es comportamiento observado al configurar la pantalla de Mensajes, fuera del contrato público de Kapso: puede cambiar o desaparecer sin aviso y sin que nadie se entere, porque —otra vez— el modo de fallo es silencioso. No construir nada encima sin aceptar ese riesgo.
+Conviene ser preciso con lo que sabemos, porque la primera versión de esta sección no lo fue: **nadie ha probado esos dos parámetros contra la bandeja**. Lo que sí está medido —que `?conversation_id=` filtra y `?wamid=` no— es de la **API de plataforma**, otra superficie distinta, y está en la sección siguiente. Dar por observado en el iframe un resultado obtenido en la API es exactamente el error que se coló aquí.
 
-Lo documentado y por tanto estable para acercarse a una conversación es `search`, que **prerrellena el buscador** con lo que se le pase (por ejemplo el teléfono); no selecciona la conversación, deja la bandeja filtrada por ese texto.
+Lo documentado, y por tanto lo único estable para acercarse a una conversación desde el iframe, es `search`, que **prerrellena el buscador** con lo que se le pase (por ejemplo el teléfono); no selecciona la conversación, deja la bandeja filtrada por ese texto.
+
+Si alguna vez hace falta abrir una conversación concreta en la bandeja, aplica antes la regla de la sección siguiente: **un valor imposible primero; si la vista no cambia o sigue mostrándolo todo, el parámetro no existe.** Un parámetro que la URL ignora carga sin error, y eso se parece demasiado a que funcionó.
 
 ## Comprobar si un mensaje llegó (API de plataforma, no la bandeja)
 
