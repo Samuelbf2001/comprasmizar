@@ -32,6 +32,17 @@ Las cinco plantillas de texto usan **parámetros con nombre** (`parameter_format
 
 Cuando Meta responde que la plantilla no existe (código `132001`), la cola **no gasta intento**: difiere esa notificación diez minutos y sigue con el resto del lote. Cualquier otro error sí agota los cinco intentos con espera creciente y acaba en `fallido`, para que se vea. La distinción es por el código de Meta, no por el HTTP: un 400 puede ser cualquiera de los dos.
 
+## Enlaces a la bandeja
+
+La bandeja embebida acepta **filtros iniciales por query string**, que se aplican al cargar el iframe. Los que Kapso documenta son exactamente estos y ningún otro: `status` (`active`/`ended`/`all`), `search`, `whatsapp_config_id` (UUID del número o `all`), `unread`, `handoff`, `contact_properties` (JSON codificado, hasta 3 entradas), y aparte `mode` para el tema y `language`.
+
+**No hay parámetro para abrir una conversación concreta**, y conviene saberlo antes de intentarlo:
+
+- `?wamid=` **no filtra nada**. El identificador de mensaje de Meta no es una clave que la bandeja entienda. Lo importante es cómo falla: la URL carga igual, sin error y sin filtro, así que parece que funcionó. Un enlace así llevaría a quien lo siga a la bandeja completa creyendo que está viendo una conversación concreta.
+- `?conversation_id=` sí acota la vista, pero **no está documentado**. Es comportamiento observado al configurar la pantalla de Mensajes, fuera del contrato público de Kapso: puede cambiar o desaparecer sin aviso y sin que nadie se entere, porque —otra vez— el modo de fallo es silencioso. No construir nada encima sin aceptar ese riesgo.
+
+Lo documentado y por tanto estable para acercarse a una conversación es `search`, que **prerrellena el buscador** con lo que se le pase (por ejemplo el teléfono); no selecciona la conversación, deja la bandeja filtrada por ese texto.
+
 ## Estado y seguridad
 
 La pantalla actual muestra un estado seguro sin iframe cuando falta una URL pública HTTPS válida. No hay cuenta, número, plantilla, webhook ni credencial real en este manual. El onboarding, número dedicado, sandbox, plantillas aprobadas y costos son gates externos; ver [gates-externos.md](../gates-externos.md).
