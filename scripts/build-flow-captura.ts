@@ -232,11 +232,21 @@ function pantallaResumen() {
     { type: "TextBody", text: "Tipo: ${data.tipo_solicitud}" },
     { type: "TextBody", text: "Fecha requerida: ${data.fecha_requerida}" },
   ];
-  // Una línea por artículo. Los no usados llegan vacíos; se pintan igual porque ocultarlos exigiría
-  // condicionales sobre cadena vacía, que es terreno que Meta no documenta con claridad y que, si
-  // falla, falla en silencio — exactamente el defecto que estamos arreglando.
+  // Una línea por artículo, pero solo las que existen.
+  //
+  // Ernesto lo preguntó al recorrer la vista previa: «si no se agregan otros ítems, ¿en el resumen
+  // quedan vacíos o sin aparecer?». Quedaban vacíos — siete líneas "Artículo N:  ( )" para quien
+  // pidiera una sola cosa. Un resumen que sirva para revisar no puede tener siete renglones de
+  // ruido.
+  //
+  // El artículo 1 no lleva `visible`: es obligatorio, siempre está.
+  // Se usa el componente `If` y no la propiedad `visible`: Meta rechaza una comparación ahí —
+  // "The expression return type is 'string' which does not match the schema for the property",
+  // porque `visible` quiere un booleano ya resuelto, no una expresión. `If` existe justamente para
+  // condicionar, y su `condition` sí admite la comparación.
   for (let k = 1; k <= MAX_ITEMS; k += 1) {
-    hijos.push({ type: "TextBody", text: `Artículo ${k}: \${data.item_${k}_descripcion} (\${data.item_${k}_cantidad} \${data.item_${k}_unidad})` });
+    const linea: ComponenteFlow = { type: "TextBody", text: `Artículo ${k}: \${data.item_${k}_descripcion} (\${data.item_${k}_cantidad} \${data.item_${k}_unidad})` };
+    hijos.push(k === 1 ? linea : { type: "If", condition: `\${data.item_${k}_descripcion} != ''`, then: [linea] });
   }
   hijos.push({ type: "Footer", label: "Enviar solicitud", "on-click-action": { name: "complete", payload } });
   return { id: "RESUMEN", title: "Resumen", terminal: true, success: true, data, layout: { type: "SingleColumnLayout", children: hijos } };
@@ -249,15 +259,26 @@ export function construirFlow(): FlowCaptura {
   return { version: "7.3", screens };
 }
 
-const json = `${JSON.stringify(construirFlow(), null, 2)}\n`;
-if (process.argv.includes("--check")) {
-  const actual = readFileSync(RUTA_FLOW_V2, "utf8");
-  if (actual !== json) {
-    process.stderr.write("requisicion-v2.flow.json no coincide con el generador. Ejecuta: npx tsx scripts/build-flow-captura.ts\n");
-    process.exit(1);
+/**
+ * Este módulo es DOS cosas: un guion que escribe el JSON y una biblioteca que la prueba importa
+ * para comparar. Sin esta guarda hacía las dos a la vez: importarlo desde el test REESCRIBÍA
+ * `requisicion-v2.flow.json`, así que correr la suite dejaba el árbol sucio y llegó a impedir
+ * cambiar de rama en mitad de una revisión. Un `import` no puede tener efectos sobre el disco.
+ */
+const ejecutadoComoGuion = (process.argv[1] ?? "").replace(/\\/g, "/").endsWith("scripts/build-flow-captura.ts");
+
+if (ejecutadoComoGuion) {
+  const json = `${JSON.stringify(construirFlow(), null, 2)}\n`;
+  if (process.argv.includes("--check")) {
+    // Se normalizan los finales de línea: en Windows el archivo puede estar en CRLF y la
+    // comparación fallaría por eso, que nunca es el problema que interesa.
+    if (readFileSync(RUTA_FLOW_V2, "utf8").replace(/\r\n/g, "\n") !== json) {
+      process.stderr.write("requisicion-v2.flow.json no coincide con el generador. Ejecuta: npx tsx scripts/build-flow-captura.ts\n");
+      process.exit(1);
+    }
+    process.stdout.write("requisicion-v2.flow.json al día\n");
+  } else {
+    writeFileSync(RUTA_FLOW_V2, json, "utf8");
+    process.stdout.write(`escrito ${RUTA_FLOW_V2} (${construirFlow().screens.length} pantallas, ${MAX_ITEMS} artículos)\n`);
   }
-  process.stdout.write("requisicion-v2.flow.json al día\n");
-} else {
-  writeFileSync(RUTA_FLOW_V2, json, "utf8");
-  process.stdout.write(`escrito ${RUTA_FLOW_V2} (${construirFlow().screens.length} pantallas, ${MAX_ITEMS} artículos)\n`);
 }

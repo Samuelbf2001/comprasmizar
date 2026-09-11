@@ -10,3 +10,9 @@ ops/*.mjs text eol=lf
 
 # El bootstrap y las migraciones los aplica psql dentro del contenedor Linux.
 *.sql text eol=lf
+
+# El Flow JSON lo GENERA `scripts/build-flow-captura.ts` y una prueba lo compara byte a byte con la
+# salida del generador. Sin fijar LF, `git checkout` en Windows lo deja con CRLF, la comparación
+# falla por un motivo que no tiene nada que ver con el contenido, y el archivo aparece siempre como
+# modificado — lo que llegó a impedir cambiar de rama durante una revisión.
+integrations/whatsapp-flow/*.json text eol=lf
