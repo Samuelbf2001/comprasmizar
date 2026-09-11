@@ -54,32 +54,32 @@ export interface DefinicionPlantilla {
 export const PLANTILLAS_WHATSAPP = {
   requisicion_recibida: {
     variables: ["consecutive"],
-    texto: "Recibimos tu requisicion {{consecutive}}. Te avisamos por este medio cuando avance.",
+    texto: "Recibimos tu requisición {{consecutive}}. Te avisamos por este medio cuando avance.",
     ejemplo: { consecutive: "REQ-2026-0001" },
     proposito: "Acuse al solicitante cuando su requisicion queda radicada (portal publico o WhatsApp).",
   },
   requisicion_aprobada: {
     variables: ["consecutive"],
-    texto: "Tu requisicion {{consecutive}} fue aprobada. Compras sigue con la orden al proveedor.",
+    texto: "Tu requisición {{consecutive}} fue aprobada. Compras sigue con la orden al proveedor.",
     ejemplo: { consecutive: "REQ-2026-0001" },
     proposito: "Aviso al solicitante cuando el aprobador aprueba la requisicion.",
   },
   requisicion_declinada: {
     variables: ["consecutive"],
-    texto: "Tu requisicion {{consecutive}} fue declinada. Consulta el motivo con el area de compras.",
+    texto: "Tu requisición {{consecutive}} fue declinada. Consulta el motivo con el área de compras.",
     ejemplo: { consecutive: "REQ-2026-0001" },
     proposito: "Aviso al solicitante cuando la requisicion se declina completa.",
   },
   requisicion_devuelta: {
     variables: ["consecutive"],
-    texto: "Tu requisicion {{consecutive}} regreso a revision para ajustes. Te avisamos cuando avance.",
+    texto: "Tu requisición {{consecutive}} regresó a revisión para ajustes. Te avisamos cuando avance.",
     ejemplo: { consecutive: "REQ-2026-0001" },
     proposito:
       "Aviso al solicitante cuando el aprobador la devuelve a revision (`returnForCorrection`). No estaba en el encargo original: apareció al cruzar las definiciones con los sitios que encolan, y es justo lo que fija la prueba.",
   },
   pendiente_aprobador: {
     variables: ["consecutive"],
-    texto: "La requisicion {{consecutive}} esta esperando tu aprobacion en la plataforma de compras.",
+    texto: "La requisición {{consecutive}} está esperando tu aprobación en la plataforma de compras.",
     ejemplo: { consecutive: "REQ-2026-0001" },
     proposito:
       "Aviso al aprobador. Es el ULTIMO recurso del despachador: primero intenta el Flow interactivo y luego la plantilla con boton (aprobacion_requisicion); solo cae aqui cuando el Flow es imposible.",

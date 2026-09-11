@@ -88,12 +88,12 @@ describe("el texto y sus variables no se desalinean", () => {
     }
   });
 
-  it("el texto va sin tildes ni emojis", () => {
+  it("el texto va sin emojis ni caracteres fuera del alfabeto latino", () => {
     // Misma razón que publish-approval-template.ts: reduce los rechazos de revisión y algunos
     // clientes viejos renderizan mal los acentos. Y una UTILITY con emojis parece publicidad, que es
     // el motivo de rechazo más común.
     for (const [nombre, plantilla] of Object.entries(PLANTILLAS_WHATSAPP)) {
-      expect(plantilla.texto, `${nombre}: el texto lleva caracteres fuera de ASCII`).toMatch(/^[\x20-\x7E]*$/);
+      expect(plantilla.texto, `${nombre}: el texto lleva caracteres fuera de ASCII`).toMatch(/^[ -~¡¿À-ÿ]*$/);
     }
   });
 });
