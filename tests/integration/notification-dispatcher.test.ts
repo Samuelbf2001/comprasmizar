@@ -26,11 +26,18 @@ describe("dispatchPendingNotifications", () => {
     const adapter = { sendTemplate: vi.fn(async () => ({ messageId: "wamid.1" })) };
     const outcome = await dispatchPendingNotifications(store, adapter);
     expect(outcome).toEqual({ claimed: 1, sent: 1, retried: 0, failed: 0, deferred: 0 });
-    expect(adapter.sendTemplate).toHaveBeenCalledWith({ to: "+573001234567", template: "pendiente_aprobador", payload: { requisitionId: "11111111-1111-4111-8111-111111111111", consecutive: "REQ-2026-0001" } });
+    // Al adaptador va SOLO lo que la plantilla declara (lib/infrastructure/plantillas-whatsapp.ts).
+    // Antes se mandaba el payload entero, `requisitionId` incluido: `sendKapsoTemplate` lo pasa tal
+    // cual como `parameters`, así que ese UUID interno habría acabado dentro del WhatsApp del
+    // maestro, o habría hecho que Meta rechazara el envío por un parámetro no declarado.
+    expect(adapter.sendTemplate).toHaveBeenCalledWith({ to: "+573001234567", template: "pendiente_aprobador", payload: { consecutive: "REQ-2026-0001" } });
     expect(calls.markSent).toHaveLength(1);
-    const [id, sent] = calls.markSent[0] as [string, { messageId: string; phone: string; template: string }];
+    const [id, sent] = calls.markSent[0] as [string, { messageId: string; phone: string; template: string; payload: Record<string, unknown> }];
     expect(id).toBe("n-1");
     expect(sent).toMatchObject({ messageId: "wamid.1", phone: "+573001234567", template: "pendiente_aprobador" });
+    // Pero en la base sí se conserva entero: `whatsapp_eventos` se enlaza con la requisición por ese
+    // mismo `requisitionId` (extractRequisitionId). Recortar el envío no puede romper la trazabilidad.
+    expect(sent.payload).toMatchObject({ requisitionId: "11111111-1111-4111-8111-111111111111" });
   });
 
   it("retries a transient failure with backoff, staying pendiente without losing the notification", async () => {
