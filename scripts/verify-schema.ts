@@ -59,6 +59,9 @@ const HARNESSES = [
   path.join(ROOT, "supabase", "tests", "indices_rendimiento_verification.sql"),
   // Alta de usuarios desde la plataforma (2026-09-11): unicidad del correo y el camino completo del alta.
   path.join(ROOT, "supabase", "tests", "alta_usuarios_verification.sql"),
+  // Cola de notificaciones (2026-09-11): que se pueda ACTUALIZAR, y que ninguna tabla lleve el
+  // disparador set_updated_at sin la columna que ese disparador escribe.
+  path.join(ROOT, "supabase", "tests", "notificaciones_cola_verification.sql"),
 ];
 
 function migrationFiles(): string[] {
