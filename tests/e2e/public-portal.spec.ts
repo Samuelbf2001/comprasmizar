@@ -24,19 +24,27 @@ async function abrirPortalHidratado(page: Page) {
 
 async function pasarCompuerta(page: Page) {
   await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
-  await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
   await page.getByRole("button", { name: "Continuar" }).click();
 }
 
+/** Paso 1: obra, teléfono y nombre. El teléfono se pide aquí desde 2026-09-11, no en la compuerta. */
+async function pasarDatos(page: Page, nombre: string) {
+  await page.locator('select[name="work"]').selectOption({ label: "Altos de La Pradera" });
+  await page.getByLabel("Tu teléfono").fill("300 555 0101");
+  await page.getByLabel("Tu nombre").fill(nombre);
+  await page.getByRole("button", { name: "Continuar a material" }).click();
+}
+
 test.describe("portal público de requisiciones", () => {
-  test("no muestra shell interno y exige contraseña y teléfono antes del formulario", async ({ page }) => {
+  test("no muestra shell interno y exige SOLO la contraseña antes del formulario", async ({ page }) => {
     await page.goto("/requisiciones/publica");
 
     await expect(page.locator(".app-shell")).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Pide lo que tu obra necesita." })).toBeVisible();
 
     await page.getByRole("button", { name: "Continuar" }).click();
-    await expect(page.locator("#portal-access-error")).toContainText("Ingresa la contraseña del portal");
+    await expect(page.locator("#portal-access-error")).toContainText("Escribe la contraseña del portal");
+    await expect(page.getByLabel("Teléfono autorizado")).toHaveCount(0);
 
     await pasarCompuerta(page);
     await expect(page.getByRole("heading", { name: "¿Para quién y cuándo?" })).toBeVisible();
@@ -49,9 +57,7 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.getByRole("heading", { name: "¿Para quién y cuándo?" })).toBeVisible();
     await expect(page.getByRole("list", { name: "Avance de la requisición" })).toBeVisible();
 
-    await page.locator('select[name="work"]').selectOption({ label: "Altos de La Pradera" });
-    await page.getByLabel("Tu nombre").fill("Usuario QA");
-    await page.getByRole("button", { name: "Continuar a material" }).click();
+    await pasarDatos(page, "Usuario QA");
     await expect(page.getByRole("heading", { name: "¿Qué material necesitas?" })).toBeVisible();
 
     await page.getByLabel("Material").selectOption({ label: "Cemento gris uso general" });
@@ -86,7 +92,7 @@ test.describe("portal público de requisiciones", () => {
       expect(box!.height).toBeGreaterThanOrEqual(48);
     };
 
-    for (const locator of [page.getByLabel("Contraseña del portal"), page.getByLabel("Teléfono autorizado"), page.getByRole("button", { name: "Continuar" })]) {
+    for (const locator of [page.getByLabel("Contraseña del portal"), page.getByRole("button", { name: "Continuar" })]) {
       await expectTouchTarget(locator);
     }
 
@@ -95,16 +101,28 @@ test.describe("portal público de requisiciones", () => {
     expect(focusStyle).not.toBe("none");
 
     await pasarCompuerta(page);
-    for (const locator of [page.getByLabel("Obra"), page.getByLabel("Fecha requerida"), page.getByLabel("Tu nombre"), page.getByRole("button", { name: "Continuar a material" })]) {
+    for (const locator of [page.getByLabel("Obra"), page.getByLabel("Fecha requerida"), page.getByLabel("Tu teléfono"), page.getByLabel("Tu nombre"), page.getByRole("button", { name: "Continuar a material" })]) {
       await expectTouchTarget(locator);
     }
 
-    await page.getByLabel("Obra").selectOption({ label: "Altos de La Pradera" });
-    await page.getByLabel("Tu nombre").fill("Usuario QA móvil");
-    await page.getByRole("button", { name: "Continuar a material" }).click();
+    await pasarDatos(page, "Usuario QA móvil");
     for (const locator of [page.getByLabel("Material"), page.getByLabel("Cantidad"), page.getByLabel("Unidad"), page.getByRole("button", { name: "Agregar una nota o foto" }), page.getByRole("button", { name: "Enviar requisición" })]) {
       await expectTouchTarget(locator);
     }
+  });
+
+  test("recargar con el enlace abierto NO rompe el acceso", async ({ page }) => {
+    // Ernesto recargó y le salió "Este enlace no está habilitado": el portal borraba el fragmento de
+    // la barra nada más leerlo, así que al recargar ya no quedaba token. Roto también "atrás" y
+    // guardar en favoritos, que es lo que hace quien se queda a medias y vuelve luego.
+    const fragmento = "#obra=11111111-1111-4111-8111-111111111111&token=" + "a".repeat(64);
+    await page.goto(`/requisiciones/publica${fragmento}`);
+    await expect(page.getByRole("heading", { name: "Pide lo que tu obra necesita." })).toBeVisible();
+    expect(page.url()).toContain(fragmento);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Pide lo que tu obra necesita." })).toBeVisible();
+    await expect(page.getByText("Este enlace no está habilitado")).toHaveCount(0);
   });
 
   test("la URL móvil heredada sigue viva y reenvía conservando el fragmento", async ({ page }) => {
