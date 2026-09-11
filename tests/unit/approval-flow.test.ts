@@ -9,6 +9,7 @@ import {
 import { adaptApprovalReply, isApprovalNfmReply } from "../../lib/infrastructure/approval-reply-adapter";
 import { applyApprovalDecision, DEFAULT_DECLINE_REASON, planApprovalDecision } from "../../lib/infrastructure/approval-processor";
 import type { ItemLine, Requisition } from "../../lib/domain";
+import { hmacSha256 } from "../../lib/security/crypto";
 
 // ---------------------------------------------------------------------------------------------
 // El Flow JSON. Mismas invariantes duras que ya verifica whatsapp-flow.test.ts para el de captura.
@@ -113,10 +114,52 @@ const REQ_A = "11111111-1111-4111-8111-111111111111";
 const REQ_B = "22222222-2222-4222-8222-222222222222";
 const NOW = new Date("2026-09-10T15:00:00.000Z");
 
+const OTRO_SECRETO = "otro-secreto-distinto";
+
 describe("flow_token de aprobación", () => {
   it("valida el token que él mismo emite", () => {
     const token = issueApprovalFlowToken("573001112233", REQ_A, SECRET, NOW);
     expect(validateApprovalFlowToken(token, "+57 300 111 2233", REQ_A, SECRET, NOW)).toEqual({ ok: true });
+  });
+
+  // Todas las pruebas de este bloque firmaban y validaban con el MISMO secreto. Los casos negativos
+  // cubrían teléfono, requisición, caducidad y formato — ninguno el secreto. Es decir: una
+  // implementación que IGNORARA el secreto por completo las pasaba todas, y este es el token que
+  // autoriza aprobaciones de gasto que llegan por WhatsApp. Si la firma fuera forjable, cualquiera
+  // que supiera el teléfono del aprobador y el id de la requisición podría aprobar una compra.
+  //
+  // Se ancla contra un HMAC calculado aparte, igual que `flow-sender.test.ts` hace con el token de
+  // captura: si la construcción de la firma cambia, esto lo dice; comparar el emisor consigo mismo,
+  // no.
+  it("la firma es HMAC del teléfono normalizado, el timestamp y la requisición, con ESE secreto", () => {
+    const token = issueApprovalFlowToken("+57 300 111 2233", REQ_A, SECRET, NOW);
+    const esperado = `2026-09-10T15:00:00.000Z.${hmacSha256(`573001112233.2026-09-10T15:00:00.000Z.${REQ_A}`, SECRET)}`;
+    expect(token).toBe(esperado);
+    // Y con otro secreto la firma es OTRA: si esto fallara, el secreto no estaría entrando en el HMAC.
+    expect(issueApprovalFlowToken("+57 300 111 2233", REQ_A, OTRO_SECRETO, NOW)).not.toBe(esperado);
+  });
+
+  it("un token firmado con OTRO secreto se rechaza", () => {
+    // El caso que ninguna prueba cubría. Es lo que separa "hay firma" de "la firma sirve".
+    const token = issueApprovalFlowToken("573001112233", REQ_A, OTRO_SECRETO, NOW);
+    expect(validateApprovalFlowToken(token, "573001112233", REQ_A, SECRET, NOW)).toEqual({ ok: false, reason: "invalid_flow_token_signature" });
+  });
+
+  it("un token válido con un solo carácter cambiado se rechaza", () => {
+    const token = issueApprovalFlowToken("573001112233", REQ_A, SECRET, NOW);
+    // Se altera el último dígito hex de la firma, manteniendo el formato <iso>.<64 hex> intacto, para
+    // que el rechazo venga de la firma y no del patrón.
+    const ultimo = token.slice(-1);
+    const manipulado = `${token.slice(0, -1)}${ultimo === "a" ? "b" : "a"}`;
+    expect(manipulado).toHaveLength(token.length);
+    expect(validateApprovalFlowToken(manipulado, "573001112233", REQ_A, SECRET, NOW)).toEqual({ ok: false, reason: "invalid_flow_token_signature" });
+  });
+
+  it("un secreto vacío no valida un token emitido con secreto de verdad", () => {
+    // Cubre el entorno mal configurado: si `KAPSO_WEBHOOK_SECRET` llegara vacío, la validación no
+    // puede volverse permisiva — tiene que rechazar, no aceptar cualquier cosa.
+    const token = issueApprovalFlowToken("573001112233", REQ_A, SECRET, NOW);
+    expect(validateApprovalFlowToken(token, "573001112233", REQ_A, "", NOW)).toEqual({ ok: false, reason: "invalid_flow_token_signature" });
   });
 
   it("un token emitido para otra requisición no sirve para esta", () => {
