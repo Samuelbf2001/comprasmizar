@@ -254,12 +254,22 @@ begin
   end;
   execute 'reset role';
 
-  -- Ordenes siguen la RLS de ordenes_lectura_operativa: el solicitante no
-  -- obtiene soporte de la OC, pero su aprobador enrutado sí.
+  -- Ordenes siguen la RLS de ordenes_lectura_operativa: el solicitante no obtiene soporte de la OC,
+  -- pero el APROBADOR ASIGNADO sí.
+  --
+  -- Decía "aprobador enrutado" y la requisición no fijaba `aprobador_id`: pasaba porque
+  -- `puede_leer_adjunto` resolvía por `etiquetas.aprobador_id`, que es el aprobador por defecto de la
+  -- etiqueta y desde 2026-09-07 solo una sugerencia. O sea: esta prueba estaba verde por la capa
+  -- obsoleta. `ordenes_lectura_operativa`, la policy que el propio comentario citaba, ya miraba
+  -- `requisiciones.aprobador_id` desde entonces — las dos capas decían cosas distintas y la prueba
+  -- afirmaba la equivocada. Con 202609110005 las dos usan `es_aprobador_de`, así que aquí se asigna
+  -- el aprobador de verdad. Que la etiqueta y el asignado sean el mismo usuario es casualidad del
+  -- seed; el caso en que difieren lo cubre adjuntos_aprobador_verification.sql.
   select id into v_etiqueta from public.etiquetas where nombre = 'Materiales';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id)
     values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', v_etiqueta)
     returning id into v_requisicion_orden;
+  update public.requisiciones set aprobador_id = '10000000-0000-4000-8000-000000000003' where id = v_requisicion_orden;
   insert into public.ordenes(consecutivo, tipo, requisicion_id)
     values ('', 'OC', v_requisicion_orden) returning id into v_orden;
   insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
@@ -282,7 +292,7 @@ begin
   perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000003', true);
   execute 'set local role authenticated';
   if not exists (select 1 from public.adjuntos where id = v_adjunto_orden) then
-    raise exception 'Aprobador enrutado no puede leer soporte de orden';
+    raise exception 'El aprobador asignado no puede leer soporte de orden';
   end if;
   execute 'reset role';
 
