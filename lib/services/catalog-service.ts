@@ -59,10 +59,9 @@ export class CatalogService {
   private conflict(error: unknown, kind: CatalogKind): never {
     if (typeof error === "object" && error !== null && "code" in error) {
       if (error.code === "23505") throw new DomainError("CONFLICT", kind === "suppliers" ? "Ya existe un proveedor con el mismo nombre o NIT" : kind === "societies" ? "Ya existe una sociedad con el mismo nombre o NIT" : kind === "users" ? "Ya existe un usuario con ese correo electrónico" : kind === "requesters" ? "Ya existe un solicitante autorizado con ese número de teléfono" : "Ya existe un registro equivalente en el catálogo");
-      // Defensa adicional ante una condición de carrera: el chequeo explícito de validateUserExists ya
-      // cubre el caso normal, pero si el id dejó de existir entre el chequeo y el INSERT, la FK de
-      // `usuarios.id -> auth.users.id` sigue protegiendo la integridad y aquí se traduce el error.
-      if (kind === "users" && error.code === "23503") throw new DomainError("AUTH_ACCOUNT_NOT_FOUND", "El id indicado no corresponde a una cuenta existente en Supabase Auth. Cree primero la cuenta en Auth y luego vincúlela aquí.");
+      // La FK `usuarios.id -> auth.users.id` ya no puede violarse en el alta (ambas filas se crean en la
+      // misma transacción, ver postgres-repositories.ts), pero sí en una edición contra un id inventado.
+      if (kind === "users" && error.code === "23503") throw new DomainError("NOT_FOUND", "El usuario indicado no existe.");
       // Los triggers de BD (validar_baja_usuario_con_etiquetas_activas y
       // validar_retiro_ultimo_rol_aprobador) protegen que una etiqueta activa nunca se quede sin
       // aprobador elegible; aquí se traducen a mensajes útiles en vez de dejarlos explotar crudos.
@@ -73,11 +72,6 @@ export class CatalogService {
       }
     }
     throw error;
-  }
-  /** RF-004: nunca se crea la cuenta en `auth.users` desde aquí; solo se vincula un id que ya debe existir en Auth. */
-  private async validateUserExists(value: CatalogCreateInput, repository: CatalogRepository): Promise<void> {
-    const user = value as CatalogUser;
-    if (!(await repository.authUserExists(user.id))) throw new DomainError("AUTH_ACCOUNT_NOT_FOUND", "No existe una cuenta de Supabase Auth con este id. Esta plataforma no crea cuentas nuevas: cree primero el usuario en Supabase Auth y luego vincúlelo aquí con su id.");
   }
   private async audit(action: string, kind: CatalogKind, id: string, actor: Actor, before: CatalogRecord | undefined, after: CatalogRecord, repository: { append(event: Parameters<ServiceDependencies["audit"]["append"]>[0]): Promise<void> }): Promise<void> {
     await repository.append({ entity: kind, entityId: id, event: action, actorId: actor.id, at: this.deps.clock.now(), origin: "web", data: { ...(before ? { before: safeSnapshot(before) } : {}), after: safeSnapshot(after) } });
@@ -98,7 +92,7 @@ export class CatalogService {
     if (await repository.findRequesterDuplicate(value.phone, exceptId)) throw new DomainError("CONFLICT", "Ya existe un solicitante autorizado con ese número de teléfono");
   }
   async create(kind: CatalogKind, value: CatalogCreateInput, actor: Actor): Promise<CatalogRecord> {
-    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.authorize(actor, kind, tx.features); if (kind === "suppliers") await this.supplierConflict(tx.catalogs, value); if (kind === "requesters") await this.requesterConflict(tx.catalogs, value); if (kind === "tags") await this.validateTag(value as CatalogRecord, tx.catalogs); if (kind === "users") await this.validateUserExists(value, tx.catalogs); const created = await tx.catalogs.create(kind, value); await this.audit("creada", kind, created.id, actor, undefined, created, tx.audit); return created; }); } catch (error) { this.conflict(error, kind); }
+    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.authorize(actor, kind, tx.features); if (kind === "suppliers") await this.supplierConflict(tx.catalogs, value); if (kind === "requesters") await this.requesterConflict(tx.catalogs, value); if (kind === "tags") await this.validateTag(value as CatalogRecord, tx.catalogs); const created = await tx.catalogs.create(kind, value); await this.audit("creada", kind, created.id, actor, undefined, created, tx.audit); return created; }); } catch (error) { this.conflict(error, kind); }
   }
   async patch(kind: CatalogKind, id: string, value: CatalogPatchInput, actor: Actor): Promise<CatalogRecord> {
     try {

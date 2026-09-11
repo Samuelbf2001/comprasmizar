@@ -114,7 +114,7 @@ const emptyForm: FormValues = {
   phone: "",
   email: "",
   address: "",
-  id: "",
+  password: "",
   roles: [],
 };
 function rolesFromForm(values: FormValues): string[] {
@@ -254,10 +254,11 @@ function payloadFor(
   // nunca se envía como null: sin teléfono la fila no tiene ninguna función.
   if (kind === "requesters") data.phone = String(values.phone || "").trim();
   if (kind === "users") {
-    // RF-004: id/correo son inmutables tras el alta (el correo vive en auth.users, no en este
-    // catálogo); el esquema de PATCH ni siquiera acepta esas claves, así que solo se envían al crear.
+    // El correo es inmutable tras el alta (vive en auth.users, no en este catálogo) y la contraseña
+    // solo se fija al crear: cambiarla después es otro flujo (POST /api/usuarios/:id/clave, que además
+    // cierra las sesiones abiertas). El esquema de PATCH ni siquiera acepta estas claves.
     if (!editing) {
-      data.id = String(values.id || "").trim();
+      data.password = String(values.password || "");
       data.email = String(values.email || "").trim();
     }
     const phone = String(values.phone || "").trim();
@@ -404,8 +405,8 @@ export function ConnectedCatalogAdmin({
       // RF-004: el id debe ser el de una cuenta que ya existe en auth.users; esta plataforma nunca
       // la crea. El servicio vuelve a validarlo (AUTH_ACCOUNT_NOT_FOUND) — esto solo evita un viaje
       // redondo con un valor que ni siquiera tiene forma de UUID.
-      if (!UUID_RE.test(String(form.id || "").trim()))
-        return "El id de usuario debe ser el UUID de una cuenta de acceso existente.";
+      if (String(form.password || "").length < 8)
+        return "La contraseña inicial debe tener al menos 8 caracteres.";
       if (!/^\S+@\S+\.\S+$/.test(String(form.email || "")))
         return "Ingresa un correo válido.";
     }
@@ -1248,21 +1249,28 @@ function CatalogForm({
             {!editing && (
               <label className="field field-wide">
                 <span>
-                  Id de usuario (cuenta de acceso) <em>*</em>
+                  Contraseña inicial <em>*</em>
                 </span>
+                {/* Sin enmascarar a propósito: es una clave temporal que el administrador tiene que
+                    leer para entregársela a la persona, en una pantalla que solo ve un administrador.
+                    Enmascararla obligaría a escribirla a ciegas dos veces sin ganar nada. */}
                 <input
-                  value={String(values.id || "")}
-                  maxLength={36}
+                  type="text"
+                  value={String(values.password || "")}
+                  minLength={8}
+                  maxLength={200}
                   required
-                  placeholder="00000000-0000-4000-8000-000000000000"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="Mínimo 8 caracteres"
                   aria-invalid={Boolean(
-                    feedback && !UUID_RE.test(String(values.id || "").trim()),
+                    feedback && String(values.password || "").length < 8,
                   )}
-                  onChange={(event) => update("id", event.target.value)}
+                  onChange={(event) => update("password", event.target.value)}
                 />
                 <small>
-                  Debe existir previamente como cuenta de acceso; esta plataforma
-                  nunca crea la cuenta, solo la vincula.
+                  Anótala y entrégasela a la persona: no vuelve a mostrarse. Que
+                  la cambie al entrar desde &ldquo;Cambiar contraseña&rdquo;.
                 </small>
               </label>
             )}

@@ -1,6 +1,6 @@
 import postgres, { type Sql } from "postgres";
 import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
-import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
+import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
 import { hmacSha256, safeEqual } from "../security/crypto";
 import { publicEnv, runtimeEnv } from "../security/env";
@@ -421,11 +421,25 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     else if (kind === "items") { const itemValue = value as Extract<CatalogRecord, { unit: string }>; rows = await this.sql<DbRow[]>`insert into items (nombre, nombre_normalizado, especificacion, unidad_defecto, categoria, estado) values (${itemValue.name}, ${normalizeItemName(itemValue.name)}, ${itemValue.specification ?? null}, ${itemValue.unit}, ${itemValue.category ?? null}, ${itemValue.active ? "activo" : "inactivo"}) returning *`; }
     else if (kind === "societies") { const society = value as CatalogSociety; rows = await this.sql<DbRow[]>`insert into sociedades (nombre, nit, activa) values (${society.name}, ${society.nit ?? null}, ${society.active}) returning *`; }
     else if (kind === "users") {
-      // RF-004: nunca se crea la cuenta de Auth aquí; `id` ya fue validado por
-      // CatalogService.validateUserExists contra auth.users antes de llegar a este INSERT.
-      const user = value as CatalogUser;
-      rows = await this.sql<DbRow[]>`insert into usuarios (id, nombre, email, telefono, estado) values (${user.id}, ${user.name}, ${user.email}, ${user.phone ?? null}, ${user.active ? "activo" : "inactivo"}) returning *`;
-      for (const rol of user.roles) await this.sql`insert into usuario_roles (usuario_id, rol) values (${user.id}, ${rol}) on conflict do nothing`;
+      // Alta de usuarios (2026-09-11): la plataforma CREA la cuenta de acceso. Antes solo vinculaba
+      // un id que ya existiera en `auth.users` porque de crearlo se encargaba el panel de Supabase;
+      // al salir de Supabase ese panel desapareció y no quedaba forma de dar de alta a nadie.
+      //
+      // Las tres escrituras van en la misma transacción (`this.sql` ya lo es cuando el llamador es
+      // CatalogService): una cuenta sin fila en `usuarios`, o un usuario sin roles, son estados que
+      // nadie puede arreglar desde la interfaz.
+      const user = value as CatalogUserCreate;
+      // La contraseña se convierte a bcrypt DENTRO de la base (`extensions.crypt`), igual que en el
+      // resto del repo: así el texto en claro no pasa por el log de consultas ni vive en memoria del
+      // proceso más de lo imprescindible. Coste 12, el mismo que usa el cambio de contraseña.
+      const auth = await this.sql<DbRow[]>`
+        insert into auth.users (aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data)
+        values ('authenticated', 'authenticated', ${user.email}, extensions.crypt(${user.password}, extensions.gen_salt('bf', 12)), now(),
+                ${asJsonb(this.sql, { provider: "email", providers: ["email"] })}, ${asJsonb(this.sql, {})})
+        returning id`;
+      const id = String(auth[0].id);
+      rows = await this.sql<DbRow[]>`insert into usuarios (id, nombre, email, telefono, estado) values (${id}, ${user.name}, ${user.email}, ${user.phone ?? null}, ${user.active ? "activo" : "inactivo"}) returning *`;
+      for (const rol of user.roles) await this.sql`insert into usuario_roles (usuario_id, rol) values (${id}, ${rol}) on conflict do nothing`;
       return catalogRecord(kind, { ...rows[0], roles: [...user.roles] });
     }
     else if (kind === "requesters") { const requester = value as CatalogRequester; rows = await this.sql<DbRow[]>`insert into solicitantes_autorizados (nombre, telefono, activo) values (${requester.name}, ${requester.phone}, ${requester.active}) returning *`; }
@@ -504,7 +518,6 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   async hasRequisitionsForWork(workId: string): Promise<boolean> { const rows = await this.sql<{ existe: boolean }[]>`select exists(select 1 from requisiciones where obra_id=${workId}) as existe`; return rows[0]?.existe === true; }
   // RF-004: la conexión directa a Postgres (DATABASE_URL) puede leer auth.users; nunca se INSERTA
   // ni modifica esa tabla desde esta plataforma, solo se verifica que el id ya exista en Auth.
-  async authUserExists(id: string): Promise<boolean> { const rows = await this.sql<{ existe: boolean }[]>`select exists(select 1 from auth.users where id=${id}) as existe`; return rows[0]?.existe === true; }
 }
 
 class PostgresTransactionManager implements TransactionManager {

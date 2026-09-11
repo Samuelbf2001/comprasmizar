@@ -377,7 +377,7 @@ describe("ConnectedCatalogAdmin", () => {
       );
     });
 
-    it("creates a user with an existing auth.users id, email and at least one role", async () => {
+    it("creates the access account with name, initial password, email and at least one role", async () => {
       const fetchMock = mockFetch(
         new Response(
           JSON.stringify({
@@ -402,8 +402,8 @@ describe("ConnectedCatalogAdmin", () => {
         target: { value: "Nueva Revisora" },
       });
       fireEvent.change(
-        screen.getByRole("textbox", { name: /Id de usuario/i }),
-        { target: { value: authUserId } },
+        screen.getByRole("textbox", { name: /Contraseña inicial/i }),
+        { target: { value: "clave-inicial-123" } },
       );
       fireEvent.change(screen.getByRole("textbox", { name: /^Correo/i }), {
         target: { value: "revisora@mizar.test" },
@@ -419,7 +419,7 @@ describe("ConnectedCatalogAdmin", () => {
             kind: "users",
             data: {
               name: "Nueva Revisora",
-              id: authUserId,
+              password: "clave-inicial-123",
               email: "revisora@mizar.test",
               roles: ["revisor"],
             },
@@ -442,8 +442,8 @@ describe("ConnectedCatalogAdmin", () => {
         target: { value: "Sin Rol" },
       });
       fireEvent.change(
-        screen.getByRole("textbox", { name: /Id de usuario/i }),
-        { target: { value: authUserId } },
+        screen.getByRole("textbox", { name: /Contraseña inicial/i }),
+        { target: { value: "clave-inicial-123" } },
       );
       fireEvent.change(screen.getByRole("textbox", { name: /^Correo/i }), {
         target: { value: "sinrol@mizar.test" },

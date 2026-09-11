@@ -100,6 +100,15 @@ export interface CatalogSociety { id: string; name: string; nit?: string | null;
  */
 export interface CatalogUser { id: string; name: string; email: string; phone?: string | null; active: boolean; roles: readonly Role[]; }
 /**
+ * Alta de un usuario (2026-09-11). Trae `password` y NO trae `id`: desde que la plataforma dejó de
+ * apoyarse en Supabase Auth, es ella quien crea la cuenta de acceso, y el id lo genera la base.
+ *
+ * La contraseña solo existe en este objeto de entrada — nunca se devuelve, nunca se guarda en claro
+ * y nunca aparece en `CatalogUser`. El repositorio la convierte a bcrypt dentro de la misma
+ * transacción que crea la fila (ver postgres-repositories.ts).
+ */
+export type CatalogUserCreate = Omit<CatalogUser, "id"> & { password: string };
+/**
  * HUECO 1 (reunión 2026-08-31): lista blanca GLOBAL de quién puede radicar una requisición por
  * WhatsApp (RF-902, tabla `solicitantes_autorizados`, migración 202609010001). A diferencia de
  * proveedores/usuarios, `phone` es OBLIGATORIO (la columna `telefono` es NOT NULL): sin teléfono la
@@ -107,11 +116,11 @@ export interface CatalogUser { id: string; name: string; email: string; phone?: 
  */
 export interface CatalogRequester { id: string; name: string; phone: string; active: boolean; }
 export type CatalogRecord = CatalogWork | CatalogTag | CatalogItem | CatalogSupplier | CatalogSociety | CatalogUser | CatalogRequester;
-/** Todos los catálogos generan su id en la base de datos, salvo "users": ese id debe preexistir en Supabase Auth. */
-export type CatalogCreateRecord = CatalogRecord extends infer T ? T extends CatalogUser ? T : T extends CatalogRecord ? Omit<T, "id"> : never : never;
+/** Todos los catálogos generan su id en la base de datos. "users" además recibe la contraseña inicial. */
+export type CatalogCreateRecord = CatalogRecord extends infer T ? T extends CatalogUser ? CatalogUserCreate : T extends CatalogRecord ? Omit<T, "id"> : never : never;
 export type CatalogPatchRecord = CatalogRecord extends infer T ? T extends CatalogRecord ? Partial<Omit<T, "id">> : never : never;
 /** CRUD-only records; adapters must normalize duplicate comparisons and never delete rows. */
-export interface CatalogRepository { create(kind: CatalogKind, value: CatalogCreateRecord): Promise<CatalogRecord>; get(kind: CatalogKind, id: string): Promise<CatalogRecord | null>; update(kind: CatalogKind, id: string, value: CatalogPatchRecord): Promise<CatalogRecord>; findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null>; /** HUECO 1: compara con el MISMO criterio que `public.normalizar_telefono_co` (ver lib/infrastructure/phone.ts), para que "3001112233" y "+57 300 111 2233" choquen como el mismo solicitante antes de tocar la BD. */ findRequesterDuplicate(phone: string, exceptId?: string): Promise<string | null>; isEligibleApprover(id: string): Promise<boolean>; /** Verifica (sin crearla nunca) que el id ya exista en Supabase Auth antes de vincular un usuario de aplicación. */ authUserExists(id: string): Promise<boolean>; /** GRAVE 3 (QA Postgres real): existe al menos una requisición (de cualquier estado) anclada a esta obra — usado para bloquear un cambio de sociedad que las dejaría inservibles. */ hasRequisitionsForWork(workId: string): Promise<boolean>; }
+export interface CatalogRepository { create(kind: CatalogKind, value: CatalogCreateRecord): Promise<CatalogRecord>; get(kind: CatalogKind, id: string): Promise<CatalogRecord | null>; update(kind: CatalogKind, id: string, value: CatalogPatchRecord): Promise<CatalogRecord>; findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null>; /** HUECO 1: compara con el MISMO criterio que `public.normalizar_telefono_co` (ver lib/infrastructure/phone.ts), para que "3001112233" y "+57 300 111 2233" choquen como el mismo solicitante antes de tocar la BD. */ findRequesterDuplicate(phone: string, exceptId?: string): Promise<string | null>; isEligibleApprover(id: string): Promise<boolean>;  /** GRAVE 3 (QA Postgres real): existe al menos una requisición (de cualquier estado) anclada a esta obra — usado para bloquear un cambio de sociedad que las dejaría inservibles. */ hasRequisitionsForWork(workId: string): Promise<boolean>; }
 export interface NotificationRepository { enqueue(notification: { userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }): Promise<void>; }
 /** Repositories provided to the callback are pinned to the same database transaction/connection. */
 export interface TransactionRepositories { requisitions: RequisitionRepository; orders: OrderRepository; expenses: ExpenseRepository; pettyCash: PettyCashRepository; audit: AuditRepository; consecutives: ConsecutiveRepository; features: FeatureRepository; items: ItemCatalogRepository; catalogs: CatalogRepository; notifications: NotificationRepository; }

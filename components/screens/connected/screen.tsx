@@ -107,6 +107,12 @@ export function ConnectedScreen({ pathname, role, go }: ConnectedProps) {
     if (!kind) return;
     const persisted = getPersistedRoute(pathname);
     if (!persisted) return;
+    // La regla avisa de renders en cascada, pero este es el patrón que la propia documentación de
+    // React prescribe para un valor que difiere entre servidor y cliente: renderizar lo que el
+    // servidor puede saber y adoptar el resto DESPUÉS de montar. Leerlo antes es justamente lo que
+    // rompía la hidratación (ver commit ea5efac). El efecto corre una vez por ruta y solo cuando hay
+    // entrada persistida, así que no hay cascada que evitar.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRouteState((current) =>
       current.pathname === pathname && current.load.state === "loading"
         ? { pathname, load: { state: "ready", data: persisted.data, revalidating: true } }

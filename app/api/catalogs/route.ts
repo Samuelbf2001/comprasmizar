@@ -25,9 +25,15 @@ const createCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("items"), data: z.object({ name, specification: z.string().trim().min(1).max(1_000).optional(), unit: z.string().trim().min(1).max(40), category: z.string().trim().min(1).max(100).optional(), active }).strict() }),
   z.object({ kind: z.literal("suppliers"), data: z.object({ name, nit: nit.optional(), phone: phone.optional(), email: z.string().trim().email().max(254).optional(), address: z.string().trim().min(1).max(300).optional(), active }).strict() }),
   z.object({ kind: z.literal("societies"), data: z.object({ name, nit: nit.optional(), active }).strict() }),
-  // RF-004: `id` es obligatorio y debe ser el id ya existente en auth.users del usuario a
-  // vincular; esta plataforma nunca crea la cuenta de Auth. Al menos un rol es obligatorio en el alta.
-  z.object({ kind: z.literal("users"), data: z.object({ id: uuid, name, email: z.string().trim().email().max(254), phone: phone.optional(), roles: z.array(roleLiteral).min(1).max(6), active }).strict() }),
+  // RF-004: el alta CREA la cuenta de acceso (2026-09-11). Recibe la contraseña inicial, nunca un id:
+  // ese lo genera la base al insertar en auth.users, dentro de la misma transacción que `usuarios` y
+  // sus roles (ver lib/infrastructure/postgres-repositories.ts). Antes había que crear la cuenta en el
+  // panel de Supabase y pegar aquí su id; ese panel ya no existe.
+  // La contraseña solo viaja de entrada. No puede filtrarse por dos vías independientes: el alta
+  // devuelve el `CatalogRecord` creado (que no tiene ese campo), y lo que se audita es ese registro
+  // pasado por `safeSnapshot`, que para usuarios reduce a `{ active, roles }` — ni siquiera el correo.
+  // Al menos un rol es obligatorio en el alta.
+  z.object({ kind: z.literal("users"), data: z.object({ password: z.string().min(8).max(200), name, email: z.string().trim().email().max(254), phone: phone.optional(), roles: z.array(roleLiteral).min(1).max(6), active }).strict() }),
   // HUECO 1: lista blanca global de solicitantes autorizados por WhatsApp (RF-902). `phone` es
   // obligatorio (a diferencia de proveedores/usuarios): la columna `telefono` es NOT NULL.
   z.object({ kind: z.literal("requesters"), data: z.object({ name, phone, active }).strict() }),

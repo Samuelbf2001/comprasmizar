@@ -57,6 +57,8 @@ const HARNESSES = [
   // Fase 3 del plan de rendimiento (2026-09-10, hallazgo H3): índices para las consultas paginadas y
   // los agregados del dashboard.
   path.join(ROOT, "supabase", "tests", "indices_rendimiento_verification.sql"),
+  // Alta de usuarios desde la plataforma (2026-09-11): unicidad del correo y el camino completo del alta.
+  path.join(ROOT, "supabase", "tests", "alta_usuarios_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

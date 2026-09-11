@@ -23,7 +23,7 @@ function fakeReportDeps(expenses: Expense[]): ServiceDependencies {
     publicAccess: { verify: notUsed },
     features: { isEnabled: async () => false },
     items: { propose: notUsed },
-    catalogs: { create: notUsed, get: notUsed, update: notUsed, findSupplierDuplicate: notUsed, findRequesterDuplicate: notUsed, isEligibleApprover: notUsed, authUserExists: notUsed, hasRequisitionsForWork: notUsed },
+    catalogs: { create: notUsed, get: notUsed, update: notUsed, findSupplierDuplicate: notUsed, findRequesterDuplicate: notUsed, isEligibleApprover: notUsed, hasRequisitionsForWork: notUsed },
     notifications: { enqueue: async () => {} },
     transactions: { transaction: notUsed },
     clock: { now: () => new Date("2026-08-24T00:00:00.000Z") },
