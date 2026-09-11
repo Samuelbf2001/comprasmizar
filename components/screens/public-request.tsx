@@ -38,16 +38,38 @@ function PortalFrame({ children }: { children: React.ReactNode }) {
   </div>;
 }
 
-function AccessGate({ code, phone, error, onCodeChange, onPhoneChange, onSubmit, showHelp = false }: {
-  code: string; phone: string; error: string; onCodeChange: (value: string) => void; onPhoneChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; showHelp?: boolean;
+/**
+ * La compuerta es NO CONTROLADA a propósito (2026-09-11).
+ *
+ * Con campos controlados se perdía lo que la persona tecleara antes de que React hidratara: el
+ * navegador pinta el HTML del servidor y acepta escritura de inmediato, pero el primer render de
+ * cliente impone el estado —vacío— y borra lo escrito. En un maestro que abre el enlace y teclea sin
+ * esperar, eso significa entrar la contraseña a medias y recibir "contraseña incorrecta" sin
+ * entender por qué. Se descubrió porque los recorridos de navegador fallaban al rellenar justo
+ * después de `goto()` (ver tests/e2e/public-portal.spec.ts).
+ *
+ * Sin estado que imponer, el DOM conserva lo tecleado y los valores se leen del formulario al
+ * enviar. La alternativa era deshabilitar los campos hasta hidratar, pero eso cambia un problema
+ * invisible por uno visible: la persona ve un formulario que no la deja escribir.
+ *
+ * `defaultValue` mantiene lo ya introducido al volver con "Cambiar datos": el componente se
+ * desmonta, así que sin eso los campos aparecerían en blanco.
+ */
+function AccessGate({ code, phone, error, onSubmit, showHelp = false }: {
+  code: string; phone: string; error: string; onSubmit: (datos: { code: string; phone: string }) => void; showHelp?: boolean;
 }) {
+  const enviar = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const datos = new FormData(event.currentTarget);
+    onSubmit({ code: String(datos.get('access-code') ?? ''), phone: String(datos.get('access-phone') ?? '') });
+  };
   return <PortalFrame><section className={styles.access} aria-labelledby="portal-access-title">
     <div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Acceso protegido</div>
     <h1 id="portal-access-title">Pide lo que tu obra necesita.</h1>
     <p className={styles.accessCopy}>Primero confirma tus datos. Después solo tendrás que completar dos pasos claros.</p>
-    <form className={styles.accessCard} onSubmit={onSubmit} noValidate>
-      <label className={styles.field}><span className={styles.fieldLabel}>Contraseña del portal <em className={styles.required}>*</em></span><input className={styles.control} name="access-code" value={code} onChange={event => onCodeChange(event.target.value)} placeholder="Contraseña entregada por Mizar" autoComplete="off" aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-access-error' : undefined} /></label>
-      <label className={styles.field}><span className={styles.fieldLabel}>Teléfono autorizado <em className={styles.required}>*</em></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="access-phone" value={phone} onChange={event => onPhoneChange(event.target.value)} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-access-error' : undefined} /></span></label>
+    <form className={styles.accessCard} onSubmit={enviar} noValidate>
+      <label className={styles.field}><span className={styles.fieldLabel}>Contraseña del portal <em className={styles.required}>*</em></span><input className={styles.control} name="access-code" defaultValue={code} placeholder="Contraseña entregada por Mizar" autoComplete="off" aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-access-error' : undefined} /></label>
+      <label className={styles.field}><span className={styles.fieldLabel}>Teléfono autorizado <em className={styles.required}>*</em></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="access-phone" defaultValue={phone} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-access-error' : undefined} /></span></label>
       {error && <p className={styles.error} id="portal-access-error" role="alert">{error}</p>}
       <button className={styles.primaryButton} type="submit">Continuar <ArrowRight aria-hidden="true" size={19} /></button>
     </form>
@@ -71,7 +93,11 @@ function DemoPublicRequest() {
   const [code, setCode] = useState(''), [phone, setPhone] = useState(''), [accessError, setAccessError] = useState('');
   const [step, setStep] = useState<1 | 2>(1), [values, setValues] = useState(initialValues), [errors, setErrors] = useState<FieldErrors>({}), [showDetails, setShowDetails] = useState(false);
   const update = <K extends keyof RequestValues>(key: K, value: RequestValues[K]) => setValues(current => ({ ...current, [key]: value }));
-  const handleAccess = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (code.trim().length < 4 || phone.trim().length < 7) { setAccessError('Ingresa la contraseña del portal y un teléfono válido para continuar.'); return; } setAccessError(''); setAccessGranted(true); };
+  // Los valores llegan leídos del formulario, no del estado: la compuerta es no controlada para no
+  // perder lo que se teclee antes de hidratar (ver AccessGate). Se guardan en estado AQUÍ, ya
+  // validados, porque los pasos siguientes los necesitan (el teléfono se muestra, la contraseña viaja
+  // en el envío).
+  const handleAccess = ({ code: claveEscrita, phone: telefonoEscrito }: { code: string; phone: string }) => { if (claveEscrita.trim().length < 4 || telefonoEscrito.trim().length < 7) { setAccessError('Ingresa la contraseña del portal y un teléfono válido para continuar.'); return; } setCode(claveEscrita); setPhone(telefonoEscrito); setAccessError(''); setAccessGranted(true); };
   const validate = (targetStep: 1 | 2) => {
     const next: FieldErrors = {};
     if (targetStep === 1) { if (!values.work) next.work = 'Selecciona la obra.'; if (values.requestor.trim().length < 2) next.requestor = 'Escribe tu nombre.'; }
@@ -81,7 +107,7 @@ function DemoPublicRequest() {
   const nextStep = () => { if (validate(1)) { setErrors({}); setStep(2); } };
   const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!validate(2)) return; setSent(true); };
   if (sent) return <PortalFrame><section className={styles.success}><div className={styles.successDemo} role="status"><b>Modo demostración</b>No se creó una requisición real ni se guardaron datos.</div><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>Recorrido completado.</h1><p className={styles.successCopy}>El formulario móvil quedó listo para probar. Este código no sirve para seguimiento real.</p><div className={styles.trackingCode}>REQ-DEMO-0148</div><button className={styles.primaryButton} type="button" onClick={() => { setValues(initialValues()); setErrors({}); setStep(1); setSent(false); }}>Probar otra requisición</button></section></PortalFrame>;
-  if (!accessGranted) return <AccessGate code={code} phone={phone} error={accessError} onCodeChange={setCode} onPhoneChange={setPhone} onSubmit={handleAccess} showHelp />;
+  if (!accessGranted) return <AccessGate code={code} phone={phone} error={accessError} onSubmit={handleAccess} showHelp />;
   return <PortalFrame><StepIntro code={code} onChangeAccess={() => setAccessGranted(false)} /><Progress step={step} />
     <form className={styles.stepCard} onSubmit={submit} noValidate>
       {step === 1 ? <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso 1 de 2</p><h2>¿Para quién y cuándo?</h2><p>Elige la obra, la fecha y escribe tu nombre.</p></div><div className={styles.stepBody}>
@@ -112,7 +138,11 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   // de dejar un selector mudo.
   useEffect(() => { if (!access || access.workId) return; let active = true; fetch(`/api/public/works?token=${encodeURIComponent(access.token)}`).then(response => response.ok ? response.json() : { works: [] }).then((body: { works?: PublicWork[] }) => { if (active) setPublicWorks(Array.isArray(body.works) ? body.works : []); }).catch(() => { if (active) setPublicWorks([]); }).finally(() => { if (active) setWorksLoaded(true); }); return () => { active = false; }; }, [access]);
   const update = <K extends keyof RequestValues>(key: K, value: RequestValues[K]) => setValues(current => ({ ...current, [key]: value }));
-  const handleAccess = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (code.trim().length < 4 || phone.trim().length < 7) { setAccessError('Ingresa la contraseña del portal y un teléfono válido para continuar.'); return; } setAccessError(''); setAccessGranted(true); };
+  // Los valores llegan leídos del formulario, no del estado: la compuerta es no controlada para no
+  // perder lo que se teclee antes de hidratar (ver AccessGate). Se guardan en estado AQUÍ, ya
+  // validados, porque los pasos siguientes los necesitan (el teléfono se muestra, la contraseña viaja
+  // en el envío).
+  const handleAccess = ({ code: claveEscrita, phone: telefonoEscrito }: { code: string; phone: string }) => { if (claveEscrita.trim().length < 4 || telefonoEscrito.trim().length < 7) { setAccessError('Ingresa la contraseña del portal y un teléfono válido para continuar.'); return; } setCode(claveEscrita); setPhone(telefonoEscrito); setAccessError(''); setAccessGranted(true); };
   const validate = (targetStep: 1 | 2) => {
     const next: FieldErrors = {};
     if (targetStep === 1) { if (!access?.workId && !values.work) next.work = 'Selecciona la obra.'; if (values.requestor.trim().length < 2) next.requestor = 'Escribe tu nombre.'; }
@@ -128,7 +158,7 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   if (!linkRead) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`} role="status"><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Validando enlace</div><h1>Preparando el formulario…</h1></section></PortalFrame>;
   if (!access) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`}><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Captura cerrada</div><h1>Este enlace no está habilitado.</h1><p className={styles.accessCopy}>Solicita al responsable de tu obra un enlace vigente. No se creó ninguna requisición ni se aceptaron datos.</p></section></PortalFrame>;
   if (sent) return <PortalFrame><section className={styles.success}><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>La estamos validando.</h1><p className={styles.successCopy}>Si el enlace, la contraseña y el teléfono corresponden a la obra, la requisición quedará registrada. Por seguridad no mostramos un consecutivo.</p><button className={styles.primaryButton} type="button" onClick={() => { setValues(initialValues()); setErrors({}); setStep(1); setSent(false); setAccessGranted(false); }}>Enviar otra solicitud</button></section></PortalFrame>;
-  if (!accessGranted) return <AccessGate code={code} phone={phone} error={accessError} onCodeChange={setCode} onPhoneChange={setPhone} onSubmit={handleAccess} />;
+  if (!accessGranted) return <AccessGate code={code} phone={phone} error={accessError} onSubmit={handleAccess} />;
   return <PortalFrame><StepIntro code="obra autorizada" onChangeAccess={() => setAccessGranted(false)} /><Progress step={step} />
     <form className={styles.stepCard} onSubmit={submit} noValidate>
       {step === 1 ? <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso 1 de 2</p><h2>¿Para quién y cuándo?</h2><p>Indica el tipo de solicitud, la fecha y tu nombre.</p></div><div className={styles.stepBody}>

@@ -7,25 +7,19 @@ import { expect, test, type Page } from "@playwright/test";
 // unificación tenía que demostrar. Lo único acotado al proyecto móvil es la ergonomía táctil.
 
 /**
- * Abre el portal y espera a que React haya HIDRATADO antes de teclear nada.
+ * Abre el portal y teclea INMEDIATAMENTE, sin esperar a nada.
  *
- * Hace falta porque el formulario es un componente controlado: antes de hidratar, el DOM acepta lo
- * que se escriba, pero el primer render de cliente lo descarta y el campo vuelve a quedar vacío. Un
- * `fill()` inmediato después de `goto()` se pierde sin error y la prueba revienta más adelante, en
- * un sitio que no tiene nada que ver — comprobar el valor justo después de rellenarlo tampoco
- * sirve, porque se lee el DOM previo a la hidratación y da bueno un instante antes de borrarse.
+ * Esto es la prueba del arreglo de la compuerta, no una comodidad. Cuando los campos eran
+ * controlados, un `fill()` justo después de `goto()` escribía en el DOM previo a la hidratación y el
+ * primer render de cliente lo descartaba: el recorrido moría dos pasos más adelante, en un sitio que
+ * no tenía nada que ver. Traducido a la obra, el maestro que abre el enlace y teclea sin esperar
+ * entraba media contraseña y recibía un error incomprensible.
  *
- * La señal fiable es un efecto que SOLO puede producir React: pulsar "Continuar" con los campos
- * vacíos pinta el mensaje de error de la compuerta. Cuando ese mensaje aparece, los manejadores
- * están puestos y lo que se teclee se conserva.
- *
- * (Es además un aviso de producto, menor pero real: quien teclee al instante de abrir el enlace
- * puede perder los primeros caracteres. No lo introduce esta unificación — venía de antes.)
+ * Con la compuerta no controlada, lo tecleado se conserva y esto pasa sin ninguna espera previa. Si
+ * alguien vuelve a hacerla controlada, este recorrido falla — que es justo lo que queremos.
  */
 async function abrirPortalHidratado(page: Page) {
   await page.goto("/requisiciones/publica");
-  await page.getByRole("button", { name: "Continuar" }).click();
-  await expect(page.locator("#portal-access-error")).toContainText("Ingresa la contraseña del portal");
 }
 
 async function pasarCompuerta(page: Page) {
