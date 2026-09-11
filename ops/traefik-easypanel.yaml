@@ -1,0 +1,46 @@
+# Enrutado del dominio hacia la plataforma, para el Traefik que ya trae EasyPanel.
+#
+# Se copia a `/etc/easypanel/traefik/config/mizar-compras.yaml` en el VPS. Traefik mezcla todos los
+# archivos de ese directorio, así que este NO toca ninguno de los que genera EasyPanel para los otros
+# 35 contenedores del servidor — solo añade el propio.
+#
+# Por qué un archivo suelto y no la interfaz de EasyPanel: la plataforma se despliega con
+# `docker compose` desde /opt/mizar (ver docs/migracion-autoalojado.md), no como proyecto de
+# EasyPanel, porque ops/apply-migrations.sh, backup-daily.sh y restore-verify.sh hacen
+# `docker compose exec` contra esos servicios. EasyPanel sigue siendo el dueño de Traefik y del
+# certificado; esto solo le dice a dónde mandar este dominio.
+#
+# REQUISITO: el contenedor de la aplicación tiene que estar en la red `easypanel`, que es la única
+# que Traefik ve. Con el compose de /opt/mizar eso NO pasa solo, hay que conectarlo:
+#
+#   docker network connect easypanel mizar-app-1
+#
+# Y volver a conectarlo tras un `docker compose down`. Para que sobreviva a los reinicios conviene
+# declarar la red como externa en el compose del servidor.
+#
+# Aplicado y verificado el 2026-09-11: https://comprasmizar.sixteam.pro/api/health responde 200.
+http:
+  routers:
+    mizar-compras-http:
+      rule: "Host(`comprasmizar.sixteam.pro`)"
+      entryPoints: [http]
+      middlewares: [redirect-to-https, bad-gateway-error-page]
+      service: mizar-compras
+
+    mizar-compras-https:
+      rule: "Host(`comprasmizar.sixteam.pro`)"
+      entryPoints: [https]
+      middlewares: [bad-gateway-error-page]
+      service: mizar-compras
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: comprasmizar.sixteam.pro
+
+  services:
+    mizar-compras:
+      loadBalancer:
+        # Por nombre de contenedor, igual que el resto de servicios de este Traefik. Nunca por IP:
+        # cambia en cada reinicio del contenedor.
+        servers:
+          - url: "http://mizar-app-1:3000"

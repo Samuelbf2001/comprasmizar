@@ -180,6 +180,24 @@ MAILTO=ernesto@sixteam.pro
 Cada noche sube dos objetos cifrados —la base y los archivos— más su `.sha256`, purga lo que pase de
 35 días y limpia las sesiones vencidas.
 
+## Paso 5b — Enrutar el dominio (VPS con EasyPanel)
+
+EasyPanel ya ocupa los puertos 80 y 443 con su propio Traefik, así que **no se levanta el servicio
+`caddy` de compose.yaml**: solo `docker compose up -d db app`. El enrutado se le añade a ese Traefik
+con un archivo propio, sin tocar ninguno de los que EasyPanel genera para los demás servicios del
+servidor:
+
+```bash
+scp ops/traefik-easypanel.yaml root@<vps>:/etc/easypanel/traefik/config/mizar-compras.yaml
+ssh root@<vps> "docker network connect easypanel mizar-app-1"
+```
+
+Conectar la aplicación a la red `easypanel` es imprescindible: es la única que Traefik ve, y hay que
+rehacerlo tras cada `docker compose down`. Traefik recarga ese directorio solo, sin reiniciarse.
+
+Aplicado y verificado el 2026-09-11: `https://comprasmizar.sixteam.pro/api/health` responde 200 y
+`/` redirige a `/login` sin error de configuración.
+
 ## Paso 6 — Verificar
 
 1. `curl -s localhost:3000/api/health` responde `ok`, no `unconfigured`.
