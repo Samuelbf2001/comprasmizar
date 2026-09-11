@@ -24,8 +24,12 @@
  * posicional que arma `buildApprovalTemplatePayload`: nombre, consecutivo, obra, total.
  */
 
-const TEMPLATE_NAME = "aprobacion_requisicion";
-const TEMPLATE_LANGUAGE = "es";
+// Exportados para que tests/unit/approval-flow.test.ts pueda CRUZARLOS con los defaults del emisor
+// (DEFAULT_APPROVAL_TEMPLATE/_LANGUAGE en lib/infrastructure/approval-flow-sender.ts). El docblock de
+// arriba declara esa obligación en voz alta desde el principio; lo que faltaba era algo que la
+// comprobara.
+export const TEMPLATE_NAME = "aprobacion_requisicion";
+export const TEMPLATE_LANGUAGE = "es";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -37,7 +41,7 @@ function baseUrl(): string {
   return (process.env.KAPSO_META_PROXY_URL?.trim() || "https://api.kapso.ai/meta/whatsapp/v24.0").replace(/\/+$/, "");
 }
 
-function templateDefinition(flowId: string) {
+export function templateDefinition(flowId: string) {
   return {
     name: TEMPLATE_NAME,
     language: TEMPLATE_LANGUAGE,
@@ -89,7 +93,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+// Mismo guardián que scripts/build-flow-captura.ts: importar este módulo desde una prueba no debe
+// disparar una llamada a Meta.
+const ejecutadoComoGuion = (process.argv[1] ?? "").replace(/\\/g, "/").endsWith("scripts/publish-approval-template.ts");
+if (ejecutadoComoGuion) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

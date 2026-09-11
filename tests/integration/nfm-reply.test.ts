@@ -95,12 +95,16 @@ vi.mock("../../lib/infrastructure/nfm-reply-adapter", async (importOriginal) => 
 
 import { POST } from "../../app/api/kapso/route";
 import {
-  adaptNfmReply, isNfmReplyWebhookPayload, normalizePhoneForToken, validateFlowToken,
+  adaptNfmReply, isNfmReplyWebhookPayload, MAX_ITEM_SLOTS, normalizePhoneForToken, validateFlowToken,
   type RawKapsoWebhookPayload,
 } from "../../lib/infrastructure/nfm-reply-adapter";
 // Contraparte real del receptor: el mismo `issueFlowToken` que usa el emisor real
 // (lib/infrastructure/flow-sender.ts) para construir tokens que validateFlowToken debe aceptar.
 import { issueFlowToken } from "../../lib/infrastructure/flow-sender";
+// El generador del Flow. Se importa SOLO para atar su tope al del adaptador (ver la prueba al final):
+// el adaptador no puede importarlo al revés porque arrastra Postgres, ni el script importar al
+// adaptador por lo mismo. La prueba es el único sitio donde los dos pueden mirarse.
+import { MAX_ITEMS } from "../../scripts/build-flow-captura";
 
 const ENV: Record<string, string> = {
   DATABASE_URL: "postgres://user:pass@localhost:5432/db",
@@ -502,5 +506,21 @@ describe("POST /api/kapso — nfm_reply real de WhatsApp Flows", () => {
     const noItems = withResponseFields(fixture, { item_1_catalogo: "", item_1_descripcion: "" });
     await postPayload(noItems);
     expect(hoisted.copyAllCalls).toHaveLength(0);
+  });
+});
+
+// El tope de artículos vive DUPLICADO a mano: `MAX_ITEM_SLOTS` en el adaptador (las franjas
+// `item_N_*` que sabe leer) y `MAX_ITEMS` en el generador del Flow (las que el Flow ofrece). Ninguno
+// puede importar al otro sin arrastrar dependencias que no le tocan, así que lo ata esta prueba.
+//
+// Sin ella, subir `MAX_ITEMS` a 10 hace que el Flow mande `item_9_*` e `item_10_*`, el adaptador los
+// DESCARTE EN SILENCIO —el bucle solo llega hasta su propio tope— y la suite siga verde. El maestro
+// pediría diez materiales y llegarían ocho, sin error en ningún lado.
+//
+// El docblock del adaptador apuntaba además a `integrations/whatsapp-flow/build-requisicion-flow.mjs`,
+// un archivo que no existe; el generador real es `scripts/build-flow-captura.ts`.
+describe("el tope de franjas del adaptador es el mismo que el del generador", () => {
+  it("MAX_ITEM_SLOTS y MAX_ITEMS no pueden separarse", () => {
+    expect(MAX_ITEM_SLOTS).toBe(MAX_ITEMS);
   });
 });

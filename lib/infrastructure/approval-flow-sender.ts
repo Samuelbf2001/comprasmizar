@@ -387,8 +387,11 @@ export async function sendApprovalFlow(requisitionId: string, deps: ApprovalFlow
 
 /** Nombre de la plantilla aprobada en la WABA. Configurable porque el nombre vive en Meta, no en
  * el código, y una WABA distinta (o una v2 del copy) puede usar otro. */
-const DEFAULT_APPROVAL_TEMPLATE = "aprobacion_requisicion";
-const DEFAULT_APPROVAL_TEMPLATE_LANGUAGE = "es";
+// Exportados para que la prueba los cruce con TEMPLATE_NAME/TEMPLATE_LANGUAGE de
+// scripts/publish-approval-template.ts, que es quien crea la plantilla en Meta. Estaban duplicados a
+// mano en los dos sitios y nada comprobaba que coincidieran.
+export const DEFAULT_APPROVAL_TEMPLATE = "aprobacion_requisicion";
+export const DEFAULT_APPROVAL_TEMPLATE_LANGUAGE = "es";
 
 export interface ApprovalTemplatePayload {
   messaging_product: "whatsapp";

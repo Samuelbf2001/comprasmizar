@@ -33,8 +33,14 @@
  * `parametrosDePlantilla()` recorta el payload a lo declarado antes de enviarlo: lo interno se
  * queda en la base y solo sale lo que la plantilla pide.
  *
- * Los textos van SIN TILDES, igual que `publish-approval-template.ts`: reducen los rechazos de
- * revisión y algunos clientes viejos los renderizan mal.
+ * Los textos LLEVAN TILDES: Ernesto aprobó así la redacción el 11-sep-2026, y Meta las acepta sin
+ * problema porque el cuerpo viaja en UTF-8. Lo que sí se filtra, y lo fija la prueba, son los emojis
+ * y los caracteres fuera del alfabeto latino — una plantilla UTILITY que parezca publicidad es el
+ * motivo de rechazo más común. El nombre sigue siendo ASCII.
+ *
+ * Este comentario decía lo contrario ("van SIN TILDES") después de que la regla cambiara, y su propia
+ * prueba ya permitía las tildes. Un docblock que contradice a la prueba que lo acompaña deja al
+ * siguiente sin saber cuál de los dos manda.
  */
 
 export const IDIOMA_PLANTILLAS = "es";
