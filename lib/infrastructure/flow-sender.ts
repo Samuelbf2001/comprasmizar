@@ -1,4 +1,5 @@
 import { hmacSha256 } from "../security/crypto";
+import { destinatarioWhatsApp } from "./phone";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 
@@ -245,7 +246,9 @@ export async function sendRequisitionFlow(to: string, deps: FlowSenderDeps = {})
   const config = flowSendConfig();
   if (!config) throw new Error("FLOW_SEND_NOT_CONFIGURED");
 
-  const normalizedPhone = to.replace(/[^0-9]/g, "");
+  // Mismo destino canónico que los otros dos emisores. Antes era solo "quita los no-dígitos", que
+  // dejaba salir un número local sin indicativo — Meta lo acepta en la llamada y lo descarta después.
+  const normalizedPhone = destinatarioWhatsApp(to);
   if (!normalizedPhone) throw new Error("FLOW_SEND_INVALID_PHONE");
 
   const catalogSource = deps.catalogSource ?? createPostgresFlowCatalogSource();

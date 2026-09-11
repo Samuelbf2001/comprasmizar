@@ -1,4 +1,5 @@
 import { hmacSha256, safeEqual } from "../security/crypto";
+import { destinatarioWhatsApp } from "./phone";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 
@@ -183,9 +184,25 @@ export function issueApprovalFlowToken(phone: string, requisitionId: string, sec
   return `${timestampISO}.${hmacSha256(`${normalizeApprovalPhone(phone)}.${timestampISO}.${requisitionId}`, secret)}`;
 }
 
-/** Solo dígitos, la forma exacta que se firma. Igual que `normalizePhoneForToken` en
- * nfm-reply-adapter.ts; se redeclara aquí para que este módulo no dependa del adaptador de captura. */
-export function normalizeApprovalPhone(phone: string): string { return phone.replace(/[^0-9]/g, ""); }
+/**
+ * La forma canónica del teléfono del aprobador: la que se ENVÍA y la que se FIRMA.
+ *
+ * Antes era solo `phone.replace(/[^0-9]/g, "")`, y eso rompía dos cosas a la vez:
+ *
+ *   1. El envío. `usuarios.telefono` guarda el número local ("3002408743"), así que el mensaje salía
+ *      sin indicativo y Meta lo descartaba con `failed` — aunque Kapso hubiera devuelto un `wamid` y
+ *      la cola lo diera por enviado.
+ *   2. La respuesta. El token se firmaba sobre ese número local, pero cuando el aprobador contesta,
+ *      Meta entrega `message.from` en E.164 ("573002408743"). `validateApprovalFlowToken` normaliza
+ *      el `from` con esta misma función y comparaba "573002408743" contra una firma hecha sobre
+ *      "3002408743": **firma inválida**. Es decir, aunque el mensaje hubiera llegado, la aprobación
+ *      del aprobador habría sido rechazada.
+ *
+ * Delegar en `destinatarioWhatsApp` arregla las dos, y por construcción: enviar y firmar usan el
+ * mismo valor porque son la misma función. Los tokens emitidos antes dejan de validar, y está bien —
+ * corresponden a mensajes que nunca llegaron.
+ */
+export function normalizeApprovalPhone(phone: string): string { return destinatarioWhatsApp(phone); }
 
 const APPROVAL_TOKEN_PATTERN = /^(.+)\.([0-9a-f]{64})$/;
 /** Una decisión de aprobación es una tarea humana con plazo laboral: 7 días es tolerante con un fin
