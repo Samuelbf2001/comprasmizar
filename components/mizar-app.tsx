@@ -26,6 +26,14 @@ import { SectionTitle } from "./screens/screen-primitives";
 import { ConnectedScreen } from "./screens/connected/screen";
 import { isConnectedReadRoute } from "./screens/connected/data";
 
+// ssr: false en las pantallas con controles (2026-09-11, e2e suppliers): con SSR, el HTML de la
+// pantalla llega ANTES que su chunk diferido, y un clic sobre un botón de ese HTML mientras el
+// chunk aún no ha ejecutado se pierde para siempre — React 19 no lo reproduce cuando por fin
+// hidrata. Reproducido al 100 % retrasando el chunk de proveedores (ver el e2e "sigue abriendo el
+// diálogo aunque el chunk llegue tarde"); en local era una carrera de ~100 ms tras el load, que
+// el spec atribuía erróneamente a la compilación en paralelo. Sin SSR el botón solo existe
+// cuando ya puede responder. El portal público queda con SSR a propósito: su primer pintado en
+// un celular lento es lo que importa y sus campos son no controlados (ver public-request.tsx).
 const PublicRequestScreen = dynamic(
   () => import("./screens/public-request").then((mod) => mod.PublicRequestScreen),
   { loading: () => null },
@@ -39,50 +47,50 @@ const PublicRequestRedirect = dynamic(
 );
 const MessagesScreen = dynamic(
   () => import("./screens/messages").then((mod) => mod.MessagesScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const SuppliersScreen = dynamic(
   () => import("./screens/suppliers").then((mod) => mod.SuppliersScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const DemoRequisitionScreen = dynamic(
   () =>
     import("./screens/connected/new-requisition").then(
       (mod) => mod.DemoRequisitionScreen,
     ),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const DashboardScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.DashboardScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const ReviewScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.ReviewScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const ApprovalsScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.ApprovalsScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const RequestDetailScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.RequestDetailScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const OrdersScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.OrdersScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const ExpensesScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.ExpensesScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const ReportsScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.ReportsScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 const AdminScreen = dynamic(
   () => import("./screens/demo-screens").then((mod) => mod.AdminScreen),
-  { loading: () => null },
+  { ssr: false, loading: () => null },
 );
 
 function AccessDenied({
