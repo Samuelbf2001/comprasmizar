@@ -11,11 +11,11 @@ declare
   v_etiqueta uuid;
   v_requisicion_orden uuid;
   v_orden uuid;
-  v_adjunto uuid := '70000000-0000-0000-0000-000000000001';
-  v_adjunto_item uuid := '70000000-0000-0000-0000-000000000002';
-  v_adjunto_caja uuid := '70000000-0000-0000-0000-000000000003';
-  v_adjunto_orden uuid := '70000000-0000-0000-0000-000000000004';
-  v_adjunto_legacy uuid := '70000000-0000-0000-0000-000000000005';
+  v_adjunto uuid := '70000000-0000-4000-8000-000000000001';
+  v_adjunto_item uuid := '70000000-0000-4000-8000-000000000002';
+  v_adjunto_caja uuid := '70000000-0000-4000-8000-000000000003';
+  v_adjunto_orden uuid := '70000000-0000-4000-8000-000000000004';
+  v_adjunto_legacy uuid := '70000000-0000-4000-8000-000000000005';
   v_path text;
   v_path_pendiente text;
   v_path_legacy text;
@@ -31,10 +31,10 @@ begin
     and allowed_mime_types @> array['application/pdf', 'image/jpeg', 'image/png', 'image/webp']) then
     raise exception 'Bucket genérico debe ser privado, limitado y con MIME permitido';
   end if;
-  if not public.path_adjunto_generico_valido('requisiciones/50000000-0000-0000-0000-000000000001/70000000-0000-0000-0000-000000000001/soporte.pdf')
-    or public.path_adjunto_generico_valido('requisiciones/50000000-0000-0000-0000-000000000001/70000000-0000-0000-0000-000000000001/../soporte.pdf')
-    or public.path_adjunto_generico_valido('requisiciones/50000000-0000-0000-0000-000000000001/70000000-0000-0000-0000-000000000001/soporte.pdf/extra')
-    or public.path_adjunto_generico_valido('proveedores/50000000-0000-0000-0000-000000000001/70000000-0000-0000-0000-000000000001/soporte.pdf') then
+  if not public.path_adjunto_generico_valido('requisiciones/50000000-0000-4000-8000-000000000001/70000000-0000-4000-8000-000000000001/soporte.pdf')
+    or public.path_adjunto_generico_valido('requisiciones/50000000-0000-4000-8000-000000000001/70000000-0000-4000-8000-000000000001/../soporte.pdf')
+    or public.path_adjunto_generico_valido('requisiciones/50000000-0000-4000-8000-000000000001/70000000-0000-4000-8000-000000000001/soporte.pdf/extra')
+    or public.path_adjunto_generico_valido('proveedores/50000000-0000-4000-8000-000000000001/70000000-0000-4000-8000-000000000001/soporte.pdf') then
     raise exception 'El validador de path canónico es permisivo';
   end if;
 
@@ -84,12 +84,12 @@ begin
   end if;
 
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_requisicion;
   insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad)
     values (v_requisicion, 'Soporte QA', 1, 'unidad') returning id into v_item;
   insert into public.caja_menor(obra_id, fecha, concepto, valor, registrado_por)
-    values ('30000000-0000-0000-0000-000000000001', current_date, 'Caja QA adjunto', 1000, '10000000-0000-0000-0000-000000000002')
+    values ('30000000-0000-4000-8000-000000000001', current_date, 'Caja QA adjunto', 1000, '10000000-0000-4000-8000-000000000002')
     returning id into v_caja;
 
   -- La ruta debe corresponder a entidad, id y adjunto; MIME y tamaño son
@@ -97,37 +97,37 @@ begin
   v_path := 'requisiciones/' || v_requisicion || '/' || v_adjunto || '/soporte-qa.pdf';
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-      values (v_adjunto, 'requisicion', v_requisicion, replace(v_path, 'requisiciones/', 'caja-menor/'), 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', repeat('b', 64), '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', v_requisicion, replace(v_path, 'requisiciones/', 'caja-menor/'), 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', repeat('b', 64), '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó path de otra entidad';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 20971521, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 20971521, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó soporte que supera 20 MiB';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 1024, null, 'application/pdf', '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 1024, null, 'application/pdf', '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó storage_bucket NULL';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', null, '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', null, '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó mime_type NULL';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', null, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', null, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó tamano_bytes NULL';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'recibo', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'recibo', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
     raise exception 'Requisición aceptó tipo no permitido';
   exception when sqlstate '23514' then null;
   end;
@@ -135,7 +135,7 @@ begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
       values (v_adjunto, 'requisicion_item', v_item,
         'requisicion-items/' || v_item || '/' || v_adjunto || '/soporte-qa.pdf',
-        'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000001');
+        'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
     raise exception 'Ítem aceptó un tipo distinto de foto';
   exception when sqlstate '23514' then null;
   end;
@@ -143,49 +143,49 @@ begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
       values (v_adjunto, 'caja_menor', v_caja,
         'caja-menor/' || v_caja || '/' || v_adjunto || '/foto-qa.png',
-        'recibo', 'foto-qa.png', 1024, 'requisicion-adjuntos', 'image/png', '10000000-0000-0000-0000-000000000002');
+        'recibo', 'foto-qa.png', 1024, 'requisicion-adjuntos', 'image/png', '10000000-0000-4000-8000-000000000002');
     raise exception 'Caja menor aceptó tipo distinto de soporte';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.exe', 1024, 'requisicion-adjuntos', 'application/x-msdownload', '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.exe', 1024, 'requisicion-adjuntos', 'application/x-msdownload', '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó MIME inseguro';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
       values (v_adjunto, 'requisicion', v_requisicion,
-        replace(v_path, 'soporte-qa.pdf', 'soporte-qa.exe'), 'soporte', 'soporte-qa.exe', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000001');
+        replace(v_path, 'soporte-qa.pdf', 'soporte-qa.exe'), 'soporte', 'soporte-qa.exe', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó extensión incompatible con MIME';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values (v_adjunto, 'requisicion', '50000000-0000-0000-0000-000000000999',
-        'requisiciones/50000000-0000-0000-0000-000000000999/' || v_adjunto || '/soporte-qa.pdf', 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000001');
+      values (v_adjunto, 'requisicion', '50000000-0000-4000-8000-000000000999',
+        'requisiciones/50000000-0000-4000-8000-000000000999/' || v_adjunto || '/soporte-qa.pdf', 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
     raise exception 'Aceptó soporte de una entidad inexistente';
   exception when sqlstate '23503' then null;
   end;
 
   insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-    values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', repeat('b', 64), '10000000-0000-0000-0000-000000000001');
+    values (v_adjunto, 'requisicion', v_requisicion, v_path, 'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', repeat('b', 64), '10000000-0000-4000-8000-000000000001');
   insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
     values (v_adjunto_item, 'requisicion_item', v_item,
       'requisicion-items/' || v_item || '/' || v_adjunto_item || '/foto-qa.webp',
-      'foto', 'foto-qa.webp', 2048, 'requisicion-adjuntos', 'image/webp', '10000000-0000-0000-0000-000000000001');
+      'foto', 'foto-qa.webp', 2048, 'requisicion-adjuntos', 'image/webp', '10000000-0000-4000-8000-000000000001');
   insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
     values (v_adjunto_caja, 'caja_menor', v_caja,
       'caja-menor/' || v_caja || '/' || v_adjunto_caja || '/recibo-qa.png',
-      'soporte', 'recibo-qa.png', 2048, 'requisicion-adjuntos', 'image/png', '10000000-0000-0000-0000-000000000002');
-  v_path_pendiente := 'requisiciones/' || v_requisicion || '/70000000-0000-0000-0000-000000000099/pendiente.pdf';
+      'soporte', 'recibo-qa.png', 2048, 'requisicion-adjuntos', 'image/png', '10000000-0000-4000-8000-000000000002');
+  v_path_pendiente := 'requisiciones/' || v_requisicion || '/70000000-0000-4000-8000-000000000099/pendiente.pdf';
   v_path_legacy := 'legacy/ruta-no-canonica.pdf';
   -- Fixture mínima compatible con Storage Supabase: el objeto pendiente no
   -- tiene fila adjuntos y por tanto jamás es legible por RLS.
   insert into storage.objects(bucket_id, name, owner_id, metadata)
-    values ('requisicion-adjuntos', v_path, '10000000-0000-0000-0000-000000000001', '{}'::jsonb),
-      ('requisicion-adjuntos', v_path_pendiente, '10000000-0000-0000-0000-000000000001', '{}'::jsonb),
-      ('requisicion-adjuntos', v_path_legacy, '10000000-0000-0000-0000-000000000001', '{}'::jsonb);
+    values ('requisicion-adjuntos', v_path, '10000000-0000-4000-8000-000000000001', '{}'::jsonb),
+      ('requisicion-adjuntos', v_path_pendiente, '10000000-0000-4000-8000-000000000001', '{}'::jsonb),
+      ('requisicion-adjuntos', v_path_legacy, '10000000-0000-4000-8000-000000000001', '{}'::jsonb);
   -- Simula una fila de antes de 003. El CHECK es NOT VALID intencionalmente,
   -- por lo que la fixture se inserta durante una ventana de mantenimiento y
   -- se restaura inmediatamente. Tiene bucket moderno y objeto real, pero su
@@ -195,7 +195,7 @@ begin
   execute 'alter table public.adjuntos drop constraint adjuntos_genericos_documento_valido';
   insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
     values (v_adjunto_legacy, 'requisicion', v_requisicion, v_path_legacy, 'soporte',
-      'archivo-legacy.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000001');
+      'archivo-legacy.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
   execute format(
     'alter table public.adjuntos add constraint adjuntos_genericos_documento_valido check (%s) not valid',
     v_check_expr
@@ -207,7 +207,7 @@ begin
 
   -- Un solicitante puede leer sólo su soporte finalizado, pero nunca escribe
   -- metadata ni Storage: eso requiere prepare signed + HEAD/complete server-side.
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
   execute 'set local role authenticated';
   if not exists (select 1 from public.adjuntos where id = v_adjunto)
     or exists (select 1 from public.adjuntos where id = v_adjunto_legacy)
@@ -218,13 +218,13 @@ begin
     or exists (select 1 from storage.objects where bucket_id = 'requisicion-adjuntos' and name = v_path_pendiente) then
     raise exception 'RLS Storage no distingue metadata finalizada de carga pendiente';
   end if;
-  if public.puede_leer_adjunto('requisicion', v_requisicion, '10000000-0000-0000-0000-000000000002') then
+  if public.puede_leer_adjunto('requisicion', v_requisicion, '10000000-0000-4000-8000-000000000002') then
     raise exception 'El helper de lectura permite consultar permisos de otro usuario';
   end if;
-  v_path_rechazo_solicitante := 'requisiciones/' || v_requisicion || '/70000000-0000-0000-0000-000000000011/rechazo-solicitante.pdf';
+  v_path_rechazo_solicitante := 'requisiciones/' || v_requisicion || '/70000000-0000-4000-8000-000000000011/rechazo-solicitante.pdf';
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values ('70000000-0000-0000-0000-000000000011', 'requisicion', v_requisicion, v_path_rechazo_solicitante,
+      values ('70000000-0000-4000-8000-000000000011', 'requisicion', v_requisicion, v_path_rechazo_solicitante,
         'soporte', 'rechazo-solicitante.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', auth.uid());
     raise exception 'Solicitante escribió metadata de adjunto directamente';
   exception when sqlstate '42501' then null;
@@ -258,28 +258,28 @@ begin
   -- obtiene soporte de la OC, pero su aprobador enrutado sí.
   select id into v_etiqueta from public.etiquetas where nombre = 'Materiales';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', v_etiqueta)
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', v_etiqueta)
     returning id into v_requisicion_orden;
   insert into public.ordenes(consecutivo, tipo, requisicion_id)
     values ('', 'OC', v_requisicion_orden) returning id into v_orden;
   insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
     values (v_adjunto_orden, 'orden', v_orden, 'ordenes/' || v_orden || '/orden-qa.pdf', 'soporte', 'orden-qa.pdf', 1024,
-      'requisicion-adjuntos', 'application/pdf', '10000000-0000-0000-0000-000000000002');
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
+      'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000002');
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
   execute 'set local role authenticated';
   if exists (select 1 from public.adjuntos where id = v_adjunto_orden) then
     raise exception 'Solicitante puede leer soporte de orden';
   end if;
   execute 'reset role';
   insert into public.usuario_roles(usuario_id, rol)
-    values ('10000000-0000-0000-0000-000000000005', 'solicitante') on conflict do nothing;
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000005', true);
+    values ('10000000-0000-4000-8000-000000000005', 'solicitante') on conflict do nothing;
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000005', true);
   execute 'set local role authenticated';
   if exists (select 1 from storage.objects where bucket_id = 'requisicion-adjuntos' and name = v_path) then
     raise exception 'Otro solicitante puede leer soporte ajeno';
   end if;
   execute 'reset role';
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000003', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000003', true);
   execute 'set local role authenticated';
   if not exists (select 1 from public.adjuntos where id = v_adjunto_orden) then
     raise exception 'Aprobador enrutado no puede leer soporte de orden';
@@ -288,12 +288,12 @@ begin
 
   -- Ni siquiera el revisor escribe por SQL directo: prepare signed y complete
   -- con HEAD son acciones server/service-role, no rutas JWT.
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000002', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000002', true);
   execute 'set local role authenticated';
-  v_path_rechazo_revisor := 'caja-menor/' || v_caja || '/70000000-0000-0000-0000-000000000012/rechazo-revisor.pdf';
+  v_path_rechazo_revisor := 'caja-menor/' || v_caja || '/70000000-0000-4000-8000-000000000012/rechazo-revisor.pdf';
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-      values ('70000000-0000-0000-0000-000000000012', 'caja_menor', v_caja, v_path_rechazo_revisor,
+      values ('70000000-0000-4000-8000-000000000012', 'caja_menor', v_caja, v_path_rechazo_revisor,
         'soporte', 'rechazo-revisor.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', auth.uid());
     raise exception 'Revisor escribió metadata de adjunto directamente';
   exception when sqlstate '42501' then null;

@@ -358,16 +358,6 @@ export function ConnectedNewRequisition({
                     }
                   />
                 </label>
-                <AttachmentPicker
-                  id={`requisition-item-photo-${line.key}`}
-                  label="Foto del ítem (opcional)"
-                  help="JPG, PNG o WebP · máximo 10 MB"
-                  allowedMimeTypes={IMAGE_MIME_TYPES}
-                  file={line.photo}
-                  onFile={(photo) => updateLine(line.key, { photo })}
-                  onError={setFeedback}
-                  disabled={busy}
-                />
                 <label className="field">
                   <span>Unidad</span>
                   <input
@@ -412,6 +402,17 @@ export function ConnectedNewRequisition({
                     }
                   />
                 </label>
+                {/* La foto va al final: se toma cuando ya se diligenciaron los datos del ítem; antes partía la fila entre Cantidad y Unidad */}
+                <AttachmentPicker
+                  id={`requisition-item-photo-${line.key}`}
+                  label="Foto del ítem (opcional)"
+                  help="JPG, PNG o WebP · máximo 10 MB"
+                  allowedMimeTypes={IMAGE_MIME_TYPES}
+                  file={line.photo}
+                  onFile={(photo) => updateLine(line.key, { photo })}
+                  onError={setFeedback}
+                  disabled={busy}
+                />
                 <button
                   className="icon-button connected-remove"
                   type="button"

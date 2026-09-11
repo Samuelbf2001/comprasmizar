@@ -19,7 +19,7 @@ do $$
 declare v_fecha_orden date; v_fecha date; v_periodo date;
 begin
   select fecha_orden, fecha, periodo into v_fecha_orden, v_fecha, v_periodo
-    from public.gastos where id = '90000000-0000-0000-0000-000000000007';
+    from public.gastos where id = '90000000-0000-4000-8000-000000000007';
   if v_fecha_orden is distinct from '2026-08-10'::date or v_fecha is distinct from '2026-08-31'::date or v_periodo is distinct from '2026-08-01'::date then
     raise exception 'Gasto legado de orden PAGADA: esperado fecha_orden=2026-08-10, fecha=2026-08-31, periodo=2026-08-01 — obtenido fecha_orden=%, fecha=%, periodo=%',
       v_fecha_orden, v_fecha, v_periodo;
@@ -32,7 +32,7 @@ do $$
 declare v_fecha_orden date; v_fecha date; v_periodo date;
 begin
   select fecha_orden, fecha, periodo into v_fecha_orden, v_fecha, v_periodo
-    from public.gastos where id = '90000000-0000-0000-0000-00000000000a';
+    from public.gastos where id = '90000000-0000-4000-8000-00000000000a';
   if v_fecha_orden is distinct from '2026-08-20'::date or v_fecha is not null or v_periodo is not null then
     raise exception 'Gasto legado de orden PENDIENTE: esperado fecha_orden=2026-08-20, fecha/periodo NULL — obtenido fecha_orden=%, fecha=%, periodo=%',
       v_fecha_orden, v_fecha, v_periodo;
@@ -46,7 +46,7 @@ declare v_fecha_orden date; v_fecha date; v_periodo date;
 begin
   select g.fecha_orden, g.fecha, g.periodo into v_fecha_orden, v_fecha, v_periodo
     from public.gastos g join public.caja_menor c on c.gasto_id = g.id
-    where c.id = '90000000-0000-0000-0000-00000000000b';
+    where c.id = '90000000-0000-4000-8000-00000000000b';
   if v_fecha_orden is distinct from '2026-08-25'::date or v_fecha is distinct from '2026-08-25'::date or v_periodo is distinct from '2026-08-01'::date then
     raise exception 'Gasto legado de caja menor: esperado fecha_orden=fecha=2026-08-25, periodo=2026-08-01 — obtenido fecha_orden=%, fecha=%, periodo=%',
       v_fecha_orden, v_fecha, v_periodo;

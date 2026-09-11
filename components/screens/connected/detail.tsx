@@ -10,7 +10,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { Pencil, X } from "lucide-react";
+import { Check, Pencil, X } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
 import { SectionTitle, Tone, useConfirmDialog } from "../screen-primitives";
 import { AttachmentPicker } from "../attachment-upload";
@@ -582,7 +582,7 @@ export function ConnectedRequisitionDetail({
                             </td>
                             <td>
                               <button
-                                className="button button-secondary cell-action"
+                                className={`button button-secondary cell-action ${declinado ? "decision-approve" : "decision-decline"}`}
                                 type="button"
                                 onClick={() =>
                                   updateLine(line.id, {
@@ -591,7 +591,9 @@ export function ConnectedRequisitionDetail({
                                   })
                                 }
                               >
-                                {declinado ? "Reactivar" : "Declinar"}
+                                {declinado
+                                  ? <><Check aria-hidden="true" size={15} /> Reactivar</>
+                                  : <><X aria-hidden="true" size={15} /> Declinar</>}
                               </button>
                             </td>
                           </tr>
@@ -732,21 +734,35 @@ export function ConnectedRequisitionDetail({
                       onChange={(event) => updateLine(line.id, { quantity: Number(event.target.value) })}
                     />
                   </label>
+                  {/* Dos botones en vez de un desplegable: con el <select> decidir un ítem eran tres
+                      gestos (abrir, elegir, cerrar) y el estado actual no se veía sin abrirlo. */}
                   <div className="field">
-                    <label className="field-label" htmlFor={`decision-${line.id}`}>Decisión</label>
-                    <select
-                      id={`decision-${line.id}`}
-                      value={line.status === "declinado" ? "declinado" : "aprobado"}
-                      onChange={(event) =>
-                        updateLine(line.id, {
-                          status: event.target.value === "declinado" ? "declinado" : "aprobado",
-                          declineReason: event.target.value === "declinado" ? line.declineReason : undefined,
-                        })
-                      }
-                    >
-                      <option value="aprobado">Aprobado</option>
-                      <option value="declinado">Declinar</option>
-                    </select>
+                    <span className="field-label" id={`decision-${line.id}`}>Decisión</span>
+                    {/* Solo símbolos: rotularlos "Aprobar"/"Declinar" pondría un segundo botón
+                        "Aprobar" al lado del que aprueba la requisición entera, y decidir un ítem
+                        no es lo mismo que aprobarla. El nombre accesible sí lo dice completo. */}
+                    <div className="decision-toggle" role="group" aria-labelledby={`decision-${line.id}`}>
+                      <button
+                        aria-label="Aprobar este ítem"
+                        aria-pressed={line.status !== "declinado"}
+                        className="decision-approve"
+                        title="Aprobar este ítem"
+                        type="button"
+                        onClick={() => updateLine(line.id, { status: "aprobado", declineReason: undefined })}
+                      >
+                        <Check aria-hidden="true" size={18} />
+                      </button>
+                      <button
+                        aria-label="Declinar este ítem"
+                        aria-pressed={line.status === "declinado"}
+                        className="decision-decline"
+                        title="Declinar este ítem"
+                        type="button"
+                        onClick={() => updateLine(line.id, { status: "declinado", declineReason: line.declineReason })}
+                      >
+                        <X aria-hidden="true" size={18} />
+                      </button>
+                    </div>
                   </div>
                   {line.status === "declinado" && (
                     <label className="field field-wide">
@@ -984,7 +1000,7 @@ export function ConnectedRequisitionDetail({
                       void run({ action: "decline", reason: comment });
                     }}
                   >
-                    Declinar toda la requisición
+                    <X aria-hidden="true" size={16} /> Declinar toda la requisición
                   </button>
                 </>
               )}
@@ -1007,7 +1023,7 @@ export function ConnectedRequisitionDetail({
                     void run({ action: "approve" });
                   }}
                 >
-                  Aprobar
+                  <Check aria-hidden="true" size={16} /> Aprobar
                 </button>
                 <label className="field">
                   <span>Comentario de devolución</span>
@@ -1022,7 +1038,7 @@ export function ConnectedRequisitionDetail({
                   type="button"
                   onClick={() => void run({ action: "return", comment })}
                 >
-                  Devolver a revisión
+                  <X aria-hidden="true" size={16} /> Devolver a revisión
                 </button>
               </>
             )}

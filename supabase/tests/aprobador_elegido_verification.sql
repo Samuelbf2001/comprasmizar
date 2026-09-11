@@ -33,12 +33,12 @@ declare v_req uuid; v_etiqueta uuid;
 begin
   select id into v_etiqueta from public.etiquetas where nombre = 'Materiales';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', v_etiqueta)
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', v_etiqueta)
     returning id into v_req;
   update public.requisiciones set aprobador_id = null where id = v_req;
   update public.requisiciones r set aprobador_id = e.aprobador_id
     from public.etiquetas e where e.id = r.etiqueta_id and r.aprobador_id is null and r.id = v_req;
-  if not exists (select 1 from public.requisiciones where id = v_req and aprobador_id = '10000000-0000-0000-0000-000000000003') then
+  if not exists (select 1 from public.requisiciones where id = v_req and aprobador_id = '10000000-0000-4000-8000-000000000003') then
     raise exception 'El backfill no copió el aprobador_id de la etiqueta';
   end if;
 end $$;
@@ -49,10 +49,10 @@ do $$
 declare v_req uuid;
 begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   begin
-    update public.requisiciones set aprobador_id = '10000000-0000-0000-0000-000000000001' where id = v_req;
+    update public.requisiciones set aprobador_id = '10000000-0000-4000-8000-000000000001' where id = v_req;
     raise exception 'Se pudo asignar un aprobador no elegible';
   exception when sqlstate '23514' then null;
   end;
@@ -67,13 +67,13 @@ declare v_req uuid; v_etiqueta uuid; v_etiqueta_aprobador uuid;
 begin
   select id, aprobador_id into v_etiqueta, v_etiqueta_aprobador from public.etiquetas where nombre = 'Materiales';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', v_etiqueta)
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', v_etiqueta)
     returning id into v_req;
-  update public.requisiciones set aprobador_id = '10000000-0000-0000-0000-000000000006' where id = v_req;
-  if not exists (select 1 from public.requisiciones where id = v_req and aprobador_id = '10000000-0000-0000-0000-000000000006') then
+  update public.requisiciones set aprobador_id = '10000000-0000-4000-8000-000000000006' where id = v_req;
+  if not exists (select 1 from public.requisiciones where id = v_req and aprobador_id = '10000000-0000-4000-8000-000000000006') then
     raise exception 'No se pudo asignar un aprobador elegible';
   end if;
-  if v_etiqueta_aprobador = '10000000-0000-0000-0000-000000000006' then
+  if v_etiqueta_aprobador = '10000000-0000-4000-8000-000000000006' then
     raise exception 'Fixture inválido: el aprobador de la etiqueta ya coincidía con el asignado, la prueba no distingue nada';
   end if;
   if not exists (
@@ -89,12 +89,12 @@ do $$
 declare v_req uuid;
 begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   -- Se fuerza un aprobador_id NO elegible saltándose el trigger un instante, simulando una fila que ya
   -- quedó así (legado, o el mismo bloqueante 3 antes de esta corrección).
   alter table public.requisiciones disable trigger requisiciones_aprobador_elegible;
-  update public.requisiciones set aprobador_id = '10000000-0000-0000-0000-000000000001' where id = v_req;
+  update public.requisiciones set aprobador_id = '10000000-0000-4000-8000-000000000001' where id = v_req;
   alter table public.requisiciones enable trigger requisiciones_aprobador_elegible;
   -- Guardar la fila MENCIONANDO aprobador_id en el SET sin cambiar su valor (mismo patrón que el
   -- ON CONFLICT DO UPDATE de saveRequisition) no debe fallar.
@@ -114,15 +114,15 @@ do $$
 declare v_req uuid;
 begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, estado)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', 'en_aprobacion')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', 'en_aprobacion')
     returning id into v_req;
-  update public.requisiciones set aprobador_id = '10000000-0000-0000-0000-000000000006' where id = v_req; -- Admin Sixteam Local, elegible
+  update public.requisiciones set aprobador_id = '10000000-0000-4000-8000-000000000006' where id = v_req; -- Admin Sixteam Local, elegible
   begin
-    update public.usuarios set estado = 'inactivo' where id = '10000000-0000-0000-0000-000000000006';
+    update public.usuarios set estado = 'inactivo' where id = '10000000-0000-4000-8000-000000000006';
     raise exception 'Se pudo desactivar a un aprobador con una requisición en_aprobacion pendiente de su decisión';
   exception when sqlstate '23514' then null;
   end;
-  if not exists (select 1 from public.usuarios where id = '10000000-0000-0000-0000-000000000006' and estado = 'activo') then
+  if not exists (select 1 from public.usuarios where id = '10000000-0000-4000-8000-000000000006' and estado = 'activo') then
     raise exception 'El aprobador quedó desactivado pese al rechazo esperado';
   end if;
   -- Se resuelve la requisición (transición válida en_aprobacion -> aprobada) para no dejarla
@@ -138,11 +138,11 @@ do $$
 declare v_req uuid;
 begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, estado)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', 'aprobada')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', 'aprobada')
     returning id into v_req;
-  update public.requisiciones set aprobador_id = '10000000-0000-0000-0000-000000000006' where id = v_req; -- Admin Sixteam Local, aún activo
-  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-0000-0000-000000000006';
-  if not exists (select 1 from public.usuarios where id = '10000000-0000-0000-0000-000000000006' and estado = 'inactivo') then
+  update public.requisiciones set aprobador_id = '10000000-0000-4000-8000-000000000006' where id = v_req; -- Admin Sixteam Local, aún activo
+  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-4000-8000-000000000006';
+  if not exists (select 1 from public.usuarios where id = '10000000-0000-4000-8000-000000000006' and estado = 'inactivo') then
     raise exception 'Se debería poder desactivar a un aprobador cuando sus requisiciones ya están aprobada (no en_aprobacion)';
   end if;
 end $$;

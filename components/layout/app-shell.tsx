@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ClipboardList,
   Database,
+  Eye,
   FileCheck2,
   HelpCircle,
   Inbox,
@@ -43,6 +44,8 @@ const roleInitials: Record<Role, string> = {
   "Administrador Mizar": "CM",
   "Administrador Sixteam": "SS",
 };
+// roleAllowed se construye con TODOS los hrefs de `navigation`, incluidos los que llevan
+// `hidden` (hoy /gastos): ocultar una entrada del menú no debe quitarle la ruta a ningún rol.
 export const roleAllowed: Record<Role, string[]> = {
   Solicitante: [
     "/",
@@ -95,6 +98,7 @@ export function AppShell({
   sidebarOpen,
   setSidebarOpen,
   role,
+  realRole,
   setRole,
   demoMode,
   actorName,
@@ -107,6 +111,7 @@ export function AppShell({
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
   role: Role;
+  realRole: Role;
   setRole: (role: Role) => void;
   demoMode: boolean;
   actorName?: string;
@@ -116,6 +121,16 @@ export function AppShell({
   const identity = demoMode
     ? roleNames[role]
     : actorName || "Usuario autenticado";
+  // "Ver como" es una LENTE DE PRESENTACIÓN, no un cambio de permisos: solo altera qué pinta
+  // este cliente. La autorización real vive en el servidor (lib/domain/rules.ts le da "*" a
+  // admin_sixteam y requireServerActor() resuelve el rol desde la sesión, no desde aquí), así
+  // que mirar como "Contabilidad" no recorta lo que el servidor deja hacer ni al revés.
+  // La visibilidad del control se decide con el rol REAL: si se decidiera con `role`, al mirar
+  // como otro rol el selector desaparecería y el usuario quedaría atrapado sin poder volver.
+  const canViewAs = !demoMode && realRole === "Administrador Sixteam";
+  const viewingAs = canViewAs && role !== realRole;
+  // El avatar representa siempre la sesión real, no el rol que se está mirando.
+  const avatarRole = demoMode ? role : realRole;
 
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
@@ -194,18 +209,50 @@ export function AppShell({
             </span>
             <ChevronDown aria-hidden="true" size={14} />
           </label>
+        ) : canViewAs ? (
+          <label
+            className={`role-switch role-view-as ${viewingAs ? "is-lens" : ""}`}
+          >
+            <span className="avatar">{roleInitials[avatarRole]}</span>
+            <span>
+              <small>
+                <Eye aria-hidden="true" size={11} /> Ver como
+              </small>
+              <select
+                value={role}
+                onChange={(event) => setRole(event.target.value as Role)}
+                aria-label="Ver la plataforma como otro rol"
+              >
+                {Object.keys(roleNames).map((option) => (
+                  <option key={option}>{option}</option>
+                ))}
+              </select>
+              <b>{identity}</b>
+            </span>
+            <ChevronDown aria-hidden="true" size={14} />
+          </label>
         ) : (
           <div className="role-switch role-production">
-            <span className="avatar">{roleInitials[role]}</span>
+            <span className="avatar">{roleInitials[avatarRole]}</span>
             <span>
               <small>Sesión autenticada</small>
               <b>{identity}</b>
             </span>
           </div>
         )}
+        {viewingAs && (
+          <p className="view-as-flag">
+            <span role="status">
+              Viendo como <b>{role}</b> · tu sesión sigue siendo {realRole}
+            </span>
+            <button type="button" onClick={() => setRole(realRole)}>
+              Volver a mi rol
+            </button>
+          </p>
+        )}
         <nav className="nav-main" aria-label="Navegación principal">
           {navigation
-            .filter((item) => isAllowed(item.href))
+            .filter((item) => !item.hidden && isAllowed(item.href))
             .map((item) => {
               const Icon = navIcons[item.icon] || LayoutDashboard;
               const label = demoMode
@@ -324,7 +371,7 @@ export function AppShell({
                 aria-label={`Perfil de ${identity}`}
                 onClick={() => setProfileMenuOpen((value) => !value)}
               >
-                <span className="avatar">{roleInitials[role]}</span>
+                <span className="avatar">{roleInitials[avatarRole]}</span>
                 <span>{identity}</span>
                 <ChevronDown aria-hidden="true" size={14} />
               </button>

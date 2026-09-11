@@ -3,7 +3,7 @@ import { dispatchPendingNotifications, type NotificationDispatchStore, type Pend
 import { sendKapsoTemplate } from "../../lib/infrastructure/kapso";
 
 function notification(overrides: Partial<PendingNotification> = {}): PendingNotification {
-  return { id: "n-1", phone: "+573001234567", template: "pendiente_aprobador", payload: { requisitionId: "11111111-1111-1111-1111-111111111111", consecutive: "REQ-2026-0001" }, attempts: 0, ...overrides };
+  return { id: "n-1", phone: "+573001234567", template: "pendiente_aprobador", payload: { requisitionId: "11111111-1111-4111-8111-111111111111", consecutive: "REQ-2026-0001" }, attempts: 0, ...overrides };
 }
 
 /** Simple queue-backed mock: `claimBatch` just dequeues, mirroring the shape kapso-idempotency.test.ts uses for its store mock. */
@@ -26,7 +26,7 @@ describe("dispatchPendingNotifications", () => {
     const adapter = { sendTemplate: vi.fn(async () => ({ messageId: "wamid.1" })) };
     const outcome = await dispatchPendingNotifications(store, adapter);
     expect(outcome).toEqual({ claimed: 1, sent: 1, retried: 0, failed: 0, deferred: 0 });
-    expect(adapter.sendTemplate).toHaveBeenCalledWith({ to: "+573001234567", template: "pendiente_aprobador", payload: { requisitionId: "11111111-1111-1111-1111-111111111111", consecutive: "REQ-2026-0001" } });
+    expect(adapter.sendTemplate).toHaveBeenCalledWith({ to: "+573001234567", template: "pendiente_aprobador", payload: { requisitionId: "11111111-1111-4111-8111-111111111111", consecutive: "REQ-2026-0001" } });
     expect(calls.markSent).toHaveLength(1);
     const [id, sent] = calls.markSent[0] as [string, { messageId: string; phone: string; template: string }];
     expect(id).toBe("n-1");

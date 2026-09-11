@@ -43,7 +43,7 @@ end $$;
 -- ACCOUNT_INACTIVE, y `invalidateActorCache(userId)` hace que surta efecto de inmediato en vez de
 -- esperar los 60 s del caché de perfil.
 do $$
-declare v_usuario uuid := '10000000-0000-0000-0000-000000000002'; v_fk int;
+declare v_usuario uuid := '10000000-0000-4000-8000-000000000002'; v_fk int;
 begin
   -- El check de vigencia impide guardar una sesión que nace vencida.
   begin

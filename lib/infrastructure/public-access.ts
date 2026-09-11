@@ -5,6 +5,23 @@ import { sharedPostgres } from "./postgres-repositories";
 // postgres-repositories.ts también la reutilice (alta de solicitantes_autorizados vía catálogo) sin
 // crear un ciclo de imports con este archivo, que ya importa sharedPostgres desde ese módulo.
 import { normalizeCoPhone } from "./phone";
+
+/**
+ * Obras que aceptan radicación pública, para el selector del formulario general.
+ *
+ * Se entrega con el token del enlace y SIN la contraseña, a propósito: pedir la contraseña aquí
+ * convertiría este endpoint en un oráculo (lista llena = contraseña correcta), que es justo lo que
+ * evita la respuesta neutra 202 del endpoint de radicación. El precio es que quien tenga el enlace
+ * ve los nombres de las obras activas antes de escribir la contraseña; son nombres de edificios, no
+ * secretos, y radicar sigue exigiendo contraseña y teléfono.
+ */
+export async function listPublicWorks(databaseUrl = runtimeEnv().DATABASE_URL): Promise<Array<{ id: string; name: string }>> {
+  const sql = sharedPostgres(databaseUrl);
+  const rows = await sql<{ id: string; nombre: string }[]>`
+    select id, nombre from obras where public_submission_enabled and estado = 'activa' order by nombre`;
+  return rows.map((row) => ({ id: String(row.id), name: String(row.nombre) }));
+}
+
 /** Applies the optional obra phone allowlist; the code/link verifier remains a separate concern. */
 export async function isAuthorizedPublicRequester(workId: string, phone: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<boolean> { const sql = sharedPostgres(databaseUrl), rows = await sql`select o.require_authorized_requester, exists(select 1 from obra_solicitantes_autorizados s where s.obra_id=o.id and s.activo and s.telefono_normalizado=regexp_replace(${phone}, '[^0-9]', '', 'g')) as phone_allowed from obras o where o.id=${workId}`; return Boolean(rows[0] && (!rows[0].require_authorized_requester || rows[0].phone_allowed)); }
 
