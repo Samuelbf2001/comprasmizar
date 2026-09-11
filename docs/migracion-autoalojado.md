@@ -114,12 +114,36 @@ roles, esquema `auth`, pgcrypto) y luego las migraciones en orden, registrando c
 Ese bootstrap es el mismo archivo que usa `npm run verify:schema` en CI — a propósito. Si CI y el
 servidor arrancaran desde puntos distintos, CI dejaría de probar lo que se despliega.
 
-Si tienes volcado de Supabase, restáuralo **en vez de** correr el seed:
+### Si tienes volcado de Supabase, el ORDEN se invierte
+
+Restaura **antes** de migrar, no después. El volcado trae el esquema de Supabase tal como estaba el
+día del corte; si se aplican primero las migraciones, `migraciones_aplicadas` queda con las diez
+marcadas sobre una base vacía y **los backfills nunca tocan los datos restaurados**. El más caro es
+el de `202609070003`: `gastos.fecha_orden` se llenaría con `current_date`, es decir, con la fecha del
+despliegue en vez de la fecha real de cada orden.
 
 ```bash
+# 1. Sobre la base recién creada, ANTES de ops/apply-migrations.sh
 docker compose exec -T db pg_restore --no-owner --no-acl -U mizar -d mizar < mizar-supabase.dump
-docker compose exec -T app sh -c 'mkdir -p /var/lib/mizar/storage' && docker compose cp ./adjuntos app:/var/lib/mizar/storage/requisicion-adjuntos
+
+# 2. Comprobar que los índices únicos NUEVOS no choquen con los datos que acaban de entrar.
+#    Las dos consultas deben devolver cero filas; si no, hay que deduplicar antes de migrar.
+docker compose exec -T db psql -U mizar -d mizar -c "
+  select requisicion_id, proveedor_id, count(*) from public.ordenes
+   group by 1,2 having count(*) > 1;"
+docker compose exec -T db psql -U mizar -d mizar -c "
+  select lower(email), count(*) from auth.users
+   group by 1 having count(*) > 1;"
+
+# 3. Ahora sí las migraciones, que backfillean sobre los datos reales
+ops/apply-migrations.sh
+
+# 4. Los archivos, que pg_dump no incluye
+docker compose cp ./adjuntos app:/var/lib/mizar/storage/requisicion-adjuntos
 ```
+
+Con arranque en vacío (el camino elegido) nada de esto aplica: las migraciones corren sobre una base
+sin filas y no hay nada que deduplicar.
 
 ## Paso 4 — Google Drive
 

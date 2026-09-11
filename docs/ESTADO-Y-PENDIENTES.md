@@ -85,7 +85,7 @@ En términos del plan de 8 semanas del PRD, el código cubre las Fases 1–4 cas
 - [ ] **RLS como segunda barrera no se ejecuta:** la app se conecta con un rol que evade RLS; la autorización real vive en la capa de servicio + triggers (que sí funcionan). Decidir si se conecta por rol `authenticated` o se corrige el PRD para no prometer una barrera que hoy es inerte.
 - [ ] **Rotar credenciales** compartidas por chat (Supabase, contraseña BD, EasyPanel, Kapso).
 - [ ] Región de Supabase quedó en **us-east-2 (Ohio)**, no São Paulo; barato de mover mientras la base esté casi vacía.
-- [ ] Programar el **backup automático** (`backup.yml` existe; falta crear el secreto `DATABASE_URL` en GitHub Actions).
+- [ ] Programar el **respaldo automático**: el cron de `ops/backup-daily.sh` en el VPS (03:00 Colombia) y el consentimiento OAuth de Google Drive. El workflow `backup.yml` se retiró en la migración a autoalojado — hacía `pg_dump` por internet y la base ya no expone puerto público. Ver docs/migracion-autoalojado.md paso 4 y 5.
 
 ---
 

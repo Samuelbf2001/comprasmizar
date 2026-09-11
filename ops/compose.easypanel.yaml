@@ -62,6 +62,12 @@ services:
     security_opt:
       - no-new-privileges:true
     read_only: true
+    # El modo demo abre la plataforma como Revisor SIN credenciales (ver app/auth-guard.ts). La
+    # ausencia de la variable ya falla cerrado —solo el literal "true" lo activa—, pero aquí queda
+    # clavado en el compose para que un tecleo en la pestaña Environment de EasyPanel no pueda
+    # abrirla. Lo que se escriba en el panel no debería poder ganarle a esto.
+    environment:
+      NEXT_PUBLIC_DEMO_MODE: "false"
     tmpfs:
       - /tmp
     volumes:
