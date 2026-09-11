@@ -10,12 +10,16 @@ vi.mock("../../lib/infrastructure/auth", () => ({
   requireServerActor: async () => { if (mocks.authError) throw mocks.authError; return mocks.actor; },
 }));
 
-import { apiError, assertSameOrigin, authenticatedJson, hasListFilters, parseJson, parseListQuery, parsePathParams } from "../../lib/http/api";
+import { apiError, appOrigin, assertSameOrigin, authenticatedJson, hasListFilters, parseJson, parseListQuery, parsePathParams } from "../../lib/http/api";
 import { REQUISITION_STATUS_VALUES } from "../../lib/http/schemas";
 import { encodeCursor } from "../../lib/services/list-query";
 
 const previousUrl = process.env.NEXT_PUBLIC_APP_URL;
-afterEach(() => { if (previousUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL; else process.env.NEXT_PUBLIC_APP_URL = previousUrl; });
+const previousOrigin = process.env.APP_ORIGIN;
+afterEach(() => {
+  if (previousUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL; else process.env.NEXT_PUBLIC_APP_URL = previousUrl;
+  if (previousOrigin === undefined) delete process.env.APP_ORIGIN; else process.env.APP_ORIGIN = previousOrigin;
+});
 
 describe("authenticated HTTP boundary", () => {
   it("accepts bounded JSON and rejects unsupported or oversized bodies", async () => {
@@ -29,6 +33,23 @@ describe("authenticated HTTP boundary", () => {
     expect(() => assertSameOrigin(new Request("https://compras.mizar.test/api", { headers: { origin: "https://compras.mizar.test" } }))).not.toThrow();
     expect(() => assertSameOrigin(new Request("https://compras.mizar.test/api", { headers: { origin: "https://evil.test" } }))).toThrow("Origen");
     expect(() => assertSameOrigin(new Request("https://compras.mizar.test/api"))).toThrow("Origen");
+  });
+
+  it("APP_ORIGIN manda sobre NEXT_PUBLIC_APP_URL y sirve cuando esa quedó sin compilar", () => {
+    // Producción rota el 11-sep-2026: la imagen se construyó sin el build-arg, Next dejó
+    // `process.env.NEXT_PUBLIC_APP_URL` compilado como `undefined` y assertSameOrigin pasó a lanzar
+    // siempre — toda escritura respondía 503 mientras las lecturas seguían bien. APP_ORIGIN se lee
+    // en ejecución, así que arregla eso sin reconstruir la imagen. Aquí se fija ese contrato.
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    expect(() => assertSameOrigin(new Request("https://compras.mizar.test/api", { headers: { origin: "https://compras.mizar.test" } }))).toThrow("APP_ORIGIN_NOT_CONFIGURED");
+    process.env.APP_ORIGIN = "https://compras.mizar.test";
+    expect(appOrigin()).toBe("https://compras.mizar.test");
+    expect(() => assertSameOrigin(new Request("https://compras.mizar.test/api", { headers: { origin: "https://compras.mizar.test" } }))).not.toThrow();
+    // Y sigue siendo una comprobación de origen, no un pase libre.
+    expect(() => assertSameOrigin(new Request("https://compras.mizar.test/api", { headers: { origin: "https://evil.test" } }))).toThrow("Origen");
+    // Una cadena vacía no cuenta como configurada: es el caso real de un build-arg sin valor.
+    process.env.APP_ORIGIN = "   ";
+    expect(appOrigin()).toBeUndefined();
   });
 
   it("maps typed errors without exposing exception details", async () => {

@@ -26,8 +26,26 @@ export async function parsePathParams<T>(params: Promise<unknown>, schema: ZodTy
   return parsed.data;
 }
 
+/**
+ * Origen propio con el que se compara el `Origin` del navegador.
+ *
+ * `APP_ORIGIN` primero, y `NEXT_PUBLIC_APP_URL` solo como respaldo, por una razón que costó una
+ * producción rota: Next SUSTITUYE `process.env.NEXT_PUBLIC_*` por un literal en tiempo de
+ * compilación, también en el código de servidor. Si la build no recibe el valor, aquí no queda una
+ * variable que leer sino la constante `undefined`, y el compilador poda el resto de la función
+ * dejando un `throw` incondicional. Entonces la variable puesta en el entorno del contenedor ya no
+ * sirve de nada: llega tarde. Eso fue exactamente lo que pasó el 11-sep-2026 — la imagen se
+ * construyó en el VPS sin `args`, el `ARG NEXT_PUBLIC_APP_URL=""` del Dockerfile quedó vacío, y
+ * TODA escritura (aprobar, guardar revisión, crear) respondió 503 mientras las lecturas seguían
+ * funcionando, que es la forma más difícil de diagnosticar que tiene esto de fallar.
+ *
+ * `APP_ORIGIN` no lleva el prefijo `NEXT_PUBLIC_`, así que se lee en ejecución y se puede corregir
+ * sin reconstruir la imagen. `/api/health` informa si está resuelto (componente `origin`).
+ */
+export function appOrigin(): string | undefined { return process.env.APP_ORIGIN?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim() || undefined; }
+
 export function assertSameOrigin(request: Request): void {
-  const configured = process.env.NEXT_PUBLIC_APP_URL;
+  const configured = appOrigin();
   if (!configured) throw new Error("APP_ORIGIN_NOT_CONFIGURED");
   const origin = request.headers.get("origin");
   let expected: string;

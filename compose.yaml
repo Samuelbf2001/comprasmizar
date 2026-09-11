@@ -39,6 +39,14 @@ services:
   app:
     build:
       context: .
+      # Next incrusta las NEXT_PUBLIC_* en tiempo de compilación, así que si la build no las recibe
+      # no hay forma de corregirlas después desde el entorno del contenedor. Sin esto, el
+      # `ARG NEXT_PUBLIC_APP_URL=""` del Dockerfile se quedaba vacío y toda escritura respondía 503
+      # (ver `appOrigin` en lib/http/api.ts). APP_ORIGIN, en .env.production, es el respaldo que sí
+      # se lee en ejecución.
+      args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-https://${APP_DOMAIN}}
+        NEXT_PUBLIC_DEMO_MODE: "false"
     restart: unless-stopped
     env_file:
       - .env.production
