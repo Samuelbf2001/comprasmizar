@@ -29,7 +29,9 @@ export function ConnectedExpenses({
   data: ExpenseBundle;
   pathname: string;
   role: Role;
-  refresh: () => void;
+  /** Recarga los datos de la ruta. Devuelve una promesa: espérala antes de soltar el estado ocupado,
+   *  o la pantalla se rehabilita mostrando todavía los datos anteriores. */
+  refresh: () => void | Promise<void>;
 }) {
   const rows = Array.isArray(data.expenses) ? data.expenses : [],
     sourcePettyRows = Array.isArray(data.pettyCash) ? data.pettyCash : [],
