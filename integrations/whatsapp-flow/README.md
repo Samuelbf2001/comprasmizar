@@ -12,12 +12,19 @@ proxy de Kapso. Antes de este cambio solo existía el receptor del webhook
 
 ## Archivos
 
-- `requisicion.flow.json` — fuente de verdad del Flow de captura. Cualquier cambio de UX se
-  hace aquí y se sube con el script; nunca se edita a mano en el Builder de Meta.
+- `requisicion.flow.json` — Flow de captura **v1**, publicado (`1972861836748301`). Se conserva
+  mientras el v2 no esté en producción; no se le hacen cambios (Meta no deja editar un Flow
+  publicado).
+- `requisicion-v2.flow.json` — Flow de captura **v2**, el vigente a partir de ahora.
+  **GENERADO: no se edita a mano.** Su fuente es `../../scripts/build-flow-captura.ts`; una prueba
+  compara byte a byte que no se separen.
 - `aprobacion.flow.json` — fuente de verdad del Flow de aprobación (misma regla).
 - `../../scripts/publish-whatsapp-flow.ts` — crea el Flow (si no existe, por nombre)
   o actualiza su Flow JSON (si ya existe). Siempre dentro del estado `DRAFT`.
-  Recibe cuál de los dos: `requisicion` (por defecto) o `aprobacion`.
+  Recibe cuál de los tres: `requisicion` (v1, por defecto), `requisicion_v2` o `aprobacion`.
+- `../../scripts/build-flow-captura.ts` — genera `requisicion-v2.flow.json`. Se ejecuta con
+  `npx tsx scripts/build-flow-captura.ts`; con `--check` no escribe y falla si el JSON commiteado
+  difiere.
 - `../../tests/unit/whatsapp-flow.test.ts` y `../../tests/unit/approval-flow.test.ts` —
   validan la estructura local de cada JSON (pantallas, requeridos, terminal/complete)
   sin llamar a ninguna API.
@@ -63,11 +70,51 @@ Meta limita el `label` de `TextInput`, `TextArea` y `Dropdown` a **20 caracteres
 (`flows/reference/components.md`). Todos los labels del Flow respetan ese tope; la
 prueba `tests/unit/whatsapp-flow.test.ts` lo verifica y falla si alguno se pasa.
 
-### Por qué 3 artículos y no una lista ilimitada
+### Por qué 8 artículos y no una lista ilimitada
 
-Meta no soporta listas dinámicas sin Data Endpoint. Se usan 3 pantallas fijas
-(1 obligatoria + 2 opcionales). Una requisición con más de 3 ítems requiere otro
-envío; subir el límite es duplicar una pantalla `ARTICULO_*`.
+Meta no soporta listas dinámicas sin Data Endpoint, así que las pantallas son fijas. El v1 tenía 3
+(1 obligatoria + 2 opcionales) y se quedó corto en cuanto Ernesto lo probó de verdad: *«me preocupa
+querer agregar más y no poder»*. El **v2 tiene 8**, pero solo se visitan bajo demanda — cada
+pantalla de artículo lleva **Continuar** (salta al resumen) y, debajo, **Agregar otro artículo**
+(va a la siguiente). A partir del segundo los campos son opcionales, porque exigirlos impediría usar
+"Continuar" para saltar.
+
+Subir el tope es cambiar `MAX_ITEMS` en `scripts/build-flow-captura.ts` y regenerar; el adaptador
+(`MAX_ITEM_SLOTS` en `lib/infrastructure/nfm-reply-adapter.ts`) tiene que subir con él.
+
+### Dos reglas del validador de Meta que no están en su documentación
+
+Las dos costaron un viaje de ida y vuelta contra la API al construir el v2. Conviene tenerlas a mano
+antes de tocar un Flow JSON:
+
+**1. Los `id` de pantalla solo admiten letras y guion bajo.** `ARTICULO_1` se rechaza con
+*«Property 'id' should only consist of alphabets and underscores»*. Por eso las pantallas se llaman
+`ARTICULO_UNO`, `ARTICULO_DOS`… y no `ARTICULO_1`. Las **claves de datos** (`item_1_cantidad`) sí
+admiten dígitos; la restricción es solo para el id de la pantalla.
+
+**2. El `payload` de un `navigate` debe traer TODAS las claves que declara el `data` de la pantalla
+destino**, no solo las que existan en ese momento:
+
+> Following fields are expected in the next screen's data model but missing in payload:
+> [item_8_catalogo, item_8_descripcion, …]
+
+Como `DETALLES` declara los ocho artículos, quien salte al resumen desde el tercero tiene que mandar
+del cuarto al octavo **en blanco**. De ahí `itemsEnBlanco()` en el generador.
+
+### Y una regla de binding que el v1 incumplía sin que nadie lo notara
+
+`${screen.OTRA_PANTALLA.form.campo}` sirve en el `payload` de una acción, pero **NO** dentro de una
+propiedad de texto de un componente. Ahí solo se resuelven `${data.x}` —lo que la pantalla declara
+recibir— y `${form.x}` —lo de la propia pantalla—.
+
+El v1 pintaba el resumen con la sintaxis entre pantallas, así que **mostraba las llaves literales en
+vez de los datos**. Y no habría funcionado de ninguna forma, porque ninguna pantalla del v1
+declaraba `data` ni pasaba nada: sus seis `navigate` llevaban `payload: {}`. El v2 declara y
+encadena en las once pantallas.
+
+Corolario que conviene revisar si algo se ve vacío: el v1 también leía el catálogo como
+`${screen.TIPO_Y_EMPRESA.data.catalogo}` desde cada pantalla de artículo — misma sintaxis entre
+pantallas. En el v2 el catálogo se arrastra en el payload.
 
 ## Cómo se llenan los dropdowns dinámicos (empresa y catálogo)
 
@@ -290,9 +337,24 @@ Variables requeridas (ya están en `.env.local`, no se imprimen aquí):
   `https://api.kapso.ai/meta/whatsapp/v24.0`.
 
 ```sh
-npx tsx scripts/publish-whatsapp-flow.ts             # Flow de captura (por defecto)
-npx tsx scripts/publish-whatsapp-flow.ts aprobacion  # Flow de aprobación
+npx tsx scripts/publish-whatsapp-flow.ts                  # captura v1 (por defecto)
+npx tsx scripts/publish-whatsapp-flow.ts requisicion_v2   # captura v2 — el vigente
+npx tsx scripts/publish-whatsapp-flow.ts aprobacion       # Flow de aprobación
 ```
+
+El script imprime `validation_errors`. **Que la lista salga vacía significa que Meta acepta la
+estructura, no que el Flow se vea bien**: las dos cosas que fallan en silencio —un binding que pinta
+la llave literal, un dropdown vacío— pasan la validación sin una queja. Antes de publicar hay que
+recorrer la vista previa a ojo:
+
+```sh
+# devuelve preview.preview_url, válida 30 días
+GET /{flow_id}?fields=preview.invalidate(false),status,validation_errors&business_account_id={waba}
+```
+
+Aviso para quien lo automatice: esa vista previa **no se deja recorrer desde un navegador
+automatizado** — el botón "Continuar" no avanza de pantalla. Verificado por dos sesiones distintas
+el 2026-09-11. La revisión final es humana, en un navegador normal.
 
 El script busca un Flow por su nombre exacto en la WABA (`Requisición de obra – Mizar`
 para el de captura, `Aprobación de requisición – Mizar` para el de aprobación):
