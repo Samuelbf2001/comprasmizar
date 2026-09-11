@@ -107,6 +107,10 @@ function catalogRecord(kind: CatalogKind, row: DbRow): CatalogRecord {
   return { id: String(row.id), name: String(row.razon_social), nit: row.nit ? String(row.nit) : undefined, phone: typeof contact.phone === "string" ? contact.phone : undefined, email: typeof contact.email === "string" ? contact.email : undefined, address: typeof contact.address === "string" ? contact.address : undefined, active: row.activo === true };
 }
 
+/** Forma que exige la columna `auditoria.entidad_id` (uuid). Deliberadamente laxa con los nibbles
+ * de versión y variante: lo que la base rechaza es lo que no tiene forma de uuid, no un v0. */
+const AUDIT_ENTITY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export class PostgresPorts implements AuditRepository, ConsecutiveRepository, CatalogRepository {
   constructor(private readonly sql: Sql) {}
   // aprobador_id ya vive en requisiciones (reunión 2026-09: lo elige el revisor, no lo deriva la
@@ -408,7 +412,16 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha) as string, String(last.id)) : null;
     return { rows: pageRows.map(mapRow), nextCursor };
   }
-  async append(event: AuditEvent): Promise<void> { await this.sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin ?? "web"}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(this.sql, event.data ?? {})})`; }
+  // `auditoria.entidad_id` es de tipo `uuid` y `AuditEvent.entityId` es `string`: nada impide pasarle
+  // una etiqueta. Cuando pasa, Postgres lanza 22P02 — pero lo hace DESPUÉS de que la escritura que se
+  // está auditando ya ocurrió, y el error que llega arriba ("invalid input syntax for type uuid") no
+  // apunta ni de lejos al sitio donde alguien escribió el literal. Eso costó semanas de 500 en el
+  // endpoint de la contraseña del portal.
+  //
+  // Esta comprobación es la que cubre TODOS los caminos: un literal en el objeto, un argumento
+  // posicional, una variable, un valor que llega de fuera. El escáner de
+  // tests/unit/auditoria-entity-id.test.ts solo ve los literales, y siempre irá por detrás.
+  async append(event: AuditEvent): Promise<void> { if (!AUDIT_ENTITY_ID_RE.test(event.entityId)) throw new Error(`AUDIT_ENTITY_ID_INVALIDO: "${event.entityId}" no es un uuid (entidad "${event.entity}", evento "${event.event}")`); await this.sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values (${event.entity}, ${event.entityId}, ${event.event.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, ${event.origin ?? "web"}, ${event.actorId ?? null}, ${event.at.toISOString()}, ${asJsonb(this.sql, event.data ?? {})})`; }
   async list(entity: string, entityId: string): Promise<AuditEvent[]> { const rows = await this.sql<DbRow[]>`select entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json from auditoria where entidad=${entity} and entidad_id=${entityId} order by fecha, id`; return rows.map((row) => ({ entity: String(row.entidad), entityId: String(row.entidad_id), event: String(row.evento).toLocaleLowerCase(), actorId: row.usuario_id ? String(row.usuario_id) : undefined, at: new Date(String(row.fecha)), data: row.datos_json && typeof row.datos_json === "object" ? row.datos_json as Record<string, unknown> : {}, origin: row.origen as AuditEvent["origin"] })); }
   async take(prefix: "REQ" | "OC" | "OP", year: number): Promise<string> { const rows = await this.sql<DbRow[]>`insert into consecutivos (tipo_documento, anio, siguiente) values (${prefix}, ${year}, 2) on conflict (tipo_documento, anio) do update set siguiente=consecutivos.siguiente+1 returning siguiente-1 as value`; return `${prefix}-${year}-${String(rows[0].value).padStart(4, "0")}`; }
   async isEnabled(name: string): Promise<boolean> { const rows = await this.sql<{ activo: boolean }[]>`select activo from modulos where nombre=${name}`; return rows[0]?.activo === true; }
