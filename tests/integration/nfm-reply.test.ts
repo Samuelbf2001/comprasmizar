@@ -507,6 +507,33 @@ describe("POST /api/kapso — nfm_reply real de WhatsApp Flows", () => {
     await postPayload(noItems);
     expect(hoisted.copyAllCalls).toHaveLength(0);
   });
+
+  // 11-sep-2026: con el webhook registrado, el secreto coincidiendo y el payload compatible, ningún
+  // mensaje real de Ernesto llegó a la plataforma. Kapso firma en `X-Webhook-Signature` (hex, sin
+  // prefijo; docs.kapso.ai/docs/platform/webhooks/security) y la ruta leía `x-kapso-signature`, un
+  // nombre que Kapso nunca envía: 401 silencioso en cada entrega, tres reintentos y a `pending`.
+  // Todas las pruebas firmadas de este archivo usaban NUESTRO nombre, así que iban verdes. Esta firma
+  // como Kapso de verdad.
+  describe("POST /api/kapso — la firma llega como la manda Kapso", () => {
+    const postConCabecera = (nombre: string, valor: string) => {
+      const raw = JSON.stringify(fixture);
+      return POST(new Request("http://localhost/api/kapso", { method: "POST", body: raw, headers: { "content-type": "application/json", [nombre]: valor } }));
+    };
+    it("acepta X-Webhook-Signature con el HMAC hex sin prefijo, tal como lo envía Kapso", async () => {
+      const response = await postConCabecera("X-Webhook-Signature", hmacSha256(JSON.stringify(fixture), ENV.KAPSO_WEBHOOK_SECRET));
+      expect(response.status).not.toBe(401);
+      expect(response.status).not.toBe(503);
+    });
+    it("sigue rechazando una firma incorrecta bajo esa cabecera", async () => {
+      const response = await postConCabecera("X-Webhook-Signature", "0".repeat(64));
+      expect(response.status).toBe(401);
+    });
+    it("y sin ninguna cabecera de firma, 401", async () => {
+      const raw = JSON.stringify(fixture);
+      const response = await POST(new Request("http://localhost/api/kapso", { method: "POST", body: raw, headers: { "content-type": "application/json" } }));
+      expect(response.status).toBe(401);
+    });
+  });
 });
 
 // El tope de artículos vive DUPLICADO a mano: `MAX_ITEM_SLOTS` en el adaptador (las franjas
@@ -522,31 +549,5 @@ describe("POST /api/kapso — nfm_reply real de WhatsApp Flows", () => {
 describe("el tope de franjas del adaptador es el mismo que el del generador", () => {
   it("MAX_ITEM_SLOTS y MAX_ITEMS no pueden separarse", () => {
     expect(MAX_ITEM_SLOTS).toBe(MAX_ITEMS);
-  });
-});
-
-// 11-sep-2026: con el webhook registrado, el secreto coincidiendo y el payload compatible, ningún
-// mensaje real de Ernesto llegó a la plataforma. Kapso firma en `X-Webhook-Signature` (hex, sin
-// prefijo; docs.kapso.ai/docs/platform/webhooks/security) y la ruta leía `x-kapso-signature`, un
-// nombre que Kapso nunca envía: 401 silencioso en cada entrega, tres reintentos y a `pending`.
-// Todas las pruebas firmadas de este archivo usaban NUESTRO nombre, así que iban verdes. Esta firma
-// como Kapso de verdad.
-describe("POST /api/kapso — la firma llega como la manda Kapso", () => {
-  const postConCabecera = (nombre: string, valor: string) => {
-    const raw = JSON.stringify(fixture);
-    return POST(new Request("http://localhost/api/kapso", { method: "POST", body: raw, headers: { "content-type": "application/json", [nombre]: valor } }));
-  };
-  it("acepta X-Webhook-Signature con el HMAC hex sin prefijo, tal como lo envía Kapso", async () => {
-    const response = await postConCabecera("X-Webhook-Signature", hmacSha256(JSON.stringify(fixture), ENV.KAPSO_WEBHOOK_SECRET));
-    expect(response.status).not.toBe(401);
-  });
-  it("sigue rechazando una firma incorrecta bajo esa cabecera", async () => {
-    const response = await postConCabecera("X-Webhook-Signature", "0".repeat(64));
-    expect(response.status).toBe(401);
-  });
-  it("y sin ninguna cabecera de firma, 401", async () => {
-    const raw = JSON.stringify(fixture);
-    const response = await POST(new Request("http://localhost/api/kapso", { method: "POST", body: raw, headers: { "content-type": "application/json" } }));
-    expect(response.status).toBe(401);
   });
 });
