@@ -177,19 +177,24 @@ function IntegrationGate({ role }: { role: Role }) {
 }
 
 const DEMO_ROLE_STORAGE_KEY = "mizar-demo-role";
+// Clave aparte del rol demo: en producción guarda solo la LENTE "Ver como" del Administrador
+// Sixteam, nunca el rol real de la sesión (ese lo resuelve el servidor en cada petición).
+const VIEW_AS_ROLE_STORAGE_KEY = "mizar-ver-como-role";
 // sessionStorage como store externo: en SSR/hidratación devuelve null (sin mismatch)
-// y en cliente entrega el rol demo persistido tras cada remontaje de ruta.
+// y en cliente entrega el rol persistido tras cada remontaje de ruta.
 const subscribeToNothing = () => () => {};
-const getServerDemoRole = () => null;
-function readStoredDemoRole(): Role | null {
+const getServerStoredRole = () => null;
+function readStoredRole(key: string): Role | null {
   try {
-    const stored = window.sessionStorage.getItem(DEMO_ROLE_STORAGE_KEY);
+    const stored = window.sessionStorage.getItem(key);
     return stored && stored in roleAllowed ? (stored as Role) : null;
   } catch {
     // sessionStorage no disponible (p.ej. modo privado estricto).
     return null;
   }
 }
+const readStoredDemoRole = () => readStoredRole(DEMO_ROLE_STORAGE_KEY);
+const readStoredViewAsRole = () => readStoredRole(VIEW_AS_ROLE_STORAGE_KEY);
 
 export default function MizarApp({
   initialRole = "Revisor",
@@ -210,16 +215,38 @@ export default function MizarApp({
   const storedDemoRole = useSyncExternalStore(
     subscribeToNothing,
     readStoredDemoRole,
-    getServerDemoRole,
+    getServerStoredRole,
+  );
+  const storedViewAsRole = useSyncExternalStore(
+    subscribeToNothing,
+    readStoredViewAsRole,
+    getServerStoredRole,
   );
   const [roleOverride, setRoleOverride] = useState<Role | null>(null);
-  const role: Role =
-    roleOverride ?? (demoMode ? (storedDemoRole ?? initialRole) : initialRole);
+  // Rol REAL: el que trae la sesión (o el elegido en el selector demo). "Ver como" NUNCA lo
+  // toca, porque de él dependen la visibilidad del propio control y la identidad mostrada;
+  // si se sobrescribiera, mirar como "Contabilidad" escondería el selector y dejaría al
+  // Administrador Sixteam atrapado sin forma de volver a su vista.
+  const realRole: Role = demoMode
+    ? (roleOverride ?? storedDemoRole ?? initialRole)
+    : initialRole;
+  // La lente solo existe en producción y solo para Administrador Sixteam. Es presentación
+  // pura: el servidor sigue autorizando con el rol de la sesión (lib/domain/rules.ts +
+  // requireServerActor()), así que esto no otorga ni recorta permisos reales.
+  const canViewAs = !demoMode && realRole === "Administrador Sixteam";
+  const role: Role = canViewAs
+    ? ((roleOverride ?? storedViewAsRole) ?? realRole)
+    : realRole;
   const changeRole = (next: Role) => {
+    if (!demoMode && !canViewAs) return;
     setRoleOverride(next);
-    if (!demoMode) return;
     try {
-      window.sessionStorage.setItem(DEMO_ROLE_STORAGE_KEY, next);
+      // MizarApp se remonta en cada navegación de ruta: sin persistir, el rol elegido
+      // (demo o lente) se perdería al primer clic del menú.
+      window.sessionStorage.setItem(
+        demoMode ? DEMO_ROLE_STORAGE_KEY : VIEW_AS_ROLE_STORAGE_KEY,
+        next,
+      );
     } catch {
       // Sin persistencia disponible el selector sigue funcionando durante la vista actual.
     }
@@ -335,6 +362,7 @@ export default function MizarApp({
       sidebarOpen={sidebarOpen}
       setSidebarOpen={setSidebarOpen}
       role={role}
+      realRole={realRole}
       setRole={changeRole}
       demoMode={demoMode}
       actorName={actorName}

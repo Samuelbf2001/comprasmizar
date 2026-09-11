@@ -22,7 +22,9 @@ export const navigation = [
   { label: 'Revisión de Daniel', genericLabel: 'Revisión', href: '/revision', icon: 'Inbox', badge: '12' },
   { label: 'Aprobaciones', href: '/aprobaciones', icon: 'CheckCircle2', badge: '4' },
   { label: 'Órdenes', href: '/ordenes', icon: 'FileCheck2' },
-  { label: 'Gastos y caja menor', href: '/gastos', icon: 'Receipt' },
+  // Oculta del menú a pedido del cliente: no quiere ese módulo a la vista por ahora. Sigue
+  // listada aquí a propósito para que roleAllowed (navigation.map) no le quite /gastos a nadie.
+  { label: 'Gastos y caja menor', href: '/gastos', icon: 'Receipt', hidden: true },
   { label: 'Catálogos', href: '/catalogos', icon: 'Database' },
   { label: 'Proveedores', href: '/proveedores', icon: 'Truck' },
   { label: 'Mensajes Kapso', href: '/mensajes', icon: 'MessageSquare' },

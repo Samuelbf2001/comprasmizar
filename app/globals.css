@@ -987,6 +987,16 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .supplier-order-total b{font-size:var(--text-sm);color:var(--navy)}
 .role-production{cursor:default}
 .role-production b{color:#e8ecf1}
+/* "Ver como": lente de presentación del Administrador Sixteam. El aviso debe leerse como un
+   apunte, no como una alarma: la sesión real no cambió, solo lo que se está mirando. */
+.role-view-as small{display:flex;align-items:center;gap:4px}
+.role-view-as.is-lens{margin-bottom:var(--space-2);border-color:rgba(255,255,255,.24);background:rgba(255,255,255,.09)}
+.view-as-flag{margin:0 var(--space-1) var(--space-6);padding:var(--space-2) var(--space-3);display:flex;align-items:center;gap:var(--space-2);border-radius:var(--radius-sm);background:rgba(255,255,255,.05);color:#aab3c2;font-size:var(--text-3xs);line-height:1.35}
+.view-as-flag span{flex:1;min-width:0}
+.view-as-flag b{color:#edf0f3;font-weight:600}
+.view-as-flag button{flex:none;color:#dfe4ea;font-size:var(--text-3xs);font-weight:600;text-decoration:underline;text-underline-offset:2px;transition:color var(--duration-fast) var(--ease)}
+.view-as-flag button:hover{color:#fff}
+.view-as-flag button:focus-visible{outline-color:#eef1f5}
 
 /* =========================================================================
    Portal de proveedores
@@ -1410,4 +1420,31 @@ h2,h3,.panel-head h2,.approval-item h3,.detail-header h2,.pantalla-empty h1{lett
 @media(max-width:530px){
   .icon-button,.filter-button,.view-switch,.quick-supplier-trigger,.screen-session .button{min-height:44px}
   .report-filters button{min-height:44px}
+}
+
+/* =========================================================================
+   Decisión por ítem: check / equis en vez de desplegable
+   -------------------------------------------------------------------------
+   El aprobador decidía cada ítem con un <select> Aprobado/Declinar: tres gestos
+   por ítem y el estado actual invisible sin abrirlo. Con dos botones el estado
+   se lee de un vistazo y decidir es un clic. `aria-pressed` es lo que comunica
+   cuál está activo; el color solo lo refuerza (no cumpliría AA por sí solo).
+   ========================================================================= */
+.decision-toggle{display:inline-flex;gap:0;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden}
+.decision-toggle button{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border:0;background:var(--paper);color:var(--muted);font:inherit;font-size:.86rem;cursor:pointer;min-height:38px}
+.decision-toggle button+button{border-left:1px solid var(--line-strong)}
+.decision-toggle button:hover{background:var(--surface)}
+.decision-toggle button[aria-pressed="true"].decision-approve{background:var(--green-soft);color:var(--green);font-weight:600}
+.decision-toggle button[aria-pressed="true"].decision-decline{background:var(--red-soft);color:var(--red);font-weight:600}
+.decision-toggle button:focus-visible{outline:2px solid var(--navy);outline-offset:-2px}
+
+/* El botón por ítem de la bandeja de revisión (declinar / reactivar) usa los mismos
+   símbolos para que el gesto se lea igual en las dos pantallas. */
+.cell-action.decision-approve,.cell-action.decision-decline{display:inline-flex;align-items:center;gap:5px}
+.cell-action.decision-approve{color:var(--green)}
+.cell-action.decision-decline{color:var(--red)}
+
+@media(max-width:530px){
+  .decision-toggle{width:100%}
+  .decision-toggle button{flex:1;justify-content:center;min-height:44px}
 }
