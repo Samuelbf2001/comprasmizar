@@ -65,7 +65,19 @@ export class ProcurementService {
     if (input.channel !== "publico" && !input.societyId) throw new DomainError("INVALID_INPUT", "Empresa obligatoria");
     if (!input.items.length) throw new DomainError("INVALID_INPUT", "Los ítems son obligatorios"); sumLines(input.items);
     const externalPhone = input.externalRequester?.phone?.replace(/[\s()\-]/g, "");
-    if (isExternalChannel && (!input.externalRequester?.name?.trim() || !externalPhone || !/^\+?[1-9]\d{6,14}$/.test(externalPhone))) throw new DomainError("INVALID_INPUT", "Nombre y teléfono externo válidos son obligatorios"); if (!isExternalChannel && input.externalRequester) throw new DomainError("INVALID_INPUT", "Solicitante externo no permitido en canal web");
+    // El NOMBRE es obligatorio en los dos canales externos: sin él la requisición no tiene autor.
+    //
+    // El TELÉFONO ya no lo es en el portal público (decisión de Ernesto, 11-sep-2026: "el teléfono no
+    // lo hagas obligatorio"). Sigue siéndolo en WhatsApp, donde no es un dato de contacto sino la
+    // IDENTIDAD del remitente: sin él no hay de quién venga el mensaje.
+    //
+    // Cuando viene, se valida igual que antes. Lo que se acepta ahora es que NO venga — y la
+    // consecuencia está asumida: sin teléfono no hay acuse por WhatsApp (`notifyRequester` no encola
+    // nada, ver arriba), así que quien radique sin dejarlo no recibirá aviso de avance. El precio de
+    // exigirlo era peor: un maestro que no lo quiere dar no radica.
+    if (isExternalChannel && !input.externalRequester?.name?.trim()) throw new DomainError("INVALID_INPUT", "El nombre del solicitante es obligatorio");
+    if (input.channel === "whatsapp" && !externalPhone) throw new DomainError("INVALID_INPUT", "El teléfono del solicitante es obligatorio en WhatsApp");
+    if (externalPhone && !/^\+?[1-9]\d{6,14}$/.test(externalPhone)) throw new DomainError("INVALID_INPUT", "El teléfono del solicitante no es válido");if (!isExternalChannel && input.externalRequester) throw new DomainError("INVALID_INPUT", "Solicitante externo no permitido en canal web");
     const actor = context.actor ?? { id: input.channel === "whatsapp" ? "kapso" : "public", roles: [] }, elevated = actor.roles.includes("revisor") || actor.roles.includes("admin_mizar") || actor.roles.includes("admin_sixteam");
     if (!isExternalChannel && input.requesterId && input.requesterId !== actor.id && !elevated) throw new DomainError("FORBIDDEN", "Un solicitante solo puede crear para sí mismo");
     const requesterId = isExternalChannel ? undefined : input.requesterId ?? actor.id;

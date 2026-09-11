@@ -2,8 +2,8 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight, Check, ClipboardList, FileText, HardHat, LockKeyhole, PackageCheck, Phone, ShieldCheck, SquarePen, Upload } from 'lucide-react';
-import { items, works } from '../../lib/demo-data';
+import { ArrowLeft, ArrowRight, Check, ClipboardList, FileText, HardHat, LockKeyhole, PackageCheck, Phone, Plus, ShieldCheck, SquarePen } from 'lucide-react';
+import { companies } from '../../lib/demo-data';
 import styles from './public-request.module.css';
 
 // `workId` ausente = enlace GENERAL (uno solo para todas las obras): la obra se elige en el
@@ -15,25 +15,117 @@ import styles from './public-request.module.css';
  * sirviendo para acotar a una obra concreta, que es lo único que el token hace ahora.
  */
 type PublicAccess = { workId?: string; token?: string };
-type PublicWork = { id: string; name: string };
+type PublicCompany = { id: string; name: string };
 // Reunión 2026-08-31: el antiguo campo "frente o actividad" sale del modelo (se fusiona en
 // notes/observations, ver el campo "Observaciones" del paso 2); requiredDate ya era opcional aquí.
+/** Una línea del pedido. Ernesto, 11-sep-2026: "solo dejas agregar un ítem por form, debe permitir ir
+ *  agregando más" — un maestro que necesita cemento, arena y varilla tenía que radicar tres veces. */
+type RequestLine = { description: string; quantity: string; unit: string; supplier: string; productLink: string };
 type RequestValues = {
-  type: 'compra' | 'pago'; work: string; date: string; requestor: string;
-  item: string; description: string; quantity: string; unit: string; supplier: string; productLink: string; notes: string;
+  // `company`, no `work`: el solicitante elige EMPRESA y la obra la asigna el revisor (reunión
+  // 2026-08-31; Ernesto: "ya dijimos era empresa"). El enlace POR OBRA sigue trayendo la suya fija,
+  // y entonces este campo ni se pide.
+  type: 'compra' | 'pago'; company: string; date: string; requestor: string;
+  notes: string; lines: RequestLine[];
 };
-/** `phone` no vive en `RequestValues` —tiene su propio estado, porque también viaja aparte en el
- *  envío— pero desde 2026-09-11 se valida en el paso 1 como un campo más, así que necesita error. */
-type FieldErrors = Partial<Record<keyof RequestValues | 'phone', string>>;
+/**
+ * `phone` no vive en `RequestValues` —tiene su propio estado, porque también viaja aparte en el
+ * envío—; desde 2026-09-11 se valida en el paso 1 como un campo más, así que necesita error.
+ *
+ * Las claves de línea llevan el ÍNDICE (`description-0`, `quantity-1`) y coinciden con el atributo
+ * `name` del campo, que es como `focusFirstError` lo encuentra. Sin el índice, con varios ítems el
+ * foco saltaría siempre al primero y quien se equivocara en el tercero no vería dónde.
+ */
+type FieldErrors = Record<string, string>;
+
+function nuevaLinea(): RequestLine {
+  // Unidad VACÍA, no "Unidad": era el valor por defecto de un desplegable que ya no existe, y dejarlo
+  // haría que se radicara "Unidad" como unidad real sin que nadie lo eligiera.
+  return { description: "", quantity: "1", unit: "", supplier: "", productLink: "" };
+}
+
+/** Tope de ítems por requisición. Es el mismo orden de magnitud que el esquema del endpoint
+ *  (`items.max(20)`), el Flow de WhatsApp y el CheckboxGroup de aprobación: una requisición
+ *  radicada por el portal sigue cabiendo entera en el resto del ciclo. */
+const MAX_LINEAS = 20;
+/** Sugerencias del `datalist` de unidad. NO es una lista cerrada (ver el campo en el paso 2). */
+const UNIDADES_SUGERIDAS = ["und", "m", "m²", "m³", "kg", "bulto", "galón", "viaje", "global"];
 
 function initialValues(): RequestValues {
-  return { type: 'compra', work: '', date: new Date().toISOString().slice(0, 10), requestor: '', item: '', description: '', quantity: '1', unit: 'Unidad', supplier: '', productLink: '', notes: '' };
+  return { type: "compra", company: "", date: new Date().toISOString().slice(0, 10), requestor: "", notes: "", lines: [nuevaLinea()] };
 }
 
 function focusFirstError(errors: FieldErrors) {
   const field = Object.keys(errors)[0];
   if (!field) return;
   window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[name="${field}"]`)?.focus());
+}
+
+/**
+ * Estado del formulario y las operaciones sobre sus líneas, compartido por la pantalla real y la de
+ * demostración.
+ *
+ * Vive aquí y no dentro de cada componente porque reindexar errores y paneles al quitar una línea es
+ * la parte fácil de equivocarse, y tenerla escrita dos veces era garantizar que una de las dos se
+ * quedara mal el día que alguien la tocara.
+ */
+function useFormularioRequisicion() {
+  const [values, setValues] = useState(initialValues), [errors, setErrors] = useState<FieldErrors>({}), [detalles, setDetalles] = useState<number[]>([]);
+  const update = <K extends keyof RequestValues>(key: K, value: RequestValues[K]) => setValues(current => ({ ...current, [key]: value }));
+  // Una línea cambia sola y las demás se conservan por referencia: `map` en vez de mutar, porque
+  // React compara por identidad y una mutación in situ no repintaría el campo.
+  const updateLinea = (indice: number, campo: keyof RequestLine, valor: string) =>
+    setValues(current => ({ ...current, lines: current.lines.map((linea, i) => (i === indice ? { ...linea, [campo]: valor } : linea)) }));
+  const agregarLinea = () => setValues(current => (current.lines.length >= MAX_LINEAS ? current : { ...current, lines: [...current.lines, nuevaLinea()] }));
+  // NUNCA por debajo de una línea. El esquema exige `items.min(1)`, así que un paso 2 vacío daría un
+  // 202 neutro sin requisición: el peor final posible, porque parece que sí se envió.
+  //
+  // Los detalles abiertos y los errores se REINDEXAN al quitar: son índices, no identidades. Sin
+  // esto, quitar el ítem 1 dejaría el panel abierto y el error rojo sobre el que ocupe su lugar, que
+  // nadie ha tocado.
+  const quitarLinea = (indice: number) => {
+    setValues(current => (current.lines.length <= 1 ? current : { ...current, lines: current.lines.filter((_, i) => i !== indice) }));
+    setDetalles(abiertos => abiertos.filter(i => i !== indice).map(i => (i > indice ? i - 1 : i)));
+    setErrors(actuales => Object.fromEntries(Object.entries(actuales).flatMap(([clave, mensaje]) => {
+      const partes = /^([A-Za-z]+)-(\d+)$/.exec(clave);
+      if (!partes) return [[clave, mensaje] as const];
+      const posicion = Number(partes[2]);
+      return posicion === indice ? [] : [[`${partes[1]}-${posicion > indice ? posicion - 1 : posicion}`, mensaje] as const];
+    })));
+  };
+  const alternarDetalle = (indice: number) => setDetalles(abiertos => (abiertos.includes(indice) ? abiertos.filter(i => i !== indice) : [...abiertos, indice]));
+  const reiniciar = () => { setValues(initialValues()); setErrors({}); setDetalles([]); };
+  return { values, errors, setErrors, detalles, update, updateLinea, agregarLinea, quitarLinea, alternarDetalle, reiniciar };
+}
+
+/**
+ * Las dos pantallas validan IGUAL, y por eso la regla está escrita una sola vez.
+ *
+ * `exigirEmpresa` es lo único que cambia: con enlace POR OBRA la empresa no se pide —viene firmada—,
+ * así que exigirla dejaría el formulario bloqueado en un campo que no está en pantalla.
+ *
+ * TELÉFONO OPCIONAL (Ernesto, 11-sep-2026: «el teléfono no lo hagas obligatorio»). Si se deja en
+ * blanco se radica igual y no hay acuse. Si se escribe algo, tiene que ser un número usable: un
+ * teléfono a medias es peor que ninguno, porque el aviso se encola contra alguien que no existe y
+ * nadie se entera de que no llegó.
+ */
+function validarPaso(targetStep: 1 | 2, values: RequestValues, phone: string, exigirEmpresa: boolean): FieldErrors {
+  const next: FieldErrors = {};
+  if (targetStep === 1) {
+    if (exigirEmpresa && !values.company) next.company = "Selecciona la empresa.";
+    if (values.requestor.trim().length < 2) next.requestor = "Escribe tu nombre.";
+    if (phone.trim() && phone.replace(/[^0-9]/g, "").length < 7) next.phone = "Ese teléfono está incompleto. Déjalo vacío o escríbelo completo.";
+  } else {
+    // Por LÍNEA, con el índice en la clave para que el foco caiga en el campo que falla y no siempre
+    // en el primero.
+    values.lines.forEach((linea, indice) => {
+      if (linea.description.trim().length < 1) next[`description-${indice}`] = "Describe lo que necesitas.";
+      if (!linea.quantity || Number(linea.quantity) <= 0) next[`quantity-${indice}`] = "Indica una cantidad mayor que cero.";
+      if (!linea.unit.trim()) next[`unit-${indice}`] = "Indica la unidad.";
+      if (linea.productLink && !linea.productLink.startsWith("https://")) next[`productLink-${indice}`] = "El enlace debe comenzar con https://";
+    });
+  }
+  return next;
 }
 
 function PortalFrame({ children }: { children: React.ReactNode }) {
@@ -73,12 +165,26 @@ function PortalFrame({ children }: { children: React.ReactNode }) {
  * ver el formulario.
  *
  * El teléfono no desaparece: se pide en el paso 1, junto al nombre, que es donde se entiende para
- * qué sirve —avisar por WhatsApp del avance—. Sigue siendo obligatorio al enviar, y alimenta
- * `solicitante_telefono_externo`, que es lo que hace funcionar «Mis requisiciones» y las
- * notificaciones. El contrato HTTP no cambia.
+ * qué sirve —avisar por WhatsApp del avance—. Desde el 11-sep-2026 es además OPCIONAL, así que lo
+ * que alimenta `solicitante_telefono_externo` —y con ello «Mis requisiciones» y los avisos— solo
+ * llega cuando quien radica quiere que le avisen.
  */
-function AccessGate({ code, error, onSubmit, showHelp = false }: {
-  code: string; error: string; onSubmit: (datos: { code: string }) => void; showHelp?: boolean;
+/**
+ * Y la contraseña se comprueba CONTRA EL SERVIDOR antes de dejar pasar (`POST /api/public/access`).
+ *
+ * Hasta el 11-sep-2026 la compuerta solo miraba, en el navegador, que tuviera cuatro caracteres. Con
+ * eso dejaba entrar cualquier cosa: Ernesto se equivocó de contraseña en producción, llenó los dos
+ * pasos, pulsó enviar y leyó «La estamos validando» — el 202 del endpoint de radicación es neutro a
+ * propósito y no distingue el acierto del error. La requisición no existía, nadie la recibió y él se
+ * quedó esperando. Fallar en la puerta y decirlo cuesta un oráculo de la contraseña (ver el
+ * comentario del endpoint, que lo asume por escrito); fallar al final no cuesta nada y se lleva el
+ * pedido por delante.
+ *
+ * `comprobando` deshabilita el botón mientras se pregunta, que es medio segundo en el que, sin esto,
+ * se pulsa dos veces y se gastan dos intentos del limitador.
+ */
+function AccessGate({ code, error, onSubmit, comprobando = false, showHelp = false }: {
+  code: string; error: string; onSubmit: (datos: { code: string }) => void; comprobando?: boolean; showHelp?: boolean;
 }) {
   const enviar = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -91,7 +197,7 @@ function AccessGate({ code, error, onSubmit, showHelp = false }: {
     <form className={styles.accessCard} onSubmit={enviar} noValidate>
       <label className={styles.field}><span className={styles.fieldLabel}>Contraseña del portal <em className={styles.required}>*</em></span><input className={styles.control} name="access-code" defaultValue={code} placeholder="Contraseña entregada por Mizar" autoComplete="off" aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-access-error' : undefined} /></label>
       {error && <p className={styles.error} id="portal-access-error" role="alert">{error}</p>}
-      <button className={styles.primaryButton} type="submit">Continuar <ArrowRight aria-hidden="true" size={19} /></button>
+      <button className={styles.primaryButton} type="submit" disabled={comprobando}>{comprobando ? 'Comprobando…' : 'Continuar'} <ArrowRight aria-hidden="true" size={19} /></button>
     </form>
     {showHelp && <div className={styles.accessHelp}><ShieldCheck aria-hidden="true" size={19} /><span><b>¿No tienes la contraseña?</b><small>Pídesela al responsable de la obra. Este enlace solo permite crear una requisición.</small></span></div>}
   </section></PortalFrame>;
@@ -108,39 +214,109 @@ function StepIntro({ code, onChangeAccess }: { code: string; onChangeAccess: () 
   return <div className={styles.intro}><div className={styles.introLine}><div><div className={styles.kicker}><HardHat aria-hidden="true" size={17} /> Requisición de obra</div><h1>Haz la solicitud sin enredos.</h1></div><button className={styles.changeButton} type="button" onClick={onChangeAccess}>Cambiar datos</button></div><p>Dos pasos. Los campos con <em className={styles.required}>*</em> son necesarios para enviarla.</p><p className={styles.hint}>Acceso para: <b>{code}</b></p></div>;
 }
 
+/**
+ * Selector de EMPRESA, compartido por las dos pantallas.
+ *
+ * Reunión 2026-08-31 y recordatorio de Ernesto el 11-sep-2026 («en el formulario público aparece
+ * seleccionar obra y ya dijimos era empresa»). La obra es el centro de costo y la asigna el revisor,
+ * que es quien sabe a qué contrato cargar el gasto; el Flow de WhatsApp ya funcionaba así y el
+ * portal se había quedado con el selector viejo.
+ */
+function SelectorEmpresa({ empresas, cargadas, valor, error, onChange }: {
+  empresas: PublicCompany[]; cargadas: boolean; valor: string; error?: string; onChange: (valor: string) => void;
+}) {
+  return <label className={styles.field}><span className={styles.fieldLabel}>Empresa <em className={styles.required}>*</em></span>
+    <select className={styles.control} name="company" value={valor} onChange={event => onChange(event.target.value)} disabled={!cargadas || empresas.length === 0} aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-company-error' : undefined}>
+      <option value="" disabled>{cargadas ? (empresas.length ? 'Selecciona la empresa' : 'No hay empresas disponibles') : 'Cargando empresas…'}</option>
+      {empresas.map(empresa => <option key={empresa.id} value={empresa.id}>{empresa.name}</option>)}
+    </select>
+    <small className={styles.hint}>La obra la asigna quien revisa tu solicitud.</small>
+    {error && <small className={styles.error} id="portal-company-error">{error}</small>}
+  </label>;
+}
+
+/**
+ * El paso 2, compartido: un bloque por ítem.
+ *
+ * Ernesto, 11-sep-2026: «solo dejas agregar un ítem por form, debe permitir ir agregando más». Quien
+ * necesitaba cemento, arena y varilla radicaba tres requisiciones, y el revisor recibía tres pedidos
+ * que en la obra eran uno solo.
+ *
+ * La clave de React es el ÍNDICE a propósito: las líneas no tienen identidad propia (no hay id hasta
+ * que el servidor las crea) y el único reordenamiento posible es quitar una, que ya obliga a repintar
+ * las siguientes. Los campos son controlados, así que el valor lo pone el estado y no queda texto
+ * pegado de la línea que se fue.
+ */
+function LineasDePedido({ lines, errors, detalles, onCampo, onQuitar, onAlternarDetalle, onAgregar }: {
+  lines: RequestLine[]; errors: FieldErrors; detalles: number[];
+  onCampo: (indice: number, campo: keyof RequestLine, valor: string) => void;
+  onQuitar: (indice: number) => void; onAlternarDetalle: (indice: number) => void; onAgregar: () => void;
+}) {
+  return <>
+    {lines.map((linea, indice) => <fieldset className={styles.lineCard} key={indice}>
+      <legend className={styles.lineLegend}><span>Ítem {indice + 1}</span>{lines.length > 1 && <button className={styles.lineRemove} type="button" onClick={() => onQuitar(indice)}>Quitar</button>}</legend>
+      <label className={styles.field}><span className={styles.fieldLabel}>¿Qué necesitas? <em className={styles.required}>*</em></span><input className={styles.control} name={`description-${indice}`} value={linea.description} onChange={event => onCampo(indice, 'description', event.target.value)} maxLength={500} placeholder="Ej. 20 bultos de cemento gris" aria-invalid={Boolean(errors[`description-${indice}`])} aria-describedby={errors[`description-${indice}`] ? `portal-description-${indice}-error` : undefined} />{errors[`description-${indice}`] && <small className={styles.error} id={`portal-description-${indice}-error`}>{errors[`description-${indice}`]}</small>}</label>
+      <div className={styles.twoColumns}><label className={styles.field}><span className={styles.fieldLabel}>Cantidad <em className={styles.required}>*</em></span><input className={styles.control} name={`quantity-${indice}`} type="number" inputMode="decimal" min="0.001" step="0.001" value={linea.quantity} onChange={event => onCampo(indice, 'quantity', event.target.value)} aria-invalid={Boolean(errors[`quantity-${indice}`])} aria-describedby={errors[`quantity-${indice}`] ? `portal-quantity-${indice}-error` : undefined} />{errors[`quantity-${indice}`] && <small className={styles.error} id={`portal-quantity-${indice}-error`}>{errors[`quantity-${indice}`]}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Unidad <em className={styles.required}>*</em></span><input className={styles.control} name={`unit-${indice}`} list="portal-unidades" value={linea.unit} onChange={event => onCampo(indice, 'unit', event.target.value)} maxLength={20} placeholder="und, m², bulto…" aria-invalid={Boolean(errors[`unit-${indice}`])} aria-describedby={errors[`unit-${indice}`] ? `portal-unit-${indice}-error` : undefined} />{errors[`unit-${indice}`] && <small className={styles.error} id={`portal-unit-${indice}-error`}>{errors[`unit-${indice}`]}</small>}</label></div>
+      <button className={styles.optionalToggle} type="button" onClick={() => onAlternarDetalle(indice)} aria-expanded={detalles.includes(indice)}><span><SquarePen aria-hidden="true" size={18} /> Agregar detalles <small className={styles.hint}>(opcional)</small></span><span aria-hidden="true">{detalles.includes(indice) ? '−' : '+'}</span></button>
+      {detalles.includes(indice) && <div className={styles.optionalPanel}><label className={styles.field}><span className={styles.fieldLabel}>Posible proveedor <small className={styles.hint}>opcional</small></span><input className={styles.control} name={`supplier-${indice}`} value={linea.supplier} onChange={event => onCampo(indice, 'supplier', event.target.value)} maxLength={240} /></label><label className={styles.field}><span className={styles.fieldLabel}>Enlace del producto <small className={styles.hint}>HTTPS opcional</small></span><input className={styles.control} name={`productLink-${indice}`} type="url" inputMode="url" value={linea.productLink} onChange={event => onCampo(indice, 'productLink', event.target.value)} maxLength={2048} placeholder="https://…" aria-invalid={Boolean(errors[`productLink-${indice}`])} aria-describedby={errors[`productLink-${indice}`] ? `portal-link-${indice}-error` : undefined} />{errors[`productLink-${indice}`] && <small className={styles.error} id={`portal-link-${indice}-error`}>{errors[`productLink-${indice}`]}</small>}</label></div>}
+    </fieldset>)}
+    {/* SUGIERE, NO RESTRINGE (Ernesto: «las unidades no son un desplegable»). `datalist` deja elegir
+        de la lista o escribir "cuñete" si eso es lo que se pide en esa obra. Un `select` habría
+        dejado sin unidad a quien necesitara una que no previmos. */}
+    <datalist id="portal-unidades">{UNIDADES_SUGERIDAS.map(unidad => <option key={unidad} value={unidad} />)}</datalist>
+    {lines.length < MAX_LINEAS && <button className={styles.addLine} type="button" onClick={onAgregar}><Plus aria-hidden="true" size={18} /> Agregar otro ítem</button>}
+  </>;
+}
+
+/**
+ * Pantalla de DEMOSTRACIÓN (NEXT_PUBLIC_DEMO_MODE). No llama a ningún endpoint ni guarda nada.
+ *
+ * Va deliberadamente A LA PAR del formulario real. Hasta el 11-sep-2026 arrastraba la forma vieja
+ * —obra en vez de empresa, un solo ítem, unidad de desplegable—, y una demo que enseña un portal que
+ * ya no existe es peor que no tener demo: es justo lo que se le muestra al cliente.
+ *
+ * Y es la ÚNICA versión que recorre un navegador: playwright.config.ts levanta el servidor con
+ * NEXT_PUBLIC_DEMO_MODE=true, así que los e2e de escritorio y de móvil pasan por aquí. Dejarla atrás
+ * habría significado que los cuatro cambios del portal no los probara ninguno.
+ *
+ * Lo único suyo es el final: un consecutivo falso y el aviso de que no se creó nada.
+ */
 function DemoPublicRequest() {
   const [accessGranted, setAccessGranted] = useState(false), [sent, setSent] = useState(false);
   const [code, setCode] = useState(''), [phone, setPhone] = useState(''), [accessError, setAccessError] = useState('');
-  const [step, setStep] = useState<1 | 2>(1), [values, setValues] = useState(initialValues), [errors, setErrors] = useState<FieldErrors>({}), [showDetails, setShowDetails] = useState(false);
-  const update = <K extends keyof RequestValues>(key: K, value: RequestValues[K]) => setValues(current => ({ ...current, [key]: value }));
+  const [step, setStep] = useState<1 | 2>(1);
+  const { values, errors, setErrors, detalles, update, updateLinea, agregarLinea, quitarLinea, alternarDetalle, reiniciar } = useFormularioRequisicion();
+  // Las sociedades reales del cliente (ver supabase/seed.sql). En la demo la lista es fija: no hay
+  // base a la que preguntarle, y nombres inventados harían dudar de si la pantalla es la de verdad.
+  const empresas = companies.map((nombre, indice) => ({ id: `demo-${indice}`, name: nombre }));
   // Los valores llegan leídos del formulario, no del estado: la compuerta es no controlada para no
   // perder lo que se teclee antes de hidratar (ver AccessGate). Se guardan en estado AQUÍ, ya
-  // validados, porque los pasos siguientes los necesitan (el teléfono se muestra, la contraseña viaja
-  // en el envío).
-  // Solo la contraseña abre la compuerta. El teléfono se pide en el paso 1 y se valida allí.
+  // validados, porque los pasos siguientes los necesitan.
+  //
+  // AQUÍ NO se pregunta al servidor, al revés que en el portal real: en modo demostración no hay
+  // base ni contraseña que comprobar, y una compuerta que llamara a un endpoint inexistente no
+  // dejaría entrar a nadie a la demo. Es la única diferencia de comportamiento que queda entre las
+  // dos pantallas, y por eso está escrita.
   const handleAccess = ({ code: claveEscrita }: { code: string }) => { if (claveEscrita.trim().length < 4) { setAccessError('Escribe la contraseña del portal para continuar.'); return; } setCode(claveEscrita); setAccessError(''); setAccessGranted(true); };
   const validate = (targetStep: 1 | 2) => {
-    const next: FieldErrors = {};
-    if (targetStep === 1) { if (!values.work) next.work = 'Selecciona la obra.'; if (values.requestor.trim().length < 2) next.requestor = 'Escribe tu nombre.'; if (phone.replace(/[^0-9]/g, '').length < 7) next.phone = 'Escribe tu teléfono para avisarte por WhatsApp.'; }
-    else { if (!values.item) next.item = 'Selecciona el material.'; if (!values.quantity || Number(values.quantity) < 1) next.quantity = 'Indica una cantidad mayor que cero.'; }
+    const next = validarPaso(targetStep, values, phone, true);
     setErrors(next); if (Object.keys(next).length) { focusFirstError(next); return false; } return true;
   };
   const nextStep = () => { if (validate(1)) { setErrors({}); setStep(2); } };
   const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!validate(2)) return; setSent(true); };
-  if (sent) return <PortalFrame><section className={styles.success}><div className={styles.successDemo} role="status"><b>Modo demostración</b>No se creó una requisición real ni se guardaron datos.</div><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>Recorrido completado.</h1><p className={styles.successCopy}>El formulario móvil quedó listo para probar. Este código no sirve para seguimiento real.</p><div className={styles.trackingCode}>REQ-DEMO-0148</div><button className={styles.primaryButton} type="button" onClick={() => { setValues(initialValues()); setErrors({}); setStep(1); setSent(false); }}>Probar otra requisición</button></section></PortalFrame>;
+  if (sent) return <PortalFrame><section className={styles.success}><div className={styles.successDemo} role="status"><b>Modo demostración</b>No se creó una requisición real ni se guardaron datos.</div><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>Recorrido completado.</h1><p className={styles.successCopy}>El formulario quedó listo para probar. Este código no sirve para seguimiento real.</p><div className={styles.trackingCode}>REQ-DEMO-0148</div><button className={styles.primaryButton} type="button" onClick={() => { reiniciar(); setStep(1); setSent(false); }}>Probar otra requisición</button></section></PortalFrame>;
   if (!accessGranted) return <AccessGate code={code} error={accessError} onSubmit={handleAccess} showHelp />;
   return <PortalFrame><StepIntro code={code} onChangeAccess={() => setAccessGranted(false)} /><Progress step={step} />
     <form className={styles.stepCard} onSubmit={submit} noValidate>
-      {step === 1 ? <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso 1 de 2</p><h2>¿Para quién y cuándo?</h2><p>Elige la obra, la fecha y escribe tu nombre.</p></div><div className={styles.stepBody}>
-        <label className={styles.field}><span className={styles.fieldLabel}>Obra <em className={styles.required}>*</em></span><select className={styles.control} name="work" value={values.work} onChange={event => update('work', event.target.value)} aria-invalid={Boolean(errors.work)} aria-describedby={errors.work ? 'portal-work-error' : undefined}><option value="" disabled>Selecciona tu obra</option>{works.map(work => <option key={work}>{work}</option>)}</select>{errors.work && <small className={styles.error} id="portal-work-error">{errors.work}</small>}</label>
-        <div className={styles.twoColumns}><label className={styles.field}><span className={styles.fieldLabel}>Fecha requerida <small className={styles.hint}>opcional</small></span><input className={styles.control} name="date" type="date" value={values.date} onChange={event => update('date', event.target.value)} aria-invalid={Boolean(errors.date)} aria-describedby={errors.date ? 'portal-date-error' : undefined} />{errors.date && <small className={styles.error} id="portal-date-error">{errors.date}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Tu teléfono <em className={styles.required}>*</em></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="phone" value={phone} onChange={event => setPhone(event.target.value)} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(errors.phone)} aria-describedby={errors.phone ? 'portal-phone-error' : undefined} /></span><small className={styles.hint}>Para avisarte por WhatsApp del avance de tu requisición</small>{errors.phone && <small className={styles.error} id="portal-phone-error">{errors.phone}</small>}</label></div>
+      {step === 1 ? <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso 1 de 2</p><h2>¿Para quién y cuándo?</h2><p>Elige la empresa, la fecha y escribe tu nombre.</p></div><div className={styles.stepBody}>
+        <SelectorEmpresa empresas={empresas} cargadas valor={values.company} error={errors.company} onChange={valor => update('company', valor)} />
+        <div className={styles.twoColumns}><label className={styles.field}><span className={styles.fieldLabel}>Fecha requerida <small className={styles.hint}>opcional</small></span><input className={styles.control} name="date" type="date" value={values.date} onChange={event => update('date', event.target.value)} aria-invalid={Boolean(errors.date)} aria-describedby={errors.date ? 'portal-date-error' : undefined} />{errors.date && <small className={styles.error} id="portal-date-error">{errors.date}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Tu teléfono <small className={styles.hint}>opcional</small></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="phone" value={phone} onChange={event => setPhone(event.target.value)} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(errors.phone)} aria-describedby={errors.phone ? 'portal-phone-error' : undefined} /></span><small className={styles.hint}>Opcional: para avisarte por WhatsApp del avance. Sin él la radicamos igual, pero no podremos avisarte.</small>{errors.phone && <small className={styles.error} id="portal-phone-error">{errors.phone}</small>}</label></div>
         <label className={styles.field}><span className={styles.fieldLabel}>Tu nombre <em className={styles.required}>*</em></span><input className={styles.control} name="requestor" value={values.requestor} onChange={event => update('requestor', event.target.value)} placeholder="Nombre completo" autoComplete="name" aria-invalid={Boolean(errors.requestor)} aria-describedby={errors.requestor ? 'portal-requestor-error' : undefined} />{errors.requestor && <small className={styles.error} id="portal-requestor-error">{errors.requestor}</small>}</label>
         <div className={`${styles.actionRow} ${styles.actionRowSingle}`}><button className={styles.primaryButton} type="button" onClick={nextStep}>Continuar a material <ArrowRight aria-hidden="true" size={19} /></button></div>
-      </div></> : <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso 2 de 2</p><h2>¿Qué material necesitas?</h2><p>Selecciona el material y cuántas unidades necesitas.</p></div><div className={styles.stepBody}>
-        <label className={styles.field}><span className={styles.fieldLabel}>Material <em className={styles.required}>*</em></span><select className={styles.control} name="item" value={values.item} onChange={event => update('item', event.target.value)} aria-invalid={Boolean(errors.item)} aria-describedby={errors.item ? 'portal-item-error' : undefined}><option value="" disabled>Selecciona el material</option>{items.map(item => <option key={item.name}>{item.name}</option>)}</select>{errors.item && <small className={styles.error} id="portal-item-error">{errors.item}</small>}</label>
-        <div className={styles.twoColumns}><label className={styles.field}><span className={styles.fieldLabel}>Cantidad <em className={styles.required}>*</em></span><input className={styles.control} name="quantity" type="number" inputMode="decimal" min="1" value={values.quantity} onChange={event => update('quantity', event.target.value)} aria-invalid={Boolean(errors.quantity)} aria-describedby={errors.quantity ? 'portal-quantity-error' : undefined} />{errors.quantity && <small className={styles.error} id="portal-quantity-error">{errors.quantity}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Unidad</span><select className={styles.control} name="unit" value={values.unit} onChange={event => update('unit', event.target.value)}><option>Bulto</option><option>Unidad</option><option>m³</option></select></label></div>
-        <button className={styles.optionalToggle} type="button" onClick={() => setShowDetails(open => !open)} aria-expanded={showDetails}><span><SquarePen aria-hidden="true" size={18} /> Agregar una nota o foto <small className={styles.hint}>(opcional)</small></span><span aria-hidden="true">{showDetails ? '−' : '+'}</span></button>
-        {showDetails && <div className={styles.optionalPanel}><label className={styles.field}><span className={styles.fieldLabel}>Observaciones <small className={styles.hint}>opcional</small></span><textarea className={`${styles.control} ${styles.textarea}`} name="notes" value={values.notes} onChange={event => update('notes', event.target.value)} placeholder="Marca, tamaño o instrucciones de entrega" /></label><label className={styles.uploadLabel}><Upload aria-hidden="true" size={20} /><span><b>Adjunta una foto o cotización</b><small>PDF, JPG o PNG · máximo 10 MB</small></span><input type="file" aria-label="Adjuntar una foto o cotización" /></label></div>}
+      </div></> : <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso 2 de 2</p><h2>Describe lo que necesitas.</h2><p>Un ítem por bloque. Si necesitas varios materiales, agrégalos aquí mismo.</p></div><div className={styles.stepBody}>
+        <LineasDePedido lines={values.lines} errors={errors} detalles={detalles} onCampo={updateLinea} onQuitar={quitarLinea} onAlternarDetalle={alternarDetalle} onAgregar={agregarLinea} />
+        <label className={styles.field}><span className={styles.fieldLabel}>Observaciones <small className={styles.hint}>di a dónde va, opcional</small></span><textarea className={`${styles.control} ${styles.textarea}`} name="notes" value={values.notes} onChange={event => update('notes', event.target.value)} maxLength={3000} placeholder="Ej. Torre 2, piso 4" /></label>
+        <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> Fotos y PDF aún no están disponibles en el portal público.</p>
         <div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={() => { setErrors({}); setStep(1); }}><ArrowLeft aria-hidden="true" size={18} /> Volver</button><button className={styles.primaryButton} type="submit">Enviar requisición <ArrowRight aria-hidden="true" size={19} /></button></div>
       </div></>}
     </form>
@@ -151,8 +327,9 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   const [access, setAccess] = useState<PublicAccess | undefined>(), [linkRead, setLinkRead] = useState(false);
   const [accessGranted, setAccessGranted] = useState(false), [sent, setSent] = useState(false), [submitting, setSubmitting] = useState(false);
   const [code, setCode] = useState(''), [phone, setPhone] = useState(''), [accessError, setAccessError] = useState('');
-  const [step, setStep] = useState<1 | 2>(1), [values, setValues] = useState(initialValues), [errors, setErrors] = useState<FieldErrors>({}), [formError, setFormError] = useState(''), [showDetails, setShowDetails] = useState(false);
-  const [publicWorks, setPublicWorks] = useState<PublicWork[]>([]), [worksLoaded, setWorksLoaded] = useState(false);
+  const [step, setStep] = useState<1 | 2>(1), [formError, setFormError] = useState(''), [comprobandoClave, setComprobandoClave] = useState(false);
+  const { values, errors, setErrors, detalles, update, updateLinea, agregarLinea, quitarLinea, alternarDetalle, reiniciar } = useFormularioRequisicion();
+  const [empresas, setEmpresas] = useState<PublicCompany[]>([]), [empresasCargadas, setEmpresasCargadas] = useState(false);
   // EL FRAGMENTO SE QUEDA EN LA URL (2026-09-11). Antes se borraba con `history.replaceState` nada
   // más leerlo, por precaución. La precaución estaba mal dirigida: lo que nunca puede ir en la URL
   // es la CONTRASEÑA, y nunca ha ido — se teclea. El fragmento lleva la obra y el token, que SON el
@@ -181,62 +358,98 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
     });
     return () => { active = false; };
   }, [enabled]);
-  // Enlace general: la obra no viene firmada, hay que ofrecer la lista. Se pide con el token y sin
-  // contraseña (ver app/api/public/works/route.ts); si falla, la lista queda vacía y se dice, en vez
-  // de dejar un selector mudo.
-  // Con token, la lista se pide con el token (como siempre). SIN token —ruta pública— se pide con la
-  // contraseña, y por eso esto espera a que la compuerta se haya pasado: antes no hay con qué pedirla.
-  // Si falla, la lista queda vacía y se dice, en vez de dejar un selector mudo.
+  // La lista de EMPRESAS se pide SIN contraseña ni token: son los nombres de las sociedades del
+  // cliente, que están en la marca y en las facturas. Antes eran obras y había dos caminos (GET con
+  // token para el enlace general, POST con contraseña para la ruta pública); el segundo era un
+  // oráculo de la contraseña y se ha borrado con el endpoint entero.
+  //
+  // Por eso esto ya no espera a la compuerta: no hay nada que la contraseña autorice aquí, y pedirla
+  // antes deja el selector lleno para cuando se llega al paso 1.
+  //
+  // Un enlace POR OBRA no necesita la lista: trae su obra fija y la empresa se deriva de ella. Si la
+  // petición falla, la lista queda vacía y se dice, en vez de dejar un selector mudo.
   useEffect(() => {
     if (!access || access.workId) return;
-    if (!access.token && !accessGranted) return;
     let active = true;
-    const peticion = access.token
-      ? fetch(`/api/public/works?token=${encodeURIComponent(access.token)}`)
-      : fetch('/api/public/works', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
-    peticion
-      .then(response => (response.ok ? response.json() : { works: [] }))
-      .then((body: { works?: PublicWork[] }) => { if (active) setPublicWorks(Array.isArray(body.works) ? body.works : []); })
-      .catch(() => { if (active) setPublicWorks([]); })
-      .finally(() => { if (active) setWorksLoaded(true); });
+    fetch("/api/public/companies")
+      .then(response => (response.ok ? response.json() : { companies: [] }))
+      .then((body: { companies?: PublicCompany[] }) => { if (active) setEmpresas(Array.isArray(body.companies) ? body.companies : []); })
+      .catch(() => { if (active) setEmpresas([]); })
+      .finally(() => { if (active) setEmpresasCargadas(true); });
     return () => { active = false; };
-  }, [access, accessGranted, code]);
-  const update = <K extends keyof RequestValues>(key: K, value: RequestValues[K]) => setValues(current => ({ ...current, [key]: value }));
+  }, [access]);
   // Los valores llegan leídos del formulario, no del estado: la compuerta es no controlada para no
   // perder lo que se teclee antes de hidratar (ver AccessGate). Se guardan en estado AQUÍ, ya
-  // validados, porque los pasos siguientes los necesitan (el teléfono se muestra, la contraseña viaja
-  // en el envío).
+  // validados, porque los pasos siguientes los necesitan: la contraseña vuelve a viajar en el envío.
   // Solo la contraseña abre la compuerta. El teléfono se pide en el paso 1 y se valida allí.
-  const handleAccess = ({ code: claveEscrita }: { code: string }) => { if (claveEscrita.trim().length < 4) { setAccessError('Escribe la contraseña del portal para continuar.'); return; } setCode(claveEscrita); setAccessError(''); setAccessGranted(true); };
+  //
+  // Y LA COMPRUEBA EL SERVIDOR. Antes bastaba con que tuviera cuatro caracteres en el navegador, así
+  // que una contraseña equivocada dejaba entrar, llenar los dos pasos y recibir el 202 neutro de la
+  // radicación: ni requisición ni aviso. Ahora se pregunta en la puerta y se dice qué pasó.
+  //
+  // El envío final SIGUE verificando la contraseña en el servidor (`publicAccess.verify` /
+  // `verifySociety` en el endpoint de radicación). Esto es una cortesía para quien se equivoca, no
+  // una autorización: nada de lo que decida el navegador puede sustituir a esa comprobación.
+  const handleAccess = async ({ code: claveEscrita }: { code: string }) => {
+    const clave = claveEscrita.trim();
+    if (clave.length < 4) { setAccessError('Escribe la contraseña del portal para continuar.'); return; }
+    setAccessError(''); setComprobandoClave(true);
+    try {
+      const response = await fetch('/api/public/access', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: clave }) });
+      // Un 503 es el portal apagado, no una contraseña mala: decir "incorrecta" mandaría a buscar
+      // una contraseña nueva a quien tiene la buena.
+      if (response.status === 503) { setAccessError('El portal no está disponible ahora mismo. Intenta más tarde.'); return; }
+      const cuerpo = (await response.json()) as { ok?: boolean };
+      if (cuerpo.ok !== true) { setAccessError('Contraseña incorrecta. Revísala con quien te la entregó.'); return; }
+      setCode(clave); setAccessGranted(true);
+    } catch { setAccessError('No pudimos comprobar la contraseña. Revisa tu conexión e intenta de nuevo.'); }
+    finally { setComprobandoClave(false); }
+  };
   const validate = (targetStep: 1 | 2) => {
-    const next: FieldErrors = {};
-    if (targetStep === 1) { if (!access?.workId && !values.work) next.work = 'Selecciona la obra.'; if (values.requestor.trim().length < 2) next.requestor = 'Escribe tu nombre.'; if (phone.replace(/[^0-9]/g, '').length < 7) next.phone = 'Escribe tu teléfono para avisarte por WhatsApp.'; }
-    else { if (values.description.trim().length < 1) next.description = 'Describe lo que necesitas.'; if (!values.quantity || Number(values.quantity) <= 0) next.quantity = 'Indica una cantidad mayor que cero.'; if (!values.unit.trim()) next.unit = 'Indica la unidad.'; if (values.productLink && !values.productLink.startsWith('https://')) next.productLink = 'El enlace debe comenzar con https://'; }
+    // Con enlace por obra la empresa ni se pide: ya viene firmada en el fragmento.
+    const next = validarPaso(targetStep, values, phone, !access?.workId);
     setErrors(next); if (Object.keys(next).length) { focusFirstError(next); return false; } return true;
   };
   const nextStep = () => { if (validate(1)) { setErrors({}); setStep(2); } };
-  // requiredDate va con `|| undefined` (mismo idioma que observations, abajo): el esquema HTTP la acepta
-  // OPCIONAL con z.string().date() — enviar '' cuando el campo queda vacío no es "sin fecha", es una
-  // fecha inválida, y .strict() la rechazaba en silencio (el endpoint público siempre responde 202
-  // neutro, así que ese rechazo pasaba desapercibido en vez de fallar de forma visible).
-  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!access || !validate(2)) return; setFormError(''); setSubmitting(true); const payload = { workId: access.workId ?? values.work, code, type: values.type, requiredDate: values.date || undefined, name: values.requestor, phone, observations: values.notes || undefined, items: [{ description: values.description, quantity: Number(values.quantity), unit: values.unit, possibleSupplier: values.supplier || undefined, productLink: values.productLink || undefined }] }; try { const response = await fetch('/api/public/requisitions', { method: 'POST', headers: { 'content-type': 'application/json', ...(access.token ? { 'x-public-link-token': access.token } : {}) }, body: JSON.stringify(payload) }); if (response.status === 202) setSent(true); else if (response.status === 503) setFormError('El servicio de requisiciones no está disponible. Intenta más tarde.'); else setFormError('No pudimos recibir la solicitud. Revisa los campos e intenta otra vez.'); } catch { setFormError('No pudimos conectar con el servicio. Intenta más tarde.'); } finally { setSubmitting(false); } };
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!access || !validate(2)) return;
+    setFormError(''); setSubmitting(true);
+    // TELÉFONO SOLO SI SE ESCRIBIÓ. Mandar `phone: ''` no es "sin teléfono": el esquema exige min(7)
+    // y rechazaría el envío entero, y como el endpoint siempre responde 202 neutro, ese rechazo se
+    // vería exactamente igual que un envío correcto que nunca llega a la bandeja.
+    const telefono = phone.trim();
+    // requiredDate va con `|| undefined` (mismo idioma que observations): el esquema la acepta
+    // OPCIONAL con z.string().date() — enviar '' cuando el campo queda vacío no es "sin fecha", es
+    // una fecha inválida, y .strict() la rechazaría en el mismo silencio del 202.
+    const payload = {
+      // Obra O empresa, exactamente una (lo exige el esquema del endpoint). Con enlace por obra manda
+      // la obra firmada; por la ruta general, la empresa elegida.
+      ...(access.workId ? { workId: access.workId } : { societyId: values.company }),
+      code, type: values.type, requiredDate: values.date || undefined, name: values.requestor,
+      ...(telefono ? { phone: telefono } : {}),
+      observations: values.notes || undefined,
+      items: values.lines.map(linea => ({ description: linea.description, quantity: Number(linea.quantity), unit: linea.unit, possibleSupplier: linea.supplier || undefined, productLink: linea.productLink || undefined })),
+    };
+    try { const response = await fetch('/api/public/requisitions', { method: 'POST', headers: { 'content-type': 'application/json', ...(access.token ? { 'x-public-link-token': access.token } : {}) }, body: JSON.stringify(payload) }); if (response.status === 202) setSent(true); else if (response.status === 503) setFormError('El servicio de requisiciones no está disponible. Intenta más tarde.'); else setFormError('No pudimos recibir la solicitud. Revisa los campos e intenta otra vez.'); } catch { setFormError('No pudimos conectar con el servicio. Intenta más tarde.'); } finally { setSubmitting(false); } };
   if (!linkRead) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`} role="status"><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Validando enlace</div><h1>Preparando el formulario…</h1></section></PortalFrame>;
   if (!access) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`}><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Captura cerrada</div><h1>Este enlace no está habilitado.</h1><p className={styles.accessCopy}>Solicita al responsable de tu obra un enlace vigente. No se creó ninguna requisición ni se aceptaron datos.</p></section></PortalFrame>;
-  if (sent) return <PortalFrame><section className={styles.success}><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>La estamos validando.</h1><p className={styles.successCopy}>Si el enlace, la contraseña y el teléfono corresponden a la obra, la requisición quedará registrada. Por seguridad no mostramos un consecutivo.</p><button className={styles.primaryButton} type="button" onClick={() => { setValues(initialValues()); setErrors({}); setStep(1); setSent(false); setAccessGranted(false); }}>Enviar otra solicitud</button></section></PortalFrame>;
-  if (!accessGranted) return <AccessGate code={code} error={accessError} onSubmit={handleAccess} />;
+  if (sent) return <PortalFrame><section className={styles.success}><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>La estamos validando.</h1><p className={styles.successCopy}>Si el enlace y la contraseña corresponden, la requisición quedará registrada. Por seguridad no mostramos un consecutivo.</p><button className={styles.primaryButton} type="button" onClick={() => { reiniciar(); setStep(1); setSent(false); setAccessGranted(false); }}>Enviar otra solicitud</button></section></PortalFrame>;
+  if (!accessGranted) return <AccessGate code={code} error={accessError} onSubmit={handleAccess} comprobando={comprobandoClave} />;
   return <PortalFrame><StepIntro code="obra autorizada" onChangeAccess={() => setAccessGranted(false)} /><Progress step={step} />
     <form className={styles.stepCard} onSubmit={submit} noValidate>
-      {step === 1 ? <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso 1 de 2</p><h2>¿Para quién y cuándo?</h2><p>Indica el tipo de solicitud, la fecha y tu nombre.</p></div><div className={styles.stepBody}>
+      {step === 1 ? <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso 1 de 2</p><h2>¿Para quién y cuándo?</h2><p>Indica el tipo de solicitud, la empresa y tu nombre.</p></div><div className={styles.stepBody}>
         <fieldset className={styles.fieldset}><legend className={styles.fieldsetLegend}>¿Qué vas a solicitar? <em className={styles.required}>*</em></legend><div className={styles.choiceGrid}><label className={styles.choice}><input type="radio" name="type" value="compra" checked={values.type === 'compra'} onChange={() => update('type', 'compra')} /><span className={styles.choiceIcon}><PackageCheck aria-hidden="true" size={16} /></span>Compra de material</label><label className={styles.choice}><input type="radio" name="type" value="pago" checked={values.type === 'pago'} onChange={() => update('type', 'pago')} /><span className={styles.choiceIcon}><ClipboardList aria-hidden="true" size={16} /></span>Solicitud de pago</label></div></fieldset>
-        <div className={styles.twoColumns}><label className={styles.field}><span className={styles.fieldLabel}>Fecha requerida <small className={styles.hint}>opcional</small></span><input className={styles.control} name="date" type="date" value={values.date} onChange={event => update('date', event.target.value)} aria-invalid={Boolean(errors.date)} aria-describedby={errors.date ? 'portal-date-error' : undefined} />{errors.date && <small className={styles.error} id="portal-date-error">{errors.date}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Tu teléfono <em className={styles.required}>*</em></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="phone" value={phone} onChange={event => setPhone(event.target.value)} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(errors.phone)} aria-describedby={errors.phone ? 'portal-phone-error' : undefined} /></span><small className={styles.hint}>Para avisarte por WhatsApp del avance de tu requisición</small>{errors.phone && <small className={styles.error} id="portal-phone-error">{errors.phone}</small>}</label></div>
-        {!access.workId && <label className={styles.field}><span className={styles.fieldLabel}>Obra <em className={styles.required}>*</em></span><select className={styles.control} name="work" value={values.work} onChange={event => update('work', event.target.value)} disabled={!worksLoaded || publicWorks.length === 0} aria-invalid={Boolean(errors.work)} aria-describedby={errors.work ? 'portal-work-error' : undefined}><option value="" disabled>{worksLoaded ? (publicWorks.length ? 'Selecciona una obra' : 'No hay obras habilitadas') : 'Cargando obras…'}</option>{publicWorks.map(work => <option key={work.id} value={work.id}>{work.name}</option>)}</select>{errors.work && <small className={styles.error} id="portal-work-error">{errors.work}</small>}</label>}
+        <div className={styles.twoColumns}><label className={styles.field}><span className={styles.fieldLabel}>Fecha requerida <small className={styles.hint}>opcional</small></span><input className={styles.control} name="date" type="date" value={values.date} onChange={event => update('date', event.target.value)} aria-invalid={Boolean(errors.date)} aria-describedby={errors.date ? 'portal-date-error' : undefined} />{errors.date && <small className={styles.error} id="portal-date-error">{errors.date}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Tu teléfono <small className={styles.hint}>opcional</small></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="phone" value={phone} onChange={event => setPhone(event.target.value)} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(errors.phone)} aria-describedby={errors.phone ? 'portal-phone-error' : undefined} /></span><small className={styles.hint}>Opcional: para avisarte por WhatsApp del avance. Sin él la radicamos igual, pero no podremos avisarte.</small>{errors.phone && <small className={styles.error} id="portal-phone-error">{errors.phone}</small>}</label></div>
+        {!access.workId && <SelectorEmpresa empresas={empresas} cargadas={empresasCargadas} valor={values.company} error={errors.company} onChange={valor => update('company', valor)} />}
         <label className={styles.field}><span className={styles.fieldLabel}>Tu nombre <em className={styles.required}>*</em></span><input className={styles.control} name="requestor" value={values.requestor} onChange={event => update('requestor', event.target.value)} autoComplete="name" aria-invalid={Boolean(errors.requestor)} aria-describedby={errors.requestor ? 'portal-requestor-error' : undefined} />{errors.requestor && <small className={styles.error} id="portal-requestor-error">{errors.requestor}</small>}</label>
         <div className={`${styles.actionRow} ${styles.actionRowSingle}`}><button className={styles.primaryButton} type="button" onClick={nextStep}>Continuar a material <ArrowRight aria-hidden="true" size={19} /></button></div>
-      </div></> : <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso 2 de 2</p><h2>Describe el material.</h2><p>Con una descripción, cantidad y unidad podemos recibir la solicitud.</p></div><div className={styles.stepBody}>
-        <label className={styles.field}><span className={styles.fieldLabel}>¿Qué necesitas? <em className={styles.required}>*</em></span><input className={styles.control} name="description" value={values.description} onChange={event => update('description', event.target.value)} maxLength={500} placeholder="Ej. 20 bultos de cemento gris" aria-invalid={Boolean(errors.description)} aria-describedby={errors.description ? 'portal-description-error' : undefined} />{errors.description && <small className={styles.error} id="portal-description-error">{errors.description}</small>}</label>
-        <div className={styles.twoColumns}><label className={styles.field}><span className={styles.fieldLabel}>Cantidad <em className={styles.required}>*</em></span><input className={styles.control} name="quantity" type="number" inputMode="decimal" min="0.001" step="0.001" value={values.quantity} onChange={event => update('quantity', event.target.value)} aria-invalid={Boolean(errors.quantity)} aria-describedby={errors.quantity ? 'portal-quantity-error' : undefined} />{errors.quantity && <small className={styles.error} id="portal-quantity-error">{errors.quantity}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Unidad <em className={styles.required}>*</em></span><input className={styles.control} name="unit" value={values.unit} onChange={event => update('unit', event.target.value)} maxLength={40} aria-invalid={Boolean(errors.unit)} aria-describedby={errors.unit ? 'portal-unit-error' : undefined} />{errors.unit && <small className={styles.error} id="portal-unit-error">{errors.unit}</small>}</label></div>
-        <button className={styles.optionalToggle} type="button" onClick={() => setShowDetails(open => !open)} aria-expanded={showDetails}><span><SquarePen aria-hidden="true" size={18} /> Agregar detalles <small className={styles.hint}>(opcional)</small></span><span aria-hidden="true">{showDetails ? '−' : '+'}</span></button>
-        {showDetails && <div className={styles.optionalPanel}><label className={styles.field}><span className={styles.fieldLabel}>Posible proveedor <small className={styles.hint}>opcional</small></span><input className={styles.control} name="supplier" value={values.supplier} onChange={event => update('supplier', event.target.value)} maxLength={240} /></label><label className={styles.field}><span className={styles.fieldLabel}>Enlace del producto <small className={styles.hint}>HTTPS opcional</small></span><input className={styles.control} name="productLink" type="url" inputMode="url" value={values.productLink} onChange={event => update('productLink', event.target.value)} maxLength={2048} placeholder="https://…" aria-invalid={Boolean(errors.productLink)} aria-describedby={errors.productLink ? 'portal-link-error' : undefined} />{errors.productLink && <small className={styles.error} id="portal-link-error">{errors.productLink}</small>}</label><label className={styles.field}><span className={styles.fieldLabel}>Observaciones <small className={styles.hint}>di a dónde va, opcional</small></span><textarea className={`${styles.control} ${styles.textarea}`} name="notes" value={values.notes} onChange={event => update('notes', event.target.value)} maxLength={3000} placeholder="Ej. Torre 2, piso 4" /></label><p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> Fotos y PDF aún no están disponibles en el portal público.</p></div>}
+      </div></> : <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso 2 de 2</p><h2>Describe lo que necesitas.</h2><p>Un ítem por bloque. Si necesitas varios materiales, agrégalos aquí mismo.</p></div><div className={styles.stepBody}>
+        <LineasDePedido lines={values.lines} errors={errors} detalles={detalles} onCampo={updateLinea} onQuitar={quitarLinea} onAlternarDetalle={alternarDetalle} onAgregar={agregarLinea} />
+        {/* Las observaciones son de la REQUISICIÓN, no de la línea: dicen a dónde entregar y para
+            cuándo, y repetirlas por ítem sería pedir lo mismo tantas veces como materiales haya. */}
+        <label className={styles.field}><span className={styles.fieldLabel}>Observaciones <small className={styles.hint}>di a dónde va, opcional</small></span><textarea className={`${styles.control} ${styles.textarea}`} name="notes" value={values.notes} onChange={event => update('notes', event.target.value)} maxLength={3000} placeholder="Ej. Torre 2, piso 4" /></label>
+        <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> Fotos y PDF aún no están disponibles en el portal público.</p>
         {formError && <p className={styles.error} role="alert">{formError}</p>}<div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={() => { setErrors({}); setStep(1); }}><ArrowLeft aria-hidden="true" size={18} /> Volver</button><button className={styles.primaryButton} type="submit" disabled={submitting}>{submitting ? 'Enviando…' : 'Enviar requisición'} <ArrowRight aria-hidden="true" size={19} /></button></div>
       </div></>}
     </form>

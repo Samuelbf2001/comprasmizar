@@ -8,18 +8,22 @@ import { PostgresPorts, sharedPostgres } from "./postgres-repositories";
 import { normalizeCoPhone } from "./phone";
 
 /**
- * Obras que aceptan radicación pública, para el selector del formulario general.
+ * Empresas que puede elegir quien radica por el portal.
  *
- * Se entrega con el token del enlace y SIN la contraseña, a propósito: pedir la contraseña aquí
- * convertiría este endpoint en un oráculo (lista llena = contraseña correcta), que es justo lo que
- * evita la respuesta neutra 202 del endpoint de radicación. El precio es que quien tenga el enlace
- * ve los nombres de las obras activas antes de escribir la contraseña; son nombres de edificios, no
- * secretos, y radicar sigue exigiendo contraseña y teléfono.
+ * Reunión 2026-08-31 y recordatorio de Ernesto (11-sep-2026: "en el formulario público aparece
+ * seleccionar obra y ya dijimos era empresa"): el solicitante elige EMPRESA, no obra. La obra es el
+ * centro de costo y la asigna el revisor, que es quien sabe a qué contrato cargar el gasto. El Flow
+ * de WhatsApp ya funcionaba así; el portal se había quedado atrás.
+ *
+ * Solo sociedades ACTIVAS: lo que se OFRECE tiene que ser exactamente lo que el endpoint de
+ * radicación ACEPTA (ver `verifySociety` en postgres-repositories.ts). Una lista más ancha que la
+ * aceptada sería una invitación a un 202 neutro que no crea nada.
  */
-export async function listPublicWorks(databaseUrl = runtimeEnv().DATABASE_URL): Promise<Array<{ id: string; name: string }>> {
+export async function listPublicCompanies(databaseUrl = runtimeEnv().DATABASE_URL): Promise<Array<{ id: string; name: string }>> {
   const sql = sharedPostgres(databaseUrl);
+  // `sociedades` marca la vigencia con `activa boolean`, no con el enum `estado` que usan `obras`.
   const rows = await sql<{ id: string; nombre: string }[]>`
-    select id, nombre from obras where public_submission_enabled and estado = 'activa' order by nombre`;
+    select id, nombre from sociedades where activa order by nombre`;
   return rows.map((row) => ({ id: String(row.id), name: String(row.nombre) }));
 }
 
@@ -29,9 +33,12 @@ export async function listPublicWorks(databaseUrl = runtimeEnv().DATABASE_URL): 
  * misma función que usa el endpoint de radicación: el bcrypt nunca sale de Postgres y no hay dos
  * criterios que puedan divergir.
  *
- * Se necesita desde que la ruta del portal es pública (2026-09-11) y hay que decidir con la sola
- * contraseña si se enseña la lista de obras. Cualquier fallo devuelve `false`: sin base no se enseña
- * nada.
+ * La usa `POST /api/public/access`, que es lo que permite a la compuerta del portal decir
+ * «contraseña incorrecta» en la puerta. Antes la compuerta solo miraba en el navegador que la
+ * contraseña tuviera cuatro caracteres, así que quien se equivocaba llenaba los dos pasos y recibía
+ * el 202 neutro de la radicación: ni requisición ni aviso de que algo había fallado.
+ *
+ * Cualquier fallo devuelve `false`: ante la duda, no se pasa.
  */
 export async function verificarCodigoPublico(code: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<boolean> {
   const sql = sharedPostgres(databaseUrl);

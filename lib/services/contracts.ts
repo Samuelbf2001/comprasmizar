@@ -85,7 +85,15 @@ export interface ConsecutiveRepository { take(prefix: "REQ" | "OC" | "OP", year:
  * 2026-09-11: «que el enlace no necesite un token, sea ruta pública»). En ese caso la única llave es
  * la contraseña del portal; el token, cuando viene, sigue acotando el acceso a una obra concreta.
  */
-export interface PublicAccessVerifier { verify(workId: string, linkToken: string | null, code: string): Promise<boolean>; }
+export interface PublicAccessVerifier {
+  verify(workId: string, linkToken: string | null, code: string): Promise<boolean>;
+  /**
+   * Igual que `verify`, pero para quien elige EMPRESA en vez de obra (portal sin enlace por obra).
+   * Un token por obra NO sirve aquí: firma una obra concreta y no puede autorizar una sociedad
+   * cualquiera. Solo se acepta el token general, o ninguno — en ambos casos la llave es la contraseña.
+   */
+  verifySociety(societyId: string, linkToken: string | null, code: string): Promise<boolean>;
+}
 export interface FeatureRepository { isEnabled(name: string): Promise<boolean>; }
 export interface ItemCatalogRepository { propose(description: string, unit: string, createdBy?: string): Promise<{ id: string; created: boolean }>; }
 export type CatalogKind = "works" | "tags" | "items" | "suppliers" | "societies" | "users" | "requesters";
