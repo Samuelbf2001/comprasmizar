@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Sql } from "postgres";
-import { DomainError } from "../../lib/domain";
+import { DomainError, type Actor } from "../../lib/domain";
 import { PostgresPorts } from "../../lib/infrastructure/postgres-repositories";
 import { decodeCursor, encodeCursor } from "../../lib/services/list-query";
 
@@ -228,16 +230,21 @@ describe("PostgresPorts.getRequisition / listVisibleRequisitions — aprobador_i
     const select = sql.calls.find((call) => /^select .* from requisiciones/i.test(call.text));
     expect(select!.text).not.toMatch(/etiquetas/i);
   });
-  // La bandeja del aprobador filtra por r.aprobador_id (columna propia), no por un join con etiquetas —
-  // dos requisiciones con la MISMA etiqueta pero aprobadores distintos ya no se confunden.
-  it("un actor con rol aprobador lista por r.aprobador_id, sin join con etiquetas", async () => {
+  // La bandeja del aprobador no sale de un join con etiquetas — dos requisiciones con la MISMA
+  // etiqueta pero aprobadores distintos ya no se confunden.
+  //
+  // Desde el aprobador por ítem (11-sep-2026) el criterio es `public.es_aprobador_de`: la cabecera
+  // suya O algún ítem suyo. Se afirma la FUNCIÓN y no el predicado a mano a propósito — escrito a
+  // mano estuvo copiado trece veces y se escaparon dos consultas (órdenes y gastos), con el
+  // resultado de que un aprobador por ítem veía la requisición y luego una lista de órdenes vacía.
+  it("un actor con rol aprobador lista con es_aprobador_de, sin join con etiquetas", async () => {
     const sql = fakeSql();
     const ports = new PostgresPorts(sql);
     await ports.listVisibleRequisitions({ id: "aprobador-1", roles: ["aprobador"] });
     const select = sql.calls.find((call) => /^select r\.\* from requisiciones/i.test(call.text));
     expect(select).toBeDefined();
     expect(select!.text).not.toMatch(/etiquetas/i);
-    expect(select!.text).toMatch(/aprobador_id/);
+    expect(select!.text).toMatch(/es_aprobador_de/);
     expect(select!.values).toContain("aprobador-1");
   });
   it("un revisor/admin ve todas las requisiciones sin filtrar por aprobador_id ni etiquetas", async () => {
@@ -334,11 +341,11 @@ describe("PostgresPorts.listVisibleRequisitions con query — filtros y paginaci
     const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
     const ports = new PostgresPorts(sql);
     await ports.listVisibleRequisitions({ id: "nelson", roles: ["aprobador"] }, { limit: 10 });
-    expect(selectOf(sql)!.text).toMatch(/r\.aprobador_id = \?/);
+    expect(selectOf(sql)!.text).toMatch(/es_aprobador_de\(r\.id, \?\)/);
     await ports.listVisibleRequisitions({ id: "sol", roles: ["solicitante"] }, { limit: 10 });
     expect(selectOf(sql)!.text).toMatch(/r\.solicitante_id = \?/);
     await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
-    expect(selectOf(sql)!.text).not.toMatch(/aprobador_id = \?|solicitante_id = \?/);
+    expect(selectOf(sql)!.text).not.toMatch(/es_aprobador_de|solicitante_id = \?/);
   });
 
   it("decodifica el cursor entrante y lo aplica como comparación de tupla (created_at, id) < (cursor)", async () => {
@@ -487,7 +494,7 @@ describe("PostgresPorts — agregados del dashboard (H3): byStatus, pendingOrder
     const byStatus = await new PostgresPorts(sql).dashboardByStatus({ id: "nelson", roles: ["aprobador"] });
     expect(byStatus).toEqual({ enviada: 2, en_revision: 0, en_aprobacion: 0, aprobada: 1, devuelta: 0, declinada: 0 });
     const select = sql.calls.find((call) => /^select r\.estado, count/i.test(call.text))!;
-    expect(select.text).toMatch(/r\.aprobador_id = \?/);
+    expect(select.text).toMatch(/es_aprobador_de\(r\.id, \?\)/);
   });
 
   it("dashboardPendingCount cuenta órdenes generada/no_cumplida con visibilidad por actor", async () => {
@@ -509,5 +516,43 @@ describe("PostgresPorts — agregados del dashboard (H3): byStatus, pendingOrder
     const totals = sql.calls.find((call) => /^select coalesce\(sum/i.test(call.text))!;
     expect(totals.values).toContain("2026-08-01");
     expect(totals.text).toMatch(/g\.periodo = \?::date/);
+  });
+});
+
+// UNA SOLA DEFINICIÓN DE "QUÉ VE UN APROBADOR", y una prueba que lo vigila.
+//
+// Contexto, porque la prueba sin él no se entiende: el aprobador por ítem (11-sep-2026) amplió esa
+// visibilidad de "la cabecera es mía" a "la cabecera es mía O algún ítem es mío". El predicado estaba
+// escrito A MANO en trece consultas, se ampliaron once y se escaparon dos —listVisibleOrders y
+// listVisibleExpenses—, así que un aprobador por ítem veía su requisición y, al aprobarla, una lista
+// de órdenes y de gastos vacías. No lo cazó la suite: lo cazó una prueba de humo contra producción.
+//
+// El arreglo de fondo no fue parchear las dos, fue quitar las trece copias: ahora todas llaman a
+// `public.es_aprobador_de`, que vive en la migración 202609110004 y que el arnés SQL ya comprueba
+// contra Postgres real (cabecera, ítem y ajeno). Estas dos pruebas son el cierre: una comprueba las
+// dos consultas que se escaparon, la otra impide que vuelva a haber copias.
+describe("visibilidad del aprobador: una sola definición", () => {
+  const listasDelAprobador: Array<[string, (ports: PostgresPorts, actor: Actor) => Promise<unknown>]> = [
+    ["listVisibleRequisitions", (ports, actor) => ports.listVisibleRequisitions(actor)],
+    ["listVisibleOrders", (ports, actor) => ports.listVisibleOrders(actor)],
+    ["listVisibleExpenses", (ports, actor) => ports.listVisibleExpenses(actor)],
+  ];
+
+  it.each(listasDelAprobador)("%s acota por es_aprobador_de, no por un predicado propio", async (_nombre, llamar) => {
+    const sql = fakeSql();
+    await llamar(new PostgresPorts(sql), { id: "juliana", roles: ["aprobador"] });
+    const consultas = sql.calls.filter((call) => /requisiciones/i.test(call.text));
+    expect(consultas.length).toBeGreaterThan(0);
+    for (const consulta of consultas) {
+      expect(consulta.text).toMatch(/es_aprobador_de/);
+      expect(consulta.values).toContain("juliana");
+    }
+  });
+
+  it("no queda ninguna copia a mano del predicado en el repositorio", () => {
+    // Lo que falló no fue el criterio, fue tenerlo trece veces: escrito trece veces, la pregunta no es
+    // si se olvidará una, es cuál. Esta prueba es barata y habría señalado las dos que se escaparon.
+    const fuente = readFileSync(resolve(process.cwd(), "lib/infrastructure/postgres-repositories.ts"), "utf8");
+    expect(fuente).not.toMatch(/r\.aprobador_id\s*=\s*\$\{actor\.id\}/);
   });
 });
