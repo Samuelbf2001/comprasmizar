@@ -76,5 +76,6 @@ jobs:
           build-args: |
             NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL || 'https://comprasmizar.sixteam.pro' }}
             NEXT_PUBLIC_DEMO_MODE=false
+            APP_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

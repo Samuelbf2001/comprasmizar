@@ -26,6 +26,11 @@ RUN npm run build
 
 FROM node:24-alpine AS runner
 WORKDIR /app
+# Commit que corre, para que /api/health lo informe y "qué hay desplegado" se responda con un curl y
+# no comparando mensajes. Variable de ejecución a propósito (NO NEXT_PUBLIC_): se lee cuando llega la
+# petición, y si la build no la recibe el health dice null en vez de mentir.
+ARG APP_COMMIT=""
+ENV APP_COMMIT=$APP_COMMIT
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
