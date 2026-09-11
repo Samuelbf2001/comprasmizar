@@ -10,12 +10,15 @@ const requester = { id: "requester", roles: ["solicitante"] as const };
 const reviewer = { id: "reviewer", roles: ["revisor"] as const };
 const accountant = { id: "accountant", roles: ["contabilidad"] as const };
 const approver = { id: "approver", roles: ["aprobador"] as const };
+// Aprobador POR ÍTEM: no es el de cabecera, decide una línea. Debe poder leer los soportes.
+const itemApprover = { id: "item-approver", roles: ["aprobador"] as const };
+const strangerApprover = { id: "stranger-approver", roles: ["aprobador"] as const };
 const upload = { type: "soporte" as const, name: "Soporte Ágil.pdf", mimeType: "application/pdf", sizeBytes: 128 };
 
 function fixture(options: { info?: { sizeBytes: number; mimeType: string } | null; status?: "enviada" | "en_revision" } = {}) {
   const parents = new Map<string, AttachmentParent>([
-    [`requisicion:${requisitionId}`, { entity: "requisicion", id: requisitionId, requesterId: requester.id, requisitionStatus: options.status ?? "enviada", approverId: approver.id }],
-    [`requisicion_item:${itemId}`, { entity: "requisicion_item", id: itemId, requesterId: requester.id, requisitionStatus: options.status ?? "enviada", approverId: approver.id }],
+    [`requisicion:${requisitionId}`, { entity: "requisicion", id: requisitionId, requesterId: requester.id, requisitionStatus: options.status ?? "enviada", approverId: approver.id, itemApproverIds: [itemApprover.id] }],
+    [`requisicion_item:${itemId}`, { entity: "requisicion_item", id: itemId, requesterId: requester.id, requisitionStatus: options.status ?? "enviada", approverId: approver.id, itemApproverIds: [itemApprover.id] }],
     [`caja_menor:${cashId}`, { entity: "caja_menor", id: cashId }],
   ]);
   const attachments = new Map<string, PrivateAttachment>(), audits: unknown[] = [], signedPaths: string[] = [];
@@ -74,6 +77,19 @@ describe("PrivateAttachmentService", () => {
     await state.service.complete("requisicion", requisitionId, attachmentId, upload, reviewer);
     await expect(state.service.list("requisicion", requisitionId, approver)).resolves.toMatchObject({ attachments: [{ id: attachmentId }] });
     await expect(state.service.prepare("requisicion", requisitionId, upload, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  // Aprobador POR ÍTEM (11-sep-2026): decide una línea sin ser el de cabecera. Sin esto, abría el
+  // enlace del Flow, la pantalla pedía `/detail` y recibía 403 en los soportes — la requisición se le
+  // mostraba en la lista pero no podía abrirla. Un aprobador ajeno, ni ítem ni cabecera, sigue fuera.
+  it("permits a per-item approver to read supports (list and listForRequisition) and keeps a stranger out", async () => {
+    const state = fixture();
+    await state.service.complete("requisicion", requisitionId, attachmentId, upload, reviewer);
+    await expect(state.service.list("requisicion", requisitionId, itemApprover)).resolves.toMatchObject({ attachments: [{ id: attachmentId }] });
+    await expect(state.service.listForRequisition(requisitionId, itemApprover)).resolves.toMatchObject({ attachments: [{ id: attachmentId }] });
+    await expect(state.service.prepare("requisicion", requisitionId, upload, itemApprover)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.list("requisicion", requisitionId, strangerApprover)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.listForRequisition(requisitionId, strangerApprover)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("HEAD-verifies MIME/size before metadata creation and finalizes safely under retries", async () => {

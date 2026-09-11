@@ -7,7 +7,13 @@ const MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image
 const PREFIX: Record<AttachmentEntity, string> = { requisicion: "requisiciones", requisicion_item: "requisicion-items", caja_menor: "caja-menor" };
 
 export interface PrivateAttachmentUpload { type: (typeof PRIVATE_ATTACHMENT_TYPES)[number]; name: string; mimeType: string; sizeBytes: number; }
-export interface AttachmentParent { entity: AttachmentEntity; id: string; requesterId?: string; requisitionStatus?: RequisitionStatus; approverId?: string; }
+// `approverId` es el aprobador de CABECERA (requisiciones.aprobador_id) e `itemApproverIds` los
+// aprobadores POR ÍTEM (requisicion_items.aprobador_id, 11-sep-2026). Los dos importan para leer:
+// un aprobador por ítem tiene que poder abrir el detalle de la requisición que le toca decidir, y
+// sin la segunda lista `assertRead` lo rechazaba con 403 — el mismo hueco que la visibilidad del
+// repositorio, en la ACL de soportes. Es la MISMA regla que la consulta de visibilidad (cabecera O
+// un ítem suyo).
+export interface AttachmentParent { entity: AttachmentEntity; id: string; requesterId?: string; requisitionStatus?: RequisitionStatus; approverId?: string; itemApproverIds?: string[]; }
 export interface PrivateAttachmentRepository {
   getParent(entity: AttachmentEntity, entityId: string): Promise<AttachmentParent | null>;
   list(entity: AttachmentEntity, entityId: string): Promise<PrivateAttachment[]>;
@@ -44,7 +50,7 @@ export class PrivateAttachmentService {
   private async assertRead(parent: AttachmentParent, actor: Actor): Promise<void> {
     if (actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || actor.roles.includes("contabilidad")) return;
     if ((parent.entity === "requisicion" || parent.entity === "requisicion_item") && parent.requesterId === actor.id && actor.roles.includes("solicitante")) return;
-    if ((parent.entity === "requisicion" || parent.entity === "requisicion_item") && parent.approverId === actor.id && actor.roles.includes("aprobador")) return;
+    if ((parent.entity === "requisicion" || parent.entity === "requisicion_item") && actor.roles.includes("aprobador") && (parent.approverId === actor.id || (parent.itemApproverIds?.includes(actor.id) ?? false))) return;
     throw new DomainError("FORBIDDEN", "No puede consultar estos soportes");
   }
   private async assertWrite(parent: AttachmentParent, actor: Actor): Promise<void> {
