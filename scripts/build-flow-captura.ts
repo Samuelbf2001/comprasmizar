@@ -1,5 +1,5 @@
 /**
- * Genera `requisicion-v2.flow.json`, el Flow de captura v2.
+ * Genera `requisicion-captura.flow.json`, el Flow de captura v2.
  *
  * POR QUÉ SE GENERA Y NO SE ESCRIBE A MANO. El v1 tenía tres pantallas de artículo; el v2 tiene
  * ocho, y cada pantalla debe DECLARAR en su `data` todo lo que recibe y REENVIARLO en el `payload`
@@ -59,10 +59,26 @@ export const MAX_ITEMS = 8;
  */
 const ORDINAL = ["UNO", "DOS", "TRES", "CUATRO", "CINCO", "SEIS", "SIETE", "OCHO"];
 const idArticulo = (k: number) => `ARTICULO_${ORDINAL[k - 1]}`;
-export const RUTA_FLOW_V2 = resolve("integrations/whatsapp-flow/requisicion-v2.flow.json");
+export const RUTA_FLOW_CAPTURA = resolve("integrations/whatsapp-flow/requisicion-captura.flow.json");
 
 /** Campos escalares de un artículo. La foto va aparte: no se encadena (ver abajo). */
+/** Campos de texto de un artículo. La foto va aparte porque no es una cadena (ver `CAMPO_FOTO`). */
 const CAMPOS_ITEM = ["catalogo", "descripcion", "cantidad", "unidad", "proveedor", "link"];
+
+/**
+ * La foto también se encadena, y esto no es un detalle: el v2 la perdió.
+ *
+ * Al quitar las referencias entre pantallas (`${screen.ARTICULO_UNO.form.foto}`) para arreglar el
+ * resumen, el `complete` se quedó sin la única vía que tenía para leer las fotos, mientras las ocho
+ * pantallas seguían mostrando el `PhotoPicker`. Resultado en obra: el maestro toma la foto, el Flow
+ * la acepta, la requisición se crea sin ella y nadie recibe un error.
+ *
+ * Se dejó fuera del encadenado por miedo al tamaño del payload. Era un miedo infundado: el valor de
+ * un `PhotoPicker` es una REFERENCIA (media id + metadatos), no la imagen — `firstEvidenceMediaId`
+ * (lib/infrastructure/nfm-reply-adapter.ts) lee `value[0].id` y la descarga después por el proxy de
+ * Kapso. Encadenarla cuesta unos cientos de bytes por artículo.
+ */
+const CAMPO_FOTO = "foto";
 
 const UNIDADES = [
   ["unidad", "Unidad"], ["bulto", "Bulto"], ["kg", "Kilogramo (kg)"], ["lt", "Litro (L)"],
@@ -91,7 +107,9 @@ function cabeceraData() {
 /** Claves de los artículos 1..n tal como se declaran al RECIBIRLAS. */
 function itemsData(n: number) {
   const data: Record<string, unknown> = {};
-  for (let k = 1; k <= n; k += 1) for (const campo of CAMPOS_ITEM) data[`item_${k}_${campo}`] = textoRecibido("");
+  for (let k = 1; k <= n; k += 1) {
+    for (const campo of CAMPOS_ITEM) data[`item_${k}_${campo}`] = textoRecibido("");
+  }
   return data;
 }
 
@@ -101,7 +119,9 @@ function reenvioCabecera() {
 }
 function reenvioItems(n: number) {
   const payload: Record<string, string> = {};
-  for (let k = 1; k <= n; k += 1) for (const campo of CAMPOS_ITEM) payload[`item_${k}_${campo}`] = `\${data.item_${k}_${campo}}`;
+  for (let k = 1; k <= n; k += 1) {
+    for (const campo of CAMPOS_ITEM) payload[`item_${k}_${campo}`] = `\${data.item_${k}_${campo}}`;
+  }
   return payload;
 }
 /** Lo que la pantalla de artículo k aporta: sus propios campos, leídos de `form`. */
@@ -123,8 +143,10 @@ function aporteItem(k: number) {
  * los artículos sin descripción, de modo que llegar con huecos es inocuo.
  */
 function itemsEnBlanco(desde: number) {
-  const payload: Record<string, string> = {};
-  for (let k = desde; k <= MAX_ITEMS; k += 1) for (const campo of CAMPOS_ITEM) payload[`item_${k}_${campo}`] = "";
+  const payload: Record<string, unknown> = {};
+  for (let k = desde; k <= MAX_ITEMS; k += 1) {
+    for (const campo of CAMPOS_ITEM) payload[`item_${k}_${campo}`] = "";
+  }
   return payload;
 }
 
@@ -224,7 +246,21 @@ function pantallaResumen() {
   // El `complete` se arma con `${data.*}`, no con referencias entre pantallas: llega aquí ya
   // encadenado, así que no hace falta —ni conviene— volver a mirar hacia atrás.
   const payload: Record<string, string> = { type: "${data.tipo_solicitud}", societyId: "${data.empresa}", requiredDate: "${data.fecha_requerida}", observations: "${data.observaciones}" };
-  for (let k = 1; k <= MAX_ITEMS; k += 1) for (const campo of CAMPOS_ITEM) payload[`item_${k}_${campo}`] = `\${data.item_${k}_${campo}}`;
+  // LA FOTO ES LA ÚNICA EXCEPCIÓN AL ENCADENADO, y no por elección: Meta lo prohíbe.
+  //
+  //   "The value of PhotoPicker component is not allowed in the payload of navigate action."
+  //
+  // Es decir, una foto no puede viajar de pantalla en pantalla. La única forma de que llegue al
+  // envío es leerla donde se tomó, con una referencia entre pantallas — que el `complete` SÍ admite,
+  // porque no es un `navigate`. Es exactamente lo que hacía el v1.
+  //
+  // El v2 la perdió: al quitar las referencias entre pantallas para arreglar el resumen se llevó por
+  // delante la única vía de la foto, mientras las ocho pantallas seguían ofreciendo el PhotoPicker.
+  // El maestro tomaba la foto, la requisición se creaba sin ella, y no había error por ningún lado.
+  for (let k = 1; k <= MAX_ITEMS; k += 1) {
+    for (const campo of CAMPOS_ITEM) payload[`item_${k}_${campo}`] = `\${data.item_${k}_${campo}}`;
+    payload[`item_${k}_${CAMPO_FOTO}`] = `\${screen.${idArticulo(k)}.form.${CAMPO_FOTO}}`;
+  }
 
   const hijos: ComponenteFlow[] = [
     { type: "TextHeading", text: "Revisa antes de enviar" },
@@ -262,7 +298,7 @@ export function construirFlow(): FlowCaptura {
 /**
  * Este módulo es DOS cosas: un guion que escribe el JSON y una biblioteca que la prueba importa
  * para comparar. Sin esta guarda hacía las dos a la vez: importarlo desde el test REESCRIBÍA
- * `requisicion-v2.flow.json`, así que correr la suite dejaba el árbol sucio y llegó a impedir
+ * `requisicion-captura.flow.json`, así que correr la suite dejaba el árbol sucio y llegó a impedir
  * cambiar de rama en mitad de una revisión. Un `import` no puede tener efectos sobre el disco.
  */
 const ejecutadoComoGuion = (process.argv[1] ?? "").replace(/\\/g, "/").endsWith("scripts/build-flow-captura.ts");
@@ -272,13 +308,13 @@ if (ejecutadoComoGuion) {
   if (process.argv.includes("--check")) {
     // Se normalizan los finales de línea: en Windows el archivo puede estar en CRLF y la
     // comparación fallaría por eso, que nunca es el problema que interesa.
-    if (readFileSync(RUTA_FLOW_V2, "utf8").replace(/\r\n/g, "\n") !== json) {
-      process.stderr.write("requisicion-v2.flow.json no coincide con el generador. Ejecuta: npx tsx scripts/build-flow-captura.ts\n");
+    if (readFileSync(RUTA_FLOW_CAPTURA, "utf8").replace(/\r\n/g, "\n") !== json) {
+      process.stderr.write("requisicion-captura.flow.json no coincide con el generador. Ejecuta: npx tsx scripts/build-flow-captura.ts\n");
       process.exit(1);
     }
-    process.stdout.write("requisicion-v2.flow.json al día\n");
+    process.stdout.write("requisicion-captura.flow.json al día\n");
   } else {
-    writeFileSync(RUTA_FLOW_V2, json, "utf8");
-    process.stdout.write(`escrito ${RUTA_FLOW_V2} (${construirFlow().screens.length} pantallas, ${MAX_ITEMS} artículos)\n`);
+    writeFileSync(RUTA_FLOW_CAPTURA, json, "utf8");
+    process.stdout.write(`escrito ${RUTA_FLOW_CAPTURA} (${construirFlow().screens.length} pantallas, ${MAX_ITEMS} artículos)\n`);
   }
 }

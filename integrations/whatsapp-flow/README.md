@@ -15,14 +15,14 @@ proxy de Kapso. Antes de este cambio solo existía el receptor del webhook
 - `requisicion.flow.json` — Flow de captura **v1**, publicado (`1972861836748301`). Se conserva
   mientras el v2 no esté en producción; no se le hacen cambios (Meta no deja editar un Flow
   publicado).
-- `requisicion-v2.flow.json` — Flow de captura **v2**, el vigente a partir de ahora.
+- `requisicion-captura.flow.json` — Flow de captura **v2**, el vigente a partir de ahora.
   **GENERADO: no se edita a mano.** Su fuente es `../../scripts/build-flow-captura.ts`; una prueba
   compara byte a byte que no se separen.
 - `aprobacion.flow.json` — fuente de verdad del Flow de aprobación (misma regla).
 - `../../scripts/publish-whatsapp-flow.ts` — crea el Flow (si no existe, por nombre)
   o actualiza su Flow JSON (si ya existe). Siempre dentro del estado `DRAFT`.
   Recibe cuál de los tres: `requisicion` (v1, por defecto), `requisicion_v2` o `aprobacion`.
-- `../../scripts/build-flow-captura.ts` — genera `requisicion-v2.flow.json`. Se ejecuta con
+- `../../scripts/build-flow-captura.ts` — genera `requisicion-captura.flow.json`. Se ejecuta con
   `npx tsx scripts/build-flow-captura.ts`; con `--check` no escribe y falla si el JSON commiteado
   difiere.
 - `../../tests/unit/whatsapp-flow.test.ts` y `../../tests/unit/approval-flow.test.ts` —

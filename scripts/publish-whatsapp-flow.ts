@@ -32,12 +32,17 @@ import { resolve } from "node:path";
  * `requisicion` sigue siendo el valor por defecto para no romper el comando ya documentado.
  */
 const FLOWS = {
-  // El Flow de captura VIGENTE (`1076158778395724`, publicado el 2026-09-11). `requisicion` apunta
-  // aquí para que el comando por defecto, el documentado y el que escriba cualquiera de memoria
-  // toquen siempre el bueno. El JSON lo genera `scripts/build-flow-captura.ts`; no se edita a mano.
-  requisicion: { name: "Requisición de obra – Mizar v2", path: "integrations/whatsapp-flow/requisicion-v2.flow.json" },
-  // Alias explícito, por si alguien lo escribe así siguiendo un mensaje o un commit antiguo.
-  requisicion_v2: { name: "Requisición de obra – Mizar v2", path: "integrations/whatsapp-flow/requisicion-v2.flow.json" },
+  /**
+   * El Flow de captura VIGENTE. `requisicion` apunta siempre aquí para que el comando por defecto,
+   * el documentado y el que escriba cualquiera de memoria toquen el bueno. El JSON lo genera
+   * `scripts/build-flow-captura.ts`; no se edita a mano.
+   *
+   * El ARCHIVO no lleva versión a propósito (`requisicion-captura.flow.json`): Meta no deja editar
+   * un Flow publicado, así que cada corrección obliga a crear uno nuevo, y renombrar el artefacto en
+   * cada vuelta solo genera churn y enlaces rotos. La versión vive donde importa —el `name`, que es
+   * la clave de búsqueda contra la WABA— y el historial, en git.
+   */
+  requisicion: { name: "Requisición de obra – Mizar v3", path: "integrations/whatsapp-flow/requisicion-captura.flow.json" },
   /**
    * DEPRECADO. Flow de captura v1, `1972861836748301`. Sustituido por el v2 el 2026-09-11 por dos
    * defectos que solo se vieron usándolo: el resumen pintaba las llaves en vez de los datos (ninguna
@@ -49,6 +54,16 @@ const FLOWS = {
    * republica.
    */
   requisicion_v1_deprecado: { name: "Requisición de obra – Mizar", path: "integrations/whatsapp-flow/requisicion.flow.json" },
+  /**
+   * DEPRECADO. Flow de captura v2, `1076158778395724`. Estuvo en producción unas horas el
+   * 2026-09-11 y lo sustituye el v3 por un defecto de la reconstrucción: el `complete` se quedó SIN
+   * `item_N_foto` mientras las ocho pantallas seguían mostrando el `PhotoPicker`, así que la foto
+   * del artículo se perdía sin un solo error visible.
+   *
+   * No tiene `path` propio: su JSON era el mismo archivo generado, que ya avanzó al v3. Queda aquí
+   * como registro de que ese id existe y está deprecado, para que nadie lo reviva buscándolo por id.
+   */
+
   aprobacion: { name: "Aprobación de requisición – Mizar", path: "integrations/whatsapp-flow/aprobacion.flow.json" },
 } as const;
 type FlowKey = keyof typeof FLOWS;

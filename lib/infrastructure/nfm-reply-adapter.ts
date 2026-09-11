@@ -145,7 +145,19 @@ interface CompactedItem { itemId?: string; proposedDescription?: string; quantit
  * Leer de más es inocuo con el Flow v1 (las claves 4..8 sencillamente no vienen), así que el
  * adaptador sirve a los dos mientras convivan.
  */
-const MAX_ITEM_SLOTS = 8;
+export const MAX_ITEM_SLOTS = 8;
+
+/**
+ * Los sufijos de `item_N_*` que este adaptador LEE de verdad.
+ *
+ * Se exporta para poder cruzarlo con el `complete` del Flow generado
+ * (`tests/unit/flow-captura-v2.test.ts`). Ese cruce existe por un fallo real: al reconstruir el
+ * Flow para el v2 se perdió `item_N_foto` del `complete` mientras las ocho pantallas seguían
+ * mostrando el `PhotoPicker`. Nadie se enteró porque falla en silencio — la requisición se crea, la
+ * foto simplemente no está. Son dos artefactos que TIENEN que coincidir y no había nada
+ * comprobándolo.
+ */
+export const CAMPOS_ITEM_LEIDOS = ["catalogo", "descripcion", "cantidad", "unidad", "proveedor", "link", "foto"] as const;
 
 /**
  * Compacta las franjas fijas del Flow (`item_N_*`, N=1..MAX_ITEM_SLOTS) en un arreglo de ítems,
