@@ -52,6 +52,22 @@ Distinto de los enlaces de la bandeja de arriba: esto es la API REST (`{KAPSO_AP
 - `GET /whatsapp/conversations` lista las conversaciones (con `phone_number`); `GET /whatsapp/conversations/<uuid>` devuelve una.
 - **`?wamid=` en `/whatsapp/messages` NO filtra**: responde 200 con la lista general paginada, sin error. Comprobado con un wamid inventado, que devolvió mensajes ajenos; ese día llevó a «confirmar» como entregados mensajes que Meta había descartado, porque `data[0]` era siempre el más reciente. Regla que lo habría evitado: **todo filtro se prueba primero con un valor imposible; si devuelve datos, el filtro no existe.**
 
+### Un acuse puede llegar ANTES que la fila del envío
+
+Observado en el primer acuse real (11-sep-2026, aprobación de REQ-2026-0012), cruzando el registro de entregas de Kapso con la base:
+
+```
+16:29:03  llega el acuse `sent` de Meta
+16:29:04  `markSent` escribe la fila del envío con su wamid
+16:29:07  llega `delivered` y la fila pasa a `entregado`
+```
+
+El `sent` llegó **un segundo antes de que existiera la fila que debía actualizar**. No encontró nada, devolvió `false` y no rompió nada. Es el desorden que la propia documentación de Kapso advierte —«at-least-once and not guaranteed to arrive in order»— ocurriendo en el primer envío de verdad, no en un caso rebuscado.
+
+De ahí la forma de `aplicar` en `lib/infrastructure/whatsapp-delivery-status.ts`: **un UPDATE condicional, no leer-y-luego-escribir**. Con una lectura previa, ese acuse habría entrado en carrera con `markSent`, y la ventana perdedora dura lo que tarde la transacción del envío.
+
+Si alguien lo «simplifica» algún día a consultar el estado y después escribirlo, este es el escenario que lo rompe — y lo rompe **en silencio**: el acuse se descarta y la fila se queda diciendo `enviado` para siempre. Que es, exactamente, el fallo que todo este mecanismo vino a eliminar.
+
 ## Estado y seguridad
 
 La pantalla actual muestra un estado seguro sin iframe cuando falta una URL pública HTTPS válida. No hay cuenta, número, plantilla, webhook ni credencial real en este manual. El onboarding, número dedicado, sandbox, plantillas aprobadas y costos son gates externos; ver [gates-externos.md](../gates-externos.md).
