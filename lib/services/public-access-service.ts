@@ -3,17 +3,31 @@ import { DomainError, type Actor } from "../domain";
 /** Estado expuesto a la UI de administración: nunca el hash, solo si hay contraseña fijada y cuándo. */
 export interface PublicAccessStatus { configured: boolean; updatedAt: string | null; }
 
-/** El hash se calcula EN LA BASE (extensions.crypt + gen_salt); este puerto nunca ve ni transporta el hash. */
+/** Evento de auditoría del cambio de contraseña. Mismo shape que `AuditEvent`, con `origin` fijo. */
+export interface PublicAccessAuditEvent { entity: string; entityId: string; event: string; actorId?: string; at: Date; origin: "web"; data?: Record<string, unknown> }
+
+/**
+ * El hash se calcula EN LA BASE (extensions.crypt + gen_salt); este puerto nunca ve ni transporta el
+ * hash.
+ *
+ * `setPassword` recibe el evento de auditoría y se compromete a escribir LAS DOS COSAS —contraseña y
+ * evento— de forma atómica. Antes eran dos llamadas sueltas desde el servicio, y esa separación no
+ * era teórica: el evento llevaba un `entityId` que la base rechazaba, el update ya había commiteado
+ * cuando la auditoría reventaba, y el administrador veía un 500 con la contraseña ya cambiada. Eso
+ * está corregido, pero el patrón "escribo, confirmo, y luego audito" seguía ahí para el siguiente
+ * fallo — un corte de red entre ambas dejaría una contraseña de portal cambiada sin rastro de quién.
+ *
+ * Por eso el evento entra por aquí en vez de existir un puerto de auditoría aparte en el servicio:
+ * quien tiene la conexión es quien puede abrir la transacción, y con dos puertos independientes no
+ * hay forma de que compartan una.
+ */
 export interface PublicAccessAdminRepository {
   getStatus(): Promise<PublicAccessStatus>;
-  setPassword(code: string, actorId: string): Promise<void>;
+  setPassword(code: string, actorId: string, audit: PublicAccessAuditEvent): Promise<void>;
 }
-
-export interface PublicAccessAdminAudit { append(event: { entity: string; entityId: string; event: string; actorId?: string; at: Date; origin: "web"; data?: Record<string, unknown> }): Promise<void>; }
 
 export interface PublicAccessAdminServiceDependencies {
   repository: PublicAccessAdminRepository;
-  audit: PublicAccessAdminAudit;
   clock: { now(): Date };
 }
 
@@ -59,7 +73,9 @@ export class PublicAccessAdminService {
     // trim es defensivo por si algún día se llama al servicio sin pasar por esa ruta).
     const trimmed = code.trim();
     if (trimmed.length < 8) throw new DomainError("INVALID_INPUT", "La contraseña debe tener al menos 8 caracteres");
-    await this.deps.repository.setPassword(trimmed, actor.id);
+    // Contraseña y evento van JUNTOS al repositorio, que los escribe en una sola transacción. El
+    // servicio sigue decidiendo QUÉ se audita (actor, reloj, nombre del evento); lo que ya no hace es
+    // encadenar dos escrituras que pueden quedar a medias.
     // GRAVE (QA Postgres real): este comentario decía "la contraseña nunca se audita en claro, ni
     // siquiera hasheada" — false. El hash SÍ podía terminar en `auditoria` a través del trigger
     // genérico `escribir_auditoria` cuando el hash vivía dentro de `configuracion.valor` (columna no
@@ -69,6 +85,13 @@ export class PublicAccessAdminService {
     // `{redactado:true}`. Lo que sigue siendo cierto, y lo único que este evento manual añade aparte
     // de esa redacción automática, es que el código en claro nunca viaja como argumento de este
     // evento de auditoría de aplicación.
-    await this.deps.audit.append({ entity: "acceso_publico", entityId: ACCESO_PUBLICO_ID, event: "contrasena_actualizada", actorId: actor.id, at: this.deps.clock.now(), origin: "web" });
+    await this.deps.repository.setPassword(trimmed, actor.id, {
+      entity: "acceso_publico",
+      entityId: ACCESO_PUBLICO_ID,
+      event: "contrasena_actualizada",
+      actorId: actor.id,
+      at: this.deps.clock.now(),
+      origin: "web",
+    });
   }
 }

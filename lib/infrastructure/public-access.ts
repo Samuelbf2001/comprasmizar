@@ -1,6 +1,7 @@
+import { type Sql } from "postgres";
 import { runtimeEnv } from "../security/env";
-import type { PublicAccessAdminRepository, PublicAccessStatus } from "../services";
-import { sharedPostgres } from "./postgres-repositories";
+import type { PublicAccessAdminRepository, PublicAccessAuditEvent, PublicAccessStatus } from "../services";
+import { PostgresPorts, sharedPostgres } from "./postgres-repositories";
 // GRAVE 2 (QA Postgres real): normalizeCoPhone vive en su propio módulo (ver phone.ts) para que
 // postgres-repositories.ts también la reutilice (alta de solicitantes_autorizados vía catálogo) sin
 // crear un ciclo de imports con este archivo, que ya importa sharedPostgres desde ese módulo.
@@ -74,13 +75,26 @@ export function createPublicAccessAdminRepository(databaseUrl = runtimeEnv().DAT
     // base mal migrada sí podría dejarla sin filas) devolvía 200 sin haber cambiado nada.
     // `gen_salt('bf', 12)` fija el costo de bcrypt explícito (sin el argumento, sale en $2a$06$ — 2^6
     // rondas, muy por debajo de lo razonable para una contraseña de portal público).
-    async setPassword(code: string, actorId: string): Promise<void> {
-      const result = await sql`
-        update acceso_publico
-        set public_code_hash = extensions.crypt(${code}, extensions.gen_salt('bf', 12)),
-            updated_at = now(), updated_by = ${actorId}
-        where id = '00000000-0000-0000-0000-000000000001'`;
-      if (result.count === 0) throw new Error("No se pudo actualizar la contraseña del portal: la fila de configuración no existe");
+    // Contraseña y auditoría, en UNA transacción. Antes eran dos escrituras encadenadas desde el
+    // servicio, y la segunda falló siempre durante semanas (un `entityId` que no era uuid): el update
+    // ya había commiteado, así que el administrador veía un 500 con la contraseña ya cambiada. Ese
+    // error concreto está corregido, pero el patrón "escribo, confirmo, y luego audito" quedaba vivo
+    // para el siguiente — un corte entre ambas dejaría una contraseña de portal cambiada sin ningún
+    // rastro de quién lo hizo.
+    //
+    // El insert de auditoría NO se reescribe aquí: se reutiliza `PostgresPorts`, que implementa
+    // `AuditRepository` sobre cualquier conexión, atado a la transacción. Duplicar ese insert sería
+    // la forma segura de que un día diverja del real.
+    async setPassword(code: string, actorId: string, audit: PublicAccessAuditEvent): Promise<void> {
+      await sql.begin(async (tx) => {
+        const result = await tx`
+          update acceso_publico
+          set public_code_hash = extensions.crypt(${code}, extensions.gen_salt('bf', 12)),
+              updated_at = now(), updated_by = ${actorId}
+          where id = '00000000-0000-0000-0000-000000000001'`;
+        if (result.count === 0) throw new Error("No se pudo actualizar la contraseña del portal: la fila de configuración no existe");
+        await new PostgresPorts(tx as unknown as Sql).append(audit);
+      });
     },
   };
 }
