@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  buildApprovalFlowSendPayload, buildApprovalTemplatePayload, formatCop, issueApprovalFlowToken,
+  buildApprovalFlowSendPayload, buildApprovalTemplatePayload, DEFAULT_APPROVAL_TEMPLATE, DEFAULT_APPROVAL_TEMPLATE_LANGUAGE, formatCop, issueApprovalFlowToken,
   MAX_APPROVAL_ITEMS, sendApprovalFlow, sendApprovalTemplate, validateApprovalFlowToken,
   type ApprovalFlowContext,
 } from "../../lib/infrastructure/approval-flow-sender";
@@ -10,6 +10,9 @@ import { adaptApprovalReply, isApprovalNfmReply } from "../../lib/infrastructure
 import { applyApprovalDecision, DEFAULT_DECLINE_REASON, planApprovalDecision } from "../../lib/infrastructure/approval-processor";
 import type { ItemLine, Requisition } from "../../lib/domain";
 import { hmacSha256 } from "../../lib/security/crypto";
+// El script que CREA la plantilla en Meta. Importarlo no dispara nada: lleva el mismo guardián de
+// "ejecutado como guion" que scripts/build-flow-captura.ts.
+import { templateDefinition, TEMPLATE_LANGUAGE, TEMPLATE_NAME } from "../../scripts/publish-approval-template";
 
 // ---------------------------------------------------------------------------------------------
 // El Flow JSON. Mismas invariantes duras que ya verifica whatsapp-flow.test.ts para el de captura.
@@ -458,5 +461,51 @@ describe("applyApprovalDecision", () => {
       expect(spy.approve).not.toHaveBeenCalled();
       expect(spy.returnForCorrection).not.toHaveBeenCalled();
     }
+  });
+});
+
+// La plantilla `aprobacion_requisicion` se declara en DOS sitios que nadie ataba: el script que la
+// crea en Meta y el emisor que la manda. Su propio docblock lo dice en voz alta — "el nombre y el
+// idioma deben coincidir… y el ORDEN de las variables del cuerpo con el orden posicional que arma
+// buildApprovalTemplatePayload" — y hasta ahora nada lo comprobaba. La prueba que había le PASABA los
+// literales al emisor en vez de ejercitar sus defaults, así que un cambio en uno de los dos lados no
+// rompía nada aquí: rompía en Meta, que es donde no llega la suite.
+//
+// Es la misma técnica que tests/unit/plantillas-whatsapp.test.ts aplica a las otras cinco plantillas;
+// faltaba justo en la que lleva el botón de Flow.
+describe("aprobacion_requisicion: el emisor y el script que la publica no pueden separarse", () => {
+  it("nombre e idioma son los mismos a los dos lados", () => {
+    expect(DEFAULT_APPROVAL_TEMPLATE).toBe(TEMPLATE_NAME);
+    expect(DEFAULT_APPROVAL_TEMPLATE_LANGUAGE).toBe(TEMPLATE_LANGUAGE);
+  });
+
+  it("el cuerpo declara tantas variables como parámetros manda el emisor", () => {
+    const cuerpo = templateDefinition("flow-id-de-prueba").components.find((componente) => componente.type === "BODY");
+    const placeholders = [...String(cuerpo?.text ?? "").matchAll(/\{\{(\d+)\}\}/g)].map(([, n]) => Number(n));
+    // Posicionales y consecutivos desde 1: es lo que exige Meta y lo que asume el emisor.
+    expect(placeholders).toEqual([1, 2, 3, 4]);
+
+    const payload = buildApprovalTemplatePayload({
+      to: "573001112233", templateName: TEMPLATE_NAME, languageCode: TEMPLATE_LANGUAGE, flowToken: "tok",
+      context: context,
+    });
+    const body = payload.template.components.find((componente) => componente.type === "body");
+    expect(body?.parameters).toHaveLength(placeholders.length);
+  });
+
+  it("el ORDEN de los parámetros coincide con el ejemplo aprobado por Meta", () => {
+    // El cruce que de verdad importa: el ejemplo que se somete a revisión dice qué significa cada
+    // posición. Si el emisor los reordena, Meta acepta el envío igual y el aprobador recibe el total
+    // donde va la obra — sin que falle nada.
+    const cuerpo = templateDefinition("flow-id-de-prueba").components.find((componente) => componente.type === "BODY");
+    const ejemplo = (cuerpo?.example as { body_text: string[][] }).body_text[0];
+    const payload = buildApprovalTemplatePayload({
+      to: "573001112233", templateName: TEMPLATE_NAME, languageCode: TEMPLATE_LANGUAGE, flowToken: "tok",
+      // Contexto construido con LOS VALORES DEL EJEMPLO, cada uno en su campo semántico. Si el emisor
+      // los coloca en otro orden, el arreglo resultante deja de ser igual al ejemplo.
+      context: { ...context, approverName: ejemplo[0], consecutive: ejemplo[1], work: ejemplo[2], totalText: ejemplo[3] },
+    });
+    const body = payload.template.components.find((componente) => componente.type === "body");
+    expect(body?.parameters.map((parametro) => (parametro as { text: string }).text)).toEqual(ejemplo);
   });
 });

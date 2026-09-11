@@ -63,7 +63,7 @@ describe("buildFlowSendPayload — shape exacto del mensaje interactive.type=flo
   const obras: FlowOption[] = [{ id: "obra-1", title: "Obra La Pradera" }];
   const catalogo: FlowOption[] = [{ id: "item-1", title: "Cemento gris 50kg" }];
 
-  it("arma flow_message_version 3, flow_action navigate y flow_action_payload.screen TIPO_Y_OBRA", () => {
+  it("arma flow_message_version 3, flow_action navigate y flow_action_payload.screen TIPO_Y_EMPRESA", () => {
     const payload = buildFlowSendPayload({ to: "573000000000", flowId: "1972861836748301", flowCta: "Solicitar", flowToken: "tok", bodyText: "Solicita materiales o pagos.", sociedades: obras, catalogo });
     expect(payload).toEqual({
       messaging_product: "whatsapp",

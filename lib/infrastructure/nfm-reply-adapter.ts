@@ -136,7 +136,9 @@ interface CompactedItem { itemId?: string; proposedDescription?: string; quantit
 /**
  * Número de franjas de artículo que puede traer el Flow de captura.
  *
- * Debe coincidir con `MAX_ITEMS` de `integrations/whatsapp-flow/build-requisicion-flow.mjs`, que es
+ * Debe coincidir con `MAX_ITEMS` de `scripts/build-flow-captura.ts`. El archivo que nombraba este
+ * comentario, `integrations/whatsapp-flow/build-requisicion-flow.mjs`, NO existe. Lo ata la prueba
+ * "el tope de franjas del adaptador es el mismo que el del generador" en tests/integration/nfm-reply.test.ts, que es
  * quien genera las pantallas. Subió de 3 a 8 en el Flow v2: Ernesto, probando desde su celular,
  * avisó de que tres se le quedaban cortos («me preocupa querer agregar más y no poder»). Las ocho
  * pantallas existen siempre pero solo se visitan bajo demanda, así que lo normal es que lleguen

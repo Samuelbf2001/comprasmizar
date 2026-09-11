@@ -102,8 +102,19 @@ describe("buildOrderPdf — documento real de la orden (Fase 6, reunión 2026-08
     expect(order.total).toBe(order.subtotal + order.ivaTotal);
     expect(text).toContain("Ítem con descuento");
     expect(text).toContain("Ítem sin descuento");
-    for (const value of [order.subtotal, order.ivaTotal, order.total, conDescuento.base, sinDescuento.base]) {
-      expect(text).toContain(new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(value));
+    // Literales, no `new Intl.NumberFormat(...)` con las MISMAS opciones que lib/reports/pdf.ts. Así
+    // solo se comprobaba que el PDF llama a Intl, no lo que el cliente acaba leyendo: si ICU cambiara
+    // el separador de miles o el espacio tras el "$", cambiaría en los dos lados a la vez y la prueba
+    // no se enteraría. Mismo criterio que approval-flow.test.ts, que fija "$18.088.000" a mano.
+    //
+    // ` ` explícito, y no un espacio escrito: lo que ICU pone tras el "$" es un espacio DURO, y
+    // en el código fuente es indistinguible de uno normal. Escribirlo así es lo único que hace
+    // legible por qué esta cadena no se puede teclear a ojo.
+    //
+    // Si un día ICU cambia ese formato, esta prueba falla — y debe fallar: significa que la orden que
+    // recibe el proveedor se ve distinta. Ahí se decide si se acepta el formato nuevo, no aquí.
+    for (const esperado of ["$ 480.000", "$ 34.200", "$ 514.200", "$ 180.000", "$ 300.000"]) {
+      expect(text).toContain(esperado);
     }
   });
 
