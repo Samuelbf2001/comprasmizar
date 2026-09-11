@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Actor } from "../../lib/domain";
-import { PublicAccessAdminService, type PublicAccessAdminAudit, type PublicAccessAdminRepository } from "../../lib/services";
+import { PublicAccessAdminService, type PublicAccessAuditEvent, type PublicAccessAdminRepository } from "../../lib/services";
 
 // `auditoria.entidad_id` es de tipo `uuid` (202608240001_core_compras.sql) y `AuditRepository.append`
 // inserta el valor tal cual. Un literal que no sea uuid no falla al compilar —el tipo es `string`—
@@ -63,13 +63,14 @@ describe("PublicAccessAdminService audita la fila que realmente cambia", () => {
   const admin: Actor = { id: "10000000-0000-4000-8000-000000000006", roles: ["admin_sixteam"] };
 
   function deps() {
-    const audits: Array<{ entity: string; entityId: string; event: string }> = [];
+    // El evento se captura en la llamada al REPOSITORIO: desde que contraseña y auditoría se escriben
+    // en una transacción, es él quien los recibe juntos, no un puerto de auditoría aparte.
+    const audits: PublicAccessAuditEvent[] = [];
     const repository: PublicAccessAdminRepository = {
       getStatus: async () => ({ configured: true, updatedAt: null }),
-      setPassword: async () => {},
+      setPassword: async (_code, _actorId, audit) => { audits.push(audit); },
     };
-    const audit: PublicAccessAdminAudit = { append: async (event) => { audits.push(event); } };
-    return { service: new PublicAccessAdminService({ repository, audit, clock: { now: () => new Date("2026-09-11T12:00:00.000Z") } }), audits };
+    return { service: new PublicAccessAdminService({ repository, clock: { now: () => new Date("2026-09-11T12:00:00.000Z") } }), audits };
   }
 
   it("usa el id de la fila singleton, no una etiqueta", async () => {

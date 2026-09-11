@@ -16,11 +16,15 @@ export const runtime = "nodejs";
 export const publicAccessPasswordSchema = z.object({ code: z.string().trim().min(8, "La contraseña debe tener al menos 8 caracteres") });
 
 function service() {
-  // Reutiliza audit/clock de las dependencias Postgres compartidas (mismo AuditRepository que el resto
-  // de la app); el repositorio de la contraseña vive aparte porque toca una fila fuera del dominio de
-  // requisiciones/órdenes que administran esas dependencias.
+  // El reloj sale de las dependencias Postgres compartidas, para que la marca de tiempo del evento
+  // sea la misma fuente que usa el resto de la app.
+  //
+  // Ya NO se inyecta un puerto de auditoría aparte: el repositorio escribe la contraseña y su evento
+  // en una sola transacción, porque con dos puertos independientes no había forma de que compartieran
+  // una — y esa separación fue la que dejó al administrador viendo un 500 con la contraseña ya
+  // guardada (ver el comentario de `setPassword` en lib/services/public-access-service.ts).
   const shared = createPostgresDependencies();
-  return new PublicAccessAdminService({ repository: createPublicAccessAdminRepository(), audit: shared.audit, clock: shared.clock });
+  return new PublicAccessAdminService({ repository: createPublicAccessAdminRepository(), clock: shared.clock });
 }
 
 /** Nunca expone el hash: solo si hay contraseña fijada y cuándo cambió por última vez. */

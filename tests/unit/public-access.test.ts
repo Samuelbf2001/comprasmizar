@@ -12,9 +12,18 @@ type SqlResult = unknown[] & { count?: number };
 let nextResult: SqlResult = [{ nombre: "Ana" }];
 const calls: unknown[][] = [];
 const textCalls: string[] = [];
-vi.mock("../../lib/infrastructure/postgres-repositories", () => ({
-  sharedPostgres: () => (strings: TemplateStringsArray, ...values: unknown[]) => { calls.push(values); textCalls.push(strings.join("?")); return Promise.resolve(nextResult); },
-}));
+/** Eventos que el repositorio manda a auditoría DENTRO de la transacción de setPassword. */
+const auditCalls: unknown[] = [];
+vi.mock("../../lib/infrastructure/postgres-repositories", () => {
+  const tag = (strings: TemplateStringsArray, ...values: unknown[]) => { calls.push(values); textCalls.push(strings.join("?")); return Promise.resolve(nextResult); };
+  return {
+    // `begin` ejecuta el trabajo con la MISMA etiqueta, así que las consultas de dentro de la
+    // transacción quedan capturadas en `textCalls`/`calls` igual que las de fuera.
+    sharedPostgres: () => Object.assign(tag, { begin: (work: (tx: typeof tag) => Promise<unknown>) => work(tag) }),
+    // El repositorio reutiliza PostgresPorts para el insert de auditoría, atado a la transacción.
+    PostgresPorts: class { async append(event: unknown) { auditCalls.push(event); } },
+  };
+});
 
 import { createPublicAccessAdminRepository, resolveAuthorizedRequesterName } from "../../lib/infrastructure/public-access";
 
@@ -61,11 +70,20 @@ describe("createPublicAccessAdminRepository — contraseña global del portal (n
     await expect(repository.getStatus()).resolves.toEqual({ configured: false, updatedAt: null });
   });
 
+  const evento = {
+    entity: "acceso_publico",
+    entityId: "00000000-0000-0000-0000-000000000001",
+    event: "contrasena_actualizada",
+    actorId: "actor-1",
+    at: new Date("2026-09-11T12:00:00.000Z"),
+    origin: "web" as const,
+  };
+
   it("setPassword calcula el hash EN LA BASE (extensions.crypt + gen_salt con coste explícito) y nunca envía el código sin cifrar como columna", async () => {
-    calls.length = 0; textCalls.length = 0;
+    calls.length = 0; textCalls.length = 0; auditCalls.length = 0;
     nextResult = Object.assign([], { count: 1 });
     const repository = createPublicAccessAdminRepository("postgres://test");
-    await repository.setPassword("clave-de-prueba-larga", "actor-1");
+    await repository.setPassword("clave-de-prueba-larga", "actor-1", evento);
     const [text, values] = [textCalls[0], calls[0]];
     expect(text).toMatch(/extensions\.crypt\(.*extensions\.gen_salt\('bf', 12\)\)/);
     expect(text).toMatch(/update acceso_publico/);
@@ -78,8 +96,25 @@ describe("createPublicAccessAdminRepository — contraseña global del portal (n
   // GRAVE (QA Postgres real): antes no se comprobaban las filas afectadas, así que un UPDATE que no
   // tocara ninguna fila (la singleton ausente/borrada) devolvía éxito silencioso.
   it("setPassword falla si el UPDATE no afecta ninguna fila (la fila singleton no existe)", async () => {
+    auditCalls.length = 0;
     nextResult = Object.assign([], { count: 0 });
     const repository = createPublicAccessAdminRepository("postgres://test");
-    await expect(repository.setPassword("clave-de-prueba-larga", "actor-1")).rejects.toThrow();
+    await expect(repository.setPassword("clave-de-prueba-larga", "actor-1", evento)).rejects.toThrow();
+    // Y no audita un cambio que no ocurrió: el throw corta antes, dentro de la transacción.
+    expect(auditCalls).toHaveLength(0);
+  });
+
+  // La contraseña y su evento se escriben JUNTOS. Antes eran dos llamadas encadenadas desde el
+  // servicio: el update commiteaba y la auditoría iba después, así que un fallo entre ambas dejaba
+  // una contraseña de portal cambiada sin rastro de quién. Eso es lo que se cierra aquí.
+  it("setPassword escribe la contraseña y su auditoría en UNA transacción", async () => {
+    calls.length = 0; textCalls.length = 0; auditCalls.length = 0;
+    nextResult = Object.assign([], { count: 1 });
+    const repository = createPublicAccessAdminRepository("postgres://test");
+    await repository.setPassword("clave-de-prueba-larga", "actor-1", evento);
+    // El update viaja por la conexión de la transacción (la misma etiqueta que captura textCalls)...
+    expect(textCalls[0]).toMatch(/update acceso_publico/);
+    // ...y el evento se escribe con PostgresPorts atado a esa misma transacción, no por un puerto aparte.
+    expect(auditCalls).toEqual([evento]);
   });
 });

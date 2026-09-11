@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Actor } from "../../lib/domain";
-import { PublicAccessAdminService, type PublicAccessAdminAudit, type PublicAccessAdminRepository, type PublicAccessStatus } from "../../lib/services";
+import { PublicAccessAdminService, type PublicAccessAuditEvent, type PublicAccessAdminRepository, type PublicAccessStatus } from "../../lib/services";
 
 const mizarAdmin: Actor = { id: "mizar-admin", roles: ["admin_mizar"] };
 const sixteamAdmin: Actor = { id: "sixteam-admin", roles: ["admin_sixteam"] };
@@ -8,14 +8,15 @@ const reviewer: Actor = { id: "revisor-1", roles: ["revisor"] };
 const requester: Actor = { id: "solicitante-1", roles: ["solicitante"] };
 
 function deps(status: PublicAccessStatus = { configured: false, updatedAt: null }) {
-  const audits: Array<{ entity: string; entityId: string; event: string; actorId?: string; data?: Record<string, unknown> }> = [];
+  // El evento de auditoría llega AL REPOSITORIO junto con la contraseña: desde que ambos se escriben
+  // en una transacción, el servicio ya no tiene un puerto de auditoría propio que encadenar después.
+  const audits: PublicAccessAuditEvent[] = [];
   const setPasswordCalls: Array<{ code: string; actorId: string }> = [];
   const repository: PublicAccessAdminRepository = {
     getStatus: async () => status,
-    setPassword: async (code, actorId) => { setPasswordCalls.push({ code, actorId }); status = { configured: true, updatedAt: "2026-09-07T12:00:00.000Z" }; },
+    setPassword: async (code, actorId, audit) => { setPasswordCalls.push({ code, actorId }); audits.push(audit); status = { configured: true, updatedAt: "2026-09-07T12:00:00.000Z" }; },
   };
-  const audit: PublicAccessAdminAudit = { append: async (event) => { audits.push(event); } };
-  const service = new PublicAccessAdminService({ repository, audit, clock: { now: () => new Date("2026-09-07T12:00:00.000Z") } });
+  const service = new PublicAccessAdminService({ repository, clock: { now: () => new Date("2026-09-07T12:00:00.000Z") } });
   return { service, audits, setPasswordCalls };
 }
 

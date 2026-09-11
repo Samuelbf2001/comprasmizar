@@ -78,7 +78,16 @@ describe("PATCH/GET /api/public-access — administración de la contraseña glo
     mocks.getStatus.mockResolvedValue({ configured: true, updatedAt: "2026-09-07T12:00:00.000Z" });
     const response = await PATCH(patchRequest({ code: "contraseña-larga" }));
     expect(response.status).toBe(200);
-    expect(mocks.setPassword).toHaveBeenCalledWith("contraseña-larga", "actor-1");
+    // Tercer argumento: el evento de auditoría. Va con la contraseña porque el repositorio los
+    // escribe en una transacción — antes eran dos escrituras encadenadas y la segunda podía fallar
+    // con la primera ya commiteada.
+    expect(mocks.setPassword).toHaveBeenCalledWith("contraseña-larga", "actor-1", expect.objectContaining({
+      entity: "acceso_publico",
+      entityId: "00000000-0000-0000-0000-000000000001",
+      event: "contrasena_actualizada",
+      actorId: "actor-1",
+      origin: "web",
+    }));
     const body = await response.json();
     expect(body).toEqual({ configured: true, updatedAt: "2026-09-07T12:00:00.000Z" });
   });
