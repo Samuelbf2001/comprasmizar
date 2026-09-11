@@ -766,3 +766,107 @@ describe("ProcurementService", () => {
     await expect(service.listOrdersByRequisition(r.id, otherApprover)).rejects.toMatchObject({ code: "NOT_FOUND" }); // sonia tiene order:read pero no está asignada a esta requisición
   });
 });
+
+// APROBADOR POR ÍTEM (Ernesto, 11-sep-2026, corrigiendo la lectura de la reunión: «no es aprobador por
+// tiempo, es aprobador por ítem»). Las reglas puras están en tests/unit/aprobador-por-item.test.ts y el
+// arnés SQL cubre RLS y triggers; aquí va el control de acceso, que es lo único que la aplicación
+// aplica hoy de verdad — se conecta a Postgres con el rol dueño, así que RLS no la frena.
+describe("aprobador por ítem", () => {
+  const ITEMS_REPARTIDOS = [{ ...items[0], approverId: "sonia" }, { ...items[1] }]; // l1 → sonia, l2 → hereda a nelson
+  const adminSixteam = { actor: { id: "root", roles: ["admin_sixteam"] as const } };
+
+  /** Deja la requisición en aprobación con los ítems repartidos entre sonia (l1) y nelson (l2). */
+  async function repartida(service: ProcurementService) {
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: ITEMS_REPARTIDOS }, requester);
+    await service.startReview(r.id, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: ITEMS_REPARTIDOS }, reviewer);
+    return service.sendForApproval(r.id, reviewer);
+  }
+
+  it("cada aprobador decide lo suyo, y NO lo del otro", async () => {
+    // El agujero que esto cierra: bastaba con ser aprobador de UN ítem para decidir todos. Por WhatsApp
+    // es peor todavía, porque el token dice quién eres pero el cuerpo del mensaje lo arma el remitente.
+    const service = new ProcurementService(fakeDeps());
+    const r = await repartida(service);
+    const tras = await service.decideItems(r.id, [{ itemId: "l1", status: "aprobado" }], otherApprover);
+    expect(tras.items.find((l) => l.id === "l1")?.status).toBe("aprobado");
+    await expect(service.decideItems(r.id, [{ itemId: "l2", status: "aprobado" }], otherApprover)).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" });
+  });
+
+  it("ni colando el ajeno junto al suyo en la misma llamada, y sin dejar nada a medias", async () => {
+    // El caso que se escapa si la comprobación se hace una vez por llamada en vez de por línea.
+    const service = new ProcurementService(fakeDeps());
+    const r = await repartida(service);
+    await expect(service.decideItems(r.id, [{ itemId: "l1", status: "aprobado" }, { itemId: "l2", status: "aprobado" }], otherApprover)).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" });
+    const sinTocar = await service.getRequisition(r.id, reviewer);
+    expect(sinTocar.items.find((l) => l.id === "l1")?.status ?? "pendiente").toBe("pendiente");
+  });
+
+  it("quien no decide nada aquí no entra siquiera; admin_sixteam sí (M-5)", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const r = await repartida(service);
+    await expect(service.decideItems(r.id, [{ itemId: "l1", status: "aprobado" }], { actor: { id: "ajeno", roles: ["aprobador"] } })).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" });
+    const tras = await service.decideItems(r.id, [{ itemId: "l1", status: "aprobado" }, { itemId: "l2", status: "aprobado" }], adminSixteam);
+    expect(tras.items.every((l) => l.status === "aprobado")).toBe(true);
+  });
+
+  it("cierra el ÚLTIMO: el primero que termina lo suyo no cierra por los demás", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const r = await repartida(service);
+    await service.decideItems(r.id, [{ itemId: "l1", status: "aprobado" }], otherApprover);
+    await expect(service.approve(r.id, otherApprover)).rejects.toMatchObject({ code: "APPROVAL_PENDING_OTHERS" });
+    expect((await service.getRequisition(r.id, reviewer)).status).toBe("en_aprobacion");
+
+    await service.decideItems(r.id, [{ itemId: "l2", status: "aprobado" }], approver);
+    await expect(service.approve(r.id, approver)).resolves.toMatchObject({ status: "aprobada" });
+  });
+
+  it("con UN solo aprobador todo sigue exactamente igual que siempre", async () => {
+    // La comprobación que impide que este cambio rompa lo que ya funcionaba.
+    const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
+    await service.decideItems(r.id, items.map((l) => ({ itemId: l.id, status: "aprobado" as const })), approver);
+    await expect(service.approve(r.id, approver)).resolves.toMatchObject({ status: "aprobada" });
+  });
+
+  it("todos los ítems declinados cierran la requisición como DECLINADA, con los motivos arrastrados", async () => {
+    // Antes este camino no existía: assertHasApprovedLine lanzaba NO_APPROVED_ITEMS y la requisición se
+    // quedaba en aprobación para siempre. El motivo de cabecera no es adorno — la base lo exige.
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await repartida(service);
+    await service.decideItems(r.id, [{ itemId: "l1", status: "declinado", declineReason: "sin presupuesto" }], otherApprover);
+    await service.decideItems(r.id, [{ itemId: "l2", status: "declinado", declineReason: "llega tarde" }], approver);
+    const cerrada = await service.approve(r.id, approver);
+    expect(cerrada.status).toBe("declinada");
+    expect(cerrada.declineReason).toBe("Todos los ítems fueron declinados: sin presupuesto; llega tarde");
+    expect(deps.notificationData.map((n) => n.template)).toContain("requisicion_declinada");
+  });
+
+  it("pero declinar ALGUNOS no declina la requisición", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const r = await repartida(service);
+    await service.decideItems(r.id, [{ itemId: "l1", status: "declinado", declineReason: "sin presupuesto" }], otherApprover);
+    await service.decideItems(r.id, [{ itemId: "l2", status: "aprobado" }], approver);
+    await expect(service.approve(r.id, approver)).resolves.toMatchObject({ status: "aprobada" });
+  });
+
+  it("review() exige que el aprobador de un ítem sea elegible, y lo persiste", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], approverId: "no-elegible" }, items[1]] }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+
+    const repartidaR = await repartida(new ProcurementService(fakeDeps()));
+    expect(repartidaR.items.find((l) => l.id === "l1")?.approverId).toBe("sonia");
+    expect(repartidaR.items.find((l) => l.id === "l2")?.approverId).toBeUndefined();
+  });
+
+  it("un revisor NO puede declinar una requisición que ya está en aprobación", async () => {
+    // Efecto colateral de abrir `en_aprobacion -> declinada`: sin este límite explícito, el revisor
+    // podía matar una requisición que ya está en manos de su aprobador. La salida de una atascada
+    // sigue siendo reasignar, no declinarla por la espalda.
+    const service = new ProcurementService(fakeDeps());
+    const r = await repartida(service);
+    await expect(service.decline(r.id, "me lo pensé mejor", reviewer)).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
+    expect((await service.getRequisition(r.id, reviewer)).status).toBe("en_aprobacion");
+  });
+});

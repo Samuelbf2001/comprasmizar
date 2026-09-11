@@ -26,7 +26,11 @@ export function assertPermission(roles: readonly Role[], permission: string, ori
 }
 
 const transitions: Record<RequisitionStatus, readonly RequisitionStatus[]> = {
-  enviada: ["en_revision"], en_revision: ["en_aprobacion", "declinada"], en_aprobacion: ["aprobada", "devuelta"],
+  // `en_aprobacion -> declinada` es NUEVA (aprobador por ítem, 11-sep-2026): si todos los ítems acaban
+  // declinados no queda nada que aprobar, y sin esta transición la requisición se quedaría atascada en
+  // aprobación para siempre. Va también en el trigger `validar_transicion_requisicion` de la base
+  // (202609110004); tenerla en un solo sitio haría que el dominio y Postgres discrepasen.
+  enviada: ["en_revision"], en_revision: ["en_aprobacion", "declinada"], en_aprobacion: ["aprobada", "devuelta", "declinada"],
   devuelta: ["en_revision"], aprobada: [], declinada: [],
 };
 export function canTransition(from: RequisitionStatus, to: RequisitionStatus): boolean { return transitions[from].includes(to); }
@@ -98,6 +102,38 @@ export function sumLines(lines: readonly ItemLine[]): Money { return lines.reduc
 export function approvedLines(lines: readonly ItemLine[]): ItemLine[] { return lines.filter((line) => line.status !== "declinado"); }
 /** Alimenta órdenes y gastos. `sumLines` NO cambia de semántica (la usan create() y dashboard.inProcessValue). */
 export function sumApprovedLines(lines: readonly ItemLine[]): Money { return sumLines(approvedLines(lines)); }
+/**
+ * Quién decide este ítem: el suyo si lo tiene, y si no el de la cabecera. Es LA función de la herencia
+ * y por eso está aquí y no repetida en el servicio y en el emisor — dos copias de esta regla es como se
+ * consigue que WhatsApp le mande a alguien un ítem que la pantalla le niega.
+ */
+export function itemApproverId(line: ItemLine, headApproverId?: string): string | undefined {
+  return line.approverId ?? headApproverId;
+}
+/** Ítems que ESTE actor tiene pendientes de decidir. Vacío no significa "no le toca": puede haberlos ya decidido. */
+export function pendingItemsFor(actorId: string, lines: readonly ItemLine[], headApproverId?: string): ItemLine[] {
+  return lines.filter((line) => (line.status ?? "pendiente") === "pendiente" && itemApproverId(line, headApproverId) === actorId);
+}
+/** Aprobadores a los que todavía se les espera algo, sin repetir. Vacío = ya se puede cerrar. */
+export function pendingApproverIds(lines: readonly ItemLine[], headApproverId?: string): string[] {
+  const ids = new Set<string>();
+  for (const line of lines) {
+    if ((line.status ?? "pendiente") !== "pendiente") continue;
+    const approver = itemApproverId(line, headApproverId);
+    if (approver) ids.add(approver);
+  }
+  return [...ids];
+}
+/**
+ * Motivo de cabecera cuando se declina TODO. No es cosmético: `requisiciones_motivo_declinacion_check`
+ * exige motivo al declinar y el trigger de historial lo copia como comentario de la transición, así que
+ * sin esto la base rechaza el cierre. Se arrastran los motivos de ítem sin repetirlos: el solicitante
+ * tiene que poder leer por qué se cayó su pedido sin abrir ítem por ítem.
+ */
+export function combinedDeclineReason(lines: readonly ItemLine[]): string {
+  const motivos = [...new Set(lines.map((line) => line.declineReason?.trim()).filter((motivo): motivo is string => Boolean(motivo)))];
+  return motivos.length ? `Todos los ítems fueron declinados: ${motivos.join("; ")}` : "Todos los ítems fueron declinados.";
+}
 export function assertHasApprovedLine(lines: readonly ItemLine[]): void { if (approvedLines(lines).length === 0) throw new DomainError("NO_APPROVED_ITEMS", "La requisición no tiene ítems aprobados"); }
 /** Guía de UI: el botón "Generar órdenes" solo aplica a una requisición aprobada, sin órdenes previas y con algo que ordenar. */
 export function canGenerateOrders(status: RequisitionStatus, existingOrderCount: number, lines: readonly ItemLine[]): boolean { return status === "aprobada" && existingOrderCount === 0 && approvedLines(lines).length > 0; }

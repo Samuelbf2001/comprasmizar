@@ -19,6 +19,16 @@ export interface ItemLine {
   possibleSupplier?: string; productLink?: string; finalSupplierId?: string; unitBase?: Money; unitIva?: Money; unitTotal?: Money;
   /** Reunión 2026-08-31: decisión del aprobador por ítem; ausente = pendiente. Declinar exige declineReason. */
   status?: ItemStatus; declineReason?: string;
+  /**
+   * Quién decide ESTE ítem. Ernesto, 11-sep-2026: «así como se puede declinar por ítem, se puede
+   * designar un aprobador para todo o aprobadores por ítems».
+   *
+   * AUSENTE = HEREDA el de la cabecera (`Requisition.approverId`), y esa herencia es lo que deja
+   * intacto todo lo que ya está en vuelo: una requisición sin ningún aprobador por ítem se decide
+   * exactamente como hasta hoy. Usa `itemApproverId()` para resolverlo; leer este campo a pelo se
+   * salta la herencia y hace creer que el ítem no tiene aprobador.
+   */
+  approverId?: string;
   /** Fracción 0..1 (0.19, no 19). Ausente = línea legacy sin tasa capturada; ver calculateLineAmounts para el fallback. */
   ivaRate?: number; discountRate?: number;
 }
