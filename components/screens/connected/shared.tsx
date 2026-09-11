@@ -15,7 +15,12 @@ import type { FriendlyError } from "../../../lib/http/friendly-error";
 export type LoadState =
   | { state: "loading"; kind: RouteKind }
   | { state: "error"; message: string; friendly?: FriendlyError }
-  | { state: "ready"; data: unknown; revalidating: boolean };
+  // `revalidationFailed`: había datos visibles y la recarga en segundo plano falló. Se siguen
+  // mostrando —tapar un dashboard de dinero por un fallo de red pasajero sería peor— pero SE AVISA.
+  // Antes ese fallo se tragaba en silencio y la pantalla quedaba con datos viejos y aspecto de
+  // recién cargados: después de aprobar una requisición, el usuario veía el estado anterior sin que
+  // nada le dijera que lo que estaba mirando podía no ser lo último.
+  | { state: "ready"; data: unknown; revalidating: boolean; revalidationFailed?: boolean };
 export type ConnectedProps = {
   pathname: string;
   role: Role;

@@ -60,7 +60,8 @@ const ConnectedCatalogAdmin = dynamic(() =>
 
 export function ConnectedScreen({ pathname, role, viewingAs = null, go }: ConnectedProps) {
   const kind = useMemo(() => routeKind(pathname), [pathname]);
-  const [version, setVersion] = useState(0);
+  // Ya no hay contador de versión: `refresh` hace su propio fetch para poder devolver la promesa que
+  // `run()` espera. El efecto de abajo se queda solo para los cambios de ruta/rol.
   const [routeState, setRouteState] = useState(() => ({
     pathname,
     load: initialLoadState(pathname, kind),
@@ -88,15 +89,40 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
   // RF-1105: refrescar (manual o tras aprobar/declinar/crear, ver `mutate`) NUNCA borra
   // datos ya visibles: si hay datos previos se marcan `revalidating` (stale-while-
   // revalidate); solo si no hay nada que mostrar cae al esqueleto de carga.
-  const refresh = () => {
+  //
+  // DEVUELVE UNA PROMESA, y eso es el arreglo de un defecto real: `run()` en detail.tsx llamaba a
+  // `refresh()` sin esperarla y soltaba `busy` en el `finally`, así que tras aprobar una requisición
+  // el botón se rehabilitaba y la pantalla seguía mostrando el estado ANTERIOR hasta que llegara la
+  // recarga. Ernesto lo describió como "no cambia de estado ni dice ok, ya aprobaste" — y volvió a
+  // pulsar, porque nada le decía que hubiera pasado algo.
+  //
+  // El fetch se hace aquí en vez de delegarlo al efecto de abajo (que sigue existiendo para los
+  // cambios de ruta) precisamente para poder devolver esa promesa.
+  const refresh = async (): Promise<void> => {
+    if (!kind) return;
     setLoad((current) =>
       current.state === "ready"
-        ? { ...current, revalidating: true }
-        : kind
-          ? { state: "loading", kind }
-          : current,
+        ? { ...current, revalidating: true, revalidationFailed: false }
+        : { state: "loading", kind },
     );
-    setVersion((value) => value + 1);
+    try {
+      const data = await loadRoute(pathname, role);
+      setCachedRoute(pathname, kind, data);
+      setLoad({ state: "ready", data, revalidating: false });
+    } catch (error) {
+      setLoad((current) =>
+        // Los datos ya visibles se conservan —no se tapa un dashboard de dinero por un fallo de red
+        // pasajero—, pero AHORA SE DICE. Antes se tragaba el fallo en silencio y la pantalla se
+        // quedaba mostrando datos viejos con aspecto de recién cargados.
+        current.state === "ready"
+          ? { ...current, revalidating: false, revalidationFailed: true }
+          : {
+              state: "error",
+              message: friendlyErrorText(error, "No fue posible consultar el servicio."),
+              friendly: isFriendlyApiError(error) ? error.friendly : undefined,
+            },
+      );
+    }
   };
   // H6 (respaldo en sessionStorage) sin romper la hidratación: el estado inicial de arriba solo
   // mira la caché en memoria, que en el servidor y en el primer render del cliente vale lo mismo
@@ -112,7 +138,6 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
     // servidor puede saber y adoptar el resto DESPUÉS de montar. Leerlo antes es justamente lo que
     // rompía la hidratación (ver commit ea5efac). El efecto corre una vez por ruta y solo cuando hay
     // entrada persistida, así que no hay cascada que evitar.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRouteState((current) =>
       current.pathname === pathname && current.load.state === "loading"
         ? { pathname, load: { state: "ready", data: persisted.data, revalidating: true } }
@@ -145,7 +170,7 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
     return () => {
       active = false;
     };
-  }, [pathname, role, version, kind]);
+  }, [pathname, role, kind]);
   if (!kind) return null;
   if (load.state === "loading")
     return <RouteSkeleton kind={load.kind} pathname={pathname} />;
@@ -208,6 +233,19 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
             Actualizando información…
           </span>
         </>
+      )}
+      {/* La recarga en segundo plano falló y hay datos anteriores en pantalla. Antes esto se tragaba
+          en silencio: el usuario seguía viendo el estado viejo, sin la barra de carga, exactamente
+          igual que si estuviera al día. Se avisa sin tapar nada, porque lo que hay sigue siendo útil
+          — solo puede no ser lo último. */}
+      {load.revalidationFailed && (
+        <div className="panel state-panel state-panel-inline" role="alert">
+          <TriangleAlert aria-hidden="true" size={18} />
+          <p>No pudimos actualizar la pantalla; los datos pueden estar desactualizados.</p>
+          <button className="button button-secondary" type="button" onClick={() => void refresh()}>
+            <RefreshCw aria-hidden="true" size={14} /> Reintentar
+          </button>
+        </div>
       )}
       <Suspense fallback={<RouteSkeleton kind={kind} pathname={pathname} />}>
         {kind === "dashboard" && (

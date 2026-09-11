@@ -1137,6 +1137,11 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
    Estados / puertas de acceso
    ========================================================================= */
 .state-panel{text-align:center;padding:var(--space-12) var(--space-5)}
+/* Aviso de "no pudimos actualizar": va EN LÍNEA sobre el contenido que sigue visible, no centrado y
+   ocupando la pantalla como .state-panel a secas, porque no reemplaza nada — solo advierte de que lo
+   de abajo puede no ser lo último. */
+.state-panel-inline{display:flex;align-items:center;gap:var(--space-3);text-align:left;padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);border-left:3px solid var(--warning,#b7791f)}
+.state-panel-inline p{margin:0;flex:1}
 /* Los estados vacíos/error cuelgan del <h1> de la pantalla: usar <h2> evita el
    salto h1→h3 (§1.9). El h3 se conserva para los estados que sí anidan bajo un h2. */
 .state-panel h2{font:600 var(--text-xl) var(--font-display);letter-spacing:-.01em;margin:var(--space-2) 0 var(--space-1)}

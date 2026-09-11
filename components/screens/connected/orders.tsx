@@ -38,7 +38,9 @@ export function ConnectedOrders({
   role: Role;
   /** Rol de la lente "Ver como" si está puesta; `null` si se mira con el rol propio. Ver ConnectedProps. */
   viewingAs?: Role | null;
-  refresh: () => void;
+  /** Recarga los datos de la ruta. Devuelve una promesa: espérala antes de soltar el estado ocupado,
+   *  o la pantalla se rehabilita mostrando todavía los datos anteriores. */
+  refresh: () => void | Promise<void>;
   go: (href: string) => void;
 }) {
   // "Tu rol no puede…" es cierto pero engañoso bajo la lente "Ver como": quien mira es

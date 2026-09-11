@@ -39,7 +39,9 @@ export function ConnectedRequisitionDetail({
   data: DetailBundle;
   role: Role;
   go: (path: string) => void;
-  refresh: () => void;
+  /** Recarga los datos de la ruta. Devuelve una promesa: espérala antes de soltar el estado ocupado,
+   *  o la pantalla se rehabilita mostrando todavía los datos anteriores. */
+  refresh: () => void | Promise<void>;
 }) {
   const {
     requisition,
@@ -69,6 +71,9 @@ export function ConnectedRequisitionDetail({
     [comment, setComment] = useState(""),
     [busy, setBusy] = useState(false),
     [feedback, setFeedback] = useState(""),
+    // Confirmación visible de que la acción ocurrió. Sin ella, la única señal era que el chip de
+    // estado cambiara — y como `refresh()` no se esperaba, ni eso llegaba a tiempo.
+    [success, setSuccess] = useState(""),
     [supplierStatus, setSupplierStatus] = useState(""),
     [quickSupplierItemId, setQuickSupplierItemId] = useState<string | null>(
       null,
@@ -91,16 +96,44 @@ export function ConnectedRequisitionDetail({
     quickSupplierWasOpen = useRef(false),
     quickSupplierSubmitting = useRef(false);
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
-  const run = async (body: Record<string, unknown>) => {
+  /**
+   * Ejecuta una o VARIAS acciones EN ORDEN sobre la requisición, y no suelta el estado ocupado
+   * hasta que la pantalla tiene los datos nuevos.
+   *
+   * Acepta una secuencia por un motivo concreto, no por generalidad: la pantalla separaba "guardar"
+   * de "actuar", y actuar sin haber guardado usaba el estado VIEJO del servidor. Eso produjo dos
+   * fallos que Ernesto vivió el mismo día:
+   *
+   *   - "Enviar a aprobación" con todo lleno en pantalla respondía REVIEW_INCOMPLETE ("valor cotizado
+   *     mayor a cero"), porque el precio tecleado no se había guardado y en el servidor seguía en 0.
+   *   - El aprobador declinaba un ítem, escribía el motivo, pulsaba el botón grande — y la
+   *     requisición quedaba aprobada CON ese ítem vigente, porque las decisiones nunca se
+   *     persistieron y `approve()` trata "pendiente" como vigente (lib/domain/rules.ts).
+   *
+   * El segundo es el grave: el silencio se interpretaba como aprobación. Con la secuencia, la
+   * decisión que hay en pantalla se guarda ANTES de aprobar, y si ese guardado falla NO se aprueba.
+   *
+   * Y se espera a `refresh()`. Antes se llamaba sin `await` y `busy` se soltaba en el `finally`, así
+   * que el botón se rehabilitaba con el estado anterior todavía en pantalla: "no cambia de estado ni
+   * dice ok, ya aprobaste".
+   */
+  const run = async (bodies: Record<string, unknown> | Array<Record<string, unknown>>, successMessage?: string) => {
+    const secuencia = Array.isArray(bodies) ? bodies : [bodies];
     setBusy(true);
     setFeedback("");
+    setSuccess("");
     try {
-      await mutate(`/api/requisitions/${requisition.id}/actions`, "POST", body);
+      // En serie y cortando al primer fallo: si `decide_items` rechaza un declinado sin motivo, no
+      // puede aprobarse la requisición a continuación.
+      for (const body of secuencia) {
+        await mutate(`/api/requisitions/${requisition.id}/actions`, "POST", body);
+      }
       // RF-1105: sin esto, tras aprobar/declinar/devolver esta misma pantalla seguía
       // mostrando el estado anterior de la requisición hasta que el usuario navegara
       // fuera y volviera. `refresh` ya no vacía la vista (stale-while-revalidate): sigue
       // mostrando lo que había mientras trae el estado real.
-      refresh();
+      await refresh();
+      if (successMessage) setSuccess(successMessage);
     } catch (error) {
       setFeedback(
         error instanceof Error ? error.message : "Acción no completada.",
@@ -109,6 +142,48 @@ export function ConnectedRequisitionDetail({
       setBusy(false);
     }
   };
+  /**
+   * La revisión TAL COMO ESTÁ EN PANTALLA. Extraído para que "Guardar revisión" y "Enviar a
+   * aprobación" manden exactamente lo mismo: si se construyera dos veces, volverían a poder
+   * divergir, que es de donde venía el REVIEW_INCOMPLETE con el formulario lleno.
+   */
+  const reviewBody = () => ({
+    action: "review",
+    tagId,
+    ...(approverId ? { approverId } : {}),
+    ...(workId ? { workId } : {}),
+    ...(paymentTerms.trim() ? { paymentTerms: paymentTerms.trim() } : {}),
+    items: lines.map(({ id, itemId, description, quantity, unit, possibleSupplier, productLink, finalSupplierId, unitBase, status, declineReason, ivaRate, discountRate }) => ({
+      id,
+      ...(itemId ? { itemId } : {}),
+      ...(description ? { description } : {}),
+      quantity,
+      unit,
+      ...(possibleSupplier ? { possibleSupplier } : {}),
+      ...(productLink ? { productLink } : {}),
+      ...(finalSupplierId ? { finalSupplierId } : {}),
+      unitBase: Math.round(unitBase ?? 0),
+      ...(status ? { status } : {}),
+      ...(status === "declinado" && declineReason ? { declineReason } : {}),
+      ...(ivaRate !== undefined ? { ivaRate } : {}),
+      ...(discountRate !== undefined ? { discountRate } : {}),
+    })),
+  });
+
+  /** Las decisiones del aprobador TAL COMO ESTÁN EN PANTALLA, todas las líneas. Mismo motivo. */
+  const decisionsBody = () => ({
+    action: "decide_items",
+    decisions: lines.map((line) => {
+      const status = line.status === "declinado" ? "declinado" : "aprobado";
+      return {
+        itemId: line.id,
+        status,
+        ...(status === "declinado" ? { declineReason: (line.declineReason ?? "").trim() } : {}),
+        quantity: Number(line.quantity),
+      };
+    }),
+  });
+
   const updateLine = (id: string, patch: Partial<RequisitionItem>) =>
     setLines((current) =>
       current.map((line) => (line.id === id ? { ...line, ...patch } : line)),
@@ -647,46 +722,7 @@ export function ConnectedRequisitionDetail({
                     lines.some((line) => line.status === "declinado" && !line.declineReason?.trim())
                   }
                   type="button"
-                  onClick={() =>
-                    void run({
-                      action: "review",
-                      tagId,
-                      ...(approverId ? { approverId } : {}),
-                      ...(workId ? { workId } : {}),
-                      ...(paymentTerms.trim() ? { paymentTerms: paymentTerms.trim() } : {}),
-                      items: lines.map(
-                        ({
-                          id,
-                          itemId,
-                          description,
-                          quantity,
-                          unit,
-                          possibleSupplier,
-                          productLink,
-                          finalSupplierId,
-                          unitBase,
-                          status,
-                          declineReason,
-                          ivaRate,
-                          discountRate,
-                        }) => ({
-                          id,
-                          ...(itemId ? { itemId } : {}),
-                          ...(description ? { description } : {}),
-                          quantity,
-                          unit,
-                          ...(possibleSupplier ? { possibleSupplier } : {}),
-                          ...(productLink ? { productLink } : {}),
-                          ...(finalSupplierId ? { finalSupplierId } : {}),
-                          unitBase: Math.round(unitBase ?? 0),
-                          ...(status ? { status } : {}),
-                          ...(status === "declinado" && declineReason ? { declineReason } : {}),
-                          ...(ivaRate !== undefined ? { ivaRate } : {}),
-                          ...(discountRate !== undefined ? { discountRate } : {}),
-                        }),
-                      ),
-                    })
-                  }
+                  onClick={() => void run(reviewBody(), "Revisión guardada.")}
                 >
                   Guardar revisión
                 </button>
@@ -696,7 +732,12 @@ export function ConnectedRequisitionDetail({
                   // son roles distintos); sí lo bloquean etiqueta, obra y aprobador, que el backend exige.
                   disabled={busy || requisition.status === "devuelta" || !tagId || !workId || !approverId}
                   type="button"
-                  onClick={() => void run({ action: "send_for_approval" })}
+                  // GUARDA Y ENVÍA, en ese orden. Antes solo enviaba, y el servidor evaluaba el
+                  // estado guardado: con el precio recién tecleado y sin pulsar "Guardar revisión",
+                  // respondía "valor cotizado mayor a cero es obligatorio" con el formulario lleno
+                  // delante. El botón estaba habilitado porque etiqueta, obra y aprobador sí se leen
+                  // del formulario; el precio no. Si el guardado falla, `run` corta y no envía.
+                  onClick={() => void run([reviewBody(), { action: "send_for_approval" }], "Requisición enviada a aprobación.")}
                 >
                   Enviar a aprobación
                 </button>
@@ -796,20 +837,7 @@ export function ConnectedRequisitionDetail({
                   className="button button-secondary"
                   disabled={busy || lines.some((line) => line.status === "declinado" && !line.declineReason?.trim())}
                   type="button"
-                  onClick={() =>
-                    void run({
-                      action: "decide_items",
-                      decisions: lines.map((line) => {
-                        const status = line.status === "declinado" ? "declinado" : "aprobado";
-                        return {
-                          itemId: line.id,
-                          status,
-                          ...(status === "declinado" ? { declineReason: (line.declineReason ?? "").trim() } : {}),
-                          quantity: Number(line.quantity),
-                        };
-                      }),
-                    })
-                  }
+                  onClick={() => void run(decisionsBody(), "Decisiones guardadas.")}
                 >
                   Guardar decisiones
                 </button>
@@ -924,7 +952,7 @@ export function ConnectedRequisitionDetail({
                   className="button button-secondary"
                   disabled={busy || !approverId || approverId === requisition.approverId}
                   type="button"
-                  onClick={() => void run({ action: "reassign_approver", approverId })}
+                  onClick={() => void run({ action: "reassign_approver", approverId }, "Aprobador reasignado.")}
                 >
                   Reasignar aprobador
                 </button>
@@ -967,7 +995,7 @@ export function ConnectedRequisitionDetail({
                 className="button button-dark"
                 disabled={busy}
                 type="button"
-                onClick={() => void run({ action: "start_review" })}
+                onClick={() => void run({ action: "start_review" }, "Revisión iniciada.")}
               >
                 Iniciar revisión
               </button>
@@ -997,7 +1025,7 @@ export function ConnectedRequisitionDetail({
                         danger: true,
                       });
                       if (!ok) return;
-                      void run({ action: "decline", reason: comment });
+                      void run({ action: "decline", reason: comment }, "Requisición declinada.");
                     }}
                   >
                     <X aria-hidden="true" size={16} /> Declinar toda la requisición
@@ -1009,21 +1037,35 @@ export function ConnectedRequisitionDetail({
                 {/* Reunión 2026-08-31: aprobar y generar la orden son pasos distintos ahora — este
                     botón solo transiciona el estado. La división por proveedor ya es siempre el
                     comportamiento normal (el checkbox "Completo" desaparece). */}
+                {/* GUARDA LAS DECISIONES Y APRUEBA, en ese orden. Antes solo aprobaba, y las
+                    decisiones que hubiera en pantalla —una equis, un motivo escrito— no se habían
+                    persistido: `approvedLines` trata "pendiente" como vigente (lib/domain/rules.ts),
+                    así que la requisición quedaba aprobada CON el ítem que el aprobador acababa de
+                    declinar. Pasó de verdad, en la REQ-2026-0002.
+
+                    El nombre cambia de "Aprobar" a "Completar aprobación" a propósito: describe lo
+                    que hace de verdad —cerrar la decisión completa— y no invita a pensar que primero
+                    hay que guardar por otro lado. "Guardar decisiones" sigue existiendo para quien
+                    quiera dejarlas a medias y volver luego. */}
                 <button
                   className="button button-dark"
-                  disabled={busy}
+                  disabled={busy || lines.some((line) => line.status === "declinado" && !line.declineReason?.trim())}
                   type="button"
                   onClick={async () => {
+                    const declinados = lines.filter((line) => line.status === "declinado").length;
+                    const aprobados = lines.length - declinados;
                     const ok = await confirm({
-                      title: "Aprobar la requisición",
-                      description: `La requisición ${requisition.consecutive} quedará aprobada de forma definitiva y no podrá regresar a revisión. Genera las órdenes después, desde el bloque "Generar órdenes".`,
-                      confirmLabel: "Aprobar",
+                      title: "Completar la aprobación",
+                      // El resumen es la última oportunidad de ver que una decisión no es la que se
+                      // creía: "2 aprobados, 0 declinados" delata al que pensó que había declinado uno.
+                      description: `Se guardarán las decisiones de esta pantalla (${aprobados} ${aprobados === 1 ? "ítem aprobado" : "ítems aprobados"}, ${declinados} ${declinados === 1 ? "declinado" : "declinados"}) y la requisición ${requisition.consecutive} quedará aprobada de forma definitiva, sin poder regresar a revisión. Genera las órdenes después, desde el bloque "Generar órdenes".`,
+                      confirmLabel: "Completar aprobación",
                     });
                     if (!ok) return;
-                    void run({ action: "approve" });
+                    void run([decisionsBody(), { action: "approve" }], "Requisición aprobada.");
                   }}
                 >
-                  <Check aria-hidden="true" size={16} /> Aprobar
+                  <Check aria-hidden="true" size={16} /> Completar aprobación
                 </button>
                 <label className="field">
                   <span>Comentario de devolución</span>
@@ -1036,7 +1078,7 @@ export function ConnectedRequisitionDetail({
                   className="button button-secondary"
                   disabled={busy || !comment.trim()}
                   type="button"
-                  onClick={() => void run({ action: "return", comment })}
+                  onClick={() => void run({ action: "return", comment }, "Requisición devuelta a revisión.")}
                 >
                   <X aria-hidden="true" size={16} /> Devolver a revisión
                 </button>
@@ -1045,6 +1087,15 @@ export function ConnectedRequisitionDetail({
             {feedback && (
               <p className="field-error" role="alert">
                 {feedback}
+              </p>
+            )}
+            {/* La señal que faltaba. Sin esto, la única confirmación de que la acción ocurrió era el
+                chip de estado — y como `refresh()` no se esperaba, ni siquiera eso llegaba a tiempo:
+                "no cambia de estado ni dice ok, ya aprobaste". Aparece DESPUÉS de la recarga, así que
+                cuando se lee, lo que hay en pantalla ya es el estado nuevo. */}
+            {success && (
+              <p className="field-success" role="status">
+                {success}
               </p>
             )}
           </section>
@@ -1128,7 +1179,7 @@ export function ConnectedRequisitionDetail({
                     confirmLabel: "Generar órdenes",
                   });
                   if (!ok) return;
-                  void run({ action: "generate_orders" });
+                  void run({ action: "generate_orders" }, "Órdenes generadas.");
                 }}
               >
                 Generar órdenes
