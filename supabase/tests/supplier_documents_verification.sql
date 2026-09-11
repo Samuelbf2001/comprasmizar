@@ -5,9 +5,9 @@ begin;
 
 do $$
 declare
-  v_proveedor constant uuid := '40000000-0000-0000-0000-000000000001';
-  v_adjunto uuid := '60000000-0000-0000-0000-000000000001';
-  v_ruta text := 'proveedores/40000000-0000-0000-0000-000000000001/60000000-0000-0000-0000-000000000001/rut-qa.pdf';
+  v_proveedor constant uuid := '40000000-0000-4000-8000-000000000001';
+  v_adjunto uuid := '60000000-0000-4000-8000-000000000001';
+  v_ruta text := 'proveedores/40000000-0000-4000-8000-000000000001/60000000-0000-4000-8000-000000000001/rut-qa.pdf';
   v_requisicion uuid; v_orden uuid; v_item_1 uuid; v_item_2 uuid; v_storage_qual text;
 begin
   if not exists (select 1 from storage.buckets where id = 'proveedor-documentos-privados' and public = false) then
@@ -37,41 +37,41 @@ begin
   -- Ruta/nombre no pueden cruzar expedientes, usar traversal o MIME inseguro.
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-    values (v_adjunto, 'proveedor', v_proveedor, 'proveedores/otro/60000000-0000-0000-0000-000000000001/rut-qa.pdf', 'rut', 'rut-qa.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-0000-0000-000000000002');
+    values (v_adjunto, 'proveedor', v_proveedor, 'proveedores/otro/60000000-0000-4000-8000-000000000001/rut-qa.pdf', 'rut', 'rut-qa.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-4000-8000-000000000002');
     raise exception 'Aceptó ruta de expediente mal formada';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-    values ('60000000-0000-0000-0000-000000000002', 'proveedor', v_proveedor,
-      'proveedores/40000000-0000-0000-0000-000000000001/60000000-0000-0000-0000-000000000002/../rut.pdf', 'rut', '../rut.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-0000-0000-000000000002');
+    values ('60000000-0000-4000-8000-000000000002', 'proveedor', v_proveedor,
+      'proveedores/40000000-0000-4000-8000-000000000001/60000000-0000-4000-8000-000000000002/../rut.pdf', 'rut', '../rut.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-4000-8000-000000000002');
     raise exception 'Aceptó nombre de archivo inseguro';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-    values ('60000000-0000-0000-0000-000000000003', 'proveedor', '40000000-0000-0000-0000-000000009999',
-      'proveedores/40000000-0000-0000-0000-000000009999/60000000-0000-0000-0000-000000000003/rut.pdf', 'rut', 'rut.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-0000-0000-000000000002');
+    values ('60000000-0000-4000-8000-000000000003', 'proveedor', '40000000-0000-4000-8000-000000009999',
+      'proveedores/40000000-0000-4000-8000-000000009999/60000000-0000-4000-8000-000000000003/rut.pdf', 'rut', 'rut.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-4000-8000-000000000002');
     raise exception 'Aceptó proveedor inexistente';
   exception when sqlstate '23503' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-    values ('60000000-0000-0000-0000-000000000004', 'proveedor', v_proveedor,
-      'proveedores/40000000-0000-0000-0000-000000000001/60000000-0000-0000-0000-000000000004/calidad.pdf', 'certificado_calidad', 'calidad.pdf', 1024, 'proveedor-documentos-privados', 'application/x-msdownload', repeat('a', 64), '10000000-0000-0000-0000-000000000002');
+    values ('60000000-0000-4000-8000-000000000004', 'proveedor', v_proveedor,
+      'proveedores/40000000-0000-4000-8000-000000000001/60000000-0000-4000-8000-000000000004/calidad.pdf', 'certificado_calidad', 'calidad.pdf', 1024, 'proveedor-documentos-privados', 'application/x-msdownload', repeat('a', 64), '10000000-0000-4000-8000-000000000002');
     raise exception 'Aceptó MIME no permitido';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
-    values ('60000000-0000-0000-0000-000000000006', 'proveedor', v_proveedor,
-      'proveedores/40000000-0000-0000-0000-000000000001/60000000-0000-0000-0000-000000000006/nullos.pdf', 'rut', 'nullos.pdf', 1024, null, null, '10000000-0000-0000-0000-000000000002');
+    values ('60000000-0000-4000-8000-000000000006', 'proveedor', v_proveedor,
+      'proveedores/40000000-0000-4000-8000-000000000001/60000000-0000-4000-8000-000000000006/nullos.pdf', 'rut', 'nullos.pdf', 1024, null, null, '10000000-0000-4000-8000-000000000002');
     raise exception 'Aceptó bucket o MIME NULL para proveedor';
   exception when sqlstate '23514' then null;
   end;
 
   insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-  values (v_adjunto, 'proveedor', v_proveedor, v_ruta, 'rut', 'rut-qa.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-0000-0000-000000000002');
+  values (v_adjunto, 'proveedor', v_proveedor, v_ruta, 'rut', 'rut-qa.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-4000-8000-000000000002');
   begin
     update public.adjuntos set nombre_original = 'otro.pdf' where id = v_adjunto;
     raise exception 'Permitió modificar evidencia de proveedor';
@@ -88,21 +88,21 @@ begin
   end if;
 
   -- Acceso cruzado: conocer UUID/ruta no da lectura ni escritura de proveedor.
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
   execute 'set local role authenticated';
   if exists (select 1 from public.adjuntos where id = v_adjunto) then
     raise exception 'Acceso cruzado: solicitante leyó documento de proveedor';
   end if;
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, checksum_sha256, subido_por)
-    values ('60000000-0000-0000-0000-000000000005', 'proveedor', v_proveedor,
-      'proveedores/40000000-0000-0000-0000-000000000001/60000000-0000-0000-0000-000000000005/ataque.pdf', 'rut', 'ataque.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-0000-0000-000000000001');
+    values ('60000000-0000-4000-8000-000000000005', 'proveedor', v_proveedor,
+      'proveedores/40000000-0000-4000-8000-000000000001/60000000-0000-4000-8000-000000000005/ataque.pdf', 'rut', 'ataque.pdf', 1024, 'proveedor-documentos-privados', 'application/pdf', repeat('a', 64), '10000000-0000-4000-8000-000000000001');
     raise exception 'Solicitante escribió metadata privada';
   exception when sqlstate '42501' then null;
   end;
   execute 'reset role';
 
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000004', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000004', true);
   execute 'set local role authenticated';
   if not exists (select 1 from public.adjuntos where id = v_adjunto) then
     raise exception 'Contabilidad no puede leer expediente privado';
@@ -118,7 +118,7 @@ begin
   select id into v_item_1 from public.items where nombre_normalizado = 'cemento gris 50 kg';
   select id into v_item_2 from public.items where nombre_normalizado = 'arena de rio';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web') returning id into v_requisicion;
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web') returning id into v_requisicion;
   insert into public.requisicion_items(requisicion_id, item_id, cantidad, unidad, valor_base, iva)
     values (v_requisicion, v_item_1, 2, 'bulto', 1000, 190), (v_requisicion, v_item_2, 3, 'm3', 2000, 380);
   insert into public.ordenes(consecutivo, tipo, requisicion_id, proveedor_id)

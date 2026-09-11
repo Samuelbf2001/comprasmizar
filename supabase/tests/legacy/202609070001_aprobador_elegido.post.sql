@@ -13,7 +13,7 @@
 do $$
 declare v_aprobador uuid;
 begin
-  select aprobador_id into v_aprobador from public.requisiciones where id = '90000000-0000-0000-0000-000000000106';
+  select aprobador_id into v_aprobador from public.requisiciones where id = '90000000-0000-4000-8000-000000000106';
   if v_aprobador is not null then
     raise exception 'El backfill copió un aprobador NO elegible (etiqueta legado con aprobador inactivo) a requisiciones.aprobador_id: %', v_aprobador;
   end if;
@@ -26,4 +26,4 @@ end $$;
 -- aprobador ya inactivo) haría fallar ese arnés, que este cambio tiene prohibido tocar. Desactivarla
 -- es información de negocio legítima en sí misma (una etiqueta con aprobador roto no debería seguir
 -- activa) y no revierte nada de lo que este .post.sql acaba de comprobar arriba.
-update public.etiquetas set activa = false where id = '90000000-0000-0000-0000-000000000105';
+update public.etiquetas set activa = false where id = '90000000-0000-4000-8000-000000000105';

@@ -61,7 +61,7 @@ begin
     raise exception 'obras_codigo_publico_check debería haberse eliminado en 202609070002';
   end if;
   insert into public.obras (nombre, sociedad_id, estado, public_submission_enabled, public_code_hash)
-  values ('Obra arnés acceso público', '20000000-0000-0000-0000-000000000001', 'activa', true, null)
+  values ('Obra arnés acceso público', '20000000-0000-4000-8000-000000000001', 'activa', true, null)
   returning id into v_obra_id;
   if not exists (select 1 from public.obras where id = v_obra_id and public_submission_enabled and public_code_hash is null) then
     raise exception 'La obra con hash NULL y portal habilitado no quedó guardada como se esperaba';
@@ -94,6 +94,33 @@ begin
   where entidad = 'acceso_publico' and datos_json::text like '%$2a$%';
   if v_con_hash_en_claro <> 0 then
     raise exception 'El hash bcrypt quedó en texto plano en auditoria (% fila(s)) — auditoria_campo_sensible no está redactando acceso_publico.public_code_hash', v_con_hash_en_claro;
+  end if;
+end $$;
+
+-- 7) Los ids de las obras con el portal abierto tienen que ser UUID BIEN FORMADOS.
+--
+--    No es quisquillosería: la obra viaja al endpoint público y allí se valida con
+--    z.string().uuid() (app/api/public/requisitions/route.ts), llegue por enlace por obra o
+--    elegida dentro del formulario. El cliente la revalida antes incluso de pedir nada
+--    (components/screens/public-request.tsx). Las dos comprobaciones exigen el nibble de versión
+--    1-5 y el de variante 8/9/a/b, es decir un UUID de verdad y no cualquier cadena de 32 hex
+--    con guiones.
+--
+--    El seed traía las obras como '30000000-0000-0000-0000-0000000000NN' (versión 0, variante 0):
+--    legibles, pero NO son UUID válidos. El portal rechazaba TODOS sus enlaces con "Este enlace no
+--    está habilitado", sin error de servidor y sin rastro en los registros, porque el cliente ni
+--    siquiera llegaba a llamar a la API. El portal quedó inusable con los datos de demostración y
+--    nadie lo notó, justamente porque falla en silencio y del lado del navegador. Las obras creadas
+--    desde la plataforma usan gen_random_uuid() (v4) y nunca tuvieron el problema.
+do $$
+declare v_mal_formadas integer; v_ejemplo text;
+begin
+  select count(*), min(id::text) into v_mal_formadas, v_ejemplo
+  from public.obras
+  where public_submission_enabled
+    and id::text !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+  if v_mal_formadas <> 0 then
+    raise exception 'hay % obra(s) con el portal publico abierto cuyo id no es un UUID válido (p. ej. %): sus enlaces los rechaza el propio formulario', v_mal_formadas, v_ejemplo;
   end if;
 end $$;
 

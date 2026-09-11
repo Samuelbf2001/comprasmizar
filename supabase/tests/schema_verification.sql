@@ -18,8 +18,8 @@ end $$;
 
 -- Una baja de usuario corta el acceso RLS incluso con una sesión Auth aún válida.
 do $$ begin
-  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-0000-0000-000000000001';
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
+  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-4000-8000-000000000001';
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
   if public.is_active_user() then raise exception 'Usuario inactivo conserva acceso'; end if;
   if public.has_role('solicitante') then raise exception 'Usuario inactivo conserva un rol operativo'; end if;
   if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'requisiciones'
@@ -41,14 +41,14 @@ do $$ begin
   end if;
   begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-      values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web');
+      values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web');
     raise exception 'RLS dejó crear requisición a usuario inactivo';
   exception
     when sqlstate '42501' then null;
     when sqlstate '23514' then null; -- el trigger BEFORE INSERT de catálogos activos (validar_catalogos_activos_requisicion, SECURITY DEFINER) corre antes que el WITH CHECK de RLS y ya bloquea al mismo usuario inactivo
   end;
   execute 'reset role';
-  update public.usuarios set estado = 'activo' where id = '10000000-0000-0000-0000-000000000001';
+  update public.usuarios set estado = 'activo' where id = '10000000-0000-4000-8000-000000000001';
 end $$;
 
 -- Maestros y outbox: campos esenciales, destino único y envío verificable.
@@ -71,18 +71,18 @@ declare v_etiqueta uuid; begin
   end;
   begin
     insert into public.notificaciones(usuario_id, telefono_destino, canal, plantilla)
-      values ('10000000-0000-0000-0000-000000000001', '3000000000', 'whatsapp', 'prueba');
+      values ('10000000-0000-4000-8000-000000000001', '3000000000', 'whatsapp', 'prueba');
     raise exception 'outbox aceptó dos destinos';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.notificaciones(usuario_id, canal, plantilla, estado_envio)
-      values ('10000000-0000-0000-0000-000000000001', 'whatsapp', 'prueba', 'enviado');
+      values ('10000000-0000-4000-8000-000000000001', 'whatsapp', 'prueba', 'enviado');
     raise exception 'outbox marcó enviado sin timestamp';
   exception when sqlstate '23514' then null;
   end;
   insert into public.etiquetas(nombre, aprobador_id, activa)
-    values ('Auditoría QA', '10000000-0000-0000-0000-000000000003', false) returning id into v_etiqueta;
+    values ('Auditoría QA', '10000000-0000-4000-8000-000000000003', false) returning id into v_etiqueta;
   update public.etiquetas set activa = true where id = v_etiqueta;
   if not exists (
     select 1 from public.auditoria a
@@ -91,7 +91,7 @@ declare v_etiqueta uuid; begin
       and a.datos_json #>> '{datos_cambio,activa,despues}' = 'true'
   ) then raise exception 'Auditoría no conserva el cambio de catálogo'; end if;
   insert into public.notificaciones(usuario_id, canal, plantilla, payload)
-    values ('10000000-0000-0000-0000-000000000001', 'whatsapp', 'outbox_auditoria_qa', '{"telefono":"sensible"}');
+    values ('10000000-0000-4000-8000-000000000001', 'whatsapp', 'outbox_auditoria_qa', '{"telefono":"sensible"}');
   if not exists (
     select 1 from public.auditoria a
     where a.entidad = 'notificaciones' and a.evento = 'INSERT'
@@ -130,7 +130,7 @@ begin
   insert into public.etiquetas(nombre, activa) values ('Etiqueta inactiva QA', false) returning id into v_etiqueta;
   begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id)
-      values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', v_etiqueta);
+      values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', v_etiqueta);
     raise exception 'Requisición aceptó etiqueta inactiva';
   exception when sqlstate '23514' then null;
   end;
@@ -140,10 +140,10 @@ begin
   exception when sqlstate '55000' then null;
   end;
 
-  insert into public.obras(nombre, sociedad_id, estado) values ('Obra cerrada QA', '20000000-0000-0000-0000-000000000001', 'cerrada') returning id into v_obra_cerrada;
+  insert into public.obras(nombre, sociedad_id, estado) values ('Obra cerrada QA', '20000000-0000-4000-8000-000000000001', 'cerrada') returning id into v_obra_cerrada;
   begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-      values ('', 'compra', v_obra_cerrada, '10000000-0000-0000-0000-000000000001', 'web');
+      values ('', 'compra', v_obra_cerrada, '10000000-0000-4000-8000-000000000001', 'web');
     raise exception 'Requisición aceptó obra cerrada';
   exception when sqlstate '23514' then null;
   end;
@@ -151,13 +151,13 @@ begin
   insert into public.obras(nombre, sociedad_id, estado) values ('Obra sociedad inactiva QA', v_sociedad_inactiva, 'activa') returning id into v_obra_sociedad_inactiva;
   begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-      values ('', 'compra', v_obra_sociedad_inactiva, '10000000-0000-0000-0000-000000000001', 'web');
+      values ('', 'compra', v_obra_sociedad_inactiva, '10000000-0000-4000-8000-000000000001', 'web');
     raise exception 'Requisición aceptó sociedad inactiva';
   exception when sqlstate '23514' then null;
   end;
 
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web') returning id into v_req;
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web') returning id into v_req;
   insert into public.proveedores(razon_social, activo) values ('Proveedor inactivo QA', false) returning id into v_proveedor;
   insert into public.proveedores(razon_social) values ('Proveedor duplicado QA');
   begin
@@ -187,29 +187,29 @@ begin
   end;
   begin
     insert into public.caja_menor(obra_id, fecha, concepto, valor, registrado_por)
-      values (v_obra_cerrada, current_date, 'Caja con obra cerrada', 1000, '10000000-0000-0000-0000-000000000002');
+      values (v_obra_cerrada, current_date, 'Caja con obra cerrada', 1000, '10000000-0000-4000-8000-000000000002');
     raise exception 'Caja menor aceptó obra cerrada';
   exception when sqlstate '23514' then null;
   end;
 
-  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-0000-0000-000000000001';
+  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-4000-8000-000000000001';
   begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-      values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web');
+      values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web');
     raise exception 'Requisición aceptó solicitante inactivo';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.caja_menor(obra_id, fecha, concepto, valor, registrado_por)
-      values ('30000000-0000-0000-0000-000000000001', current_date, 'Caja con usuario inactivo', 1000, '10000000-0000-0000-0000-000000000001');
+      values ('30000000-0000-4000-8000-000000000001', current_date, 'Caja con usuario inactivo', 1000, '10000000-0000-4000-8000-000000000001');
     raise exception 'Caja menor aceptó responsable inactivo';
   exception when sqlstate '23514' then null;
   end;
-  update public.usuarios set estado = 'activo' where id = '10000000-0000-0000-0000-000000000001';
+  update public.usuarios set estado = 'activo' where id = '10000000-0000-4000-8000-000000000001';
 
-  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-0000-0000-000000000001';
+  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-4000-8000-000000000001';
   insert into public.etiquetas(nombre, aprobador_id, activa)
-    values ('Etiqueta aprobador inactivo QA', '10000000-0000-0000-0000-000000000001', false) returning id into v_etiqueta_aprobador_inactivo;
+    values ('Etiqueta aprobador inactivo QA', '10000000-0000-4000-8000-000000000001', false) returning id into v_etiqueta_aprobador_inactivo;
   begin
     update public.etiquetas set activa = true where id = v_etiqueta_aprobador_inactivo;
     raise exception 'Etiqueta activó un aprobador inactivo';
@@ -217,11 +217,11 @@ begin
   end;
   begin
     insert into public.caja_menor(obra_id, fecha, concepto, etiqueta_id, valor, registrado_por)
-      values ('30000000-0000-0000-0000-000000000001', current_date, 'Caja con aprobador inactivo', v_etiqueta_aprobador_inactivo, 1000, '10000000-0000-0000-0000-000000000002');
+      values ('30000000-0000-4000-8000-000000000001', current_date, 'Caja con aprobador inactivo', v_etiqueta_aprobador_inactivo, 1000, '10000000-0000-4000-8000-000000000002');
     raise exception 'Caja menor aceptó etiqueta con aprobador inactivo';
   exception when sqlstate '23514' then null;
   end;
-  update public.usuarios set estado = 'activo' where id = '10000000-0000-0000-0000-000000000001';
+  update public.usuarios set estado = 'activo' where id = '10000000-0000-4000-8000-000000000001';
 end $$;
 
 -- RF-003/RF-401: la etiqueta activa siempre conserva un aprobador activo y elegible.
@@ -230,8 +230,8 @@ declare v_etiqueta_valida uuid; begin
   if (select count(*) from pg_trigger where not tgisinternal and tgname in (
     'etiquetas_aprobador_elegible', 'usuarios_baja_etiquetas_activas', 'usuario_roles_ultimo_aprobador'
   )) <> 3 then raise exception 'Faltan triggers de integridad etiqueta/aprobador'; end if;
-  if not public.es_aprobador_elegible('10000000-0000-0000-0000-000000000003')
-    or public.es_aprobador_elegible('10000000-0000-0000-0000-000000000001') then
+  if not public.es_aprobador_elegible('10000000-0000-4000-8000-000000000003')
+    or public.es_aprobador_elegible('10000000-0000-4000-8000-000000000001') then
     raise exception 'Roles elegibles de aprobador no coinciden con el contrato';
   end if;
   begin
@@ -241,30 +241,30 @@ declare v_etiqueta_valida uuid; begin
   end;
   begin
     insert into public.etiquetas(nombre, aprobador_id, activa)
-      values ('Etiqueta aprobador no elegible QA', '10000000-0000-0000-0000-000000000001', true);
+      values ('Etiqueta aprobador no elegible QA', '10000000-0000-4000-8000-000000000001', true);
     raise exception 'Etiqueta activa aceptó aprobador sin rol elegible';
   exception when sqlstate '23514' then null;
   end;
-  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-0000-0000-000000000001';
+  update public.usuarios set estado = 'inactivo' where id = '10000000-0000-4000-8000-000000000001';
   begin
     insert into public.etiquetas(nombre, aprobador_id, activa)
-      values ('Etiqueta aprobador baja QA', '10000000-0000-0000-0000-000000000001', true);
+      values ('Etiqueta aprobador baja QA', '10000000-0000-4000-8000-000000000001', true);
     raise exception 'Etiqueta activa aceptó aprobador inactivo';
   exception when sqlstate '23514' then null;
   end;
-  update public.usuarios set estado = 'activo' where id = '10000000-0000-0000-0000-000000000001';
+  update public.usuarios set estado = 'activo' where id = '10000000-0000-4000-8000-000000000001';
   begin
-    update public.usuarios set estado = 'inactivo' where id = '10000000-0000-0000-0000-000000000003';
+    update public.usuarios set estado = 'inactivo' where id = '10000000-0000-4000-8000-000000000003';
     raise exception 'Desactivación dejó etiquetas activas sin aprobador';
   exception when sqlstate '23514' then null;
   end;
   begin
-    delete from public.usuario_roles where usuario_id = '10000000-0000-0000-0000-000000000003' and rol = 'aprobador';
+    delete from public.usuario_roles where usuario_id = '10000000-0000-4000-8000-000000000003' and rol = 'aprobador';
     raise exception 'Retiro dejó etiquetas activas sin rol elegible';
   exception when sqlstate '23514' then null;
   end;
   insert into public.etiquetas(nombre, aprobador_id, activa)
-    values ('Etiqueta desactivable QA', '10000000-0000-0000-0000-000000000003', true) returning id into v_etiqueta_valida;
+    values ('Etiqueta desactivable QA', '10000000-0000-4000-8000-000000000003', true) returning id into v_etiqueta_valida;
   update public.etiquetas set activa = false where id = v_etiqueta_valida;
   if exists (
     select 1 from public.etiquetas e where e.activa and not public.es_aprobador_elegible(e.aprobador_id)
@@ -277,10 +277,10 @@ declare v_req uuid; v_autorizado uuid; v_whatsapp uuid; begin
   insert into public.requisiciones(
     consecutivo, tipo, obra_id, solicitante_nombre_externo, solicitante_telefono_externo, canal
   ) values (
-    '', 'compra', '30000000-0000-0000-0000-000000000001', 'QA_NOMBRE_EXTERNO_SECRETO', '3005550109', 'publico'
+    '', 'compra', '30000000-0000-4000-8000-000000000001', 'QA_NOMBRE_EXTERNO_SECRETO', '3005550109', 'publico'
   ) returning id into v_req;
   insert into public.obra_solicitantes_autorizados(obra_id, nombre, telefono)
-    values ('30000000-0000-0000-0000-000000000001', 'QA_SOLICITANTE_AUTORIZADO_SECRETO', '3005550110')
+    values ('30000000-0000-4000-8000-000000000001', 'QA_SOLICITANTE_AUTORIZADO_SECRETO', '3005550110')
     returning id into v_autorizado;
   insert into public.whatsapp_eventos(direccion, telefono, tipo, kapso_message_id, payload_json)
     values ('entrada', '3005550111', 'mensaje', 'QA_KAPSO_ID_SECRETO', '{"texto":"QA_PAYLOAD_SECRETO"}')
@@ -356,7 +356,7 @@ end $$;
 do $$
 declare v_req uuid; v_gasto uuid; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   begin
     insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad, valor_base, iva)
@@ -366,22 +366,22 @@ declare v_req uuid; v_gasto uuid; begin
   end;
   begin
     insert into public.gastos(obra_id, origen, referencia_id, fecha, valor_base, iva)
-      values ('30000000-0000-0000-0000-000000000001', 'requisicion', gen_random_uuid(), current_date, 1000.50, 0);
+      values ('30000000-0000-4000-8000-000000000001', 'requisicion', gen_random_uuid(), current_date, 1000.50, 0);
     raise exception 'gastos aceptó centavos';
   exception when sqlstate '23514' then null;
   end;
   insert into public.gastos(obra_id, origen, referencia_id, fecha, valor_base, iva)
-    values ('30000000-0000-0000-0000-000000000001', 'requisicion', gen_random_uuid(), current_date, 1000, 0)
+    values ('30000000-0000-4000-8000-000000000001', 'requisicion', gen_random_uuid(), current_date, 1000, 0)
     returning id into v_gasto;
   begin
     insert into public.gastos_reparto(gasto_id, obra_id, valor)
-      values (v_gasto, '30000000-0000-0000-0000-000000000001', 0.50);
+      values (v_gasto, '30000000-0000-4000-8000-000000000001', 0.50);
     raise exception 'gastos_reparto aceptó centavos';
   exception when sqlstate '23514' then null;
   end;
   begin
     insert into public.caja_menor(obra_id, fecha, concepto, valor, registrado_por)
-      values ('30000000-0000-0000-0000-000000000001', current_date, 'Prueba sin centavos', 0.50, '10000000-0000-0000-0000-000000000002');
+      values ('30000000-0000-4000-8000-000000000001', current_date, 'Prueba sin centavos', 0.50, '10000000-0000-4000-8000-000000000002');
     raise exception 'caja_menor aceptó centavos';
   exception when sqlstate '23514' then null;
   end;
@@ -391,7 +391,7 @@ end $$;
 do $$
 declare v_cash uuid; v_expense uuid; v_count integer; begin
   insert into public.caja_menor(obra_id, fecha, concepto, etiqueta_id, valor, registrado_por)
-    values ('30000000-0000-0000-0000-000000000001', current_date, 'Verificación trigger', null, 1000, '10000000-0000-0000-0000-000000000002')
+    values ('30000000-0000-4000-8000-000000000001', current_date, 'Verificación trigger', null, 1000, '10000000-0000-4000-8000-000000000002')
     returning id, gasto_id into v_cash, v_expense;
   select count(*) into v_count from public.gastos where origen='caja_menor' and referencia_id=v_cash and id=v_expense;
   if v_expense is null or v_count <> 1 then raise exception 'Caja menor no generó exactamente un gasto vinculado'; end if;
@@ -407,12 +407,12 @@ end $$;
 do $$ begin
   begin
     insert into public.mcp_api_keys(usuario_id, nombre, key_hash)
-      values ('10000000-0000-0000-0000-000000000002', 'verify-raw-mcp-key', 'mizar_clave_de_prueba_no_permitida');
+      values ('10000000-0000-4000-8000-000000000002', 'verify-raw-mcp-key', 'mizar_clave_de_prueba_no_permitida');
     raise exception 'mcp_api_keys aceptó clave MCP en claro';
   exception when sqlstate '23514' then null;
   end;
   insert into public.mcp_api_keys(usuario_id, nombre, key_hash)
-    values ('10000000-0000-0000-0000-000000000002', 'verify-hmac-sha256', repeat('a', 64));
+    values ('10000000-0000-4000-8000-000000000002', 'verify-hmac-sha256', repeat('a', 64));
 end $$;
 
 -- El ledger Kapso conserva idempotencia y no permite completar un flow sin su requisición.
@@ -433,13 +433,13 @@ declare v_req uuid; v_tag uuid; begin
   end;
   select id into v_tag from public.etiquetas where nombre = 'Materiales';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id, kapso_event_id)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'whatsapp', v_tag, 'verify-flow-event')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'whatsapp', v_tag, 'verify-flow-event')
     returning id into v_req;
   insert into public.kapso_procesamiento(event_id, tipo_evento, estado, requisicion_id, payload)
     values ('verify-flow-completed', 'flow_submission', 'completed', v_req, '{"source":"flow"}');
   begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, kapso_event_id)
-      values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'whatsapp', 'verify-flow-event');
+      values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'whatsapp', 'verify-flow-event');
     raise exception 'Índice parcial de requisiciones.kapso_event_id ausente';
   exception when sqlstate '23505' then null;
   end;
@@ -516,7 +516,7 @@ end $$;
 do $$
 declare v_req uuid; v_historial bigint; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   update public.requisiciones set estado = 'en_revision' where id = v_req;
   select id into v_historial from public.requisicion_historial
@@ -544,13 +544,13 @@ do $$
 declare v_req uuid; v_tag uuid; begin
   select id into v_tag from public.etiquetas where nombre = 'Materiales';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', v_tag)
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', v_tag)
     returning id into v_req;
   update public.requisiciones set estado = 'en_revision' where id = v_req;
   update public.requisiciones set estado = 'en_aprobacion' where id = v_req;
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000003', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000003', true);
   begin
-    update public.requisiciones set estado = 'aprobada', obra_id = '30000000-0000-0000-0000-000000000002' where id = v_req;
+    update public.requisiciones set estado = 'aprobada', obra_id = '30000000-0000-4000-8000-000000000002' where id = v_req;
     raise exception 'Aprobador pudo alterar obra';
   exception when sqlstate '42501' then null;
   end;
@@ -558,10 +558,10 @@ declare v_req uuid; v_tag uuid; begin
 end $$;
 
 do $$ begin
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000005', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000005', true);
   if public.can_manage_items() then raise exception 'admin_mizar no debe editar items'; end if;
   if public.can_operate_compras() then raise exception 'admin_mizar no debe operar compras'; end if;
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000002', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000002', true);
   if not public.can_manage_items() then raise exception 'revisor debe editar items'; end if;
   if not public.can_operate_compras() then raise exception 'revisor debe operar compras'; end if;
 end $$;
@@ -569,14 +569,14 @@ end $$;
 -- Tener también rol aprobador no convierte a Admin-Mizar en operador de compras.
 do $$
 declare v_req uuid; v_tag uuid; begin
-  insert into public.usuario_roles(usuario_id, rol) values ('10000000-0000-0000-0000-000000000005', 'aprobador') on conflict do nothing;
+  insert into public.usuario_roles(usuario_id, rol) values ('10000000-0000-4000-8000-000000000005', 'aprobador') on conflict do nothing;
   select id into v_tag from public.etiquetas where nombre = 'Materiales';
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web', v_tag)
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web', v_tag)
     returning id into v_req;
   update public.requisiciones set estado = 'en_revision' where id = v_req;
   update public.requisiciones set estado = 'en_aprobacion' where id = v_req;
-  perform set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000005', true);
+  perform set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000005', true);
   begin
     update public.requisiciones set estado = 'aprobada', destino = 'alteración indebida' where id = v_req;
     raise exception 'Multirol aprobador/admin_mizar evadió el límite';
@@ -593,7 +593,7 @@ end $$;
 
 do $$ begin
   begin
-    insert into public.gastos_reparto(gasto_id, obra_id, valor) values ('00000000-0000-0000-0000-000000000000', '30000000-0000-0000-0000-000000000001', 1);
+    insert into public.gastos_reparto(gasto_id, obra_id, valor) values ('00000000-0000-0000-0000-000000000000', '30000000-0000-4000-8000-000000000001', 1);
     raise exception 'FK de gastos_reparto ausente';
   exception when sqlstate '23503' then null;
   end;
@@ -619,7 +619,7 @@ end $$;
 do $$ begin
   begin
     insert into public.requisiciones(consecutivo, tipo, obra_id, sociedad_id, solicitante_id, canal)
-      values ('', 'compra', '30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', 'web');
+      values ('', 'compra', '30000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'web');
     raise exception 'Requisición aceptó obra de una sociedad distinta a la sociedad explícita';
   exception when sqlstate '23514' then null;
   end;
@@ -629,7 +629,7 @@ end $$;
 do $$
 declare v_req_sin_obra uuid; begin
   insert into public.requisiciones(consecutivo, tipo, sociedad_id, solicitante_id, canal)
-    values ('', 'compra', '20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req_sin_obra;
   if v_req_sin_obra is null then raise exception 'Requisición sin obra_id (solo sociedad_id) no se pudo crear'; end if;
 end $$;
@@ -639,9 +639,9 @@ end $$;
 do $$
 declare v_req_derivada uuid; v_sociedad_derivada uuid; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id, sociedad_id into v_req_derivada, v_sociedad_derivada;
-  if v_sociedad_derivada <> '20000000-0000-0000-0000-000000000001' then
+  if v_sociedad_derivada <> '20000000-0000-4000-8000-000000000001' then
     raise exception 'El trigger de derivación de sociedad_id no completó el valor esperado desde obra_id';
   end if;
 end $$;
@@ -650,7 +650,7 @@ end $$;
 do $$
 declare v_req uuid; v_item_pendiente uuid; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad)
     values (v_req, 'Ítem estado por defecto QA', 1, 'unidad') returning id into v_item_pendiente;
@@ -671,7 +671,7 @@ end $$;
 do $$
 declare v_req uuid; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   begin
     insert into public.requisicion_items(requisicion_id, descripcion_libre, cantidad, unidad, iva_tasa)
@@ -691,7 +691,7 @@ end $$;
 do $$
 declare v_req uuid; v_orden uuid; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   insert into public.ordenes(consecutivo, tipo, requisicion_id)
     values ('', 'OC', v_req) returning id into v_orden;
@@ -710,13 +710,13 @@ end $$;
 do $$
 declare v_req uuid; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   insert into public.ordenes(consecutivo, tipo, requisicion_id, proveedor_id)
-    values ('', 'OC', v_req, '40000000-0000-0000-0000-000000000001');
+    values ('', 'OC', v_req, '40000000-0000-4000-8000-000000000001');
   begin
     insert into public.ordenes(consecutivo, tipo, requisicion_id, proveedor_id)
-      values ('', 'OC', v_req, '40000000-0000-0000-0000-000000000001');
+      values ('', 'OC', v_req, '40000000-0000-4000-8000-000000000001');
     raise exception 'Se generó una segunda orden para la misma requisición y proveedor';
   exception when sqlstate '23505' then null;
   end;

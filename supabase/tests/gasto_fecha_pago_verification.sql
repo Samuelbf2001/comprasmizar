@@ -26,13 +26,13 @@ end $$;
 do $$
 declare v_req uuid; v_orden uuid; v_gasto uuid; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   insert into public.ordenes(consecutivo, tipo, requisicion_id, proveedor_id, fecha_generacion)
-    values ('OC-TEST-FP-0001', 'OC', v_req, '40000000-0000-0000-0000-000000000001', '2026-08-31 23:30:00-05')
+    values ('OC-TEST-FP-0001', 'OC', v_req, '40000000-0000-4000-8000-000000000001', '2026-08-31 23:30:00-05')
     returning id into v_orden;
   insert into public.gastos(obra_id, origen, referencia_id, proveedor_id, fecha_orden, fecha, valor_base, iva)
-    values ('30000000-0000-0000-0000-000000000001', 'requisicion', v_orden, '40000000-0000-0000-0000-000000000001', '2026-08-31', null, 100000, 19000)
+    values ('30000000-0000-4000-8000-000000000001', 'requisicion', v_orden, '40000000-0000-4000-8000-000000000001', '2026-08-31', null, 100000, 19000)
     returning id into v_gasto;
   if not exists (select 1 from public.gastos where id = v_gasto and fecha_orden = '2026-08-31' and fecha is null and periodo is null) then
     raise exception 'El gasto de una orden recién generada debe tener fecha_orden puesta, fecha NULL y periodo NULL';
@@ -59,13 +59,13 @@ end $$;
 do $$
 declare v_req uuid; v_orden uuid; v_gasto uuid; v_fecha date; v_periodo date; begin
   insert into public.requisiciones(consecutivo, tipo, obra_id, solicitante_id, canal)
-    values ('', 'compra', '30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'web')
+    values ('', 'compra', '30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'web')
     returning id into v_req;
   insert into public.ordenes(consecutivo, tipo, requisicion_id, proveedor_id, fecha_generacion)
-    values ('OC-TEST-FP-0002', 'OC', v_req, '40000000-0000-0000-0000-000000000001', now())
+    values ('OC-TEST-FP-0002', 'OC', v_req, '40000000-0000-4000-8000-000000000001', now())
     returning id into v_orden;
   insert into public.gastos(obra_id, origen, referencia_id, proveedor_id, fecha_orden, fecha, valor_base, iva)
-    values ('30000000-0000-0000-0000-000000000001', 'requisicion', v_orden, '40000000-0000-0000-0000-000000000001', current_date, null, 50000, 0)
+    values ('30000000-0000-4000-8000-000000000001', 'requisicion', v_orden, '40000000-0000-4000-8000-000000000001', current_date, null, 50000, 0)
     returning id into v_gasto;
   select fecha, periodo into v_fecha, v_periodo from public.gasto_distribucion where gasto_id = v_gasto;
   if v_fecha is not null or v_periodo is not null then
@@ -78,7 +78,7 @@ end $$;
 do $$
 declare v_caja uuid; v_gasto uuid; begin
   insert into public.caja_menor(obra_id, fecha, concepto, etiqueta_id, proveedor_id, valor, registrado_por)
-    values ('30000000-0000-0000-0000-000000000001', '2026-09-03', 'Taxi obra', (select id from public.etiquetas where nombre = 'Transporte'), null, 25000, '10000000-0000-0000-0000-000000000002')
+    values ('30000000-0000-4000-8000-000000000001', '2026-09-03', 'Taxi obra', (select id from public.etiquetas where nombre = 'Transporte'), null, 25000, '10000000-0000-4000-8000-000000000002')
     returning id, gasto_id into v_caja, v_gasto;
   if not exists (
     select 1 from public.gastos

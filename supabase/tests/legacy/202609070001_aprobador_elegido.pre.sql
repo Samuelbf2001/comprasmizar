@@ -19,39 +19,39 @@
 -- Namespace de IDs '90000000-...-0001xx': no colisiona con supabase/seed.sql ni con los demás arneses.
 
 insert into auth.users (id, email) values
-  ('90000000-0000-0000-0000-000000000101', 'legado-ae-aprobador@mizar.test')
+  ('90000000-0000-4000-8000-000000000101', 'legado-ae-aprobador@mizar.test')
   on conflict (id) do nothing;
 insert into public.usuarios (id, nombre, email, estado) values
-  ('90000000-0000-0000-0000-000000000101', 'Legado AE Aprobador Inactivo', 'legado-ae-aprobador@mizar.test', 'activo')
+  ('90000000-0000-4000-8000-000000000101', 'Legado AE Aprobador Inactivo', 'legado-ae-aprobador@mizar.test', 'activo')
   on conflict (id) do nothing;
 insert into public.usuario_roles (usuario_id, rol) values
-  ('90000000-0000-0000-0000-000000000101', 'aprobador')
+  ('90000000-0000-4000-8000-000000000101', 'aprobador')
   on conflict do nothing;
 
 insert into auth.users (id, email) values
-  ('90000000-0000-0000-0000-000000000102', 'legado-ae-solicitante@mizar.test')
+  ('90000000-0000-4000-8000-000000000102', 'legado-ae-solicitante@mizar.test')
   on conflict (id) do nothing;
 insert into public.usuarios (id, nombre, email, estado) values
-  ('90000000-0000-0000-0000-000000000102', 'Legado AE Solicitante', 'legado-ae-solicitante@mizar.test', 'activo')
+  ('90000000-0000-4000-8000-000000000102', 'Legado AE Solicitante', 'legado-ae-solicitante@mizar.test', 'activo')
   on conflict (id) do nothing;
 
 insert into public.sociedades (id, nombre) values
-  ('90000000-0000-0000-0000-000000000103', 'Legado AE Sociedad')
+  ('90000000-0000-4000-8000-000000000103', 'Legado AE Sociedad')
   on conflict (id) do nothing;
 insert into public.obras (id, nombre, sociedad_id, estado) values
-  ('90000000-0000-0000-0000-000000000104', 'Legado AE Obra', '90000000-0000-0000-0000-000000000103', 'activa')
+  ('90000000-0000-4000-8000-000000000104', 'Legado AE Obra', '90000000-0000-4000-8000-000000000103', 'activa')
   on conflict (id) do nothing;
 
 -- La etiqueta nace activa con un aprobador TODAVÍA activo (si no, validar_aprobador_etiqueta_activa
 -- la rechazaría de entrada).
 insert into public.etiquetas (id, nombre, aprobador_id, activa) values
-  ('90000000-0000-0000-0000-000000000105', 'Legado AE Etiqueta', '90000000-0000-0000-0000-000000000101', true)
+  ('90000000-0000-4000-8000-000000000105', 'Legado AE Etiqueta', '90000000-0000-4000-8000-000000000101', true)
   on conflict (id) do nothing;
 
 -- El aprobador queda inactivo DESPUÉS: se desactiva el trigger de guardia solo para esta UPDATE, que
 -- es justo la operación que hoy (con el trigger encendido) el sistema ya rechaza.
 alter table public.usuarios disable trigger usuarios_baja_etiquetas_activas;
-update public.usuarios set estado = 'inactivo' where id = '90000000-0000-0000-0000-000000000101';
+update public.usuarios set estado = 'inactivo' where id = '90000000-0000-4000-8000-000000000101';
 alter table public.usuarios enable trigger usuarios_baja_etiquetas_activas;
 
 -- La requisición queda etiquetada con esa etiqueta (aprobador ya inactivo): mismo motivo, se
@@ -59,6 +59,6 @@ alter table public.usuarios enable trigger usuarios_baja_etiquetas_activas;
 -- etiqueta con aprobador no elegible.
 alter table public.requisiciones disable trigger requisiciones_catalogos_activos;
 insert into public.requisiciones (id, consecutivo, tipo, obra_id, solicitante_id, canal, etiqueta_id) values
-  ('90000000-0000-0000-0000-000000000106', '', 'compra', '90000000-0000-0000-0000-000000000104', '90000000-0000-0000-0000-000000000102', 'web', '90000000-0000-0000-0000-000000000105')
+  ('90000000-0000-4000-8000-000000000106', '', 'compra', '90000000-0000-4000-8000-000000000104', '90000000-0000-4000-8000-000000000102', 'web', '90000000-0000-4000-8000-000000000105')
   on conflict (id) do nothing;
 alter table public.requisiciones enable trigger requisiciones_catalogos_activos;

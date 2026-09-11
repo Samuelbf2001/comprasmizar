@@ -9,10 +9,10 @@
 -- Namespace de IDs '90000000-...-0002xx': no colisiona con supabase/seed.sql ni con los demás arneses.
 
 insert into public.sociedades (id, nombre) values
-  ('90000000-0000-0000-0000-000000000201', 'Legado AP Sociedad')
+  ('90000000-0000-4000-8000-000000000201', 'Legado AP Sociedad')
   on conflict (id) do nothing;
 
 insert into public.obras (id, nombre, sociedad_id, estado, public_submission_enabled, public_code_hash) values
-  ('90000000-0000-0000-0000-000000000202', 'Legado AP Obra', '90000000-0000-0000-0000-000000000201', 'activa', true,
+  ('90000000-0000-4000-8000-000000000202', 'Legado AP Obra', '90000000-0000-4000-8000-000000000201', 'activa', true,
    extensions.crypt('legado-obra-clave-vieja', extensions.gen_salt('bf')))
   on conflict (id) do nothing;

@@ -8,10 +8,10 @@
 --    prueba con un UPDATE real que la constraint vieja habría rechazado.
 do $$ begin
   update public.obras set public_code_hash = null
-   where id = '90000000-0000-0000-0000-000000000202' and public_submission_enabled;
+   where id = '90000000-0000-4000-8000-000000000202' and public_submission_enabled;
   if not exists (
     select 1 from public.obras
-    where id = '90000000-0000-0000-0000-000000000202' and public_code_hash is null and public_submission_enabled
+    where id = '90000000-0000-4000-8000-000000000202' and public_code_hash is null and public_submission_enabled
   ) then
     raise exception 'La obra legado no pudo quedar con public_code_hash NULL tras la migración (la constraint vieja seguiría bloqueando)';
   end if;
