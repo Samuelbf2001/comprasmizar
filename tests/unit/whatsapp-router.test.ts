@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Router de entrantes de WhatsApp (lib/infrastructure/whatsapp-router.ts). Lo que se vigila aquí no
-// es el camino feliz sino tres cosas que, si se rompen, lo hacen en silencio: que el router no le
+// es el camino feliz sino cuatro cosas que, si se rompen, lo hacen en silencio: que el router no le
 // robe el mensaje a las dos ramas de Flow, que la consulta de estado normalice el teléfono por los
-// dos lados, y que un fallo de envío NUNCA convierta un entrante en excepción.
+// dos lados, que una reentrega no salude dos veces, y que un fallo de envío NUNCA convierta un
+// entrante en excepción.
 //
 // Mismo patrón de mocks que tests/unit/server-actor.test.ts: se sustituye `sharedPostgres` para
 // probar solo esta capa, sin Postgres real. Las dos fábricas `createPostgres*` del módulo son
@@ -27,19 +28,34 @@ import {
 
 const TELEFONO = "573124358315";
 const WAMID = "wamid.HBgKMzEyNDM1ODMxNRUCABEYEjBBQkNERUY=";
+const LINEA_MIZAR = "1221974497672719";
+const LINEA_SIXTEAM = "1109228638946478";
 
 const entranteTexto = (body = "hola") => ({ message: { id: WAMID, from: TELEFONO, type: "text", text: { body } } });
 const entranteBoton = (id: string) => ({ message: { id: WAMID, from: TELEFONO, type: "interactive", interactive: { type: "button_reply", button_reply: { id, title: "x" } } } });
 const entranteFlow = () => ({ message: { id: WAMID, from: TELEFONO, type: "interactive", interactive: { type: "nfm_reply", nfm_reply: { response_json: "{}" } } } });
 
-const ENV = { KAPSO_API_KEY: "k".repeat(32), KAPSO_PHONE_NUMBER_ID: "1221974497672719", DATABASE_URL: "postgres://u:p@localhost:5432/db", STORAGE_ROOT: "/tmp/mizar", STORAGE_SIGNING_SECRET: "s".repeat(32) };
+const ENV = { KAPSO_API_KEY: "k".repeat(32), KAPSO_PHONE_NUMBER_ID: LINEA_MIZAR, DATABASE_URL: "postgres://u:p@localhost:5432/db", STORAGE_ROOT: "/tmp/mizar", STORAGE_SIGNING_SECRET: "s".repeat(32) };
 const guardado: Record<string, string | undefined> = {};
 
 beforeEach(() => { for (const [k, v] of Object.entries(ENV)) { guardado[k] = process.env[k]; process.env[k] = v; } });
 afterEach(() => { for (const [k, v] of Object.entries(guardado)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
 
+/** Registro en memoria: reclama una sola vez por wamid, igual que el índice único de Postgres. */
+function registroEspia() {
+  const reclamados = new Set<string>();
+  const cerrados: { clase: string; resultado: string }[] = [];
+  return {
+    cerrados,
+    registro: {
+      reclamar: async ({ wamid }: { wamid: string }) => (reclamados.has(wamid) ? false : (reclamados.add(wamid), true)),
+      cerrar: async (input: { clase: string; resultado: string }) => { cerrados.push({ clase: input.clase, resultado: input.resultado }); },
+    },
+  };
+}
+
 /** Captura lo que se habría enviado a Meta, sin red. */
-function fetchEspia(respuesta: Partial<Response> & { status?: number } = {}) {
+function fetchEspia(respuesta: { status?: number } = {}) {
   const enviados: unknown[] = [];
   const impl = (async (_url: string, init?: RequestInit) => {
     enviados.push(JSON.parse(String(init?.body)));
@@ -84,6 +100,12 @@ describe("mensajes que se construyen", () => {
     for (const boton of menu.interactive.action.buttons) expect(boton.reply.title.length).toBeLessThanOrEqual(20);
   });
 
+  it("el interactivo lleva body.text, que Meta exige", () => {
+    // Omitirlo es un 400 real de Meta, no un aviso.
+    const menu = construirMenu(TELEFONO) as unknown as { interactive: { body: { text: string } } };
+    expect(menu.interactive.body.text.length).toBeGreaterThan(0);
+  });
+
   it("el texto no pide vista previa de enlaces", () => {
     const texto = construirTexto(TELEFONO, "hola") as unknown as { text: { preview_url: boolean; body: string } };
     expect(texto.text).toEqual({ preview_url: false, body: "hola" });
@@ -113,7 +135,7 @@ describe("respuesta de estado", () => {
 describe("atenderMensajeEntrante", () => {
   it("un texto suelto recibe el menú", async () => {
     const { enviados, impl } = fetchEspia();
-    const resultado = await atenderMensajeEntrante(entranteTexto(), { fetchImpl: impl, registro: { registrar: async () => {} } });
+    const resultado = await atenderMensajeEntrante(entranteTexto(), { fetchImpl: impl, registro: registroEspia().registro });
     expect(resultado).toEqual({ atendido: true, accion: "menu", resultado: "ok" });
     expect((enviados[0] as { interactive: { type: string } }).interactive.type).toBe("button");
   });
@@ -124,7 +146,7 @@ describe("atenderMensajeEntrante", () => {
     const { enviados, impl } = fetchEspia();
     const flows: string[] = [];
     const resultado = await atenderMensajeEntrante(entranteBoton(BOTON_NUEVA_REQUISICION), {
-      fetchImpl: impl, registro: { registrar: async () => {} },
+      fetchImpl: impl, registro: registroEspia().registro,
       enviarFlow: async (to) => { flows.push(to); return { messageId: "wamid.FLOW" }; },
     });
     expect(resultado.atendido && resultado.accion).toBe("flow");
@@ -136,7 +158,7 @@ describe("atenderMensajeEntrante", () => {
     const { enviados, impl } = fetchEspia();
     const consultados: string[] = [];
     await atenderMensajeEntrante(entranteBoton(BOTON_ESTADO_REQUISICIONES), {
-      fetchImpl: impl, registro: { registrar: async () => {} },
+      fetchImpl: impl, registro: registroEspia().registro,
       fuenteEstado: { listarPorTelefono: async (telefono) => { consultados.push(telefono); return [{ consecutivo: "REQ-2026-0007", estado: "aprobada", fecha: "2026-09-11" }]; } },
     });
     expect(consultados).toEqual([TELEFONO]);
@@ -151,15 +173,65 @@ describe("atenderMensajeEntrante", () => {
     const consultados: string[] = [];
     await atenderMensajeEntrante(
       { message: { id: WAMID, from: "3124358315", type: "interactive", interactive: { type: "button_reply", button_reply: { id: BOTON_ESTADO_REQUISICIONES, title: "x" } } } },
-      { fetchImpl: impl, registro: { registrar: async () => {} }, fuenteEstado: { listarPorTelefono: async (t) => { consultados.push(t); return []; } } },
+      { fetchImpl: impl, registro: registroEspia().registro, fuenteEstado: { listarPorTelefono: async (t) => { consultados.push(t); return []; } } },
     );
     expect(consultados).toEqual(["573124358315"]);
   });
 
   it("un botón desconocido devuelve el menú en vez de quedarse mudo", async () => {
     const { enviados, impl } = fetchEspia();
-    const resultado = await atenderMensajeEntrante(entranteBoton("boton_de_una_version_vieja"), { fetchImpl: impl, registro: { registrar: async () => {} } });
+    const resultado = await atenderMensajeEntrante(entranteBoton("boton_de_una_version_vieja"), { fetchImpl: impl, registro: registroEspia().registro });
     expect(resultado.atendido && resultado.accion).toBe("menu");
+    expect(enviados).toHaveLength(1);
+  });
+
+  it("una reentrega del MISMO mensaje no vuelve a saludar", async () => {
+    // Kapso reentrega cuando el webhook tarda. Sin reclamar el wamid ANTES de enviar, la persona
+    // recibiría el saludo dos o tres veces por haber escrito una.
+    const { enviados, impl } = fetchEspia();
+    const espia = registroEspia();
+    const primera = await atenderMensajeEntrante(entranteTexto(), { fetchImpl: impl, registro: espia.registro });
+    const segunda = await atenderMensajeEntrante(entranteTexto(), { fetchImpl: impl, registro: espia.registro });
+    expect(primera.atendido && primera.resultado).toBe("ok");
+    expect(segunda.atendido && segunda.resultado).toBe("duplicado");
+    expect(enviados).toHaveLength(1);
+  });
+
+  it("si la reclamación falla se responde igual: mejor saludar dos veces que dejar a alguien sin respuesta", async () => {
+    const { enviados, impl } = fetchEspia();
+    await atenderMensajeEntrante(entranteTexto(), {
+      fetchImpl: impl,
+      registro: { reclamar: async () => { throw new Error("base caída"); }, cerrar: async () => {} },
+    });
+    expect(enviados).toHaveLength(1);
+  });
+
+  it("un mensaje a la línea interna de Sixteam se ignora sin responder ni registrar", async () => {
+    // Decisión de Ernesto (2026-09-11): la plataforma opera solo con la línea de Mizar. Si ambas
+    // líneas apuntaran al mismo webhook, un "hola" a la interna de Sixteam dispararía el menú de
+    // compras de Mizar a alguien que no tiene nada que ver con la obra.
+    const { enviados, impl } = fetchEspia();
+    const espia = registroEspia();
+    const resultado = await atenderMensajeEntrante({ ...entranteTexto(), phone_number_id: LINEA_SIXTEAM }, { fetchImpl: impl, registro: espia.registro });
+    expect(resultado).toEqual({ atendido: false, motivo: "otra_linea" });
+    expect(enviados).toHaveLength(0);
+    expect(espia.cerrados).toHaveLength(0);
+  });
+
+  it("la línea de Mizar sí pasa, venga en la raíz o en metadata", async () => {
+    for (const payload of [{ ...entranteTexto(), phone_number_id: LINEA_MIZAR }, { ...entranteTexto(), metadata: { phone_number_id: LINEA_MIZAR } }]) {
+      const { enviados, impl } = fetchEspia();
+      const resultado = await atenderMensajeEntrante(payload, { fetchImpl: impl, registro: registroEspia().registro });
+      expect(resultado.atendido).toBe(true);
+      expect(enviados).toHaveLength(1);
+    }
+  });
+
+  it("si el payload no informa la línea, se acepta en vez de quedarse mudo", async () => {
+    // Rechazar por ausencia dejaría el canal muerto ante un cambio de formato de Kapso. El filtro
+    // descarta solo lo que viene marcado como de OTRA línea.
+    const { enviados, impl } = fetchEspia();
+    expect((await atenderMensajeEntrante(entranteTexto(), { fetchImpl: impl, registro: registroEspia().registro })).atendido).toBe(true);
     expect(enviados).toHaveLength(1);
   });
 
@@ -167,21 +239,18 @@ describe("atenderMensajeEntrante", () => {
     // Es la garantía que sostiene el 200 del webhook. Si esto lanzara, Kapso reintentaría el mismo
     // "hola" en bucle.
     const { impl } = fetchEspia({ status: 500 });
-    const registrados: { clase: string; resultado: string }[] = [];
-    const resultado = await atenderMensajeEntrante(entranteTexto(), {
-      fetchImpl: impl,
-      registro: { registrar: async (input) => { registrados.push({ clase: input.clase, resultado: input.resultado }); } },
-    });
+    const espia = registroEspia();
+    const resultado = await atenderMensajeEntrante(entranteTexto(), { fetchImpl: impl, registro: espia.registro });
     expect(resultado.atendido).toBe(true);
     expect(resultado.atendido && resultado.resultado).toContain("error:");
-    expect(registrados[0]).toMatchObject({ clase: "menu" });
-    expect(registrados[0].resultado).toContain("ROUTER_SEND_FAILED_500");
+    expect(espia.cerrados[0]).toMatchObject({ clase: "menu" });
+    expect(espia.cerrados[0].resultado).toContain("ROUTER_SEND_FAILED_500");
   });
 
-  it("si falla el registro de auditoría, la persona ya recibió su respuesta igual", async () => {
+  it("si falla el cierre del registro, la persona ya recibió su respuesta igual", async () => {
     const { enviados, impl } = fetchEspia();
     const resultado = await atenderMensajeEntrante(entranteTexto(), {
-      fetchImpl: impl, registro: { registrar: async () => { throw new Error("base caída"); } },
+      fetchImpl: impl, registro: { reclamar: async () => true, cerrar: async () => { throw new Error("base caída"); } },
     });
     expect(resultado).toEqual({ atendido: true, accion: "menu", resultado: "ok" });
     expect(enviados).toHaveLength(1);

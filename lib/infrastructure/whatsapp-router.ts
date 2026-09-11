@@ -95,6 +95,27 @@ export function esMensajeEnrutable(payload: unknown): boolean {
   return leerMensajeTexto(payload) !== null || leerMensajeBoton(payload) !== null;
 }
 
+/**
+ * El proyecto de Kapso tiene DOS líneas: la de Mizar (`1221974497672719`) y la interna de Sixteam.
+ * Decisión de Ernesto (2026-09-11): la plataforma opera exclusivamente con la de Mizar, entrante y
+ * saliente. Si ambas apuntaran algún día al mismo webhook, un "hola" a la línea interna de Sixteam
+ * dispararía el menú de compras de Mizar a un cliente de Sixteam. Este filtro lo impide.
+ *
+ * Cuando el payload no informa la línea se acepta: no todas las envolturas la traen, y rechazar por
+ * ausencia dejaría el canal mudo por un cambio de formato de Kapso. El filtro descarta solo lo que
+ * viene marcado como de OTRA línea, que es el caso que importa.
+ */
+export function esDeLineaConfigurada(payload: unknown): boolean {
+  const esperado = process.env.KAPSO_PHONE_NUMBER_ID?.trim();
+  if (!esperado) return true;
+  if (!payload || typeof payload !== "object") return true;
+  const objeto = payload as Record<string, unknown>;
+  const metadata = objeto.metadata as Record<string, unknown> | undefined;
+  const declarado = objeto.phone_number_id ?? metadata?.phone_number_id;
+  if (declarado === undefined || declarado === null || declarado === "") return true;
+  return String(declarado) === esperado;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Construcción de los mensajes salientes (puro, sin red: es lo que verifican las pruebas)
 // ---------------------------------------------------------------------------------------------
@@ -244,27 +265,48 @@ export async function enviarPayload(payload: PayloadWhatsApp, fetchImpl: typeof 
 // Registro del evento entrante
 // ---------------------------------------------------------------------------------------------
 
-export interface RegistroEntrante { registrar(input: { wamid: string; telefono: string; clase: string; resultado: string }): Promise<void> }
+export interface RegistroEntrante {
+  /** `true` si este wamid se reclama por primera vez; `false` si ya se atendió antes. */
+  reclamar(input: { wamid: string; telefono: string; clase: string }): Promise<boolean>;
+  cerrar(input: { wamid: string; clase: string; resultado: string }): Promise<void>;
+}
 
 /**
- * Deja rastro de CADA entrante que atiende el router, que es justo lo que faltaba: hasta ahora un
- * "hola" no aparecía en ningún lado. No se guarda el texto del mensaje a propósito — `payload_json`
- * de `whatsapp_eventos` no está redactado por `auditoria_campo_sensible`, y lo que escribe la gente
- * por WhatsApp puede traer cualquier cosa. Con la clase de mensaje y el resultado basta para
- * depurar.
+ * Deja rastro de CADA entrante que atiende el router —lo que faltaba: hasta ahora un "hola" no
+ * aparecía en ningún lado— y además lo hace IDEMPOTENTE.
  *
- * El sufijo ":router" en `kapso_message_id` evita colisionar con el ledger de idempotencia de
- * `kapso-store.ts` y con el ":rejected" del `NfmReplyRejectionRecorder`: mismo índice único,
- * propósitos distintos.
+ * Por qué son dos pasos y no un `insert` al final: Kapso puede reentregar el mismo mensaje (un
+ * reintento por timeout, un webhook lento). Si el registro fuese posterior al envío, cada
+ * reentrega mandaría otro menú y la persona recibiría el saludo dos o tres veces. Reclamando
+ * ANTES, la segunda entrega encuentra la fila ya puesta y no envía nada.
+ *
+ * El `returning id` es la diferencia entre auditar y ser idempotente, y es lo que distingue a este
+ * registro de los demás `on conflict do nothing` del repositorio: sin él la consulta no dice si
+ * insertó o si chocó, que es justo el dato que hace falta.
+ *
+ * No se guarda el texto del mensaje a propósito: `payload_json` de `whatsapp_eventos` no está
+ * redactado por `auditoria_campo_sensible`, y lo que la gente escribe por WhatsApp puede traer
+ * cualquier cosa. Con la clase y el resultado basta para depurar.
+ *
+ * El sufijo ":router" en `kapso_message_id` evita colisionar con el ledger de `kapso-store.ts` y
+ * con el ":rejected" del `NfmReplyRejectionRecorder`: mismo índice único, propósitos distintos.
  */
 export function createPostgresRegistroEntrante(databaseUrl = runtimeEnv().DATABASE_URL): RegistroEntrante {
   const sql = sharedPostgres(databaseUrl);
   return {
-    async registrar({ wamid, telefono, clase, resultado }) {
-      await sql`insert into whatsapp_eventos (direccion, telefono, tipo, payload_json, estado_entrega, kapso_message_id, fecha)
-        values ('entrada', ${telefono}, 'mensaje', ${asJsonb(sql, { evento: "router_entrante", clase, resultado })},
-                ${resultado.startsWith("error") ? "fallido" : "entregado"}, ${`${wamid}:router`}, now())
-        on conflict (kapso_message_id) where kapso_message_id is not null do nothing`;
+    async reclamar({ wamid, telefono, clase }) {
+      const filas = await sql<{ id: string }[]>`
+        insert into whatsapp_eventos (direccion, telefono, tipo, payload_json, estado_entrega, kapso_message_id, fecha)
+        values ('entrada', ${telefono}, 'mensaje', ${asJsonb(sql, { evento: "router_entrante", clase })}, 'pendiente', ${`${wamid}:router`}, now())
+        on conflict (kapso_message_id) where kapso_message_id is not null do nothing
+        returning id`;
+      return filas.length > 0;
+    },
+    async cerrar({ wamid, clase, resultado }) {
+      await sql`update whatsapp_eventos
+        set estado_entrega = ${resultado.startsWith("error") ? "fallido" : "entregado"},
+            payload_json = ${asJsonb(sql, { evento: "router_entrante", clase, resultado })}
+        where kapso_message_id = ${`${wamid}:router`}`;
     },
   };
 }
@@ -274,7 +316,7 @@ export function createPostgresRegistroEntrante(databaseUrl = runtimeEnv().DATABA
 // ---------------------------------------------------------------------------------------------
 
 export type ResultadoRouter =
-  | { atendido: false; motivo: "no_enrutable" | "no_configurado" }
+  | { atendido: false; motivo: "no_enrutable" | "no_configurado" | "otra_linea" }
   | { atendido: true; accion: "menu" | "flow" | "estado"; resultado: string };
 
 export interface RouterDeps {
@@ -293,15 +335,26 @@ export async function atenderMensajeEntrante(payload: unknown, deps: RouterDeps 
   const texto = leerMensajeTexto(payload);
   const boton = leerMensajeBoton(payload);
   if (!texto && !boton) return { atendido: false, motivo: "no_enrutable" };
+  // Se descarta ANTES de mirar la configuración y sin registrar nada: un mensaje a la línea interna
+  // de Sixteam no es un rechazo de este canal, sencillamente no va con nosotros.
+  if (!esDeLineaConfigurada(payload)) return { atendido: false, motivo: "otra_linea" };
   if (!estaRouterConfigurado()) return { atendido: false, motivo: "no_configurado" };
 
   const wamid = (texto ?? boton)!.wamid;
   const from = (texto ?? boton)!.from;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const enviarFlow = deps.enviarFlow ?? sendRequisitionFlow;
+  const registro = deps.registro ?? createPostgresRegistroEntrante();
 
   const accion: "menu" | "flow" | "estado" =
     boton?.botonId === BOTON_NUEVA_REQUISICION ? "flow" : boton?.botonId === BOTON_ESTADO_REQUISICIONES ? "estado" : "menu";
+
+  // Reclamar antes de enviar es lo que evita saludar dos veces a quien escribió una: Kapso reentrega
+  // un mismo mensaje cuando el webhook tarda. Si la reclamación falla (base caída), se sigue
+  // adelante: es preferible un saludo repetido a dejar a alguien sin respuesta.
+  let primeraVez = true;
+  try { primeraVez = await registro.reclamar({ wamid, telefono: from, clase: accion }); } catch { primeraVez = true; }
+  if (!primeraVez) return { atendido: true, accion, resultado: "duplicado" };
 
   let resultado = "ok";
   try {
@@ -321,11 +374,10 @@ export async function atenderMensajeEntrante(payload: unknown, deps: RouterDeps 
   }
 
   try {
-    const registro = deps.registro ?? createPostgresRegistroEntrante();
-    await registro.registrar({ wamid, telefono: from, clase: accion, resultado });
+    await registro.cerrar({ wamid, clase: accion, resultado });
   } catch {
-    // Best-effort, igual que el `NfmReplyRejectionRecorder`: que no se pueda auditar no cambia lo
-    // que ya se le respondió a la persona.
+    // Best-effort, igual que el `NfmReplyRejectionRecorder`: que no se pueda cerrar el registro no
+    // cambia lo que ya se le respondió a la persona.
   }
 
   return { atendido: true, accion, resultado };
