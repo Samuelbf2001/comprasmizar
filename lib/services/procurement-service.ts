@@ -455,7 +455,9 @@ export class ProcurementService {
   private assertVisibleRequisition(actor: Actor, requisition: Requisition): void {
     const elevated = actor.roles.some((role) => ["revisor", "contabilidad", "admin_mizar", "admin_sixteam"].includes(role));
     if (elevated) return;
-    if (actor.roles.includes("aprobador")) { if (requisition.approverId === actor.id) return; throw new DomainError("NOT_FOUND", "Requisición no encontrada"); }
+    // El aprobador POR ÍTEM también la ve: si no, recibe el aviso de WhatsApp y la ficha le responde
+    // "no encontrada" — que es como se ve desde fuera un permiso que se quedó corto.
+    if (actor.roles.includes("aprobador")) { if (requisition.approverId === actor.id || requisition.items.some((line) => line.approverId === actor.id)) return; throw new DomainError("NOT_FOUND", "Requisición no encontrada"); }
     if (requisition.requesterId === actor.id) return;
     throw new DomainError("NOT_FOUND", "Requisición no encontrada");
   }

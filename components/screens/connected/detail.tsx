@@ -153,7 +153,7 @@ export function ConnectedRequisitionDetail({
     ...(approverId ? { approverId } : {}),
     ...(workId ? { workId } : {}),
     ...(paymentTerms.trim() ? { paymentTerms: paymentTerms.trim() } : {}),
-    items: lines.map(({ id, itemId, description, quantity, unit, possibleSupplier, productLink, finalSupplierId, unitBase, status, declineReason, ivaRate, discountRate }) => ({
+    items: lines.map(({ id, itemId, description, quantity, unit, possibleSupplier, productLink, finalSupplierId, unitBase, status, declineReason, ivaRate, discountRate, approverId }) => ({
       id,
       ...(itemId ? { itemId } : {}),
       ...(description ? { description } : {}),
@@ -162,6 +162,9 @@ export function ConnectedRequisitionDetail({
       ...(possibleSupplier ? { possibleSupplier } : {}),
       ...(productLink ? { productLink } : {}),
       ...(finalSupplierId ? { finalSupplierId } : {}),
+      // Aprobador por ítem: solo viaja cuando lo hay. Ausente = hereda el de la cabecera, que es la
+      // misma regla del dominio (itemApproverId) — mandar "" lo rechazaría el servicio por no elegible.
+      ...(approverId ? { approverId } : {}),
       unitBase: Math.round(unitBase ?? 0),
       ...(status ? { status } : {}),
       ...(status === "declinado" && declineReason ? { declineReason } : {}),
@@ -170,10 +173,19 @@ export function ConnectedRequisitionDetail({
     })),
   });
 
-  /** Las decisiones del aprobador TAL COMO ESTÁN EN PANTALLA, todas las líneas. Mismo motivo. */
+  /**
+   * Las decisiones del aprobador TAL COMO ESTÁN EN PANTALLA, pero SOLO LAS SUYAS.
+   *
+   * Antes mandaba todas las líneas, porque una requisición tenía un solo aprobador. Con aprobadores
+   * por ítem el servicio rechaza decidir lo ajeno (NOT_ASSIGNED_APPROVER) y mandar el lote entero
+   * habría roto "Completar aprobación" en cuanto alguien repartiera ítems — sin tocar esta pantalla.
+   *
+   * `misLineas` resuelve la herencia igual que el dominio: sin aprobador propio, decide el de
+   * cabecera. El administrador Sixteam puede con todo (M-5), como en el servicio.
+   */
   const decisionsBody = () => ({
     action: "decide_items",
-    decisions: lines.map((line) => {
+    decisions: misLineas.map((line) => {
       const status = line.status === "declinado" ? "declinado" : "aprobado";
       return {
         itemId: line.id,
@@ -195,6 +207,27 @@ export function ConnectedRequisitionDetail({
     setLines((current) =>
       current.map((line) => (line.status === "declinado" ? line : { ...line, ...patch })),
     );
+  /**
+   * "Aprobador para todos": rellena los ítems SIN aprobador propio y NO pisa los que ya tienen uno.
+   *
+   * Es lo contrario de las otras acciones masivas, y a propósito. Aplicar un IVA de más a una línea se
+   * ve en el total y se corrige; pisar un aprobador que alguien eligió a conciencia manda el ítem a
+   * decidir a otra persona, y eso no se nota hasta que llega el WhatsApp equivocado. Cuando hay algo
+   * que pisar se pregunta, diciendo cuántos son.
+   */
+  const aplicarAprobadorATodos = (nuevo: string) => {
+    const yaAsignados = lines.filter((line) => line.status !== "declinado" && line.approverId && line.approverId !== nuevo);
+    const pisar =
+      yaAsignados.length === 0 ||
+      window.confirm(
+        `${yaAsignados.length} ítem(s) ya tienen un aprobador distinto. ¿Reemplazarlo también en esos? Aceptar los cambia todos; cancelar deja solo los que estaban sin asignar.`,
+      );
+    setLines((current) =>
+      current.map((line) =>
+        line.status === "declinado" || (!pisar && line.approverId) ? line : { ...line, approverId: nuevo },
+      ),
+    );
+  };
   // Cotización del comprador: sube directo (la requisición ya existe) y refresca para que
   // aparezca en "Cotizaciones del comprador", separada de los adjuntos del solicitante.
   const uploadQuote = async () => {
@@ -320,6 +353,25 @@ export function ConnectedRequisitionDetail({
   };
   const isReviewer = role === "Revisor" || role === "Administrador Sixteam",
     isApprover = role === "Aprobador" || role === "Administrador Sixteam";
+  /**
+   * Las líneas que decide QUIEN ESTÁ MIRANDO. La herencia es la misma del dominio (itemApproverId):
+   * sin aprobador propio, manda el de la cabecera.
+   *
+   * El administrador Sixteam ve y decide todas — es el mismo portillo de M-5 que ya tiene el servicio,
+   * y sin él no podría desatascar nada.
+   *
+   * SIN `viewerId` (payload viejo servido a una página nueva, o al revés, durante un despliegue) se
+   * cae al comportamiento de siempre SOLO si nadie ha repartido ítems: entonces todas las líneas son
+   * del aprobador de cabecera y mandarlas todas es exactamente lo que se hacía antes. Con reparto y
+   * sin saber quién mira, no se adivina: se manda lo que se pueda justificar y nada más.
+   */
+  const hayReparto = lines.some((line) => line.approverId);
+  const misLineas =
+    role === "Administrador Sixteam" || (!hayReparto && !data.viewerId)
+      ? lines
+      : lines.filter((line) => (line.approverId ?? requisition.approverId) === data.viewerId);
+  /** Ítems de esta requisición que decide otra persona: lo que explica por qué no se ven todos. */
+  const lineasDeOtros = lines.length - misLineas.length;
   // RF: cabecera editable. Solo el revisor/admin y solo mientras la requisición aún admite cambios.
   const headerEditable = isReviewer && ["enviada", "en_revision", "devuelta"].includes(requisition.status);
   const saveHeader = async () => {
@@ -538,6 +590,25 @@ export function ConnectedRequisitionDetail({
                     ))}
                   </select>
                 </label>
+                <label className="review-bulk-field">
+                  <span>Aprobador</span>
+                  <select
+                    aria-label="Aplicar un aprobador a todos los ítems vigentes"
+                    value=""
+                    onChange={(event) => {
+                      if (event.target.value === "") return;
+                      aplicarAprobadorATodos(event.target.value);
+                      event.target.value = "";
+                    }}
+                  >
+                    <option value="">Elegir…</option>
+                    {(catalogs.approvers ?? []).map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name} a todos
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <button
                   className="button button-secondary quick-supplier-trigger"
                   type="button"
@@ -558,6 +629,7 @@ export function ConnectedRequisitionDetail({
                       <th scope="col">IVA %</th>
                       <th scope="col" className="align-right">Desc %</th>
                       <th scope="col">Proveedor</th>
+                      <th scope="col">Aprobador</th>
                       <th scope="col" className="align-right">Total</th>
                       <th scope="col"><span className="sr-only">Acciones</span></th>
                     </tr>
@@ -652,6 +724,27 @@ export function ConnectedRequisitionDetail({
                                 ))}
                               </select>
                             </td>
+                            {/* Ernesto, 11-sep-2026: «se puede designar un aprobador para todo o
+                                aprobadores por ítems». Vacío = lo decide el de la cabecera, y eso se
+                                dice con todas las letras en la opción por defecto: un "—" dejaría
+                                pensando que ese ítem no tiene quien lo apruebe. */}
+                            <td>
+                              <select
+                                className="cell-input"
+                                id={`approver-${line.id}`}
+                                disabled={declinado}
+                                aria-label={`Aprobador de ${nombre}`}
+                                value={line.approverId ?? ""}
+                                onChange={(event) => updateLine(line.id, { approverId: event.target.value || undefined })}
+                              >
+                                <option value="">El de la requisición</option>
+                                {(catalogs.approvers ?? []).map((user) => (
+                                  <option key={user.id} value={user.id}>
+                                    {user.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
                             <td className="align-right money">
                               {declinado ? "—" : money.format(estimateLineTotal(line))}
                             </td>
@@ -674,7 +767,7 @@ export function ConnectedRequisitionDetail({
                           </tr>
                           {declinado && (
                             <tr className="review-row-declined">
-                              <td colSpan={9}>
+                              <td colSpan={10}>
                                 <label className="field field-wide">
                                   <span>Motivo por el que se declina {nombre}</span>
                                   <textarea
@@ -758,7 +851,16 @@ export function ConnectedRequisitionDetail({
             </div>
           ) : isApprover && requisition.status === "en_aprobacion" ? (
             <div className="connected-review" data-testid="approval-decisions">
-              {lines.map((line) => (
+              {/* SOLO SUS ÍTEMS. Con aprobadores por ítem, enseñarle los demás sería invitarle a
+                  decidir lo que el servicio le va a rechazar — y de paso enseñarle cifras que no le
+                  tocan. Cuando hay ítems de otros se dice cuántos: si no, el aprobador cuenta tres
+                  materiales en el WhatsApp del solicitante y aquí ve uno, y piensa que algo se perdió. */}
+              {lineasDeOtros > 0 && (
+                <p className="muted-copy" role="status">
+                  Ves {misLineas.length} de {lines.length} ítems: los demás los decide otro aprobador.
+                </p>
+              )}
+              {misLineas.map((line) => (
                 <fieldset className={`review-line${line.status === "declinado" ? " review-line-declined" : ""}`} key={line.id}>
                   <legend>
                     {line.description ||
