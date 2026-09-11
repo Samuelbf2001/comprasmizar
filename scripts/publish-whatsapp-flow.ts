@@ -32,12 +32,23 @@ import { resolve } from "node:path";
  * `requisicion` sigue siendo el valor por defecto para no romper el comando ya documentado.
  */
 const FLOWS = {
-  requisicion: { name: "Requisición de obra – Mizar", path: "integrations/whatsapp-flow/requisicion.flow.json" },
-  // v2: ocho artículos bajo demanda y resumen que pinta valores en vez de llaves. Va como Flow
-  // NUEVO y no como actualización del anterior porque Meta no deja editar un Flow ya publicado, y
-  // `1972861836748301` lo está desde el 2026-09-11. El JSON lo genera
-  // `integrations/whatsapp-flow/build-requisicion-flow.mjs`; no se edita a mano.
+  // El Flow de captura VIGENTE (`1076158778395724`, publicado el 2026-09-11). `requisicion` apunta
+  // aquí para que el comando por defecto, el documentado y el que escriba cualquiera de memoria
+  // toquen siempre el bueno. El JSON lo genera `scripts/build-flow-captura.ts`; no se edita a mano.
+  requisicion: { name: "Requisición de obra – Mizar v2", path: "integrations/whatsapp-flow/requisicion-v2.flow.json" },
+  // Alias explícito, por si alguien lo escribe así siguiendo un mensaje o un commit antiguo.
   requisicion_v2: { name: "Requisición de obra – Mizar v2", path: "integrations/whatsapp-flow/requisicion-v2.flow.json" },
+  /**
+   * DEPRECADO. Flow de captura v1, `1972861836748301`. Sustituido por el v2 el 2026-09-11 por dos
+   * defectos que solo se vieron usándolo: el resumen pintaba las llaves en vez de los datos (ninguna
+   * pantalla declaraba `data` ni pasaba `payload`) y solo cabían tres artículos.
+   *
+   * Se conserva la entrada a propósito, y no se borra, porque el Flow sigue existiendo en Meta y su
+   * JSON sigue en el repositorio: sin esta anotación, el siguiente que vea `requisicion.flow.json`
+   * podría subirlo creyendo que es la fuente vigente y pisar el bueno. NO se actualiza ni se
+   * republica.
+   */
+  requisicion_v1_deprecado: { name: "Requisición de obra – Mizar", path: "integrations/whatsapp-flow/requisicion.flow.json" },
   aprobacion: { name: "Aprobación de requisición – Mizar", path: "integrations/whatsapp-flow/aprobacion.flow.json" },
 } as const;
 type FlowKey = keyof typeof FLOWS;

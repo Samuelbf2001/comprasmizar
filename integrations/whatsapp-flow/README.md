@@ -82,7 +82,7 @@ pantalla de artículo lleva **Continuar** (salta al resumen) y, debajo, **Agrega
 Subir el tope es cambiar `MAX_ITEMS` en `scripts/build-flow-captura.ts` y regenerar; el adaptador
 (`MAX_ITEM_SLOTS` en `lib/infrastructure/nfm-reply-adapter.ts`) tiene que subir con él.
 
-### Dos reglas del validador de Meta que no están en su documentación
+### Tres reglas del validador de Meta que no están en su documentación
 
 Las dos costaron un viaje de ida y vuelta contra la API al construir el v2. Conviene tenerlas a mano
 antes de tocar un Flow JSON:
@@ -100,6 +100,24 @@ destino**, no solo las que existan en ese momento:
 
 Como `DETALLES` declara los ocho artículos, quien salte al resumen desde el tercero tiene que mandar
 del cuarto al octavo **en blanco**. De ahí `itemsEnBlanco()` en el generador.
+
+**3. `visible` exige un booleano ya resuelto y rechaza comparaciones.** Para ocultar una línea según
+su contenido, lo intuitivo es `"visible": "${data.item_2_descripcion} != ''"`, y Meta lo rechaza:
+
+> Error while parsing dynamic expression `"${data.item_2_descripcion} != ''"`.
+> The expression return type is 'string' which does not match the schema for the property.
+
+Lo que sirve es el componente **`If`**, cuyo `condition` sí admite la comparación:
+
+```json
+{ "type": "If", "condition": "${data.item_2_descripcion} != ''", "then": [ { "type": "TextBody", "text": "…" } ] }
+```
+
+Así se condicionan en el resumen las líneas de los artículos 2 a 8 (la del 1 no: es obligatorio).
+La alternativa era encadenar un booleano `item_N_presente` desde cada pantalla, y se descartó por un
+motivo de fondo, no de comodidad: ese booleano solo podría decir *"se visitó la pantalla N"*, no
+*"se llenó el artículo N"*, así que quien abriera una pantalla y la dejara en blanco habría seguido
+viendo un renglón vacío.
 
 ### Y una regla de binding que el v1 incumplía sin que nadie lo notara
 
@@ -337,10 +355,13 @@ Variables requeridas (ya están en `.env.local`, no se imprimen aquí):
   `https://api.kapso.ai/meta/whatsapp/v24.0`.
 
 ```sh
-npx tsx scripts/publish-whatsapp-flow.ts                  # captura v1 (por defecto)
-npx tsx scripts/publish-whatsapp-flow.ts requisicion_v2   # captura v2 — el vigente
+npx tsx scripts/publish-whatsapp-flow.ts                  # captura — el vigente (v2)
 npx tsx scripts/publish-whatsapp-flow.ts aprobacion       # Flow de aprobación
 ```
+
+`requisicion` apunta al **v2** (`1076158778395724`, publicado el 2026-09-11). El v1
+(`1972861836748301`) queda como `requisicion_v1_deprecado`: la entrada existe solo para que nadie
+suba `requisicion.flow.json` creyendo que es la fuente vigente. No se actualiza ni se republica.
 
 El script imprime `validation_errors`. **Que la lista salga vacía significa que Meta acepta la
 estructura, no que el Flow se vea bien**: las dos cosas que fallan en silencio —un binding que pinta
