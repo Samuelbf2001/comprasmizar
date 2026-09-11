@@ -72,23 +72,58 @@ pero el despliegue no la usa.
 Desde la máquina de desarrollo, con la llave SSH de despliegue:
 
 ```bash
-# 1. El código. /opt/mizar NO es un repo git: se sincroniza volcando el árbol de un commit.
 SHA=$(git rev-parse origin/main)
-git archive --format=tar origin/main | ssh root@<vps> 'cd /opt/mizar && tar -x -f -'
 
-# 2. Migraciones. Idempotente: lleva registro en public.migraciones_aplicadas.
-ssh root@<vps> 'cd /opt/mizar && bash ops/apply-migrations.sh'
+# 1. El código. /opt/mizar NO es un repo git: se le vuelca el árbol de un commit.
+#    ops/sync-arbol.sh BORRA lo que el commit ya no tiene (ver "Sincronizar borrando", abajo).
+#    Se ejecuta desde /tmp a propósito: desde /opt/mizar/ops/ podría borrarse a sí mismo.
+git archive --format=tar origin/main | ssh root@<vps> 'cat > /tmp/mizar-nuevo.tar'
+scp ops/sync-arbol.sh root@<vps>:/tmp/sync-arbol.sh
+ssh root@<vps> 'bash /tmp/sync-arbol.sh /tmp/mizar-nuevo.tar'
 
-# 3. Imagen, con los TRES build-args. Ver más abajo por qué no son opcionales.
+# 2. Imagen, con los TRES build-args. Ver más abajo por qué no son opcionales.
+#    VA ANTES DE LAS MIGRACIONES: si el build falla, la base no se ha tocado.
 ssh root@<vps> "cd /opt/mizar && docker compose -p mizar build \
   --build-arg NEXT_PUBLIC_APP_URL=https://comprasmizar.sixteam.pro \
   --build-arg NEXT_PUBLIC_DEMO_MODE=false \
   --build-arg APP_COMMIT=$SHA app"
 
+# 3. Migraciones. Idempotente: lleva registro en public.migraciones_aplicadas.
+ssh root@<vps> 'cd /opt/mizar && bash ops/apply-migrations.sh'
+
 # 4. Arrancar y volver a enganchar Traefik (el connect se pierde en cada recreación).
 ssh root@<vps> 'cd /opt/mizar && docker compose -p mizar up -d app \
   && docker network connect easypanel mizar-app-1'
 ```
+
+**El orden de los pasos 2 y 3 es deliberado, y se pagó por aprenderlo.** Hasta el 11-sep-2026 las
+migraciones iban antes del build. Ese día el build falló y el esquema quedó **adelantado respecto al
+código que seguía corriendo**: la migración aplicada, la imagen vieja en pie. Fue inofensivo porque
+esa migración solo añadía columnas, pero con una destructiva habría roto producción sin haber
+desplegado nada. Construir primero hace que un build roto no llegue a tocar la base.
+
+Queda una ventana irreducible entre el paso 3 y el 4: unos segundos con el esquema nuevo y el código
+viejo. Para una migración aditiva es segura. **Para una destructiva no lo es**, y ninguna reordenación
+la cierra: eso exige el patrón de dos fases — desplegar primero código que tolere los dos esquemas, y
+borrar la columna en un despliegue posterior.
+
+### Sincronizar borrando
+
+`git archive | tar -x` escribe y sobrescribe, pero **nunca borra**. Un fichero que el commit elimina
+se queda en el servidor para siempre. El 11-sep-2026 eso rompió un despliegue: la rama borró
+`app/api/public/works/route.ts` y el huérfano siguió importando un símbolo que ya no existía, así que
+`next build` falló. Había **seis** acumulados, todos del mismo refactor.
+
+Ese fallo fue ruidoso por suerte, no por diseño. **Un huérfano que compile no rompe nada y se queda
+sirviendo en producción**: una ruta de API borrada por seguridad seguiría respondiendo después de
+"borrarla", y nadie lo vería.
+
+[`ops/sync-arbol.sh`](../ops/sync-arbol.sh) lo resuelve con `rsync --delete` contra el árbol extraído
+del commit. Conserva lo que no está en git y no debe perderse — `.env*` y sus respaldos,
+`.credenciales-iniciales`, `respaldos/`, `node_modules/`, `.next/`, `.claude/` — y aborta si el tar
+trae menos de 100 ficheros o le falta `package.json`/`compose.yaml`, porque un tar truncado con
+`--delete` vaciaría medio `/opt/mizar`. Con `--simulacro` enseña lo que borraría sin tocar nada;
+conviene usarlo la primera vez tras un refactor grande.
 
 ### Verificación, y qué mira cada comprobación
 
