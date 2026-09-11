@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { construirFlow, MAX_ITEMS, type ComponenteFlow } from "../../scripts/build-flow-captura";
+import { CAMPOS_ITEM_LEIDOS, MAX_ITEM_SLOTS } from "../../lib/infrastructure/nfm-reply-adapter";
 
 /** Acción de navegación de un componente, ya acotada: el generador los tipa laxos a propósito. */
 type ConAccion = ComponenteFlow & { "on-click-action"?: { name?: string; next?: { name: string }; payload?: Record<string, string> } };
@@ -12,7 +13,7 @@ type ConAccion = ComponenteFlow & { "on-click-action"?: { name?: string; next?: 
 // Lo que se vigila aquí es lo que Meta NO avisa en tiempo de validación y solo se ve en el chat:
 // una pantalla que pinta `${...}` literal, o un artículo que se pierde por el camino.
 
-const RUTA_JSON = resolve(__dirname, "../../integrations/whatsapp-flow/requisicion-v2.flow.json");
+const RUTA_JSON = resolve(__dirname, "../../integrations/whatsapp-flow/requisicion-captura.flow.json");
 const flow = construirFlow();
 const pantalla = (id: string) => flow.screens.find((s) => s.id === id)!;
 
@@ -75,10 +76,47 @@ describe("defecto 1 — el resumen pinta valores, no llaves", () => {
     expect(String(sueltos[0].text)).toContain("Artículo 1:");
   });
 
-  it("el `complete` se arma con datos encadenados, sin mirar hacia atrás", () => {
+  it("el `complete` entrega EXACTAMENTE las claves de artículo que el adaptador sabe leer", () => {
+    // CANDADO DE CLASE, no del caso concreto. El v2 perdió `item_N_foto` del `complete` mientras las
+    // ocho pantallas seguían mostrando el PhotoPicker: el maestro tomaba la foto, la requisición se
+    // creaba sin ella y nadie veía un error. Son dos artefactos que tienen que coincidir —el Flow
+    // que emite y el adaptador que lee— y no había nada cruzándolos.
+    //
+    // Se comprueba en las DOS direcciones a propósito: que no falte ninguna (se perdería el dato) y
+    // que no sobre ninguna (viajaría algo que nadie lee, y la próxima persona no sabría si es basura
+    // o una lectura que alguien olvidó implementar).
+    const footer = resumen.layout.children.at(-1) as ConAccion;
+    const emitidas = Object.keys(footer["on-click-action"]!.payload!).filter((clave) => clave.startsWith("item_"));
+    const esperadas: string[] = [];
+    for (let n = 1; n <= MAX_ITEM_SLOTS; n += 1) for (const campo of CAMPOS_ITEM_LEIDOS) esperadas.push(`item_${n}_${campo}`);
+    expect([...emitidas].sort()).toEqual([...esperadas].sort());
+  });
+
+  it("las ocho pantallas siguen ofreciendo foto, y las ocho la entregan", () => {
+    // La otra mitad del mismo fallo: ofrecer el PhotoPicker y no transportar su valor es peor que no
+    // ofrecerlo, porque promete algo que no cumple.
+    const conPicker = flow.screens.filter((s) => JSON.stringify(s.layout.children).includes('"PhotoPicker"'));
+    expect(conPicker).toHaveLength(MAX_ITEMS);
+    const footer = resumen.layout.children.at(-1) as ConAccion;
+    for (let n = 1; n <= MAX_ITEMS; n += 1) {
+      expect(footer["on-click-action"]!.payload![`item_${n}_foto`], `falta la foto del artículo ${n}`).toMatch(/^\$\{screen\.ARTICULO_[A-Z]+\.form\.foto\}$/);
+    }
+  });
+
+  it("el `complete` se arma con datos encadenados; la ÚNICA excepción es la foto", () => {
+    // La foto no puede encadenarse: Meta lo prohíbe explícitamente —"The value of PhotoPicker
+    // component is not allowed in the payload of navigate action"—, así que la única forma de que
+    // llegue es leerla donde se tomó, con una referencia entre pantallas. El `complete` sí las
+    // admite porque no es un `navigate`.
+    //
+    // La prueba fija la excepción para que sea deliberada y no se confunda con un descuido: todo lo
+    // demás mira hacia adelante, solo la foto mira hacia atrás.
     const footer = resumen.layout.children.at(-1) as ConAccion;
     expect(footer["on-click-action"]?.name).toBe("complete");
-    for (const valor of Object.values(footer["on-click-action"]!.payload!)) expect(valor).not.toContain("${screen.");
+    for (const [clave, valor] of Object.entries(footer["on-click-action"]!.payload!)) {
+      if (clave.endsWith("_foto")) expect(valor).toMatch(/^\$\{screen\.ARTICULO_[A-Z]+\.form\.foto\}$/);
+      else expect(valor, `${clave} no debería mirar hacia atrás`).not.toContain("${screen.");
+    }
   });
 });
 
@@ -119,12 +157,15 @@ describe("defecto 2 — ocho artículos bajo demanda", () => {
     expect(payloadAlResumen.item_3_descripcion).toBe("${form.descripcion}");
   });
 
-  it("ningún salto referencia una pantalla que quizá no se visitó", () => {
-    // Con ocho pantallas opcionales, apostar a que Meta resuelve el `form` de una pantalla nunca
-    // abierta sería confiar en algo que no documenta. Todo viaja encadenado.
+  it("ningún NAVIGATE referencia una pantalla que quizá no se visitó", () => {
+    // Se acota a los `navigate` a propósito. El `complete` de RESUMEN sí mira hacia atrás, pero solo
+    // para las fotos y porque Meta no deja encadenarlas (ver la prueba de la excepción, arriba).
     for (const p of flow.screens) {
-      const acciones = JSON.stringify(p.layout.children.filter((c) => c["on-click-action"]));
-      expect(acciones, `${p.id} mira hacia atrás`).not.toContain("${screen.");
+      const navegaciones = JSON.stringify(
+        p.layout.children.filter((c) => (c as ConAccion)["on-click-action"]?.name === "navigate"),
+      );
+      expect(navegaciones, `${p.id} mira hacia atrás en un navigate`).not.toContain("${screen.");
     }
   });
+
 });
