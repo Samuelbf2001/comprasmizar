@@ -1,0 +1,85 @@
+# Pila de PRODUCCIÓN para EasyPanel. Este es el archivo que se pega en el servicio tipo Compose.
+#
+# Por qué existe aparte de compose.yaml (decisión 2026-09-11):
+#   - `compose.yaml` monta la pila COMPLETA e independiente, con Caddy resolviendo TLS. Sirve para
+#     un VPS dedicado y es la base del entorno de desarrollo (con compose.local.yaml encima).
+#   - El VPS de Mizar NO está dedicado: ya corre EasyPanel con otros clientes, y EasyPanel es dueño
+#     de los puertos 80 y 443. Levantar Caddy ahí pelearía por esos puertos y tumbaría lo que ya
+#     está sirviendo. Por eso esta variante NO trae Caddy: el dominio y el certificado los pone
+#     EasyPanel, que enruta al servicio `app` por el puerto 3000.
+#
+# Dos diferencias más, ambas deliberadas:
+#   - `app` usa `image:` de GHCR en vez de `build:`. Lo que se despliega es EXACTAMENTE la imagen
+#     que pasó CI (lint, tipos, pruebas, E2E), no una recompilación en el servidor con otro
+#     toolchain. La etiqueta por commit permite revertir a una versión concreta.
+#   - No hay `env_file`. Las variables las inyecta EasyPanel desde la pestaña Environment del
+#     servicio, que es donde viven los secretos: nunca en el repo ni en capas de la imagen.
+#
+# El servicio `db` se conserva IDÉNTICO al de compose.yaml a propósito: ops/apply-migrations.sh,
+# ops/backup-daily.sh y ops/restore-verify.sh hacen `docker compose exec -T db psql`. Cambiarlo por
+# un Postgres gestionado por EasyPanel obligaría a reescribir las tres, que son justo las
+# herramientas donde un error se paga con datos perdidos.
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mizar}
+      POSTGRES_USER: ${POSTGRES_USER:-mizar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    # `/var/lib/postgresql`, NO `/var/lib/postgresql/data`: Postgres 18+ aborta el arranque si
+    # encuentra el montaje en la ruta antigua. Verificado con la pila real (commit 8715270).
+    volumes:
+      - db_data:/var/lib/postgresql
+    networks:
+      - interna
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mizar} -d ${POSTGRES_DB:-mizar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app:
+    # Etiqueta móvil para el día a día. Para fijar o revertir una versión concreta, cambiar por
+    # ghcr.io/samuelbf2001/comprasmizar:<sha> y redesplegar.
+    image: ghcr.io/samuelbf2001/comprasmizar:main
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # `expose`, no `ports`: EasyPanel enruta por la red de Docker. Publicar el puerto en el host lo
+    # dejaría accesible saltándose el proxy, el TLS y el dominio.
+    expose:
+      - "3000"
+    networks:
+      - web
+      - interna
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - storage_data:/var/lib/mizar/storage
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  web:
+  # Sin ruta de salida: aunque alguien ejecutara código en el contenedor de la base, no podría
+  # hablar con internet desde ahí.
+  interna:
+    internal: true
+
+volumes:
+  db_data:
+  storage_data:

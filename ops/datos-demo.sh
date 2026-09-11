@@ -61,5 +61,5 @@ psql_run -c "select
   (select count(*) from public.gastos) as gastos;"
 
 echo
-echo "Listo. Las seis cuentas de prueba usan la contraseña 'local-only-change-me'."
+echo "Listo. Las siete cuentas de demostración usan la contraseña 'local-only-change-me'."
 echo "CÁMBIALAS antes de exponer el dominio: POST /api/usuarios/<id>/clave como administrador."

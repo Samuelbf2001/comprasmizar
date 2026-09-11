@@ -41,7 +41,7 @@ En términos del plan de 8 semanas del PRD, el código cubre las Fases 1–4 cas
 
 ### 3.1 Despliegue (bloquea el uso real) — responsable: Sixteam
 
-- [ ] **Apuntar el DNS** de `compras.grupomizar.com.co` al VPS `72.60.67.214`.
+- [ ] **Apuntar el DNS** de `comprasmizar.sixteam.pro` (provisional, en Hostinger; el definitivo `compras.grupomizar.com.co` lo maneja el registrador de Mizar) al VPS `72.60.67.214`.
 - [ ] **Crear el proyecto en EasyPanel** (aislado; el VPS ya aloja otros clientes) con la imagen de GHCR. Guía completa en [docs/despliegue.md](despliegue.md).
 - [ ] Definir las variables de entorno de producción (Supabase, peppers, Kapso, secretos internos).
 - [ ] Definir la variable de build `NEXT_PUBLIC_APP_URL` en GitHub Actions.
@@ -58,9 +58,9 @@ En términos del plan de 8 semanas del PRD, el código cubre las Fases 1–4 cas
 ### 3.3 WhatsApp / Kapso — responsable: Sixteam + decisión de Mizar
 
 - [ ] **Publicar el Flow** (hoy es borrador). Es una acción de una sola vía (queda inmutable); requiere el "sí" de Mizar. Comando en `integrations/whatsapp-flow/README.md`.
-- [ ] **Conectar el webhook de Kapso** a `https://compras.grupomizar.com.co/api/kapso` con el `KAPSO_WEBHOOK_SECRET`. Hasta que el sitio esté desplegado, la vuelta completa (respuesta del Flow → requisición en la plataforma) no se puede probar: Kapso no alcanza `localhost`.
+- [ ] **Conectar el webhook de Kapso** a `https://comprasmizar.sixteam.pro/api/kapso` con el `KAPSO_WEBHOOK_SECRET`. Hasta que el sitio esté desplegado, la vuelta completa (respuesta del Flow → requisición en la plataforma) no se puede probar: Kapso no alcanza `localhost`.
 - [ ] **Plantillas de mensaje** (aprobación de Meta) para: notificar al solicitante (recibida/aprobada/devuelta) y a los aprobadores, e iniciar la conversación fuera de la ventana de 24 h. Yo las redacto; Meta las aprueba.
-- [ ] **Flow de APROBACIÓN por WhatsApp** (`integrations/whatsapp-flow/aprobacion.flow.json`): el código está construido y probado en unitarias (emisor, adaptador, aplicación de la decisión, webhook), pero el canal **no está activo**. Falta, en este orden: (1) crear el borrador en Meta con `npx tsx scripts/publish-whatsapp-flow.ts aprobacion` y revisar `validation_errors` — no se ha corrido, crea un Flow real en la WABA; (2) cargar `WHATSAPP_APPROVAL_FLOW_ID`; (3) cargar `usuarios.telefono` de cada aprobador; (4) recorrido real punta a punta, que exige el sitio desplegado (Kapso no alcanza `localhost`). Mientras (2) no exista, la notificación al aprobador sigue saliendo como plantilla de texto, igual que hoy. Detalle completo en `integrations/whatsapp-flow/README.md`.
+- [ ] **Flow de APROBACIÓN por WhatsApp** (`integrations/whatsapp-flow/aprobacion.flow.json`): construido, probado en unitarias y **ya publicado en Meta** (Flow `2249539985776722`, PUBLISHED) con su plantilla de utilidad **aprobada** (`aprobacion_requisicion`, la que atraviesa la ventana de 24 h). El envío se probó en vivo al número de prueba. Falta para que opere: (1) `WHATSAPP_APPROVAL_FLOW_ID` en el entorno de producción; (2) `usuarios.telefono` de cada aprobador; (3) la vuelta completa (respuesta → requisición aprobada), que exige el sitio desplegado con el webhook de Kapso conectado. Detalle en `integrations/whatsapp-flow/README.md`.
 - [ ] Confirmar el **plan de Kapso** y quién asume las tarifas de conversación de Meta.
 
 ### 3.4 Validación contable (bloquea producción) — responsable: Sixteam + contabilidad Mizar

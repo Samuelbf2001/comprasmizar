@@ -22,16 +22,17 @@ npm run dev
 
 ### Usuarios de prueba
 
-`supabase/seed.sql` crea seis cuentas, una por rol, todas con la contraseña `local-only-change-me`:
+`supabase/seed.sql` crea siete cuentas de demostración (el equipo de Mizar como cuentas demo, más las administrativas), todas con la contraseña `local-only-change-me`:
 
 | Correo | Rol |
 |---|---|
-| `solicitante.local@mizar.test` | Solicitante |
-| `revisor.local@mizar.test` | Revisor |
-| `aprobador.local@mizar.test` | Aprobador |
-| `contabilidad.local@mizar.test` | Contabilidad |
-| `admin-mizar.local@mizar.test` | Administrador Mizar |
-| `admin-sixteam.local@mizar.test` | Administrador Sixteam |
+| `solicitante.demo@mizar.test` | Solicitante (Solicitante Demo) |
+| `daniel.demo@mizar.test` | Revisor (Daniel Demo) |
+| `nelson.demo@mizar.test` | Aprobador (Nelson Demo) |
+| `juliana.demo@mizar.test` | Aprobador (Juliana Demo) |
+| `claudia.demo@mizar.test` | Contabilidad (Claudia Demo) |
+| `admin-mizar.demo@mizar.test` | Administrador Mizar |
+| `admin-sixteam.demo@mizar.test` | Administrador Sixteam |
 
 `supabase/seed-demo.sql` añade el movimiento: diez requisiciones repartidas por todos los estados del embudo, cinco órdenes con sus estados administrativos, gastos pagados y sin pagar, y caja menor. Las fechas son relativas al día de hoy, así que el dashboard nunca sale vacío. **Nunca se aplica en producción.**
 
