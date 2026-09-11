@@ -542,7 +542,11 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .kapso-checks{display:flex;justify-content:center;gap:var(--space-5);flex-wrap:wrap;margin:0 auto var(--space-6);color:#5b6677;font-size:var(--text-3xs)}
 .kapso-checks span{display:flex;align-items:center;gap:var(--space-1)}
 .kapso-checks svg{color:var(--navy-light)}
-.kapso-frame{height:540px;background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:var(--space-5);display:flex;flex-direction:column}
+/* La bandeja ocupa la altura de la ventana. Antes eran 540 px fijos con un banner, una nota de
+   seguridad y un "log demo" ficticio alrededor: la conversación se leía por una rendija mientras
+   sobraba pantalla. El descuento es la cabecera de la pantalla más los márgenes del contenedor. */
+.kapso-frame{height:calc(100vh - 230px);height:calc(100dvh - 230px);min-height:520px;background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:var(--space-5);display:flex;flex-direction:column}
+@media(max-width:820px){.kapso-frame{height:calc(100vh - 170px);height:calc(100dvh - 170px);min-height:420px}}
 .kapso-frame iframe{width:100%;height:100%;border:0}
 .kapso-auth-note{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);background:var(--surface);color:#5d6776;font-size:var(--text-3xs);border-bottom:1px solid var(--line)}
 .kapso-auth-note svg{color:var(--navy-light);flex:none}
