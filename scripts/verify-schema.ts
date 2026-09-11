@@ -75,6 +75,7 @@ const HARNESSES = [
   // —vive en el `where` de la consulta— y protege contra el desorden de entrega que Kapso anuncia.
   path.join(ROOT, "supabase", "tests", "estado_entrega_verification.sql"),
   path.join(ROOT, "supabase", "tests", "aprobador_por_item_verification.sql"),
+  path.join(ROOT, "supabase", "tests", "adjuntos_aprobador_verification.sql"),
 ];
 
 function migrationFiles(): string[] {
