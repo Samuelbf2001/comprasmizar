@@ -169,8 +169,22 @@ function PortalFrame({ children }: { children: React.ReactNode }) {
  * que alimenta `solicitante_telefono_externo` —y con ello «Mis requisiciones» y los avisos— solo
  * llega cuando quien radica quiere que le avisen.
  */
-function AccessGate({ code, error, onSubmit, showHelp = false }: {
-  code: string; error: string; onSubmit: (datos: { code: string }) => void; showHelp?: boolean;
+/**
+ * Y la contraseña se comprueba CONTRA EL SERVIDOR antes de dejar pasar (`POST /api/public/access`).
+ *
+ * Hasta el 11-sep-2026 la compuerta solo miraba, en el navegador, que tuviera cuatro caracteres. Con
+ * eso dejaba entrar cualquier cosa: Ernesto se equivocó de contraseña en producción, llenó los dos
+ * pasos, pulsó enviar y leyó «La estamos validando» — el 202 del endpoint de radicación es neutro a
+ * propósito y no distingue el acierto del error. La requisición no existía, nadie la recibió y él se
+ * quedó esperando. Fallar en la puerta y decirlo cuesta un oráculo de la contraseña (ver el
+ * comentario del endpoint, que lo asume por escrito); fallar al final no cuesta nada y se lleva el
+ * pedido por delante.
+ *
+ * `comprobando` deshabilita el botón mientras se pregunta, que es medio segundo en el que, sin esto,
+ * se pulsa dos veces y se gastan dos intentos del limitador.
+ */
+function AccessGate({ code, error, onSubmit, comprobando = false, showHelp = false }: {
+  code: string; error: string; onSubmit: (datos: { code: string }) => void; comprobando?: boolean; showHelp?: boolean;
 }) {
   const enviar = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -183,7 +197,7 @@ function AccessGate({ code, error, onSubmit, showHelp = false }: {
     <form className={styles.accessCard} onSubmit={enviar} noValidate>
       <label className={styles.field}><span className={styles.fieldLabel}>Contraseña del portal <em className={styles.required}>*</em></span><input className={styles.control} name="access-code" defaultValue={code} placeholder="Contraseña entregada por Mizar" autoComplete="off" aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-access-error' : undefined} /></label>
       {error && <p className={styles.error} id="portal-access-error" role="alert">{error}</p>}
-      <button className={styles.primaryButton} type="submit">Continuar <ArrowRight aria-hidden="true" size={19} /></button>
+      <button className={styles.primaryButton} type="submit" disabled={comprobando}>{comprobando ? 'Comprobando…' : 'Continuar'} <ArrowRight aria-hidden="true" size={19} /></button>
     </form>
     {showHelp && <div className={styles.accessHelp}><ShieldCheck aria-hidden="true" size={19} /><span><b>¿No tienes la contraseña?</b><small>Pídesela al responsable de la obra. Este enlace solo permite crear una requisición.</small></span></div>}
   </section></PortalFrame>;
@@ -278,6 +292,11 @@ function DemoPublicRequest() {
   // Los valores llegan leídos del formulario, no del estado: la compuerta es no controlada para no
   // perder lo que se teclee antes de hidratar (ver AccessGate). Se guardan en estado AQUÍ, ya
   // validados, porque los pasos siguientes los necesitan.
+  //
+  // AQUÍ NO se pregunta al servidor, al revés que en el portal real: en modo demostración no hay
+  // base ni contraseña que comprobar, y una compuerta que llamara a un endpoint inexistente no
+  // dejaría entrar a nadie a la demo. Es la única diferencia de comportamiento que queda entre las
+  // dos pantallas, y por eso está escrita.
   const handleAccess = ({ code: claveEscrita }: { code: string }) => { if (claveEscrita.trim().length < 4) { setAccessError('Escribe la contraseña del portal para continuar.'); return; } setCode(claveEscrita); setAccessError(''); setAccessGranted(true); };
   const validate = (targetStep: 1 | 2) => {
     const next = validarPaso(targetStep, values, phone, true);
@@ -308,7 +327,7 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   const [access, setAccess] = useState<PublicAccess | undefined>(), [linkRead, setLinkRead] = useState(false);
   const [accessGranted, setAccessGranted] = useState(false), [sent, setSent] = useState(false), [submitting, setSubmitting] = useState(false);
   const [code, setCode] = useState(''), [phone, setPhone] = useState(''), [accessError, setAccessError] = useState('');
-  const [step, setStep] = useState<1 | 2>(1), [formError, setFormError] = useState('');
+  const [step, setStep] = useState<1 | 2>(1), [formError, setFormError] = useState(''), [comprobandoClave, setComprobandoClave] = useState(false);
   const { values, errors, setErrors, detalles, update, updateLinea, agregarLinea, quitarLinea, alternarDetalle, reiniciar } = useFormularioRequisicion();
   const [empresas, setEmpresas] = useState<PublicCompany[]>([]), [empresasCargadas, setEmpresasCargadas] = useState(false);
   // EL FRAGMENTO SE QUEDA EN LA URL (2026-09-11). Antes se borraba con `history.replaceState` nada
@@ -339,30 +358,53 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
     });
     return () => { active = false; };
   }, [enabled]);
-  // La lista de EMPRESAS se pide con la contraseña, siempre — ya no hay rama por token. Antes eran
-  // obras y había dos caminos (GET con token para el enlace general, POST con contraseña para la
-  // ruta pública); con empresa sobra el primero, porque la compuerta ya exigió la contraseña en los
-  // dos casos y es lo único que /api/public/companies acepta. Por eso esto espera a `accessGranted`:
-  // antes de la compuerta no hay con qué pedirla.
+  // La lista de EMPRESAS se pide SIN contraseña ni token: son los nombres de las sociedades del
+  // cliente, que están en la marca y en las facturas. Antes eran obras y había dos caminos (GET con
+  // token para el enlace general, POST con contraseña para la ruta pública); el segundo era un
+  // oráculo de la contraseña y se ha borrado con el endpoint entero.
+  //
+  // Por eso esto ya no espera a la compuerta: no hay nada que la contraseña autorice aquí, y pedirla
+  // antes deja el selector lleno para cuando se llega al paso 1.
   //
   // Un enlace POR OBRA no necesita la lista: trae su obra fija y la empresa se deriva de ella. Si la
   // petición falla, la lista queda vacía y se dice, en vez de dejar un selector mudo.
   useEffect(() => {
-    if (!access || access.workId || !accessGranted) return;
+    if (!access || access.workId) return;
     let active = true;
-    fetch("/api/public/companies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) })
+    fetch("/api/public/companies")
       .then(response => (response.ok ? response.json() : { companies: [] }))
       .then((body: { companies?: PublicCompany[] }) => { if (active) setEmpresas(Array.isArray(body.companies) ? body.companies : []); })
       .catch(() => { if (active) setEmpresas([]); })
       .finally(() => { if (active) setEmpresasCargadas(true); });
     return () => { active = false; };
-  }, [access, accessGranted, code]);
+  }, [access]);
   // Los valores llegan leídos del formulario, no del estado: la compuerta es no controlada para no
   // perder lo que se teclee antes de hidratar (ver AccessGate). Se guardan en estado AQUÍ, ya
-  // validados, porque los pasos siguientes los necesitan (la contraseña viaja en el envío y con ella
-  // se pide la lista de empresas).
+  // validados, porque los pasos siguientes los necesitan: la contraseña vuelve a viajar en el envío.
   // Solo la contraseña abre la compuerta. El teléfono se pide en el paso 1 y se valida allí.
-  const handleAccess = ({ code: claveEscrita }: { code: string }) => { if (claveEscrita.trim().length < 4) { setAccessError('Escribe la contraseña del portal para continuar.'); return; } setCode(claveEscrita); setAccessError(''); setAccessGranted(true); };
+  //
+  // Y LA COMPRUEBA EL SERVIDOR. Antes bastaba con que tuviera cuatro caracteres en el navegador, así
+  // que una contraseña equivocada dejaba entrar, llenar los dos pasos y recibir el 202 neutro de la
+  // radicación: ni requisición ni aviso. Ahora se pregunta en la puerta y se dice qué pasó.
+  //
+  // El envío final SIGUE verificando la contraseña en el servidor (`publicAccess.verify` /
+  // `verifySociety` en el endpoint de radicación). Esto es una cortesía para quien se equivoca, no
+  // una autorización: nada de lo que decida el navegador puede sustituir a esa comprobación.
+  const handleAccess = async ({ code: claveEscrita }: { code: string }) => {
+    const clave = claveEscrita.trim();
+    if (clave.length < 4) { setAccessError('Escribe la contraseña del portal para continuar.'); return; }
+    setAccessError(''); setComprobandoClave(true);
+    try {
+      const response = await fetch('/api/public/access', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: clave }) });
+      // Un 503 es el portal apagado, no una contraseña mala: decir "incorrecta" mandaría a buscar
+      // una contraseña nueva a quien tiene la buena.
+      if (response.status === 503) { setAccessError('El portal no está disponible ahora mismo. Intenta más tarde.'); return; }
+      const cuerpo = (await response.json()) as { ok?: boolean };
+      if (cuerpo.ok !== true) { setAccessError('Contraseña incorrecta. Revísala con quien te la entregó.'); return; }
+      setCode(clave); setAccessGranted(true);
+    } catch { setAccessError('No pudimos comprobar la contraseña. Revisa tu conexión e intenta de nuevo.'); }
+    finally { setComprobandoClave(false); }
+  };
   const validate = (targetStep: 1 | 2) => {
     // Con enlace por obra la empresa ni se pide: ya viene firmada en el fragmento.
     const next = validarPaso(targetStep, values, phone, !access?.workId);
@@ -393,7 +435,7 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   if (!linkRead) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`} role="status"><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Validando enlace</div><h1>Preparando el formulario…</h1></section></PortalFrame>;
   if (!access) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`}><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Captura cerrada</div><h1>Este enlace no está habilitado.</h1><p className={styles.accessCopy}>Solicita al responsable de tu obra un enlace vigente. No se creó ninguna requisición ni se aceptaron datos.</p></section></PortalFrame>;
   if (sent) return <PortalFrame><section className={styles.success}><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>La estamos validando.</h1><p className={styles.successCopy}>Si el enlace y la contraseña corresponden, la requisición quedará registrada. Por seguridad no mostramos un consecutivo.</p><button className={styles.primaryButton} type="button" onClick={() => { reiniciar(); setStep(1); setSent(false); setAccessGranted(false); }}>Enviar otra solicitud</button></section></PortalFrame>;
-  if (!accessGranted) return <AccessGate code={code} error={accessError} onSubmit={handleAccess} />;
+  if (!accessGranted) return <AccessGate code={code} error={accessError} onSubmit={handleAccess} comprobando={comprobandoClave} />;
   return <PortalFrame><StepIntro code="obra autorizada" onChangeAccess={() => setAccessGranted(false)} /><Progress step={step} />
     <form className={styles.stepCard} onSubmit={submit} noValidate>
       {step === 1 ? <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso 1 de 2</p><h2>¿Para quién y cuándo?</h2><p>Indica el tipo de solicitud, la empresa y tu nombre.</p></div><div className={styles.stepBody}>

@@ -27,7 +27,36 @@ function setHash(params: Record<string, string>) {
 
 const campo = (nombre: string) => document.querySelector(`[name="${nombre}"]`) as HTMLInputElement;
 
-/** Atraviesa la compuerta: desde 2026-09-11 solo pide la contraseña. */
+type Respuesta = { status: number; body?: unknown };
+const POR_DEFECTO: Record<string, Respuesta> = {
+  "/api/public/access": { status: 200, body: { ok: true } },
+  "/api/public/companies": { status: 200, body: { companies: [] } },
+  "/api/public/requisitions": { status: 202, body: { accepted: true } },
+};
+/**
+ * Responde a los tres endpoints del portal, y LANZA ante cualquier otro.
+ *
+ * Lo de lanzar no es celo: es lo que habría cazado de inmediato el endpoint de obras cuando se
+ * sustituyó por el de empresas. Una prueba que devuelve algo plausible a cualquier URL sigue verde
+ * mientras la pantalla pide un endpoint que ya no existe.
+ */
+function stubFetch(sobrescrituras: Record<string, Respuesta> = {}) {
+  const fn = vi.fn(async (url: string) => {
+    const ruta = String(url).split("?")[0];
+    const respuesta = sobrescrituras[ruta] ?? POR_DEFECTO[ruta];
+    if (!respuesta) throw new Error(`El portal pidió ${url}, que ninguna prueba ha declarado`);
+    return { ok: respuesta.status >= 200 && respuesta.status < 300, status: respuesta.status, json: async () => respuesta.body };
+  });
+  vi.stubGlobal("fetch", fn);
+  return fn;
+}
+const ACCESO = "/api/public/access", EMPRESAS = "/api/public/companies", RADICACION = "/api/public/requisitions";
+const llamadasA = (ruta: string) => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).split("?")[0] === ruta);
+
+/**
+ * Atraviesa la compuerta: desde 2026-09-11 solo pide la contraseña, y desde este cambio la
+ * CONTRASEÑA SE COMPRUEBA CONTRA EL SERVIDOR antes de dejar pasar (ver `POST /api/public/access`).
+ */
 async function pasarCompuerta() {
   await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
   fireEvent.change(campo("access-code"), { target: { value: "clave-1234" } });
@@ -60,7 +89,7 @@ async function rellenarYEnviar({ conFecha = false, telefono = "3001234567" }: { 
 describe("portal público unificado — enlace por obra", () => {
   beforeEach(() => {
     setHash({ obra: workId, token });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 202, json: async () => ({ accepted: true }) }));
+    stubFetch();
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
@@ -76,6 +105,57 @@ describe("portal público unificado — enlace por obra", () => {
     // Sin contraseña no se pasa: la compuerta es de cliente, pero el servidor revalida al enviar.
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
     expect(screen.queryByText(/¿Para quién y cuándo\?/i)).not.toBeInTheDocument();
+  });
+
+  it("una contraseña INCORRECTA se dice en la puerta, no después de llenar el formulario", async () => {
+    // El fallo que Ernesto vio en producción el 11-sep-2026. La compuerta solo comprobaba, en el
+    // navegador, que la contraseña tuviera cuatro caracteres: con una equivocada entrabas, llenabas
+    // los dos pasos, pulsabas enviar y leías «La estamos validando» — el 202 del endpoint de
+    // radicación es neutro a propósito. Ni requisición, ni aviso, ni forma de saberlo.
+    stubFetch({ [ACCESO]: { status: 200, body: { ok: false } } });
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    fireEvent.change(campo("access-code"), { target: { value: "la-que-no-es" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
+
+    expect(await screen.findByText(/Contraseña incorrecta/i)).toBeInTheDocument();
+    expect(screen.queryByText(/¿Para quién y cuándo\?/i)).not.toBeInTheDocument();
+    expect(llamadasA(RADICACION)).toHaveLength(0);
+  });
+
+  it("si no se puede preguntar, lo dice y tampoco pasa", async () => {
+    // Sin red no se sabe si la contraseña vale. Dejar pasar «por si acaso» devolvería el fallo
+    // silencioso; decir "incorrecta" mandaría a buscar otra contraseña a quien tiene la buena.
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("sin red")));
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    fireEvent.change(campo("access-code"), { target: { value: "clave-1234" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
+
+    expect(await screen.findByText(/No pudimos comprobar la contraseña/i)).toBeInTheDocument();
+    expect(screen.queryByText(/¿Para quién y cuándo\?/i)).not.toBeInTheDocument();
+  });
+
+  it("con el portal apagado dice que no está disponible, no que la contraseña esté mal", async () => {
+    stubFetch({ [ACCESO]: { status: 503, body: { error: "service_unavailable" } } });
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    fireEvent.change(campo("access-code"), { target: { value: "clave-1234" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
+
+    expect(await screen.findByText(/no está disponible ahora mismo/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Contraseña incorrecta/i)).not.toBeInTheDocument();
+  });
+
+  it("la contraseña que abrió la compuerta es la que viaja en el envío", async () => {
+    // La comprobación de la puerta es una cortesía para quien se equivoca, no una autorización: el
+    // endpoint de radicación vuelve a verificarla contra la base. Por eso tiene que viajar.
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    expect(JSON.parse(String(llamadasA(ACCESO)[0][1]?.body)).code).toBe("clave-1234");
+    await rellenarYEnviar();
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body)).code).toBe("clave-1234");
   });
 
   it("el enlace por obra NO pide empresa: ya viene firmada", async () => {
@@ -97,8 +177,8 @@ describe("portal público unificado — enlace por obra", () => {
     expect(etiqueta.closest("label")).not.toHaveTextContent("*");
 
     await rellenarYEnviar({ telefono: "" });
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).not.toHaveProperty("phone");
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body))).not.toHaveProperty("phone");
   });
 
   it("pero un teléfono A MEDIAS sí se rechaza, en vez de mandarse roto", async () => {
@@ -117,8 +197,8 @@ describe("portal público unificado — enlace por obra", () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     await rellenarYEnviar();
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)).phone).toBe("3001234567");
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body)).phone).toBe("3001234567");
   });
 
   it("la fecha no está marcada como obligatoria", async () => {
@@ -133,8 +213,8 @@ describe("portal público unificado — enlace por obra", () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     await rellenarYEnviar();
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
-    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const [url, init] = llamadasA(RADICACION)[0];
     expect(String(url)).toBe("/api/public/requisitions");
     expect((init?.headers as Record<string, string>)["x-public-link-token"]).toBe(token);
     const body = JSON.parse(String(init?.body));
@@ -155,7 +235,8 @@ describe("portal público unificado — enlace por obra", () => {
   });
 
   it("un 503 dice que el servicio no está disponible, sin fingir éxito", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 503, json: async () => ({ error: "service_unavailable" }) }));
+    // Solo la RADICACIÓN cae: la compuerta tiene que dejar pasar para llegar a probarlo.
+    stubFetch({ "/api/public/requisitions": { status: 503, body: { error: "service_unavailable" } } });
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     await rellenarYEnviar();
@@ -170,7 +251,7 @@ describe("portal público unificado — enlace por obra", () => {
 describe("portal público — varios ítems en una requisición", () => {
   beforeEach(() => {
     setHash({ obra: workId, token });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 202, json: async () => ({ accepted: true }) }));
+    stubFetch();
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
@@ -192,8 +273,8 @@ describe("portal público — varios ítems en una requisición", () => {
     llenarItem(2, { descripcion: "Varilla 1/2", cantidad: "40", unidad: "und" });
     fireEvent.click(screen.getByRole("button", { name: /Enviar requisición/i }));
 
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
-    const { items } = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const { items } = JSON.parse(String(llamadasA(RADICACION)[0][1]?.body));
     expect(items).toHaveLength(3);
     expect(items.map((item: { description: string }) => item.description)).toEqual(["Cemento gris", "Arena de río", "Varilla 1/2"]);
     // La cantidad viaja como NÚMERO, no como el texto del input: el esquema exige `z.number()`.
@@ -213,7 +294,7 @@ describe("portal público — varios ítems en una requisición", () => {
 
     await waitFor(() => expect(campo("description-1")).toHaveAttribute("aria-invalid", "true"));
     expect(campo("description-0")).not.toHaveAttribute("aria-invalid", "true");
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(llamadasA(RADICACION)).toHaveLength(0);
   });
 
   it("quitar un ítem se lleva su error, no lo hereda el que ocupa su lugar", async () => {
@@ -247,15 +328,15 @@ describe("portal público — varios ítems en una requisición", () => {
 
     llenarItem(0, { descripcion: "Sellante", cantidad: "2", unidad: "cuñete" });
     fireEvent.click(screen.getByRole("button", { name: /Enviar requisición/i }));
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)).items[0].unit).toBe("cuñete");
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body)).items[0].unit).toBe("cuñete");
   });
 });
 
 describe("lo tecleado ANTES de hidratar no se pierde", () => {
   beforeEach(() => {
     setHash({ obra: workId, token });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 202, json: async () => ({ accepted: true }) }));
+    stubFetch();
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
@@ -288,8 +369,8 @@ describe("lo tecleado ANTES de hidratar no se pierde", () => {
     await screen.findByText(/¿Para quién y cuándo\?/i);
 
     await rellenarYEnviar();
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const body = JSON.parse(String(llamadasA(RADICACION)[0][1]?.body));
     expect(body.code).toBe("clave-1234");
     expect(body.phone).toBe("3001234567");
   });
@@ -313,22 +394,24 @@ describe("portal público unificado — ruta general, se elige EMPRESA", () => {
   beforeEach(() => {
     // Sin `obra` en el fragmento: la ruta es general y la empresa se elige en el formulario.
     setHash({ token });
-    vi.stubGlobal("fetch", vi.fn(async (url: string) =>
-      String(url) === "/api/public/companies"
-        ? { ok: true, status: 200, json: async () => ({ companies: [{ id: societyId, name: "Constructora Mizar S.A.S." }] }) }
-        : { status: 202, json: async () => ({ accepted: true }) }));
+    stubFetch({ [EMPRESAS]: { status: 200, body: { companies: [{ id: societyId, name: "Constructora Mizar S.A.S." }] } } });
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
-  it("pide la lista de empresas CON LA CONTRASEÑA y la ofrece en el selector", async () => {
-    // La lista se pide con la contraseña, no con el token: la compuerta ya la exigió y es lo único
-    // que /api/public/companies acepta. Por eso el efecto espera a haber pasado la compuerta.
+  it("pide la lista de empresas SIN contraseña, y antes incluso de pasar la compuerta", async () => {
+    // Los nombres de las sociedades están en la marca y en las facturas: no son un secreto que
+    // proteger. Pedir la contraseña aquí no escondería nada y crearía un oráculo (lista llena =
+    // acertaste), que es exactamente lo que tenía el endpoint de obras al que sustituye y por lo que
+    // se borró. Sin contraseña que esperar, la lista se pide al abrir y el selector ya está lleno
+    // cuando se llega al paso 1.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(llamadasA(EMPRESAS)).toHaveLength(1));
+    const llamada = llamadasA(EMPRESAS)[0];
+    expect(llamada?.[1]).toBeUndefined(); // GET a secas: ni método, ni cuerpo, ni cabeceras
+    expect(String(llamada?.[0])).toBe(EMPRESAS);
+
     await pasarCompuerta();
-    await waitFor(() => expect(screen.getByRole("option", { name: "Constructora Mizar S.A.S." })).toBeInTheDocument());
-    const llamada = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === "/api/public/companies");
-    expect(llamada?.[1]?.method).toBe("POST");
-    expect(JSON.parse(String(llamada?.[1]?.body)).code).toBe("clave-1234");
+    expect(screen.getByRole("option", { name: "Constructora Mizar S.A.S." })).toBeInTheDocument();
   });
 
   it("ya no hay selector de obra en el formulario", async () => {
@@ -351,8 +434,8 @@ describe("portal público unificado — ruta general, se elige EMPRESA", () => {
 
     fireEvent.change(document.querySelector('select[name="company"]') as HTMLSelectElement, { target: { value: societyId } });
     await rellenarYEnviar();
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === "/api/public/requisitions")).toBe(true));
-    const envio = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === "/api/public/requisitions");
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const envio = llamadasA(RADICACION)[0];
     const body = JSON.parse(String(envio?.[1]?.body));
     expect(body.societyId).toBe(societyId);
     expect(body).not.toHaveProperty("workId");
@@ -366,7 +449,7 @@ describe("portal público unificado — enlace inválido", () => {
     // Decisión de Ernesto (2026-09-11): «que el enlace no necesite un token, sea ruta pública».
     // Entrar a /requisiciones/publica a secas tiene que llevar a la contraseña, no al aviso.
     window.location.hash = "";
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ companies: [] }) }));
+    stubFetch();
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
     expect(screen.queryByText(/Este enlace no está habilitado/i)).not.toBeInTheDocument();
