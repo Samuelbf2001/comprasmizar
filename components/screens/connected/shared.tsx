@@ -73,6 +73,8 @@ export type RequisitionItem = {
   possibleSupplier?: string;
   productLink?: string;
   finalSupplierId?: string;
+  /** Aprobador de ESTE ítem. Ausente = lo decide el de la cabecera (misma herencia que el dominio). */
+  approverId?: string;
   unitBase?: number;
   unitIva?: number;
   status?: ItemStatus;
@@ -178,6 +180,9 @@ export type AuditRow = {
 };
 export type DetailBundle = {
   requisition: RequisitionRow;
+  /** Quién está mirando. Lo pone el servidor desde la sesión: la pantalla necesita saber qué ítems
+   *  decide esta persona, y preguntárselo al cliente sería dejar que se lo invente. */
+  viewerId?: string;
   catalogs: CatalogData;
   orders: OrderRow[];
   expenses: ExpenseRow[];
