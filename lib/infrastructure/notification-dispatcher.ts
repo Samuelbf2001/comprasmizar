@@ -2,6 +2,7 @@ import type { KapsoAdapter } from "../services";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 import { asJsonb } from "./jsonb";
+import { parametrosDePlantilla } from "./plantillas-whatsapp";
 
 /** Only `sendTemplate` is needed to dispatch; no webhook secret or event store required. */
 export type NotificationSendAdapter = Pick<KapsoAdapter, "sendTemplate"> & {
@@ -81,8 +82,22 @@ function defaultBackoffMs(attempts: number): number { return Math.min(BASE_BACKO
 
 function isKapsoNotConfigured(error: unknown): boolean { return error instanceof Error && error.message === "KAPSO_NOT_CONFIGURED"; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "error_desconocido"; }
-/** Kapso template parameters are strings; the queued payload is arbitrary JSON. */
-function toTemplatePayload(payload: Record<string, unknown>): Record<string, string> {
+/**
+ * Kapso template parameters are strings; the queued payload is arbitrary JSON.
+ *
+ * Para una plantilla declarada en `plantillas-whatsapp.ts` se manda SOLO lo que su texto usa. El
+ * payload encolado lleva además `requisitionId`, que existe para enlazar la fila de
+ * `whatsapp_eventos` con su requisición (`extractRequisitionId`, más abajo) y no tiene nada que
+ * hacer dentro del mensaje: `sendKapsoTemplate` pasa este objeto tal cual como `parameters`, así que
+ * sin el recorte el UUID interno acabaría en el WhatsApp del maestro o haría que Meta rechazara el
+ * envío por un parámetro que la plantilla no declara.
+ *
+ * Una plantilla no declarada conserva el comportamiento de siempre —el payload entero—, para no
+ * cambiar nada de lo que ya funciona ni de lo que alguien añada sin pasar por ese módulo.
+ */
+function toTemplatePayload(template: string, payload: Record<string, unknown>): Record<string, string> {
+  const declarados = parametrosDePlantilla(template, payload);
+  if (declarados) return declarados;
   return Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, value === null || value === undefined ? "" : String(value)]));
 }
 
@@ -119,7 +134,7 @@ export async function dispatchPendingNotifications(store: NotificationDispatchSt
       continue;
     }
     try {
-      const sendAsTemplate = () => adapter.sendTemplate({ to: notification.phone, template: notification.template, payload: toTemplatePayload(notification.payload) });
+      const sendAsTemplate = () => adapter.sendTemplate({ to: notification.phone, template: notification.template, payload: toTemplatePayload(notification.template, notification.payload) });
       const approvalRequisitionId = approvalFlowTarget(notification, adapter);
       const { messageId } = approvalRequisitionId
         ? await adapter.sendApprovalFlow!({ to: notification.phone, requisitionId: approvalRequisitionId, fallback: sendAsTemplate })
