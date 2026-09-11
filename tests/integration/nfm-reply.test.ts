@@ -37,7 +37,7 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
   };
   const dependencies: ServiceDependencies = {
     ...repositories,
-    publicAccess: { verify: unused },
+    publicAccess: { verify: unused, verifySociety: unused },
     transactions: { transaction: async <T>(_lockKey: string | undefined, work: (repositories: TransactionRepositories) => Promise<T>): Promise<T> => work(repositories) },
     clock: { now: () => new Date("2026-08-24T12:00:00.000Z") },
     ids: { next: () => `id-${++sequence}` },

@@ -2,7 +2,8 @@ import postgres, { type Sql } from "postgres";
 import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
 import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
-import { verifyPublicLinkToken } from "../security/public-link";
+import { generalLinkToken, verifyPublicLinkToken } from "../security/public-link";
+import { safeEqual } from "../security/crypto";
 import { publicEnv, runtimeEnv } from "../security/env";
 import { asJsonb } from "./jsonb";
 // HUECO 1: mismo criterio de normalización que la columna generada telefono_normalizado (ver
@@ -562,7 +563,24 @@ export function createPostgresDependencies(databaseUrl = runtimeEnv().DATABASE_U
     // firmado, pero el general vale para cualquier obra, así que la única defensa contra radicar
     // sobre una obra cerrada es esta. Además deja el endpoint alineado con /api/public/works, que
     // solo ofrece obras activas: lo que se ofrece es exactamente lo que se acepta.
-    const rows = await sql<DbRow[]>`select o.public_submission_enabled and o.estado = 'activa' and public.verificar_codigo_publico(${code}) as valid from obras o where o.id=${workId}`; return rows[0]?.valid === true; } };
+    const rows = await sql<DbRow[]>`select o.public_submission_enabled and o.estado = 'activa' and public.verificar_codigo_publico(${code}) as valid from obras o where o.id=${workId}`; return rows[0]?.valid === true; },
+    /**
+     * Contraparte de `verify` para el portal que elige EMPRESA (Ernesto, 11-sep-2026: "ya dijimos era
+     * empresa"). Sin obra no hay nada que firmar por obra, así que un token POR OBRA se rechaza
+     * explícitamente: firma una obra concreta y aceptarlo aquí lo convertiría en llave para radicar
+     * contra cualquier sociedad. Solo vale el token general, o ninguno.
+     *
+     * `activa` y no `estado`: sociedades marca su vigencia con un booleano. Y se comprueba por la
+     * misma razón que en `verify` — lo que ofrece /api/public/companies es exactamente lo que esto
+     * acepta.
+     */
+    verifySociety: async (societyId, linkToken, code) => {
+      const env = publicEnv();
+      if (linkToken !== null && !safeEqual(generalLinkToken(env.PUBLIC_FORM_CODE_PEPPER), linkToken)) return false;
+      const rows = await sql<DbRow[]>`select s.activa and public.verificar_codigo_publico(${code}) as valid from sociedades s where s.id=${societyId}`;
+      return rows[0]?.valid === true;
+    },
+  };
   const transactionPorts = transactionRepositories(ports);
   return { ...transactionPorts, pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) }, publicAccess, features: ports, items: ports, catalogs: ports, notifications: ports, transactions: new PostgresTransactionManager(sql), clock: { now: () => new Date() }, ids: { next: () => crypto.randomUUID() } as IdGenerator };
 }

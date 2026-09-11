@@ -87,7 +87,7 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
     try { return await work({ requisitions, orders, expenses, pettyCash, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
     catch (error) { req.clear(); for (const [id, value] of snapshot.req) req.set(id, value); ordersData.splice(0, ordersData.length, ...snapshot.orders); expensesData.splice(0, expensesData.length, ...snapshot.expenses); petty.splice(0, petty.length, ...snapshot.petty); audits.splice(0, audits.length, ...snapshot.audits); shares.splice(0, shares.length, ...snapshot.shares); proposed.clear(); for (const [key, value] of snapshot.proposed) proposed.set(key, value); notificationData.splice(0, notificationData.length, ...snapshot.notifications); throw error; }
   } };
-  return { req, ordersData, expensesData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, pettyCash, audit, inactiveSuppliers };
+  return { req, ordersData, expensesData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234", verifySociety: async (societyId, token, code) => societyId === "society" && token === null && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, pettyCash, audit, inactiveSuppliers };
 }
 const reviewer = { actor: { id: "daniel", roles: ["revisor"] as const } }, approver = { actor: { id: "nelson", roles: ["aprobador"] as const } }, requester = { actor: { id: "sol", roles: ["solicitante"] as const } };
 // "sonia": segundo actor aprobador, distinto de "nelson" — usado para probar que el aprobador ELEGIDO
@@ -98,7 +98,35 @@ async function reviewed(service: ProcurementService) { const r = await service.c
 
 describe("ProcurementService", () => {
   it("persists enviada first and enters review through an audited explicit transition", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); expect(r.status).toBe("enviada"); expect(deps.audits.map((a) => a.event)).toEqual(["creada"]); await service.startReview(r.id, reviewer); expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); expect(deps.audits.at(-1)?.data).toMatchObject({ from: "enviada", to: "en_revision" }); });
-  it("uses a verifier for public access, materializes proposals and requires external identity", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const created = await service.create({ type: "pago", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro", phone: "+57 300 123 4567" }, items: [{ ...items[0], itemId: undefined, description: "Tubería especial" }] }, {}); expect(created).toMatchObject({ status: "enviada", externalRequester: { phone: "+573001234567" }, items: [{ itemId: expect.stringMatching(/^catalog-/) }] }); expect(deps.audits.map((entry) => entry.event)).toContain("propuesto"); await expect(service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro" }, items }, {})).rejects.toMatchObject({ code: "INVALID_INPUT" }); });
+  it("uses a verifier for public access, materializes proposals and normalizes the external phone", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const created = await service.create({ type: "pago", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro", phone: "+57 300 123 4567" }, items: [{ ...items[0], itemId: undefined, description: "Tubería especial" }] }, {}); expect(created).toMatchObject({ status: "enviada", externalRequester: { phone: "+573001234567" }, items: [{ itemId: expect.stringMatching(/^catalog-/) }] }); expect(deps.audits.map((entry) => entry.event)).toContain("propuesto"); });
+
+  // EL TELÉFONO DEJÓ DE SER OBLIGATORIO EN EL PORTAL (Ernesto, 11-sep-2026: «el teléfono no lo hagas
+  // obligatorio»). Antes esta prueba fijaba lo contrario, y no era un capricho cambiarlo: exigirlo
+  // significaba que un maestro que no lo quiere dar no radica.
+  //
+  // Lo que NO cambia es el precio, y por eso se afirma aquí: sin teléfono no hay a quién avisar, así
+  // que no se encola el acuse. Que la requisición entre sin aviso es la decisión; que entrara y el
+  // aviso se perdiera en silencio sería un fallo.
+  it("el portal público acepta una requisición SIN teléfono, y entonces no encola el acuse", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const created = await service.create({ type: "compra", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro" }, items }, {});
+    expect(created).toMatchObject({ status: "enviada", externalRequester: { name: "Maestro" } });
+    expect(created.externalRequester?.phone).toBeUndefined();
+    expect(deps.notificationData).toHaveLength(0);
+    // Con teléfono sí lo encola: es el contraste que demuestra que el acuse no se cayó por otra razón.
+    const conTelefono = await service.create({ type: "compra", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro", phone: "3001234567" }, items }, {});
+    expect(deps.notificationData).toEqual([expect.objectContaining({ phone: "3001234567", channel: "whatsapp", template: "requisicion_recibida", payload: expect.objectContaining({ requisitionId: conTelefono.id }) })]);
+  });
+
+  it("pero el NOMBRE sigue siendo obligatorio, un teléfono mal escrito se rechaza, y en WhatsApp el teléfono es la identidad", async () => {
+    // En WhatsApp el número no es un dato de contacto: es de quién viene el mensaje. Sin él no hay
+    // remitente al que atribuir la requisición, así que ahí sí sigue siendo obligatorio.
+    const service = new ProcurementService(fakeDeps());
+    const publica = { type: "compra" as const, workId: "work", requiredDate: "2026-08-30", channel: "publico" as const, publicCode: "1234", publicLinkToken: "link", items };
+    await expect(service.create({ ...publica, externalRequester: { name: "   " } }, {})).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(service.create({ ...publica, externalRequester: { name: "Maestro", phone: "300" } }, {})).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(service.create({ type: "compra", societyId: "soc", requiredDate: "2026-08-30", channel: "whatsapp", kapsoEventId: "evt-sin-telefono", externalRequester: { name: "Maestro" }, items }, { origin: "kapso" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
   // Decisión del cliente (reunión 2026-09, literal de Daniel): "etiqueto a qué obra va y etiqueto quién
   // me va a aprobar" — el aprobador YA NO se deriva de la etiqueta, lo elige el revisor en review().
   it("review() persiste el aprobador elegido por el revisor (no lo deriva de la etiqueta) y audita transiciones de devolución", async () => { const service = new ProcurementService(fakeDeps()), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); await service.startReview(r.id, reviewer); const reviewedR = await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer); expect(reviewedR.approverId).toBe("nelson"); await service.sendForApproval(r.id, reviewer); await expect(service.returnForCorrection(r.id, "", approver)).rejects.toBeInstanceOf(DomainError); expect((await service.returnForCorrection(r.id, "falta soporte", approver)).status).toBe("devuelta"); });

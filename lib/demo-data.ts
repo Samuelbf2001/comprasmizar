@@ -42,6 +42,13 @@ export const requisitions: Requisition[] = [
 
 export const works = ['Altos de La Pradera', 'Casa Campestre El Retiro', 'Bodega Industrial Norte', 'Edificio San Marcos', 'Torres del Río'];
 
+/**
+ * Las cinco sociedades del cliente, con su nombre REAL (ver supabase/seed.sql). Las obras de arriba
+ * son inventadas y da igual; la empresa no: desde la reunión 2026-08-31 es lo que elige quien radica
+ * por el portal, y en la demostración conviene que vea exactamente los nombres que verá en producción.
+ */
+export const companies = ['Mizar', 'Ictinos', 'Villa del Sol', 'Proim Ingenieria', 'Palmoc'];
+
 export const items = [
   { name: 'Cemento gris uso general', category: 'Materiales', unit: 'Bulto', uses: 48, state: 'Activo' },
   { name: 'Arena de revoque', category: 'Materiales', unit: 'm³', uses: 36, state: 'Activo' },

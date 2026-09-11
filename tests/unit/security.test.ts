@@ -20,7 +20,7 @@ function fakeReportDeps(expenses: Expense[]): ServiceDependencies {
     pettyCash: { save: notUsed, list: notUsed },
     audit: { append: async () => {}, list: async () => [] },
     consecutives: { take: notUsed },
-    publicAccess: { verify: notUsed },
+    publicAccess: { verify: notUsed, verifySociety: notUsed },
     features: { isEnabled: async () => false },
     items: { propose: notUsed },
     catalogs: { create: notUsed, get: notUsed, update: notUsed, findSupplierDuplicate: notUsed, findRequesterDuplicate: notUsed, isEligibleApprover: notUsed, hasRequisitionsForWork: notUsed },

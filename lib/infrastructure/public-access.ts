@@ -23,6 +23,25 @@ export async function listPublicWorks(databaseUrl = runtimeEnv().DATABASE_URL): 
   return rows.map((row) => ({ id: String(row.id), name: String(row.nombre) }));
 }
 
+/**
+ * Empresas que puede elegir quien radica por el portal.
+ *
+ * Reunión 2026-08-31 y recordatorio de Ernesto (11-sep-2026: "en el formulario público aparece
+ * seleccionar obra y ya dijimos era empresa"): el solicitante elige EMPRESA, no obra. La obra es el
+ * centro de costo y la asigna el revisor, que es quien sabe a qué contrato cargar el gasto. El Flow
+ * de WhatsApp ya funcionaba así; el portal se había quedado atrás.
+ *
+ * Mismas reglas que `listPublicWorks`: solo activas, y lo que se OFRECE es exactamente lo que el
+ * endpoint de radicación ACEPTA (ver `verifySociety` en postgres-repositories.ts).
+ */
+export async function listPublicCompanies(databaseUrl = runtimeEnv().DATABASE_URL): Promise<Array<{ id: string; name: string }>> {
+  const sql = sharedPostgres(databaseUrl);
+  // `sociedades` marca la vigencia con `activa boolean`, no con el enum `estado` que usan `obras`.
+  const rows = await sql<{ id: string; nombre: string }[]>`
+    select id, nombre from sociedades where activa order by nombre`;
+  return rows.map((row) => ({ id: String(row.id), name: String(row.nombre) }));
+}
+
 /** Applies the optional obra phone allowlist; the code/link verifier remains a separate concern. */
 /**
  * ¿Es esta la contraseña del portal? Comparación hecha EN LA BASE con `verificar_codigo_publico`, la
