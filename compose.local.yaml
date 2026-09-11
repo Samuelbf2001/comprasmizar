@@ -1,0 +1,15 @@
+# Sobrecapa SOLO para correr la pila en la máquina de desarrollo. NO se usa en el VPS.
+#
+# Se llama `compose.local.yaml` y no `compose.override.yaml` a propósito: Docker Compose carga el
+# archivo `override` automáticamente, así que uno con ese nombre acabaría aplicándose en producción
+# el día que alguien lo copie al servidor. Este hay que pedirlo de forma explícita:
+#
+#   docker compose -f compose.yaml -f compose.local.yaml up -d --build
+#
+# Qué cambia: publica el puerto de la aplicación en el host para poder abrirla en el navegador sin
+# Caddy ni TLS. En el VPS ese puerto NO se publica — Caddy es el único que habla con la aplicación,
+# y por eso `compose.yaml` usa `expose` y no `ports`.
+services:
+  app:
+    ports:
+      - "127.0.0.1:3000:3000"

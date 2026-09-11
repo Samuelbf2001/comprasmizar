@@ -56,6 +56,13 @@ export interface ApprovalFlowContext {
   requisitionId: string;
   /** Teléfono del aprobador asignado, tal como está en `usuarios.telefono`. */
   approverPhone: string;
+  /** Campos sueltos para las variables de la plantilla ({{1}}..{{4}}), que no admite saltos de
+   * línea ni texto compuesto. `heading`/`summary` son la versión ya compuesta para las pantallas
+   * del Flow; ambas salen de los mismos datos para que nunca se contradigan. */
+  approverName: string;
+  consecutive: string;
+  work: string;
+  totalText: string;
   /** "REQ-2026-0004 · Obra La Pradera" — cabecera de la pantalla. */
   heading: string;
   /** Bloque de contexto (solicitante, fecha requerida, total vigente). */
@@ -72,7 +79,7 @@ export interface ApprovalFlowSource {
 
 interface ApprovalContextRow {
   requisicion_id: string; consecutivo: string; obra: string | null; solicitante: string | null;
-  fecha_requerida: string | null; telefono: string | null;
+  fecha_requerida: string | null; telefono: string | null; aprobador: string | null;
   items: Array<{ id: string; nombre: string | null; descripcion: string | null; cantidad: string; unidad: string; total: string }> | null;
 }
 
@@ -95,6 +102,7 @@ export function createPostgresApprovalFlowSource(databaseUrl = runtimeEnv().DATA
           coalesce(u.nombre, r.solicitante_nombre_externo) as solicitante,
           to_char(r.fecha_requerida, 'YYYY-MM-DD') as fecha_requerida,
           ap.telefono,
+          ap.nombre as aprobador,
           (
             select json_agg(json_build_object(
               'id', ri.id,
@@ -130,10 +138,17 @@ export function createPostgresApprovalFlowSource(databaseUrl = runtimeEnv().DATA
         `Total vigente: ${formatCop(total)}`,
       ].filter((line): line is string => line !== null);
 
+      // Las variables de plantilla no admiten vacío: Meta rechaza el envío. Cuando un dato falta se
+      // usa un texto honesto ("sin obra") en vez de "" — la requisición sí llega a su aprobador.
+      const work = row.obra?.trim() || "sin obra asignada";
       return {
         requisitionId: row.requisicion_id,
         approverPhone: phone,
-        heading: truncate([row.consecutivo, row.obra].filter(Boolean).join(" · "), 80),
+        approverName: row.aprobador?.trim() || "aprobador",
+        consecutive: row.consecutivo,
+        work,
+        totalText: formatCop(total),
+        heading: truncate([row.consecutivo, work].filter(Boolean).join(" · "), 80),
         summary: summaryLines.join("\n"),
         items: rawItems.map((item) => ({
           id: item.id,
@@ -344,6 +359,136 @@ export async function sendApprovalFlow(requisitionId: string, deps: ApprovalFlow
     // remedio que indica Meta (reabre la sesión y avisa igual a la persona).
     if (response.status === 422) throw new Error("APPROVAL_FLOW_SESSION_CLOSED");
     if (!response.ok) throw new Error(`APPROVAL_FLOW_SEND_FAILED_${response.status}`);
+    const data = (await response.json().catch(() => null)) as { messages?: Array<{ id?: string }> } | null;
+    const messageId = data?.messages?.[0]?.id;
+    if (!messageId) throw new Error("APPROVAL_FLOW_RESPONSE_INVALID");
+    return { messageId, to };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// El mismo Flow, pero dentro de una PLANTILLA: el único camino que atraviesa la ventana de 24 h
+// ---------------------------------------------------------------------------------------------
+//
+// Una plantilla puede llevar un botón de tipo FLOW, y ese sí se puede enviar fuera de la ventana
+// de servicio (es para lo que existen las plantillas). Los datos dinámicos viajan igual que en el
+// mensaje interactivo, pero bajo otro nombre: `flow_action_data` en lugar de
+// `flow_action_payload.data` — por eso este Flow sigue sin necesitar Data Endpoint.
+//
+// La plantilla se crea UNA vez contra la WABA (no desde este código) y Meta la revisa; la pantalla
+// de destino (`navigate_screen: REVISION`) y el `flow_id` quedan fijos en su definición, así que
+// aquí solo se mandan las variables del cuerpo y los datos de la primera pantalla.
+//
+// Cuesta dinero: cada envío fuera de la ventana abre una conversación de utilidad facturable. Por
+// eso NO es el camino por defecto — el llamador intenta primero el mensaje interactivo (gratis con
+// la sesión abierta) y cae aquí solo ante `APPROVAL_FLOW_SESSION_CLOSED`.
+
+/** Nombre de la plantilla aprobada en la WABA. Configurable porque el nombre vive en Meta, no en
+ * el código, y una WABA distinta (o una v2 del copy) puede usar otro. */
+const DEFAULT_APPROVAL_TEMPLATE = "aprobacion_requisicion";
+const DEFAULT_APPROVAL_TEMPLATE_LANGUAGE = "es";
+
+export interface ApprovalTemplatePayload {
+  messaging_product: "whatsapp";
+  recipient_type: "individual";
+  to: string;
+  type: "template";
+  template: {
+    name: string;
+    language: { code: string };
+    components: Array<
+      | { type: "body"; parameters: Array<{ type: "text"; text: string }> }
+      | { type: "button"; sub_type: "flow"; index: "0"; parameters: Array<{ type: "action"; action: { flow_token: string; flow_action_data: Record<string, unknown> } }> }
+    >;
+  };
+}
+
+/**
+ * Pura. El orden de los parámetros del cuerpo es POSICIONAL y debe calzar con {{1}}..{{4}} de la
+ * plantilla aprobada: nombre del aprobador, consecutivo, obra, total. Cambiar ese orden aquí sin
+ * cambiar la plantilla en Meta manda los datos cruzados sin que nada falle visiblemente.
+ */
+export function buildApprovalTemplatePayload(input: {
+  to: string; templateName: string; languageCode: string; flowToken: string; context: ApprovalFlowContext;
+}): ApprovalTemplatePayload {
+  return {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: input.to,
+    type: "template",
+    template: {
+      name: input.templateName,
+      language: { code: input.languageCode },
+      components: [
+        {
+          type: "body",
+          parameters: [input.context.approverName, input.context.consecutive, input.context.work, input.context.totalText]
+            .map((text) => ({ type: "text" as const, text })),
+        },
+        {
+          type: "button",
+          sub_type: "flow",
+          index: "0",
+          parameters: [{
+            type: "action",
+            action: {
+              flow_token: input.flowToken,
+              flow_action_data: {
+                requisitionId: input.context.requisitionId,
+                encabezado: input.context.heading,
+                resumen: input.context.summary,
+                items: input.context.items,
+                preseleccion: input.context.items.map((item) => item.id),
+              },
+            },
+          }],
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * Envía el Flow de aprobación dentro de la plantilla. Mismas garantías que `sendApprovalFlow`: el
+ * destinatario sale de `aprobador_id`, nunca del llamador, y falla cerrado con los mismos códigos
+ * (`APPROVAL_FLOW_NOT_CONFIGURED`, `APPROVAL_FLOW_NO_CONTEXT`, `APPROVAL_FLOW_TOO_MANY_ITEMS`).
+ * No puede devolver `APPROVAL_FLOW_SESSION_CLOSED`: es justamente el camino que no depende de la
+ * ventana.
+ */
+export async function sendApprovalTemplate(requisitionId: string, deps: ApprovalFlowSenderDeps = {}): Promise<{ messageId: string; to: string }> {
+  const config = approvalSendConfig();
+  if (!config) throw new Error("APPROVAL_FLOW_NOT_CONFIGURED");
+
+  const source = deps.source ?? createPostgresApprovalFlowSource();
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const now = deps.now ?? (() => new Date());
+
+  const context = await source.loadApprovalContext(requisitionId);
+  if (!context) throw new Error("APPROVAL_FLOW_NO_CONTEXT");
+  if (context.items.length > MAX_APPROVAL_ITEMS) throw new Error("APPROVAL_FLOW_TOO_MANY_ITEMS");
+  const to = normalizeApprovalPhone(context.approverPhone);
+  if (!to) throw new Error("APPROVAL_FLOW_NO_CONTEXT");
+
+  const payload = buildApprovalTemplatePayload({
+    to,
+    templateName: process.env.WHATSAPP_APPROVAL_TEMPLATE?.trim() || DEFAULT_APPROVAL_TEMPLATE,
+    languageCode: process.env.WHATSAPP_APPROVAL_TEMPLATE_LANG?.trim() || DEFAULT_APPROVAL_TEMPLATE_LANGUAGE,
+    flowToken: issueApprovalFlowToken(to, context.requisitionId, config.tokenSecret, now()),
+    context,
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  try {
+    const response = await fetchImpl(`${config.baseUrl}/${config.phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-API-Key": config.apiKey },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`APPROVAL_TEMPLATE_SEND_FAILED_${response.status}`);
     const data = (await response.json().catch(() => null)) as { messages?: Array<{ id?: string }> } | null;
     const messageId = data?.messages?.[0]?.id;
     if (!messageId) throw new Error("APPROVAL_FLOW_RESPONSE_INVALID");

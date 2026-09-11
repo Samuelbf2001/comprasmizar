@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import { resolveServerActor } from '../lib/infrastructure/auth';
 import type { Role } from '../lib/demo-data';
 import { demoModeEnabled } from '../lib/security/demo-mode';
@@ -30,6 +31,19 @@ export function loginErrorParam(reason: AuthSnapshot['reason']): string {
 // un mismo render cuando más de un Server Component la invoca en la misma petición.
 export async function getAuthSnapshot(): Promise<AuthSnapshot> {
   if (isDemoMode()) return { authenticated: true, demoMode: true, role: 'Revisor', displayName: 'Daniel Hernández', email: 'demo@mizar.local' };
+  // BLOQUEANTE DE PRODUCCIÓN, encontrado corriendo la pila real en Docker (2026-09-10): esta lectura
+  // va FUERA del try a propósito.
+  //
+  // Next marca una página como dinámica lanzando un error especial desde `cookies()` durante el
+  // prerender. El `catch` de abajo, que existe para fallar cerrado, se tragaba también esa señal: la
+  // página quedaba PRERENDERIZADA como estática con el resultado "config" congelado dentro, y en
+  // producción `/`, `/cambiar-clave` y `/pantalla` servían ese HTML a todo el mundo. Nadie podía
+  // entrar, con la sesión creándose correctamente en la base. En desarrollo no se ve, porque no hay
+  // prerender; `next build` tampoco se queja, porque para él la página simplemente resultó estática.
+  //
+  // Tocar la cookie aquí deja escapar la señal y ancla la decisión donde se entiende: cualquier
+  // pantalla cuyo contenido dependa de quién mira no puede cachearse nunca.
+  await cookies();
   try {
     const actor = await resolveServerActor();
     // roles ya viene filtrado contra ALL_ROLES (mismo conjunto de claves que `priority`), así que

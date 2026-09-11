@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  buildApprovalFlowSendPayload, formatCop, issueApprovalFlowToken, MAX_APPROVAL_ITEMS,
-  sendApprovalFlow, validateApprovalFlowToken, type ApprovalFlowContext,
+  buildApprovalFlowSendPayload, buildApprovalTemplatePayload, formatCop, issueApprovalFlowToken,
+  MAX_APPROVAL_ITEMS, sendApprovalFlow, sendApprovalTemplate, validateApprovalFlowToken,
+  type ApprovalFlowContext,
 } from "../../lib/infrastructure/approval-flow-sender";
 import { adaptApprovalReply, isApprovalNfmReply } from "../../lib/infrastructure/approval-reply-adapter";
 import { applyApprovalDecision, DEFAULT_DECLINE_REASON, planApprovalDecision } from "../../lib/infrastructure/approval-processor";
@@ -148,6 +149,10 @@ describe("flow_token de aprobación", () => {
 const context: ApprovalFlowContext = {
   requisitionId: REQ_A,
   approverPhone: "+57 300 111 2233",
+  approverName: "Nelson",
+  consecutive: "REQ-2026-0004",
+  work: "Obra La Pradera",
+  totalText: "$18.088.000",
   heading: "REQ-2026-0004 · Obra La Pradera",
   summary: "Solicita: Daniel Gómez\nTotal vigente: $18.088.000",
   items: [
@@ -206,6 +211,42 @@ describe("emisor del Flow de aprobación", () => {
       // Un fallo de verdad conserva su código con el status, para que la cola lo reintente.
       const rota = vi.fn(async () => new Response("boom", { status: 503 }));
       await expect(sendApprovalFlow(REQ_A, { source, fetchImpl: rota as unknown as typeof fetch })).rejects.toThrow("APPROVAL_FLOW_SEND_FAILED_503");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("la plantilla lleva el mismo Flow y los mismos datos, por el camino que sí cruza la ventana", () => {
+    const payload = buildApprovalTemplatePayload({ to: "573001112233", templateName: "aprobacion_requisicion", languageCode: "es", flowToken: "tok", context });
+    const [body, button] = payload.template.components;
+    // El orden posicional debe calzar con {{1}}..{{4}} de la plantilla aprobada en Meta.
+    expect(body).toEqual({ type: "body", parameters: [
+      { type: "text", text: "Nelson" }, { type: "text", text: "REQ-2026-0004" },
+      { type: "text", text: "Obra La Pradera" }, { type: "text", text: "$18.088.000" },
+    ] });
+    expect(button).toMatchObject({ type: "button", sub_type: "flow", index: "0" });
+    // `flow_action_data` es el equivalente de `flow_action_payload.data`: mismos ítems, misma
+    // preselección. Si divergieran, el aprobador vería cosas distintas según cómo le llegó.
+    const action = (button as { parameters: Array<{ action: { flow_token: string; flow_action_data: Record<string, unknown> } }> }).parameters[0].action;
+    expect(action.flow_token).toBe("tok");
+    expect(action.flow_action_data).toEqual({
+      requisitionId: REQ_A, encabezado: context.heading, resumen: context.summary,
+      items: context.items, preseleccion: context.items.map((item) => item.id),
+    });
+  });
+
+  it("el envío por plantilla no depende de la ventana y usa el teléfono del aprobador", async () => {
+    vi.stubEnv("KAPSO_API_KEY", "k"); vi.stubEnv("WHATSAPP_APPROVAL_FLOW_ID", "FID");
+    vi.stubEnv("KAPSO_PHONE_NUMBER_ID", "PID"); vi.stubEnv("KAPSO_WEBHOOK_SECRET", SECRET);
+    try {
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: "wamid.2" }] }), { status: 200 }));
+      const result = await sendApprovalTemplate(REQ_A, { source: { loadApprovalContext: async () => context }, fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW });
+      expect(result).toEqual({ messageId: "wamid.2", to: "573001112233" });
+      const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const sent = JSON.parse(String(init.body));
+      expect(sent.type).toBe("template");
+      expect(sent.to).toBe("573001112233");
+      // El token de la plantilla se valida igual que el del mensaje interactivo.
+      const token = sent.template.components[1].parameters[0].action.flow_token;
+      expect(validateApprovalFlowToken(token, "573001112233", REQ_A, SECRET, NOW)).toEqual({ ok: true });
     } finally { vi.unstubAllEnvs(); }
   });
 

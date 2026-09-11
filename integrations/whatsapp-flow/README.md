@@ -461,22 +461,41 @@ escribirle al negocio. Fuera de esa ventana el proxy responde:
 ```
 
 **Esto no es un caso raro: es el caso normal.** Un aprobador rara vez le ha escrito al
-número de Mizar el mismo día en que le toca aprobar algo. Consecuencias de diseño, ya
-implementadas:
+número de Mizar el mismo día en que le toca aprobar algo.
 
-- El emisor distingue ese 422 con su propio código (`APPROVAL_FLOW_SESSION_CLOSED`), no lo
-  mezcla con un fallo de red.
-- El despachador lo trata como "este envío no puede ir como Flow" y **cae a la plantilla de
-  texto**, que es exactamente el remedio que indica Meta: la plantilla llega igual, avisa a
-  la persona y reabre la sesión. No gasta reintentos ni marca la notificación como fallida.
-- Consecuencia práctica: **la primera vez el aprobador recibe la plantilla**, no el Flow. Si
-  responde cualquier cosa, la sesión queda abierta y a partir de ahí sí recibe el Flow.
+### La solución: el Flow dentro de una plantilla
 
-Para que el Flow sea el canal habitual y no la excepción hace falta una **plantilla de
-utilidad aprobada por Meta que contenga el botón del Flow** (una plantilla puede llevar un
-botón de Flow y sí puede enviarse fuera de la ventana). Eso está en los pendientes de
-`docs/ESTADO-Y-PENDIENTES.md` (§3.3, "Plantillas de mensaje") y no se ha hecho: hoy el
-código envía el Flow como mensaje interactivo suelto.
+Una plantilla **sí** atraviesa la ventana (es para lo que existe), y **puede llevar el Flow
+adentro** como botón de tipo `FLOW`. Los datos dinámicos viajan igual, solo cambia el
+nombre del campo: `flow_action_data` en vez de `flow_action_payload.data` — por eso este
+Flow sigue sin necesitar Data Endpoint por ninguno de los dos caminos.
+
+Plantilla registrada: **`aprobacion_requisicion`** (id `1974324693523971`, categoría
+`UTILITY`, idioma `es`), definida y reproducible en
+[`scripts/publish-approval-template.ts`](../../scripts/publish-approval-template.ts):
+
+> Hola {{1}}. La requisicion {{2}} de la obra {{3}} esta esperando tu aprobacion.
+> Total: {{4}}. Abre el boton para revisar los items y decidir.
+> `[Revisar y aprobar]` → abre el Flow en la pantalla `REVISION`
+
+**Meta exige que el Flow esté PUBLICADO** para aceptar el botón: con el Flow en borrador la
+creación de la plantilla falla con "Debe publicarse el flujo asociado con el botón"
+(`error_subcode 2388142`). Por eso el Flow se publicó (ver estado más abajo).
+
+### El orden de intentos, y por qué ese orden
+
+El despachador prueba en este orden, que es una decisión de **costo**:
+
+1. **Mensaje interactivo** — gratis mientras la sesión de 24 h esté abierta.
+2. **Plantilla con botón de Flow** (`APPROVAL_FLOW_SESSION_CLOSED`) — atraviesa la ventana,
+   pero abre una conversación de utilidad **facturable**.
+3. **Aviso de texto** — solo si el Flow no cabe de ninguna forma (requisición ya no está en
+   aprobación, más de 20 ítems, canal sin configurar). La persona entra por la web.
+
+Invertir 1 y 2 pagaría una conversación en cada aviso, incluso con el chat abierto. El
+costo por conversación es justamente la decisión P6 abierta del PRD ("costos WhatsApp"):
+esto la vuelve concreta — se paga una conversación de utilidad por cada requisición que
+llegue a aprobación con la sesión cerrada.
 
 ## Cómo se dispara
 
@@ -512,22 +531,22 @@ Flow de captura, y nunca devuelven 5xx.
 
 ## Pendiente antes de que este canal funcione en real
 
-1. ~~Crear el borrador en Meta~~ **HECHO (2026-09-10)**: `flow_id 2249539985776722`,
-   estado `DRAFT`, `validation_errors: []`. Meta aceptó el JSON sin objeciones, lo que
-   confirma que `CheckboxGroup` con `data-source`/`init-value` dinámicos y un arreglo en el
-   payload del `complete` son válidos. Se recrea/actualiza con
-   `npx tsx scripts/publish-whatsapp-flow.ts aprobacion`.
-2. **Cargar `WHATSAPP_APPROVAL_FLOW_ID=2249539985776722`** en producción (en `.env.local` ya
-   está), con `WHATSAPP_APPROVAL_FLOW_MODE=draft` mientras el Flow siga siendo borrador.
-3. **Cargar el teléfono de cada aprobador** en `usuarios.telefono`. Sin él, el Flow no se
-   envía y la notificación cae a la plantilla de texto.
-4. **Plantilla de utilidad con botón de Flow**, si se quiere que el aprobador reciba el Flow
-   de entrada y no solo cuando ya tiene la sesión abierta — ver la sección de la ventana de
-   24 h arriba.
-5. **Publicar el Flow** cuando esté validado en uso real. Es irreversible (un Flow publicado
-   no se edita ni se borra, solo se "deprecia"), así que es decisión de Mizar. Comando en la
-   sección "El script NUNCA publica" de este mismo documento.
-6. **Recorrido real de punta a punta**: falta la vuelta de regreso. El envío ya se probó
-   contra la API real; la respuesta (webhook → requisición aprobada) no se puede probar
-   desde local porque Kapso no alcanza `localhost`, así que exige el sitio desplegado con el
-   webhook conectado.
+1. ~~Crear el Flow en Meta~~ **HECHO (2026-09-10)**: `flow_id 2249539985776722`,
+   `validation_errors: []`. Meta aceptó el JSON sin objeciones, lo que confirma que
+   `CheckboxGroup` con `data-source`/`init-value` dinámicos y un arreglo en el payload del
+   `complete` son válidos. Se actualiza con `npx tsx scripts/publish-whatsapp-flow.ts aprobacion`.
+2. ~~Publicar el Flow~~ **HECHO (2026-09-10)**: estado `PUBLISHED`. Fue obligatorio para
+   poder adjuntarlo a la plantilla. **No se recorrió antes en un teléfono real**: si aparece
+   un problema de UX, corregirlo puede exigir un Flow nuevo.
+3. ~~Crear la plantilla~~ **HECHO (2026-09-10)**: `aprobacion_requisicion`, id
+   `1974324693523971`, categoría `UTILITY`. **En estado `PENDING`**: hasta que Meta la
+   apruebe, el envío fuera de la ventana de 24 h no funciona. Consultar con
+   `npx tsx --env-file=.env.local scripts/publish-approval-template.ts --status`.
+4. **Cargar `WHATSAPP_APPROVAL_FLOW_ID=2249539985776722`** en el entorno de producción (en
+   `.env.local` ya está). Sin esa variable el canal ni se intenta y todo sigue como antes.
+5. **Cargar el teléfono de cada aprobador** en `usuarios.telefono`. Sin él no hay a quién
+   enviarle y la notificación cae al aviso de texto.
+6. **Recorrido real de punta a punta**: falta la vuelta de regreso. El envío ya se ejercitó
+   contra la API real (y devolvió el 422 de la ventana, que es lo que motivó la plantilla);
+   la respuesta (webhook → requisición aprobada) no se puede probar desde local porque Kapso
+   no alcanza `localhost`, así que exige el sitio desplegado con el webhook conectado.

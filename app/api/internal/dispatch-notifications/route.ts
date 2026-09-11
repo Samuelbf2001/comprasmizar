@@ -1,25 +1,26 @@
 import { dispatchPendingNotifications, createPostgresNotificationDispatchStore } from "../../../../lib/infrastructure/notification-dispatcher";
 import { sendKapsoTemplate } from "../../../../lib/infrastructure/kapso";
-import { isApprovalFlowConfigured, sendApprovalFlow } from "../../../../lib/infrastructure/approval-flow-sender";
+import { isApprovalFlowConfigured, sendApprovalFlow, sendApprovalTemplate } from "../../../../lib/infrastructure/approval-flow-sender";
 import { safeEqual } from "../../../../lib/security/crypto";
 
 export const runtime = "nodejs";
 const noStore = { "Cache-Control": "no-store" };
 
 /**
- * Errores del emisor del Flow de aprobación que significan "este envío concreto no puede ir como
- * Flow", no "el canal está roto": la persona igual tiene que enterarse, así que se cae al aviso de
- * plantilla de siempre y ella entra por la web. Cualquier otro error (red, 5xx de Kapso) se
- * propaga para que la cola lo reintente con su backoff normal.
- *
- * `APPROVAL_FLOW_SESSION_CLOSED` es el caso más frecuente en producción, no una rareza: WhatsApp
- * solo admite mensajes interactivos dentro de la ventana de 24 h que abre la persona al escribirle
- * al negocio, y un aprobador normalmente NO ha escrito ese día. Caer a la plantilla es además el
- * remedio que indica Meta en el propio error ("Send a WhatsApp template message to reopen the
- * session"): la plantilla llega, reabre la sesión, y a partir de ahí el Flow sí entra.
+ * Errores que significan "este envío no puede ir como Flow EN ABSOLUTO" (la requisición ya no está
+ * en aprobación, tiene más ítems de los que Meta admite, o el canal no está configurado). La
+ * persona igual tiene que enterarse, así que se cae al aviso de texto de siempre y entra por la
+ * web. Cualquier otro error (red, 5xx de Kapso) se propaga para que la cola lo reintente con su
+ * backoff normal.
  */
-const FLOW_UNAVAILABLE = new Set(["APPROVAL_FLOW_NO_CONTEXT", "APPROVAL_FLOW_TOO_MANY_ITEMS", "APPROVAL_FLOW_NOT_CONFIGURED", "APPROVAL_FLOW_SESSION_CLOSED"]);
-function isFlowUnavailable(error: unknown): boolean { return error instanceof Error && FLOW_UNAVAILABLE.has(error.message); }
+const FLOW_IMPOSSIBLE = new Set(["APPROVAL_FLOW_NO_CONTEXT", "APPROVAL_FLOW_TOO_MANY_ITEMS", "APPROVAL_FLOW_NOT_CONFIGURED"]);
+function isFlowImpossible(error: unknown): boolean { return error instanceof Error && FLOW_IMPOSSIBLE.has(error.message); }
+/**
+ * Distinto: el Flow SÍ se puede mandar, pero no como mensaje interactivo suelto porque la persona
+ * no le ha escrito al negocio en 24 h (el caso normal de un aprobador). Para eso está la plantilla
+ * con botón de Flow, que sí atraviesa la ventana y lleva el mismo Flow adentro.
+ */
+function isSessionClosed(error: unknown): boolean { return error instanceof Error && error.message === "APPROVAL_FLOW_SESSION_CLOSED"; }
 
 /**
  * Internal-only endpoint that drains the `notificaciones` outbox (RF-406/904/905). Meant to be hit by
@@ -46,10 +47,21 @@ export async function POST(request: Request): Promise<Response> {
       // que no existe. El destinatario del Flow NO es `to`: lo resuelve el emisor desde
       // `aprobador_id` (ver sendApprovalFlow), así que un `to` equivocado no puede desviar una
       // aprobación a otra persona.
+      // Orden deliberado, por costo: primero el mensaje interactivo, que es GRATIS mientras la
+      // sesión de 24 h esté abierta; si está cerrada (lo habitual en un aprobador), la plantilla
+      // con botón de Flow, que la atraviesa pero abre una conversación de utilidad facturable; y
+      // solo si el Flow no cabe de ninguna forma, el aviso de texto para que entre por la web.
+      // Nunca al revés: invertirlo pagaría una conversación cada vez, incluso con el chat abierto.
       ...(isApprovalFlowConfigured() ? {
         sendApprovalFlow: async ({ requisitionId, fallback }) => {
-          try { return await sendApprovalFlow(requisitionId); }
-          catch (error) { if (isFlowUnavailable(error)) return fallback(); throw error; }
+          try {
+            return await sendApprovalFlow(requisitionId);
+          } catch (error) {
+            if (isFlowImpossible(error)) return fallback();
+            if (!isSessionClosed(error)) throw error;
+          }
+          try { return await sendApprovalTemplate(requisitionId); }
+          catch (error) { if (isFlowImpossible(error)) return fallback(); throw error; }
         },
       } : {}),
     });
