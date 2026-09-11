@@ -17,10 +17,17 @@ const flow = construirFlow();
 const pantalla = (id: string) => flow.screens.find((s) => s.id === id)!;
 
 describe("el JSON commiteado no se separa del generador", () => {
-  it("coincide byte a byte con lo que produce scripts/build-flow-captura.ts", () => {
+  it("coincide con lo que produce scripts/build-flow-captura.ts", () => {
     // El JSON es el artefacto que se sube a Meta, así que se commitea; el generador es la fuente.
     // Sin este candado, un retoque a mano sobre el JSON se perdería en la siguiente generación.
-    expect(readFileSync(RUTA_JSON, "utf8")).toBe(`${JSON.stringify(flow, null, 2)}\n`);
+    //
+    // Se normalizan los finales de línea antes de comparar. `.gitattributes` ya fuerza LF para este
+    // archivo, pero un clon hecho antes de esa regla —o con otra configuración de `core.autocrlf`—
+    // lo deja con CRLF, y entonces esta prueba fallaba por un motivo que no tiene NADA que ver con
+    // lo que vigila. Llegó a dejar el archivo como modificado permanentemente e impedir cambiar de
+    // rama durante una revisión.
+    const enDisco = readFileSync(RUTA_JSON, "utf8").replace(/\r\n/g, "\n");
+    expect(enDisco).toBe(`${JSON.stringify(flow, null, 2)}\n`);
   });
 });
 
@@ -43,6 +50,29 @@ describe("defecto 1 — el resumen pinta valores, no llaves", () => {
     // Es exactamente lo que hacía el v1 y por lo que se veían las llaves.
     const textos = JSON.stringify(flow.screens.flatMap((s) => s.layout.children.filter((c) => typeof c.text === "string")));
     expect(textos).not.toContain("${screen.");
+  });
+
+  it("los artículos que no se pidieron NO dejan renglón vacío en el resumen", () => {
+    // Lo preguntó Ernesto recorriendo la vista previa: «si no se agregan otros ítems, ¿en el resumen
+    // quedan vacíos o sin aparecer?». Quedaban: siete renglones "Artículo N:  ( )" para quien pidiera
+    // una sola cosa. Un resumen con siete líneas de ruido no sirve para revisar nada.
+    //
+    // Se condiciona con el componente `If` y NO con la propiedad `visible`: Meta rechaza una
+    // comparación en `visible` —"The expression return type is 'string' which does not match the
+    // schema for the property"—, porque ahí espera un booleano ya resuelto.
+    const lineas = resumen.layout.children.filter((c) => c.type === "If") as (ComponenteFlow & { condition: string; then: ComponenteFlow[] })[];
+    expect(lineas).toHaveLength(MAX_ITEMS - 1);
+    for (const [indice, bloque] of lineas.entries()) {
+      const k = indice + 2;
+      expect(bloque.condition, `el artículo ${k} debe condicionarse por SU propia descripción`).toBe(`\${data.item_${k}_descripcion} != ''`);
+      expect(String(bloque.then[0].text)).toContain(`Artículo ${k}:`);
+    }
+  });
+
+  it("el primer artículo NO se condiciona: es obligatorio y siempre está", () => {
+    const sueltos = resumen.layout.children.filter((c) => c.type === "TextBody" && String(c.text).startsWith("Artículo "));
+    expect(sueltos).toHaveLength(1);
+    expect(String(sueltos[0].text)).toContain("Artículo 1:");
   });
 
   it("el `complete` se arma con datos encadenados, sin mirar hacia atrás", () => {

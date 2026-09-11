@@ -3361,32 +3361,74 @@
             "text": "Artículo 1: ${data.item_1_descripcion} (${data.item_1_cantidad} ${data.item_1_unidad})"
           },
           {
-            "type": "TextBody",
-            "text": "Artículo 2: ${data.item_2_descripcion} (${data.item_2_cantidad} ${data.item_2_unidad})"
+            "type": "If",
+            "condition": "${data.item_2_descripcion} != ''",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "Artículo 2: ${data.item_2_descripcion} (${data.item_2_cantidad} ${data.item_2_unidad})"
+              }
+            ]
           },
           {
-            "type": "TextBody",
-            "text": "Artículo 3: ${data.item_3_descripcion} (${data.item_3_cantidad} ${data.item_3_unidad})"
+            "type": "If",
+            "condition": "${data.item_3_descripcion} != ''",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "Artículo 3: ${data.item_3_descripcion} (${data.item_3_cantidad} ${data.item_3_unidad})"
+              }
+            ]
           },
           {
-            "type": "TextBody",
-            "text": "Artículo 4: ${data.item_4_descripcion} (${data.item_4_cantidad} ${data.item_4_unidad})"
+            "type": "If",
+            "condition": "${data.item_4_descripcion} != ''",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "Artículo 4: ${data.item_4_descripcion} (${data.item_4_cantidad} ${data.item_4_unidad})"
+              }
+            ]
           },
           {
-            "type": "TextBody",
-            "text": "Artículo 5: ${data.item_5_descripcion} (${data.item_5_cantidad} ${data.item_5_unidad})"
+            "type": "If",
+            "condition": "${data.item_5_descripcion} != ''",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "Artículo 5: ${data.item_5_descripcion} (${data.item_5_cantidad} ${data.item_5_unidad})"
+              }
+            ]
           },
           {
-            "type": "TextBody",
-            "text": "Artículo 6: ${data.item_6_descripcion} (${data.item_6_cantidad} ${data.item_6_unidad})"
+            "type": "If",
+            "condition": "${data.item_6_descripcion} != ''",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "Artículo 6: ${data.item_6_descripcion} (${data.item_6_cantidad} ${data.item_6_unidad})"
+              }
+            ]
           },
           {
-            "type": "TextBody",
-            "text": "Artículo 7: ${data.item_7_descripcion} (${data.item_7_cantidad} ${data.item_7_unidad})"
+            "type": "If",
+            "condition": "${data.item_7_descripcion} != ''",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "Artículo 7: ${data.item_7_descripcion} (${data.item_7_cantidad} ${data.item_7_unidad})"
+              }
+            ]
           },
           {
-            "type": "TextBody",
-            "text": "Artículo 8: ${data.item_8_descripcion} (${data.item_8_cantidad} ${data.item_8_unidad})"
+            "type": "If",
+            "condition": "${data.item_8_descripcion} != ''",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "Artículo 8: ${data.item_8_descripcion} (${data.item_8_cantidad} ${data.item_8_unidad})"
+              }
+            ]
           },
           {
             "type": "Footer",
