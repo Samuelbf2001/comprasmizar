@@ -54,7 +54,13 @@ describe("PublicAccessAdminService — administración de la contraseña global 
     await service.setPassword(mizarAdmin, "contraseña-super-larga");
     expect(setPasswordCalls).toEqual([{ code: "contraseña-super-larga", actorId: "mizar-admin" }]);
     expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ entity: "acceso_publico", entityId: "global", event: "contrasena_actualizada", actorId: "mizar-admin" });
+    // Esta aserción decía `entityId: "global"` — y ahí estuvo el problema: fijaba el valor ROTO, así
+    // que la suite iba verde mientras la API devolvía 500 cada vez que se fijaba la contraseña.
+    // `auditoria.entidad_id` es `uuid`, "global" no lo es, y el insert moría con 22P02 DESPUÉS de que
+    // el update ya hubiera commiteado. Una prueba con un mock del repositorio de auditoría no puede
+    // ver eso: el tipo de la columna solo existe en Postgres. Lo cubre ahora
+    // tests/unit/auditoria-entity-id.test.ts, que comprueba la FORMA del valor, no solo que se audite.
+    expect(audits[0]).toMatchObject({ entity: "acceso_publico", entityId: "00000000-0000-0000-0000-000000000001", event: "contrasena_actualizada", actorId: "mizar-admin" });
     // El código NUNCA aparece en el evento de auditoría, ni siquiera hasheado.
     expect(JSON.stringify(audits[0])).not.toContain("contraseña-super-larga");
     await expect(service.getStatus(mizarAdmin)).resolves.toEqual({ configured: true, updatedAt: "2026-09-07T12:00:00.000Z" });
