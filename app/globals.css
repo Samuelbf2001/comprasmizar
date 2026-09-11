@@ -388,7 +388,19 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .supplier-assignment-field{display:flex;flex-direction:column;align-items:stretch;min-width:0}
 .supplier-assignment-field select{width:100%}
 .quick-supplier-trigger{align-self:flex-start;height:34px;margin-top:var(--space-2);padding:0 var(--space-3);font-size:var(--text-3xs)}
-.quick-supplier-overlay{position:fixed;inset:0;z-index:40;display:grid;place-items:center;padding:var(--space-5);background:rgba(6,15,25,.45);backdrop-filter:blur(2px)}
+/* Capas fijas, de abajo arriba: topbar 10, velo del menu lateral 15, menu lateral 20,
+   menu de perfil 30, fichas laterales 50 (.supplier-overlay), y ENCIMA DE TODO los dialogos
+   modales, 60.
+
+   Estaba en 40, por debajo de la ficha: el dialogo de "Marcar la orden como Contabilizada" se
+   pintaba centrado en la pagina y la ficha lateral lo tapaba, asi que la confirmacion aparecia
+   fuera de la ventana desde la que se habia pulsado. Vale para las tres fichas que usan
+   .supplier-overlay (orden, proveedor y su editor) y para cualquier dialogo que se abra desde
+   ellas, porque useConfirmDialog y el alta rapida de proveedor comparten esta clase.
+
+   Una confirmacion siempre va encima de lo que la abrio: si alguien anade una capa nueva por
+   encima de 50, esta tiene que seguir siendo la mayor. */
+.quick-supplier-overlay{position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:var(--space-5);background:rgba(6,15,25,.45);backdrop-filter:blur(2px)}
 .quick-supplier-dialog{width:min(100%,480px);margin:0;box-shadow:var(--shadow-lg)}
 .quick-supplier-body{display:grid;gap:var(--space-4);padding:var(--space-5) var(--space-6)}
 .form-footer{min-height:72px;padding:var(--space-4) var(--space-7);display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);border-top:1px solid var(--line)}
