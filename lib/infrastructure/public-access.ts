@@ -24,6 +24,21 @@ export async function listPublicWorks(databaseUrl = runtimeEnv().DATABASE_URL): 
 }
 
 /** Applies the optional obra phone allowlist; the code/link verifier remains a separate concern. */
+/**
+ * ¿Es esta la contraseña del portal? Comparación hecha EN LA BASE con `verificar_codigo_publico`, la
+ * misma función que usa el endpoint de radicación: el bcrypt nunca sale de Postgres y no hay dos
+ * criterios que puedan divergir.
+ *
+ * Se necesita desde que la ruta del portal es pública (2026-09-11) y hay que decidir con la sola
+ * contraseña si se enseña la lista de obras. Cualquier fallo devuelve `false`: sin base no se enseña
+ * nada.
+ */
+export async function verificarCodigoPublico(code: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<boolean> {
+  const sql = sharedPostgres(databaseUrl);
+  const rows = await sql<{ valido: boolean }[]>`select public.verificar_codigo_publico(${code}) as valido`;
+  return rows[0]?.valido === true;
+}
+
 export async function isAuthorizedPublicRequester(workId: string, phone: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<boolean> { const sql = sharedPostgres(databaseUrl), rows = await sql`select o.require_authorized_requester, exists(select 1 from obra_solicitantes_autorizados s where s.obra_id=o.id and s.activo and s.telefono_normalizado=regexp_replace(${phone}, '[^0-9]', '', 'g')) as phone_allowed from obras o where o.id=${workId}`; return Boolean(rows[0] && (!rows[0].require_authorized_requester || rows[0].phone_allowed)); }
 
 /**

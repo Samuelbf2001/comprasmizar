@@ -21,11 +21,10 @@ function setHash(params: Record<string, string>) {
   window.location.hash = new URLSearchParams(params).toString();
 }
 
-/** Atraviesa la compuerta de contraseña + teléfono. */
+/** Atraviesa la compuerta: desde 2026-09-11 solo pide la contraseña. */
 async function pasarCompuerta() {
   await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
   fireEvent.change(document.querySelector('input[name="access-code"]') as HTMLInputElement, { target: { value: "clave-1234" } });
-  fireEvent.change(document.querySelector('input[name="access-phone"]') as HTMLInputElement, { target: { value: "3001234567" } });
   fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
   await screen.findByText(/¿Para quién y cuándo\?/i);
 }
@@ -34,6 +33,8 @@ async function pasarCompuerta() {
 async function rellenarYEnviar({ conFecha = false }: { conFecha?: boolean } = {}) {
   if (!conFecha) fireEvent.change(document.querySelector('input[name="date"]') as HTMLInputElement, { target: { value: "" } });
   fireEvent.change(document.querySelector('input[name="requestor"]') as HTMLInputElement, { target: { value: "Ana Solicitante" } });
+  // El teléfono se pide AQUÍ desde 2026-09-11, no en la compuerta.
+  fireEvent.change(document.querySelector('input[name="phone"]') as HTMLInputElement, { target: { value: "3001234567" } });
   fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
   await screen.findByText(/Describe el material\./i);
   fireEvent.change(document.querySelector('input[name="description"]') as HTMLInputElement, { target: { value: "Cemento gris" } });
@@ -49,12 +50,37 @@ describe("portal público unificado — enlace por obra", () => {
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
-  it("exige contraseña y teléfono antes de mostrar el formulario", async () => {
+  it("la compuerta pide SOLO la contraseña, no el teléfono", async () => {
+    // Ernesto había pedido «para ingresar, solo una contraseña», y la compuerta pedía además el
+    // teléfono. No era un segundo control —cualquier número servía—, solo un obstáculo de más antes
+    // de ver el formulario. El teléfono se pide después, en el paso 1, donde se entiende para qué es.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
-    // Sin datos no se pasa: la compuerta es de cliente, pero el servidor revalida al enviar.
+    expect(document.querySelector('input[name="access-code"]')).toBeInTheDocument();
+    expect(document.querySelector('input[name="access-phone"]')).toBeNull();
+
+    // Sin contraseña no se pasa: la compuerta es de cliente, pero el servidor revalida al enviar.
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
     expect(screen.queryByText(/¿Para quién y cuándo\?/i)).not.toBeInTheDocument();
+  });
+
+  it("el teléfono se pide en el paso 1 y es obligatorio allí", async () => {
+    // Sigue siendo obligatorio al enviar —el servidor lo exige y alimenta `solicitante_telefono_externo`,
+    // que es lo que hace funcionar «Mis requisiciones» y los avisos—, pero se valida donde se pide.
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    fireEvent.change(document.querySelector('input[name="requestor"]') as HTMLInputElement, { target: { value: "Ana Solicitante" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
+    expect(await screen.findByText(/Escribe tu teléfono/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Describe el material\./i)).not.toBeInTheDocument();
+  });
+
+  it("el teléfono escrito en el paso 1 viaja en el envío", async () => {
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    await rellenarYEnviar();
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)).phone).toBe("3001234567");
   });
 
   it("la fecha no está marcada como obligatoria", async () => {
@@ -118,7 +144,6 @@ describe("lo tecleado ANTES de hidratar no se pierde", () => {
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
 
     (document.querySelector('input[name="access-code"]') as HTMLInputElement).value = "clave-1234";
-    (document.querySelector('input[name="access-phone"]') as HTMLInputElement).value = "3001234567";
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
 
     expect(await screen.findByText(/¿Para quién y cuándo\?/i)).toBeInTheDocument();
@@ -131,7 +156,6 @@ describe("lo tecleado ANTES de hidratar no se pierde", () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
     (document.querySelector('input[name="access-code"]') as HTMLInputElement).value = "clave-1234";
-    (document.querySelector('input[name="access-phone"]') as HTMLInputElement).value = "3001234567";
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
     await screen.findByText(/¿Para quién y cuándo\?/i);
 
@@ -151,7 +175,6 @@ describe("lo tecleado ANTES de hidratar no se pierde", () => {
     fireEvent.click(screen.getByRole("button", { name: /Cambiar datos/i }));
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
     expect((document.querySelector('input[name="access-code"]') as HTMLInputElement).value).toBe("clave-1234");
-    expect((document.querySelector('input[name="access-phone"]') as HTMLInputElement).value).toBe("3001234567");
   });
 });
 
@@ -194,10 +217,43 @@ describe("portal público unificado — enlace general", () => {
 describe("portal público unificado — enlace inválido", () => {
   afterEach(() => { cleanup(); window.location.hash = ""; });
 
-  it("sin token no habilita el formulario ni finge nada", async () => {
-    setHash({ obra: workId });
+  it("SIN fragmento la ruta abre la compuerta: es pública", async () => {
+    // Decisión de Ernesto (2026-09-11): «que el enlace no necesite un token, sea ruta pública».
+    // Entrar a /requisiciones/publica a secas tiene que llevar a la contraseña, no al aviso.
+    window.location.hash = "";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ works: [] }) }));
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    expect(screen.queryByText(/Este enlace no está habilitado/i)).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
+  it("un fragmento MAL FORMADO sí se rechaza, en vez de degradarse a acceso libre", async () => {
+    // La distinción importa: "sin enlace" es entrada normal, pero un enlace roto es un error de quien
+    // lo repartió. Tratarlo como acceso libre escondería ese error.
+    setHash({ obra: workId, token: "no-son-64-hex" });
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Este enlace no está habilitado/i)).toBeInTheDocument());
+  });
+
+  it("el fragmento SE QUEDA en la URL, para que recargar no rompa el enlace", async () => {
+    // Ernesto recargó la página y le salió "Este enlace no está habilitado": el portal borraba el
+    // fragmento con `history.replaceState` nada más leerlo, así que al recargar ya no quedaba token.
+    // Lo mismo pasaba con "atrás" y con guardar en favoritos — justo lo que hace quien se queda a
+    // medias y vuelve luego.
+    //
+    // La precaución estaba mal dirigida: lo que nunca puede ir en la URL es la CONTRASEÑA, y nunca
+    // ha ido. El token ES el enlace que se reparte.
+    setHash({ obra: workId, token });
+    const { unmount } = render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    expect(window.location.hash).toContain(token);
+
+    // Segundo montaje = recargar: con el fragmento intacto, vuelve a la compuerta y no al aviso.
+    unmount();
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    expect(screen.queryByText(/Este enlace no está habilitado/i)).not.toBeInTheDocument();
   });
 
   it("con el portal sin configurar tampoco se lee el fragmento", async () => {

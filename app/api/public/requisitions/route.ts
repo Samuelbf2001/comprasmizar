@@ -37,7 +37,9 @@ export async function POST(request: Request) {
   const declaredLength = Number(request.headers.get("content-length") ?? 0); if (Number.isFinite(declaredLength) && declaredLength > 100_000) return neutral();
   const raw = await request.text(); if (Buffer.byteLength(raw, "utf8") > 100_000) return neutral();
   let payload: unknown; try { payload = JSON.parse(raw); } catch { payload = null; }
-  const parsed = publicRequisitionSchema.safeParse(payload), linkToken = request.headers.get("x-public-link-token"); if (!parsed.success || !linkToken) return neutral();
+  // `x-public-link-token` es OPCIONAL desde 2026-09-11: la ruta del portal es pública y la llave es la
+  // contraseña. Cuando viene, sigue acotando a la obra que firma.
+  const parsed = publicRequisitionSchema.safeParse(payload), linkToken = request.headers.get("x-public-link-token"); if (!parsed.success) return neutral();
   // publicWorkRateLimiter (ip:workId) por sí solo es evadible repartiendo intentos entre muchas IPs; el
   // agregado por workId (sin IP) acota el total de intentos contra una obra sin importar el origen.
   if (!publicWorkRateLimiter.consume(`${ip}:${parsed.data.workId}`) || !publicWorkAggregateRateLimiter.consume(parsed.data.workId)) return neutral();
@@ -49,5 +51,5 @@ export async function POST(request: Request) {
   // x-public-link-token, y (b) usar el timing de esa consulta de teléfonos para enumerar solicitantes
   // autorizados en una obra sin siquiera poseer un enlace válido. Con HMAC inválido, verify() nunca toca
   // la BD, así que ese primer filtro es efectivamente gratis para nosotros y costoso de eludir.
-  try { const dependencies = createPostgresDependencies(); if (!(await dependencies.publicAccess.verify(parsed.data.workId, linkToken, parsed.data.code))) return neutral(); if (!(await isAuthorizedPublicRequester(parsed.data.workId, phone))) return neutral(); const service = new ProcurementService(dependencies); await service.create({ type: parsed.data.type, workId: parsed.data.workId, requiredDate: parsed.data.requiredDate, channel: "publico", publicCode: parsed.data.code, publicLinkToken: linkToken, externalRequester: { name: parsed.data.name, phone }, observations: parsed.data.observations, items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, {}); return neutral(); } catch { return neutral(); }
+  try { const dependencies = createPostgresDependencies(); if (!(await dependencies.publicAccess.verify(parsed.data.workId, linkToken, parsed.data.code))) return neutral(); if (!(await isAuthorizedPublicRequester(parsed.data.workId, phone))) return neutral(); const service = new ProcurementService(dependencies); await service.create({ type: parsed.data.type, workId: parsed.data.workId, requiredDate: parsed.data.requiredDate, channel: "publico", publicCode: parsed.data.code, publicLinkToken: linkToken ?? undefined, externalRequester: { name: parsed.data.name, phone }, observations: parsed.data.observations, items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, {}); return neutral(); } catch { return neutral(); }
 }

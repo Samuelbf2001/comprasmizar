@@ -5,6 +5,19 @@
 1. Ejecutar lint, typecheck, cobertura, build y E2E en CI.
 2. Construir una imagen inmutable con el SHA del commit.
 3. Aplicar migraciones primero en dev y ejecutar las verificaciones de RLS.
+   > **Qué protege el portal (decisión del cliente, 11-sep-2026).** Ernesto pidió que la ruta fuera
+   > pública: `https://<dominio>/requisiciones/publica` abre sin enlace firmado, y **la contraseña es
+   > la única llave**, acompañada del rate limit por IP y por obra. Es coherente con lo que dijo al
+   > definir el acceso — «no necesito que sea lo más seguro del mundo, simplemente que no cualquiera
+   > pueda ingresar» —, pero conviene saber lo que implica: cualquiera que dé con la URL puede probar
+   > contraseñas, acotado a 20 intentos por minuto y por IP. Si un día se quiere subir el listón, lo
+   > barato es rotar la contraseña; lo siguiente, volver a exigir enlace firmado.
+   >
+   > Los enlaces con token **siguen sirviendo y no hay que retirarlos**: acotan a UNA obra, que es
+   > para lo que tienen sentido ahora (un contratista que solo debe radicar contra la suya).
+   > Se generan con `npx tsx scripts/generate-public-link.ts <obra-uuid>`; sin argumentos el guion
+   > imprime la URL pública.
+
 4. **Obligatorio tras aplicar `202609070002_acceso_publico_global.sql` (contraseña global del portal):** fijar la contraseña del portal desde Catálogos › Acceso público (`PATCH /api/public-access`, solo admin_mizar/admin_sixteam). La tabla `acceso_publico` nace con el hash en `null` — hasta que alguien fije la contraseña, **el portal público rechaza todo código**, para toda obra con `public_submission_enabled = true`, sin excepción ni aviso visible del lado del solicitante (recibe un 202 neutro indistinguible del éxito). El panel de administración sí muestra un aviso prominente mientras tanto (`role="alert"`, "El portal de requisiciones está cerrado…") — no depender solo de que alguien recuerde este paso.
 5. Hacer respaldo pre-despliegue de producción.
 6. Desplegar la imagen, esperar `/api/health` y ejecutar smoke tests por rol.

@@ -13,6 +13,20 @@ import { hmacSha256, safeEqual } from "./crypto";
  * enlace, firmado sobre este ámbito constante en vez de sobre un id de obra, y la obra se elige
  * dentro del formulario.
  */
+/**
+ * QUÉ PROTEGE EL PORTAL HOY (decisión de Ernesto, 2026-09-11): **la contraseña y el rate limit**.
+ * Literal: «que el enlace no necesite un token, sea ruta pública». `/requisiciones/publica` abre sin
+ * fragmento, y el token dejó de ser una barrera de entrada.
+ *
+ * Lo que el token sigue haciendo, y por lo que no se retira: **acotar a UNA obra**. Un enlace firmado
+ * sobre un id de obra solo deja radicar contra esa; sin token, el solicitante elige entre las obras
+ * habilitadas. Sirve para dar acceso a un contratista de una obra concreta.
+ *
+ * Consecuencia que conviene tener presente al tocar esto: sin token, una petición llega hasta la base
+ * (no hay HMAC que la filtre gratis), así que los limitadores de `app/api/public/requisitions/route.ts`
+ * pasaron de ser una defensa más a ser LA defensa. Viven en la memoria del proceso: se reinician en
+ * cada despliegue y no se comparten entre réplicas.
+ */
 export const GENERAL_LINK_SCOPE = "portal-general";
 
 export function generalLinkToken(pepper: string): string { return hmacSha256(GENERAL_LINK_SCOPE, pepper); }
