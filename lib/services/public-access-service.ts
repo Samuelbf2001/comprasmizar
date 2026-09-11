@@ -21,6 +21,27 @@ export interface PublicAccessAdminServiceDependencies {
  * de acceso que el resto de catálogos administrativos — nunca solicitante/revisor/aprobador/contabilidad. */
 function canManagePublicAccess(actor: Actor): boolean { return actor.roles.includes("admin_mizar") || actor.roles.includes("admin_sixteam"); }
 
+/**
+ * Id de la fila singleton de `acceso_publico`. Lo fija un CHECK de la migración
+ * 202609070002_acceso_publico_global.sql (`constraint acceso_publico_singleton check (id = ...)`),
+ * así que no puede ser otro.
+ *
+ * Aquí se repite en vez de importarse de `lib/infrastructure/public-access.ts` para no invertir las
+ * capas: los servicios declaran contratos y la infraestructura los implementa, no al revés.
+ *
+ * ANTES DECÍA `"global"`, y eso rompía el endpoint entero: `auditoria.entidad_id` es de tipo `uuid`
+ * (202608240001_core_compras.sql) y `AuditRepository.append` lo inserta directo, así que Postgres
+ * lanzaba 22P02 `invalid input syntax for type uuid: "global"`. El resultado para quien fijaba la
+ * contraseña del portal era el peor posible: `setPassword` ya había COMMITEADO el update —no hay
+ * transacción envolviendo ambos pasos—, la auditoría reventaba después, y la API devolvía 500
+ * `internal_error`. La contraseña quedaba bien guardada y la pantalla decía que había fallado.
+ *
+ * Efecto colateral que nadie vio: como siempre falló, el evento `CONTRASENA_ACTUALIZADA` NUNCA se
+ * escribió. El rastro no se perdió del todo —el trigger `acceso_publico_auditoria` sí registra el
+ * cambio de fila, con el hash redactado— pero el evento de aplicación, con su actor, no existía.
+ */
+const ACCESO_PUBLICO_ID = "00000000-0000-0000-0000-000000000001";
+
 export class PublicAccessAdminService {
   constructor(private readonly deps: PublicAccessAdminServiceDependencies) {}
 
@@ -48,6 +69,6 @@ export class PublicAccessAdminService {
     // `{redactado:true}`. Lo que sigue siendo cierto, y lo único que este evento manual añade aparte
     // de esa redacción automática, es que el código en claro nunca viaja como argumento de este
     // evento de auditoría de aplicación.
-    await this.deps.audit.append({ entity: "acceso_publico", entityId: "global", event: "contrasena_actualizada", actorId: actor.id, at: this.deps.clock.now(), origin: "web" });
+    await this.deps.audit.append({ entity: "acceso_publico", entityId: ACCESO_PUBLICO_ID, event: "contrasena_actualizada", actorId: actor.id, at: this.deps.clock.now(), origin: "web" });
   }
 }
