@@ -553,7 +553,12 @@ function transactionRepositories(ports: PostgresPorts): TransactionRepositories 
 }
 export function createPostgresDependencies(databaseUrl = runtimeEnv().DATABASE_URL): ServiceDependencies {
   const sql = sharedPostgres(databaseUrl), ports = new PostgresPorts(sql);
-  const publicAccess: PublicAccessVerifier = { verify: async (workId, linkToken, code) => { const env = publicEnv(); if (!verifyPublicLinkToken(workId, linkToken, env.PUBLIC_FORM_CODE_PEPPER)) return false; // `estado = 'activa'` desde que el enlace es general: con un enlace por obra el destino venía
+  // Sin `linkToken` (ruta pública, decisión de Ernesto del 2026-09-11) no hay HMAC que comprobar y la
+  // autorización es solo la contraseña + obra habilitada y activa. Eso significa que una petición sin
+  // token SÍ llega a la base, al contrario que antes: por eso importa que los tres limitadores de
+  // `app/api/public/requisitions/route.ts` se apliquen ANTES de llamar aquí, que es lo que queda como
+  // única defensa contra probar contraseñas a lo bruto.
+  const publicAccess: PublicAccessVerifier = { verify: async (workId, linkToken, code) => { const env = publicEnv(); if (linkToken !== null && !verifyPublicLinkToken(workId, linkToken, env.PUBLIC_FORM_CODE_PEPPER)) return false; // `estado = 'activa'` desde que el enlace es general: con un enlace por obra el destino venía
     // firmado, pero el general vale para cualquier obra, así que la única defensa contra radicar
     // sobre una obra cerrada es esta. Además deja el endpoint alineado con /api/public/works, que
     // solo ofrece obras activas: lo que se ofrece es exactamente lo que se acepta.

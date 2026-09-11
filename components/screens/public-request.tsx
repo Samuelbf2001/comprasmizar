@@ -8,7 +8,13 @@ import styles from './public-request.module.css';
 
 // `workId` ausente = enlace GENERAL (uno solo para todas las obras): la obra se elige en el
 // formulario, no viene firmada en el enlace. Ver lib/security/public-link.ts.
-type PublicAccess = { workId?: string; token: string };
+/**
+ * `token` es OPCIONAL desde 2026-09-11. Decisión de Ernesto, literal: «que el enlace no necesite un
+ * token, sea ruta pública». Es decir, `/requisiciones/publica` a secas abre la compuerta y la
+ * contraseña es la única llave. Los enlaces firmados que ya se repartieron siguen valiendo y siguen
+ * sirviendo para acotar a una obra concreta, que es lo único que el token hace ahora.
+ */
+type PublicAccess = { workId?: string; token?: string };
 type PublicWork = { id: string; name: string };
 // Reunión 2026-08-31: el antiguo campo "frente o actividad" sale del modelo (se fusiona en
 // notes/observations, ver el campo "Observaciones" del paso 2); requiredDate ya era opcional aquí.
@@ -158,11 +164,43 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   //
   // El fragmento sigue sin viajar al servidor: el navegador nunca lo envía, así que no aparece en
   // los registros del proxy ni en los nuestros.
-  useEffect(() => { let active = true; const fragment = enabled ? new URLSearchParams(window.location.hash.replace(/^#/, '')) : new URLSearchParams(), workId = fragment.get('obra') ?? '', token = fragment.get('token') ?? '', valid = enabled && /^[0-9a-f]{64}$/.test(token) && (workId === '' || /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workId)); queueMicrotask(() => { if (!active) return; if (valid) setAccess({ workId: workId || undefined, token }); setLinkRead(true); }); return () => { active = false; }; }, [enabled]);
+  // Sin fragmento se entra igual: la ruta es pública. Solo se rechaza un fragmento MAL FORMADO —un
+  // token que no son 64 hex, o una obra que no es un uuid—, porque eso no es "sin enlace" sino un
+  // enlace roto, y tratarlo como acceso libre escondería el error a quien reparta un enlace mal.
+  useEffect(() => {
+    let active = true;
+    const fragment = enabled ? new URLSearchParams(window.location.hash.replace(/^#/, '')) : new URLSearchParams();
+    const workId = fragment.get('obra') ?? '', token = fragment.get('token') ?? '';
+    const sinEnlace = token === '' && workId === '';
+    const enlaceValido = /^[0-9a-f]{64}$/.test(token) && (workId === '' || /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workId));
+    queueMicrotask(() => {
+      if (!active) return;
+      if (enabled && sinEnlace) setAccess({});
+      else if (enabled && enlaceValido) setAccess({ workId: workId || undefined, token });
+      setLinkRead(true);
+    });
+    return () => { active = false; };
+  }, [enabled]);
   // Enlace general: la obra no viene firmada, hay que ofrecer la lista. Se pide con el token y sin
   // contraseña (ver app/api/public/works/route.ts); si falla, la lista queda vacía y se dice, en vez
   // de dejar un selector mudo.
-  useEffect(() => { if (!access || access.workId) return; let active = true; fetch(`/api/public/works?token=${encodeURIComponent(access.token)}`).then(response => response.ok ? response.json() : { works: [] }).then((body: { works?: PublicWork[] }) => { if (active) setPublicWorks(Array.isArray(body.works) ? body.works : []); }).catch(() => { if (active) setPublicWorks([]); }).finally(() => { if (active) setWorksLoaded(true); }); return () => { active = false; }; }, [access]);
+  // Con token, la lista se pide con el token (como siempre). SIN token —ruta pública— se pide con la
+  // contraseña, y por eso esto espera a que la compuerta se haya pasado: antes no hay con qué pedirla.
+  // Si falla, la lista queda vacía y se dice, en vez de dejar un selector mudo.
+  useEffect(() => {
+    if (!access || access.workId) return;
+    if (!access.token && !accessGranted) return;
+    let active = true;
+    const peticion = access.token
+      ? fetch(`/api/public/works?token=${encodeURIComponent(access.token)}`)
+      : fetch('/api/public/works', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
+    peticion
+      .then(response => (response.ok ? response.json() : { works: [] }))
+      .then((body: { works?: PublicWork[] }) => { if (active) setPublicWorks(Array.isArray(body.works) ? body.works : []); })
+      .catch(() => { if (active) setPublicWorks([]); })
+      .finally(() => { if (active) setWorksLoaded(true); });
+    return () => { active = false; };
+  }, [access, accessGranted, code]);
   const update = <K extends keyof RequestValues>(key: K, value: RequestValues[K]) => setValues(current => ({ ...current, [key]: value }));
   // Los valores llegan leídos del formulario, no del estado: la compuerta es no controlada para no
   // perder lo que se teclee antes de hidratar (ver AccessGate). Se guardan en estado AQUÍ, ya
@@ -181,7 +219,7 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   // OPCIONAL con z.string().date() — enviar '' cuando el campo queda vacío no es "sin fecha", es una
   // fecha inválida, y .strict() la rechazaba en silencio (el endpoint público siempre responde 202
   // neutro, así que ese rechazo pasaba desapercibido en vez de fallar de forma visible).
-  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!access || !validate(2)) return; setFormError(''); setSubmitting(true); const payload = { workId: access.workId ?? values.work, code, type: values.type, requiredDate: values.date || undefined, name: values.requestor, phone, observations: values.notes || undefined, items: [{ description: values.description, quantity: Number(values.quantity), unit: values.unit, possibleSupplier: values.supplier || undefined, productLink: values.productLink || undefined }] }; try { const response = await fetch('/api/public/requisitions', { method: 'POST', headers: { 'content-type': 'application/json', 'x-public-link-token': access.token }, body: JSON.stringify(payload) }); if (response.status === 202) setSent(true); else if (response.status === 503) setFormError('El servicio de requisiciones no está disponible. Intenta más tarde.'); else setFormError('No pudimos recibir la solicitud. Revisa los campos e intenta otra vez.'); } catch { setFormError('No pudimos conectar con el servicio. Intenta más tarde.'); } finally { setSubmitting(false); } };
+  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!access || !validate(2)) return; setFormError(''); setSubmitting(true); const payload = { workId: access.workId ?? values.work, code, type: values.type, requiredDate: values.date || undefined, name: values.requestor, phone, observations: values.notes || undefined, items: [{ description: values.description, quantity: Number(values.quantity), unit: values.unit, possibleSupplier: values.supplier || undefined, productLink: values.productLink || undefined }] }; try { const response = await fetch('/api/public/requisitions', { method: 'POST', headers: { 'content-type': 'application/json', ...(access.token ? { 'x-public-link-token': access.token } : {}) }, body: JSON.stringify(payload) }); if (response.status === 202) setSent(true); else if (response.status === 503) setFormError('El servicio de requisiciones no está disponible. Intenta más tarde.'); else setFormError('No pudimos recibir la solicitud. Revisa los campos e intenta otra vez.'); } catch { setFormError('No pudimos conectar con el servicio. Intenta más tarde.'); } finally { setSubmitting(false); } };
   if (!linkRead) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`} role="status"><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Validando enlace</div><h1>Preparando el formulario…</h1></section></PortalFrame>;
   if (!access) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`}><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Captura cerrada</div><h1>Este enlace no está habilitado.</h1><p className={styles.accessCopy}>Solicita al responsable de tu obra un enlace vigente. No se creó ninguna requisición ni se aceptaron datos.</p></section></PortalFrame>;
   if (sent) return <PortalFrame><section className={styles.success}><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>La estamos validando.</h1><p className={styles.successCopy}>Si el enlace, la contraseña y el teléfono corresponden a la obra, la requisición quedará registrada. Por seguridad no mostramos un consecutivo.</p><button className={styles.primaryButton} type="button" onClick={() => { setValues(initialValues()); setErrors({}); setStep(1); setSent(false); setAccessGranted(false); }}>Enviar otra solicitud</button></section></PortalFrame>;

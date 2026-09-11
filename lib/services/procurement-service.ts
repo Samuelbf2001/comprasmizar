@@ -50,7 +50,9 @@ export class ProcurementService {
   async create(input: CreateRequisitionInput, context: RequestContext): Promise<Requisition> {
     const origin = this.origin(context);
     const isExternalChannel = input.channel === "publico" || input.channel === "whatsapp";
-    if (input.channel === "publico") { if (!input.workId || !input.publicLinkToken || !input.publicCode || !(await this.deps.publicAccess.verify(input.workId, input.publicLinkToken, input.publicCode))) throw new DomainError("PUBLIC_ACCESS_DENIED", "Enlace o código público inválido"); }
+    // `publicLinkToken` dejó de ser obligatorio (2026-09-11): la ruta del portal es pública y la
+    // contraseña es la llave. `publicCode` sí sigue siéndolo — sin él no hay nada que verificar.
+    if (input.channel === "publico") { if (!input.workId || !input.publicCode || !(await this.deps.publicAccess.verify(input.workId, input.publicLinkToken ?? null, input.publicCode))) throw new DomainError("PUBLIC_ACCESS_DENIED", "Enlace o código público inválido"); }
     else if (input.channel === "whatsapp") { if (origin !== "kapso" || !input.kapsoEventId?.trim()) throw new DomainError("FORBIDDEN", "WhatsApp solo acepta eventos Kapso verificados"); }
     else assertPermission(this.actor(context).roles, "requisition:create", this.authOrigin(context));
     // Reunión 2026-08-31: el solicitante elige empresa, no obra (la asigna el revisor). El Flow de

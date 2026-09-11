@@ -217,8 +217,21 @@ describe("portal público unificado — enlace general", () => {
 describe("portal público unificado — enlace inválido", () => {
   afterEach(() => { cleanup(); window.location.hash = ""; });
 
-  it("sin token no habilita el formulario ni finge nada", async () => {
-    setHash({ obra: workId });
+  it("SIN fragmento la ruta abre la compuerta: es pública", async () => {
+    // Decisión de Ernesto (2026-09-11): «que el enlace no necesite un token, sea ruta pública».
+    // Entrar a /requisiciones/publica a secas tiene que llevar a la contraseña, no al aviso.
+    window.location.hash = "";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ works: [] }) }));
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    expect(screen.queryByText(/Este enlace no está habilitado/i)).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
+  it("un fragmento MAL FORMADO sí se rechaza, en vez de degradarse a acceso libre", async () => {
+    // La distinción importa: "sin enlace" es entrada normal, pero un enlace roto es un error de quien
+    // lo repartió. Tratarlo como acceso libre escondería ese error.
+    setHash({ obra: workId, token: "no-son-64-hex" });
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Este enlace no está habilitado/i)).toBeInTheDocument());
   });
