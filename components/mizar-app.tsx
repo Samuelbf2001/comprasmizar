@@ -30,10 +30,10 @@ const PublicRequestScreen = dynamic(
   () => import("./screens/public-request").then((mod) => mod.PublicRequestScreen),
   { loading: () => null },
 );
-const MobilePublicRequestScreen = dynamic(
+const PublicRequestRedirect = dynamic(
   () =>
-    import("./screens/public-request-mobile").then(
-      (mod) => mod.MobilePublicRequestScreen,
+    import("./screens/public-request").then(
+      (mod) => mod.PublicRequestRedirect,
     ),
   { loading: () => null },
 );
@@ -262,13 +262,12 @@ export default function MizarApp({
         publicConfigured={publicConfigured}
       />
     );
-  if (pathname === "/requisiciones/publica-movil")
-    return (
-      <MobilePublicRequestScreen
-        demoMode={demoMode}
-        publicConfigured={publicConfigured}
-      />
-    );
+  // Ruta heredada: había un formulario móvil aparte y su URL se repartió en el archivo de enlaces
+  // que tiene el cliente. Ahora el formulario es uno solo y responsive, así que esta ruta solo
+  // reenvía. El reenvío es de CLIENTE a propósito: la obra y el token viajan en el fragmento `#`,
+  // que el navegador nunca envía al servidor — un redirect de servidor los perdería y mataría
+  // todos los enlaces móviles ya repartidos.
+  if (pathname === "/requisiciones/publica-movil") return <PublicRequestRedirect />;
   const allowed = roleAllowed[role];
   // Ítem de navegación cuyo href es prefijo (por segmentos) del pathname; gana el más largo.
   const navMatch = navigation.reduce<(typeof navigation)[number] | undefined>(
