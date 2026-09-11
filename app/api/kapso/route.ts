@@ -57,13 +57,26 @@ export const kapsoWebhookSchema = z.object({
   if (event.type === "flow_submission" && !event.submission) context.addIssue({ code: z.ZodIssueCode.custom, message: "submission required" });
   if (event.submission && event.submission.eventId !== event.eventId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["submission", "eventId"], message: "event IDs must match" });
 });
+/**
+ * Kapso firma con la cabecera `X-Webhook-Signature` (HMAC-SHA256 hex del cuerpo crudo, sin prefijo;
+ * docs.kapso.ai/docs/platform/webhooks/security). Este webhook nació leyendo `x-kapso-signature`, un
+ * nombre que Kapso nunca envía: el 11-sep-2026, con todo lo demás en su sitio (webhook registrado,
+ * secreto coincidente, payload compatible), cada entrega real —los «hola» de Ernesto y su envío del
+ * Flow con foto— recibió un 401 silencioso, Kapso reintentó tres veces en ~50 s y los mensajes
+ * quedaron en `processing_status: pending` sin llegar nunca a la plataforma. Se acepta también el
+ * nombre antiguo porque los guiones de prueba y las verificaciones del VPS lo usan.
+ */
+function firmaDelWebhook(request: Request): string {
+  return request.headers.get("x-webhook-signature") ?? request.headers.get("x-kapso-signature") ?? "";
+}
+
 export async function POST(request: Request) {
   if (!isKapsoConfigured()) return Response.json({ error: "service_unavailable" }, { status: 503 });
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
   if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) return Response.json({ error: "invalid_event" }, { status: 413 });
   const raw = await readBoundedBody(request, MAX_BODY_BYTES);
   if (raw === null) return Response.json({ error: "invalid_event" }, { status: 413 });
-  if (!verifyKapsoSignature(raw, request.headers.get("x-kapso-signature") ?? "", kapsoEnv().KAPSO_WEBHOOK_SECRET)) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!verifyKapsoSignature(raw, firmaDelWebhook(request), kapsoEnv().KAPSO_WEBHOOK_SECRET)) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   let payload: unknown;
   try { payload = JSON.parse(raw); } catch { return Response.json({ error: "invalid_event" }, { status: 400 }); }
