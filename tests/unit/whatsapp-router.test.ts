@@ -178,11 +178,17 @@ describe("atenderMensajeEntrante", () => {
     expect(consultados).toEqual(["573124358315"]);
   });
 
-  it("un botón desconocido devuelve el menú en vez de quedarse mudo", async () => {
+  it("un botón desconocido devuelve el menú, y queda registrado como tal", async () => {
+    // El caso real: alguien conserva en el chat un menú de una versión anterior y lo pulsa meses
+    // después. Devolver el menú actual es más útil que ignorarlo. Se asserta también el registro
+    // porque si `cerrar` dejara de llamarse en esta rama, la fila se quedaría en 'pendiente' para
+    // siempre y nadie lo notaría.
     const { enviados, impl } = fetchEspia();
-    const resultado = await atenderMensajeEntrante(entranteBoton("boton_de_una_version_vieja"), { fetchImpl: impl, registro: registroEspia().registro });
+    const espia = registroEspia();
+    const resultado = await atenderMensajeEntrante(entranteBoton("boton_de_una_version_vieja"), { fetchImpl: impl, registro: espia.registro });
     expect(resultado.atendido && resultado.accion).toBe("menu");
     expect(enviados).toHaveLength(1);
+    expect(espia.cerrados).toEqual([{ clase: "menu", resultado: "ok" }]);
   });
 
   it("una reentrega del MISMO mensaje no vuelve a saludar", async () => {
