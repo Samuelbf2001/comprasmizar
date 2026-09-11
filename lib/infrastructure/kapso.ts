@@ -1,6 +1,7 @@
 import type { KapsoAdapter, KapsoWebhookEvent } from "../services";
 import { verifyKapsoSignature } from "../security/crypto";
 import { IDIOMA_PLANTILLAS, PLANTILLAS_WHATSAPP, esPlantillaDeclarada, type NombrePlantilla } from "./plantillas-whatsapp";
+import { destinatarioWhatsApp } from "./phone";
 
 export interface KapsoEventStore { seen(eventId: string): Promise<boolean>; record(event: KapsoWebhookEvent): Promise<void>; }
 export type KapsoClaim = "claimed" | "completed" | "in_progress";
@@ -119,13 +120,18 @@ export async function sendKapsoTemplate(input: { to: string; template: string; p
   // ahí, el nombre tampoco existe en Meta. Mejor un error propio y legible en `ultimo_error` que un
   // 400 de Meta que hay que ir a traducir.
   if (!esPlantillaDeclarada(input.template)) throw new Error("KAPSO_TEMPLATE_NOT_DECLARED");
+  // El destinatario se canoniza AQUÍ, no donde se encola. `usuarios.telefono` guarda el número local
+  // ("3002408743") y así salía: Kapso devuelve un `wamid` —la cola lo daba por enviado— y Meta lo
+  // descartaba después con `failed`, por un evento de estado al que el webhook no está suscrito. El
+  // aviso no llegaba y el sistema decía que sí.
+  const to = destinatarioWhatsApp(input.to);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
     const response = await fetchImpl(`${config.baseUrl}/${config.phoneNumberId}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", "X-API-Key": config.apiKey },
-      body: JSON.stringify(buildTextTemplatePayload({ to: input.to, template: input.template, payload: input.payload })),
+      body: JSON.stringify(buildTextTemplatePayload({ to, template: input.template, payload: input.payload })),
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(sendFailureCode(response.status, await response.json().catch(() => null)));

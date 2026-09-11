@@ -4,6 +4,7 @@ import { sharedPostgres } from "./postgres-repositories";
 import { asJsonb } from "./jsonb";
 import { parametrosDePlantilla } from "./plantillas-whatsapp";
 import { META_ERRORES_PLANTILLA_AUSENTE } from "./kapso";
+import { destinatarioWhatsApp } from "./phone";
 
 /** Only `sendTemplate` is needed to dispatch; no webhook secret or event store required. */
 export type NotificationSendAdapter = Pick<KapsoAdapter, "sendTemplate"> & {
@@ -230,7 +231,10 @@ export function createPostgresNotificationDispatchStore(databaseUrl = runtimeEnv
         select r.id, coalesce(nullif(btrim(r.telefono_destino), ''), u.telefono) as telefono, r.plantilla, r.payload, r.intentos
         from reclamadas r
         left join usuarios u on u.id = r.usuario_id`;
-      return rows.map((row) => ({ id: row.id, phone: (row.telefono ?? "").trim(), template: row.plantilla ?? "", payload: row.payload ?? {}, attempts: row.intentos }));
+      // El teléfono se canoniza AL SALIR DE LA BASE: así el mismo valor se usa para enviar y para
+      // guardar en whatsapp_eventos, y lo registrado es lo que de verdad se envió. `usuarios.telefono`
+      // guarda el número local y sin esto salía sin indicativo — Meta lo descartaba en silencio.
+      return rows.map((row) => ({ id: row.id, phone: destinatarioWhatsApp((row.telefono ?? "").trim()), template: row.plantilla ?? "", payload: row.payload ?? {}, attempts: row.intentos }));
     },
     markSent: async (id, sent, sentAt) => {
       await sql.begin(async (tx) => {

@@ -14,3 +14,29 @@ export function normalizeCoPhone(phone: string): string {
   const digits = phone.replace(/[^0-9]/g, "");
   return digits.length === 10 ? `57${digits}` : digits;
 }
+
+/**
+ * El destinatario de CUALQUIER mensaje saliente de WhatsApp. Los tres emisores —plantillas de texto
+ * (kapso.ts), Flow y plantilla de aprobación (approval-flow-sender.ts) y Flow de captura
+ * (flow-sender.ts)— pasan por aquí, para que nadie pueda mandar un `to` crudo.
+ *
+ * POR QUÉ EXISTE, medido el 11-sep-2026: `usuarios.telefono` guarda el número local tal cual
+ * ("3002408743") y los emisores lo mandaban sin tocar. Kapso ACEPTA la llamada y devuelve un
+ * `wamid` —así que la cola lo marcaba `enviado`— pero Meta lo descarta después con `failed`, y ese
+ * fallo llega por un evento de estado al que el webhook no está suscrito. Resultado: ningún aviso
+ * dirigido a un usuario de la plataforma llegaba, y el sistema decía que sí. Cinco envíos de ese día
+ * a "3002408743" terminaron en `failed`; los dirigidos a "+573002408743" (portal y router), entregados.
+ * Kapso llegó a tener dos conversaciones para la misma persona, "573002408743" y "3002408743".
+ *
+ * Es `normalizeCoPhone` sin adornos —un alias con nombre propio— porque el criterio tiene que ser
+ * EXACTAMENTE el mismo que usa la lista blanca y la columna generada `normalizar_telefono_co`: si el
+ * destino y la identidad se normalizaran distinto, un número podría ser válido para recibir y
+ * desconocido para responder. Lo que aporta es el nombre: dice para qué sirve y dónde tiene que
+ * usarse.
+ *
+ * Un número que no sea de 10 dígitos se deja como está, sin maquillar. Si está mal, que lo rechace
+ * Meta y se vea, en vez de inventarle un indicativo y mandarlo a otra persona.
+ */
+export function destinatarioWhatsApp(phone: string): string {
+  return normalizeCoPhone(phone);
+}
