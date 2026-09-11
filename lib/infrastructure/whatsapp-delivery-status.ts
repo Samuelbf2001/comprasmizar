@@ -29,14 +29,22 @@ export interface AcuseEntrega {
 }
 
 /**
- * Orden de avance. `fallido` no entra aquí porque no compite: siempre gana (ver `aplicarAcuse`).
+ * Orden de avance. Es el espejo de `public.rango_estado_entrega` (migración 202609110003), que es
+ * quien decide de verdad: aquí solo se calcula el rango del acuse que ENTRA, para pasarlo como
+ * parámetro. La comparación la hace la base con su propia función, para que no haya dos definiciones
+ * que puedan divergir.
+ *
+ * `fallido` vale 3 y es el tope, no una excepción sin rango: una vez que Meta dice que se perdió,
+ * ningún acuse más flojo puede escribir encima. La primera versión lo dejaba fuera y caía en un
+ * `else 0`, de modo que un `sent` rezagado lo pisaba y la fila volvía a decir "enviado" — con Kapso
+ * entregando at-least-once y sin orden, eso no es un caso raro sino una secuencia normal.
  *
  * `read` se homologa a `entregado` y no a un estado propio: el enum no lo tiene, y para lo que la
  * plataforma necesita —saber si el aviso llegó— "leído" y "entregado" responden lo mismo. Añadir un
  * valor al enum obligaría a una migración y a revisar cada lectura del campo, a cambio de un matiz
  * que nadie ha pedido.
  */
-const RANGO: Record<string, number> = { pendiente: 0, enviado: 1, entregado: 2 };
+const RANGO: Record<string, number> = { pendiente: 0, enviado: 1, entregado: 2, fallido: 3 };
 
 const ESTADO_POR_STATUS: Record<string, EstadoEntrega> = {
   sent: "enviado",
@@ -125,7 +133,7 @@ export function createPostgresRegistroAcuses(databaseUrl = runtimeEnv().DATABASE
          where kapso_message_id = ${wamid}
            and direccion = 'salida'
            and (${estado} = 'fallido'
-                or coalesce(case estado_entrega when 'pendiente' then 0 when 'enviado' then 1 when 'entregado' then 2 else 0 end, 0) < ${rango})
+                or coalesce(public.rango_estado_entrega(estado_entrega), 0) < ${rango})
         returning id`;
       if (filas.length === 0) return false;
 

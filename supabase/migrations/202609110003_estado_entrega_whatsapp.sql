@@ -28,6 +28,30 @@ alter table public.notificaciones add column if not exists kapso_message_id text
 create index if not exists notificaciones_kapso_message_id_idx
   on public.notificaciones (kapso_message_id) where kapso_message_id is not null;
 
+-- Rango de un estado de entrega, para decidir si un acuse AVANZA o llega tarde.
+--
+-- Vive en la base, y no en la consulta de la aplicación, por una razón concreta: la primera versión
+-- tenía el `case` escrito a mano en dos sitios —la consulta y su arnés— con el mismo defecto en los
+-- dos, así que el arnés daba verde sobre la misma equivocación. Con una función, ambos preguntan lo
+-- mismo y no pueden divergir.
+--
+-- EL DEFECTO QUE ESTO EVITA: `fallido` caía en el `else 0`, de modo que un `sent` rezagado (rango 1)
+-- pisaba un `fallido` ya guardado y la fila volvía a decir "enviado". No es un caso rebuscado: Kapso
+-- entrega at-least-once y sin orden, así que `failed` primero y `sent` después es una secuencia
+-- normal — y justo la que deja el estado mintiendo otra vez.
+--
+-- `fallido` es el tope: una vez que Meta dice que se perdió, solo otro `fallido` puede escribir
+-- encima (y ese pasa por la excepción explícita de `aplicarAcuse`, no por aquí).
+create or replace function public.rango_estado_entrega(p_estado public.estado_envio)
+returns int language sql immutable as $$
+  select case p_estado
+           when 'pendiente' then 0
+           when 'enviado'   then 1
+           when 'entregado' then 2
+           when 'fallido'   then 3
+         end;
+$$;
+
 -- Conteo de fallidos de las últimas 24 h, que expone /api/health. El índice existente por
 -- `kapso_message_id` en whatsapp_eventos no sirve para esta consulta (filtra por estado y fecha).
 create index if not exists whatsapp_eventos_fallidos_idx
