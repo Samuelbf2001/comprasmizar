@@ -22,11 +22,11 @@ test.describe("catálogo de proveedores", () => {
     await expect(page.getByRole("dialog", { name: "Nuevo proveedor" })).toBeVisible();
     // Nombre propio de cada proyecto: "desktop" y "mobile" corren EN PARALELO contra el mismo
     // servidor (fullyParallel), y dos pruebas creando el mismo registro es una trampa latente.
-    // AVISO: esto NO arregla la intermitencia que se ve en local. Medido el 2026-09-11, esa
-    // intermitencia viene del servidor de desarrollo compilando rutas bajo demanda mientras los dos
-    // navegadores golpean a la vez: falla el clic que abre un diálogo o el que avanza el portal, en
-    // cualquiera de los dos proyectos. En CI no muerde porque el servidor arranca limpio y
-    // playwright.config.ts reintenta 2 veces.
+    // Sobre la intermitencia de este clic, medida el 2026-09-11 con --workers=1 y servidor
+    // caliente: NO era la compilación en paralelo. La pantalla de proveedores se carga con
+    // next/dynamic, y con SSR el botón llegaba en el HTML antes que su chunk; un clic en esa
+    // ventana (~100 ms tras el load) se perdía sin reproducirse. Se arregló con ssr:false en
+    // mizar-app.tsx; el tercer test de este archivo lo fija retrasando el chunk a propósito.
     const razonSocial = `Proveedor E2E ${testInfo.project.name}`;
     await page.getByRole("textbox", { name: "Razón social" }).fill(razonSocial);
     await page.getByRole("button", { name: "Crear proveedor" }).click();
@@ -37,5 +37,19 @@ test.describe("catálogo de proveedores", () => {
       const documentOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       expect(documentOverflow).toBeLessThanOrEqual(1);
     }
+  });
+
+  // Regresión del defecto real de 2026-09-11. Retrasa el chunk diferido de la pantalla para que el
+  // clic llegue seguro antes de que el módulo ejecute. Con SSR (el HTML traía el botón) este clic
+  // se tragaba en silencio: dialogoTras=-1 aunque el botón terminara hidratado. Con ssr:false el
+  // botón no existe hasta que puede responder, así que el clic espera y el diálogo abre.
+  test("sigue abriendo el diálogo aunque el chunk de la pantalla llegue tarde", async ({ page }) => {
+    await page.route(/components_screens_suppliers/i, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await route.continue();
+    });
+    await page.goto("/proveedores");
+    await page.getByRole("button", { name: "Nuevo proveedor" }).click();
+    await expect(page.getByRole("dialog", { name: "Nuevo proveedor" })).toBeVisible();
   });
 });
