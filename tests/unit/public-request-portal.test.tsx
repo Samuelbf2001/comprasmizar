@@ -104,7 +104,7 @@ describe("portal público unificado — enlace general", () => {
     setHash({ token });
     vi.stubGlobal("fetch", vi.fn(async (url: string) =>
       String(url).startsWith("/api/public/works")
-        ? { ok: true, status: 200, json: async () => ({ works: [{ id: workId, name: "Torre Misar Etapa 1" }] }) }
+        ? { ok: true, status: 200, json: async () => ({ works: [{ id: workId, name: "Torre Mizar Etapa 1" }] }) }
         : { status: 202, json: async () => ({ accepted: true }) }));
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
@@ -112,7 +112,7 @@ describe("portal público unificado — enlace general", () => {
   it("pide la lista de obras con el token y la ofrece en el selector", async () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
-    await waitFor(() => expect(screen.getByRole("option", { name: "Torre Misar Etapa 1" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("option", { name: "Torre Mizar Etapa 1" })).toBeInTheDocument());
     const llamada = vi.mocked(fetch).mock.calls.find(([url]) => String(url).startsWith("/api/public/works"));
     expect(llamada).toBeDefined();
     expect(String(llamada?.[0])).toContain(encodeURIComponent(token));
@@ -121,7 +121,7 @@ describe("portal público unificado — enlace general", () => {
   it("no deja continuar sin elegir obra, y al elegirla la manda en el payload", async () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
-    await screen.findByRole("option", { name: "Torre Misar Etapa 1" });
+    await screen.findByRole("option", { name: "Torre Mizar Etapa 1" });
     fireEvent.change(document.querySelector('input[name="requestor"]') as HTMLInputElement, { target: { value: "Ana Solicitante" } });
     fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
     expect(await screen.findByText(/Selecciona la obra/i)).toBeInTheDocument();

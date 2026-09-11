@@ -47,11 +47,11 @@ insert into public.usuario_roles (usuario_id, rol) values
   ('10000000-0000-4000-8000-000000000007', 'aprobador')
 on conflict do nothing;
 
--- Empresas activas nombradas por Daniel en la reunión (Misar, Ictinus, Villa del Sol, Proim, Palmoc).
+-- Empresas activas nombradas por Daniel en la reunión (Mizar, Ictinos, Villa del Sol, Proim, Palmoc).
 -- NIT inventado: la lista oficial con NIT real la envía Mizar.
 insert into public.sociedades (id, nombre, nit) values
-  ('20000000-0000-4000-8000-000000000001', 'Misar', '900000001-1'),
-  ('20000000-0000-4000-8000-000000000002', 'Ictinus', '900000002-2'),
+  ('20000000-0000-4000-8000-000000000001', 'Mizar', '900000001-1'),
+  ('20000000-0000-4000-8000-000000000002', 'Ictinos', '900000002-2'),
   ('20000000-0000-4000-8000-000000000003', 'Villa del Sol', '900000003-3'),
   ('20000000-0000-4000-8000-000000000004', 'Proim Ingenieria', '900000004-4'),
   ('20000000-0000-4000-8000-000000000005', 'Palmoc', '900000005-5')
@@ -60,17 +60,17 @@ on conflict (id) do update set nombre = excluded.nombre, nit = excluded.nit;
 -- 17 obras (el número real de Mizar) repartidas entre las sociedades. Las obras 1..3 conservan la
 -- sociedad 1..3 respectivamente porque seed-demo.sql las empareja así.
 insert into public.obras (id, nombre, sociedad_id, estado, public_submission_enabled, public_code_hash) values
-  ('30000000-0000-4000-8000-000000000001', 'Torre Misar Etapa 1', '20000000-0000-4000-8000-000000000001', 'activa', true, extensions.crypt('LOCAL-OBRA-01', extensions.gen_salt('bf'))),
-  ('30000000-0000-4000-8000-000000000002', 'Edificio Ictinus Centro', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
+  ('30000000-0000-4000-8000-000000000001', 'Torre Mizar Etapa 1', '20000000-0000-4000-8000-000000000001', 'activa', true, extensions.crypt('LOCAL-OBRA-01', extensions.gen_salt('bf'))),
+  ('30000000-0000-4000-8000-000000000002', 'Edificio Ictinos Centro', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
   ('30000000-0000-4000-8000-000000000003', 'Conjunto Villa del Sol Fase 1', '20000000-0000-4000-8000-000000000003', 'activa', false, null),
-  ('30000000-0000-4000-8000-000000000004', 'Torre Misar Etapa 2', '20000000-0000-4000-8000-000000000001', 'activa', false, null),
-  ('30000000-0000-4000-8000-000000000005', 'Bodega Ictinus Norte', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
+  ('30000000-0000-4000-8000-000000000004', 'Torre Mizar Etapa 2', '20000000-0000-4000-8000-000000000001', 'activa', false, null),
+  ('30000000-0000-4000-8000-000000000005', 'Bodega Ictinos Norte', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
   ('30000000-0000-4000-8000-000000000006', 'Conjunto Villa del Sol Fase 2', '20000000-0000-4000-8000-000000000003', 'activa', false, null),
-  ('30000000-0000-4000-8000-000000000007', 'Urbanizacion Misar Sur', '20000000-0000-4000-8000-000000000001', 'activa', false, null),
-  ('30000000-0000-4000-8000-000000000008', 'Locales Ictinus Plaza', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
+  ('30000000-0000-4000-8000-000000000007', 'Urbanizacion Mizar Sur', '20000000-0000-4000-8000-000000000001', 'activa', false, null),
+  ('30000000-0000-4000-8000-000000000008', 'Locales Ictinos Plaza', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
   ('30000000-0000-4000-8000-000000000009', 'Casa Modelo Villa del Sol', '20000000-0000-4000-8000-000000000003', 'activa', false, null),
-  ('30000000-0000-4000-8000-000000000010', 'Parqueadero Misar', '20000000-0000-4000-8000-000000000001', 'activa', false, null),
-  ('30000000-0000-4000-8000-000000000011', 'Oficinas Ictinus Piso 3', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
+  ('30000000-0000-4000-8000-000000000010', 'Parqueadero Mizar', '20000000-0000-4000-8000-000000000001', 'activa', false, null),
+  ('30000000-0000-4000-8000-000000000011', 'Oficinas Ictinos Piso 3', '20000000-0000-4000-8000-000000000002', 'activa', false, null),
   ('30000000-0000-4000-8000-000000000012', 'Zonas Comunes Villa del Sol', '20000000-0000-4000-8000-000000000003', 'activa', false, null),
   ('30000000-0000-4000-8000-000000000013', 'Proim Via Terciaria Km 4', '20000000-0000-4000-8000-000000000004', 'activa', false, null),
   ('30000000-0000-4000-8000-000000000014', 'Proim Puente Peatonal', '20000000-0000-4000-8000-000000000004', 'activa', false, null),
