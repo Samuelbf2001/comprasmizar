@@ -2,10 +2,34 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ConnectedDashboard } from "../../components/screens/connected";
 
 afterEach(() => cleanup());
+
+/**
+ * PRECARGA DEL MÓDULO DE GRÁFICOS. Sin esto, este archivo fallaba de forma intermitente.
+ *
+ * Los gráficos entran por `next/dynamic` con `ssr:false` (ver dashboard.tsx) y `dashboard-charts`
+ * es el único módulo que importa `recharts` (~150 KB, con su árbol de dependencias). En el navegador
+ * eso es justo lo que se quiere: el gráfico se descarga solo cuando se ve el dashboard. En la prueba,
+ * en cambio, ese import se disparaba DENTRO de la ventana de espera de `findByRole`, así que lo que
+ * medía el aserto no era el render de React sino cuánto tarda vitest en transformar recharts. Con la
+ * suite entera en paralelo eso se iba por encima del segundo por defecto de `findBy*`, y alguna vez
+ * por encima de los 5 s del propio test: main salía rojo al azar.
+ *
+ * Subir el tope de espera habría escondido el problema sin quitarlo, y de paso habría hecho que un
+ * fallo real tardara 30 s en dar la cara. Precargar el módulo aquí mueve ese coste FUERA del aserto
+ * y lo paga una sola vez por archivo: cuando el test corre, `next/dynamic` resuelve contra el módulo
+ * ya cargado y `findByRole` vuelve a medir lo que dice medir. El camino dinámico se sigue ejercitando
+ * igual, no se sustituye por nada.
+ *
+ * El tope de 30 s es de la PRECARGA, no de los asertos: es lo que puede tardar transformar recharts
+ * en una máquina cargada, y los tests conservan su tope estricto.
+ */
+beforeAll(async () => {
+  await import("../../components/screens/connected/dashboard-charts");
+}, 30_000);
 
 const catalogs = {
   works: [
