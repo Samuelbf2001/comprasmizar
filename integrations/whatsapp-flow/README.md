@@ -82,10 +82,10 @@ pantalla de artículo lleva **Continuar** (salta al resumen) y, debajo, **Agrega
 Subir el tope es cambiar `MAX_ITEMS` en `scripts/build-flow-captura.ts` y regenerar; el adaptador
 (`MAX_ITEM_SLOTS` en `lib/infrastructure/nfm-reply-adapter.ts`) tiene que subir con él.
 
-### Tres reglas del validador de Meta que no están en su documentación
+### Seis reglas del validador de Meta que no están en su documentación
 
-Las dos costaron un viaje de ida y vuelta contra la API al construir el v2. Conviene tenerlas a mano
-antes de tocar un Flow JSON:
+Todas se aprendieron a base de que la API las rechazara o —peor, las dos últimas— de que NO las
+rechazara y el fallo apareciera en el teléfono. Conviene tenerlas a mano antes de tocar un Flow JSON:
 
 **1. Los `id` de pantalla solo admiten letras y guion bajo.** `ARTICULO_1` se rechaza con
 *«Property 'id' should only consist of alphabets and underscores»*. Por eso las pantallas se llaman
@@ -118,6 +118,41 @@ La alternativa era encadenar un booleano `item_N_presente` desde cada pantalla, 
 motivo de fondo, no de comodidad: ese booleano solo podría decir *"se visitó la pantalla N"*, no
 *"se llenó el artículo N"*, así que quien abriera una pantalla y la dejara en blanco habría seguido
 viendo un renglón vacío.
+
+**4. Un `${data.x}` dentro de una cadena normal se muestra LITERAL, y el validador no lo detecta.**
+Esta es la más cara de todas, porque no falla: pasa la validación y sale mal en el teléfono.
+
+```json
+{ "type": "TextBody", "text": "Empresa: ${data.empresa}" }   ← pinta “Empresa: ${data.empresa}”
+{ "type": "TextBody", "text": "${data.empresa}" }            ← pinta el valor
+```
+
+Para el validador eso es texto, así que `validation_errors: []` no dice nada al respecto. Es la razón
+de fondo por la que el v1 y el v2 mostraban las llaves **incluso después** de declarar `data` y
+encadenar el `payload`: el arreglo de la fontanería era necesario pero no suficiente.
+
+**5. La concatenación con acentos graves existe (≥ 6.3) pero no admite signos dentro.**
+`` `Fecha requerida: ${data.x}` `` se rechaza con `Unexpected ":" at character 15`; los paréntesis,
+igual. Solo sirve para unir bindings separados por espacios, como el ejemplo oficial
+`` `${data.a} ${data.b}` ``.
+
+De ahí la forma del RESUMEN: un `TextCaption` estático con el rótulo y un `TextBody` con el binding
+puro debajo. Por artículo, `TextCaption "Artículo k"` + `TextBody "${data.item_k_descripcion}"` +
+`TextCaption` con `` `${data.item_k_cantidad} ${data.item_k_unidad}` ``.
+
+**6. El valor de un `PhotoPicker` NO puede viajar en el `payload` de un `navigate`.**
+
+> The value of PhotoPicker component is not allowed in the payload of navigate action.
+
+Es decir: **una foto no se puede encadenar de pantalla en pantalla.** La única forma de que llegue al
+envío es leerla donde se tomó, con `${screen.ARTICULO_X.form.foto}` en el `complete` — que sí lo
+admite, porque no es un `navigate`.
+
+Por eso la foto es la ÚNICA excepción a la regla de encadenar todo (ver la sección siguiente), y está
+fijada como tal en `tests/unit/flow-captura-v2.test.ts`: todo lo demás mira hacia adelante, solo la
+foto mira hacia atrás. El v2 la perdió precisamente por no saber esto — al quitar las referencias
+entre pantallas para arreglar el resumen, se llevó por delante la única vía que tenía la foto,
+mientras las ocho pantallas seguían ofreciendo el `PhotoPicker`.
 
 ### Y una regla de binding que el v1 incumplía sin que nadie lo notara
 
