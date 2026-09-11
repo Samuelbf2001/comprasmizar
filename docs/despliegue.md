@@ -63,7 +63,7 @@ El validador ([lib/security/env.ts](../lib/security/env.ts)) exige estas formas 
 
 Ya automatizado: cada push a `main` que pase calidad y E2E publica `ghcr.io/samuelbf2001/comprasmizar` con dos etiquetas — `:<sha>` (inmutable, para revertir) y `:main` (móvil).
 
-Antes del primer despliegue, en GitHub → Settings → Secrets and variables → Actions → **Variables**, definir `NEXT_PUBLIC_APP_URL`.
+El workflow trae `https://comprasmizar.sixteam.pro` como valor por defecto de `NEXT_PUBLIC_APP_URL`, así que no hace falta configurar nada en GitHub para el primer despliegue. Para cambiar de dominio (p. ej. al definitivo `compras.grupomizar.com.co`): definir la Variable del repositorio `NEXT_PUBLIC_APP_URL` en Settings → Secrets and variables → Actions → **Variables** (tiene prioridad sobre el default) y reconstruir la imagen — es build-arg, no basta cambiarla en EasyPanel.
 
 El paquete de GHCR nace privado: hay que dar acceso de lectura al VPS con un token, o marcarlo público si no hay inconveniente (la imagen no contiene secretos, pero sí todo el código).
 
