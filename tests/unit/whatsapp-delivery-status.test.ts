@@ -35,12 +35,22 @@ describe("lectura de los cuatro eventos de estado", () => {
   });
 
   it("failed trae el motivo con el código de Meta por delante", () => {
-    // El código es lo que sirve para buscar en la documentación cuando alguien pregunte por qué no
-    // le llegó nada; el título solo, ambiguo entre versiones de la API.
+    // Caso REAL del 2026-09-11: los avisos salían con el teléfono sin indicativo y Meta los
+    // descartaba con este código, mientras la plataforma los daba por `enviado`. Es el fallo que
+    // motivó todo este trabajo, así que la prueba lo documenta con sus datos exactos en vez de con
+    // un ejemplo inventado.
+    //
+    // El código va por delante porque es lo que sirve para buscar en la documentación de Meta cuando
+    // alguien pregunte por qué no le llegó nada; el título solo es ambiguo entre versiones de la API.
     const payload = acuse("failed", {
-      statuses: [{ errors: [{ code: 131047, title: "Re-engagement message", message: "More than 24 hours have passed since the recipient last replied" }] }],
+      statuses: [{ errors: [{ code: 131026, title: "Message undeliverable", message: "Message could not be delivered to the recipient" }] }],
     });
-    expect(leerAcuseEntrega(payload)).toEqual({ wamid: WAMID, estado: "fallido", motivo: "131047 · Re-engagement message" });
+    expect(leerAcuseEntrega(payload)).toEqual({ wamid: WAMID, estado: "fallido", motivo: "131026 · Message undeliverable" });
+  });
+
+  it("también con el código de ventana cerrada, que es el otro habitual", () => {
+    const payload = acuse("failed", { statuses: [{ errors: [{ code: 131047, title: "Re-engagement message" }] }] });
+    expect(leerAcuseEntrega(payload)?.motivo).toBe("131047 · Re-engagement message");
   });
 
   it("el texto largo del error NO se guarda", () => {
