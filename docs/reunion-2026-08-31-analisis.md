@@ -68,10 +68,12 @@ Cada bloque cruza lo que se habló con el estado real del código de la platafor
 
 **Se habló de:** cómo el solicitante identifica a dónde va el gasto.
 
-Daniel mostró su cuadro interno de control (`GASTOS EN OBRAS`), que es el corazón de su operación: por él le cobra a los socios y controla cuánto lleva gastado cada contrato. Explicó la complejidad real: Mizar factura a Ictinus, Palmoc es dueño de "Miradores de Cantalta" pero Mizar es el vendedor, Juliana tiene su propio centro de costos dentro de Misar, etc.
+Daniel mostró su cuadro interno de control (`GASTOS EN OBRAS`), que es el corazón de su operación: por él le cobra a los socios y controla cuánto lleva gastado cada contrato. Explicó la complejidad real: Mizar factura a Ictinos, Palmoc es dueño de "Miradores de Cantalta" pero Mizar es el vendedor, Juliana tiene su propio centro de costos dentro de Mizar, etc.
 
 **Decisión:**
-- El **solicitante elige EMPRESA** (Misar, Ictinus, Villa del Sol, Proim, Palmoc…), **no obra**.
+- El **solicitante elige EMPRESA** (Mizar, Ictinos, Villa del Sol, Proim, Palmoc…), **no obra**.[^nombres]
+
+[^nombres]: Este documento decía «Misar» e «Ictinus». Era un error de transcripción nuestro al pasar la reunión a texto, no algo que dijera Daniel: los nombres reales son **Mizar** e **Ictinos**, confirmados por Ernesto el 11-sep-2026. Se corrigieron aquí y en `supabase/seed.sql`, de donde salían los nombres de las empresas y obras de demostración que se ven en pantalla.
 - La **obra / centro de costo la asigna Daniel** en la revisión: *"es mejor que ellos no definan a quién se va a cargar… que eso yo sea el que lo decida"*.
 - La obra se asigna **a la requisición completa**, no por ítem (confirmado explícitamente en el minuto 34:50 tras una confusión).
 
