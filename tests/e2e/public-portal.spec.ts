@@ -1,10 +1,39 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 // Portal público UNIFICADO (2026-09-11). Antes había dos formularios con dos URLs y dos specs
 // (`public-portal.spec.ts` para escritorio y `public-portal-mobile.spec.ts` para móvil). Ahora es
 // una sola pantalla responsive sobre la base móvil, así que también es un solo spec: el recorrido se
 // corre en los DOS proyectos de Playwright —desktop y mobile— que es justamente lo que la
 // unificación tenía que demostrar. Lo único acotado al proyecto móvil es la ergonomía táctil.
+
+/**
+ * Abre el portal y espera a que React haya HIDRATADO antes de teclear nada.
+ *
+ * Hace falta porque el formulario es un componente controlado: antes de hidratar, el DOM acepta lo
+ * que se escriba, pero el primer render de cliente lo descarta y el campo vuelve a quedar vacío. Un
+ * `fill()` inmediato después de `goto()` se pierde sin error y la prueba revienta más adelante, en
+ * un sitio que no tiene nada que ver — comprobar el valor justo después de rellenarlo tampoco
+ * sirve, porque se lee el DOM previo a la hidratación y da bueno un instante antes de borrarse.
+ *
+ * La señal fiable es un efecto que SOLO puede producir React: pulsar "Continuar" con los campos
+ * vacíos pinta el mensaje de error de la compuerta. Cuando ese mensaje aparece, los manejadores
+ * están puestos y lo que se teclee se conserva.
+ *
+ * (Es además un aviso de producto, menor pero real: quien teclee al instante de abrir el enlace
+ * puede perder los primeros caracteres. No lo introduce esta unificación — venía de antes.)
+ */
+async function abrirPortalHidratado(page: Page) {
+  await page.goto("/requisiciones/publica");
+  await page.getByRole("button", { name: "Continuar" }).click();
+  await expect(page.locator("#portal-access-error")).toContainText("Ingresa la contraseña del portal");
+}
+
+async function pasarCompuerta(page: Page) {
+  await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
+  await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
+  await page.getByRole("button", { name: "Continuar" }).click();
+}
+
 test.describe("portal público de requisiciones", () => {
   test("no muestra shell interno y exige contraseña y teléfono antes del formulario", async ({ page }) => {
     await page.goto("/requisiciones/publica");
@@ -15,18 +44,14 @@ test.describe("portal público de requisiciones", () => {
     await page.getByRole("button", { name: "Continuar" }).click();
     await expect(page.locator("#portal-access-error")).toContainText("Ingresa la contraseña del portal");
 
-    await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
-    await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
-    await page.getByRole("button", { name: "Continuar" }).click();
+    await pasarCompuerta(page);
     await expect(page.getByRole("heading", { name: "¿Para quién y cuándo?" })).toBeVisible();
   });
 
   test("mantiene el recorrido de dos pasos y deja claro que el éxito es demostrativo", async ({ page }) => {
-    await page.goto("/requisiciones/publica");
+    await abrirPortalHidratado(page);
+    await pasarCompuerta(page);
 
-    await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
-    await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
-    await page.getByRole("button", { name: "Continuar" }).click();
     await expect(page.getByRole("heading", { name: "¿Para quién y cuándo?" })).toBeVisible();
     await expect(page.getByRole("list", { name: "Avance de la requisición" })).toBeVisible();
 
@@ -55,7 +80,7 @@ test.describe("portal público de requisiciones", () => {
   test("a 390 por 844 los controles táctiles son de al menos 48 px", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "La inspección de tamaño corresponde al proyecto móvil.");
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/requisiciones/publica");
+    await abrirPortalHidratado(page);
 
     const layout = await page.evaluate(() => ({ viewport: window.innerWidth, documentWidth: document.documentElement.scrollWidth, bodyWidth: document.body.scrollWidth }));
     expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewport);
@@ -75,9 +100,7 @@ test.describe("portal público de requisiciones", () => {
     const focusStyle = await page.getByLabel("Contraseña del portal").evaluate((element) => getComputedStyle(element).outlineStyle);
     expect(focusStyle).not.toBe("none");
 
-    await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
-    await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
-    await page.getByRole("button", { name: "Continuar" }).click();
+    await pasarCompuerta(page);
     for (const locator of [page.getByLabel("Obra"), page.getByLabel("Fecha requerida"), page.getByLabel("Tu nombre"), page.getByRole("button", { name: "Continuar a material" })]) {
       await expectTouchTarget(locator);
     }
