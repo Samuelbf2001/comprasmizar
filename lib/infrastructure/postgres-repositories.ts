@@ -2,7 +2,7 @@ import postgres, { type Sql } from "postgres";
 import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
 import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
-import { hmacSha256, safeEqual } from "../security/crypto";
+import { verifyPublicLinkToken } from "../security/public-link";
 import { publicEnv, runtimeEnv } from "../security/env";
 import { asJsonb } from "./jsonb";
 // HUECO 1: mismo criterio de normalización que la columna generada telefono_normalizado (ver
@@ -540,7 +540,11 @@ function transactionRepositories(ports: PostgresPorts): TransactionRepositories 
 }
 export function createPostgresDependencies(databaseUrl = runtimeEnv().DATABASE_URL): ServiceDependencies {
   const sql = sharedPostgres(databaseUrl), ports = new PostgresPorts(sql);
-  const publicAccess: PublicAccessVerifier = { verify: async (workId, linkToken, code) => { const env = publicEnv(); if (!safeEqual(hmacSha256(workId, env.PUBLIC_FORM_CODE_PEPPER), linkToken)) return false; const rows = await sql<DbRow[]>`select o.public_submission_enabled and public.verificar_codigo_publico(${code}) as valid from obras o where o.id=${workId}`; return rows[0]?.valid === true; } };
+  const publicAccess: PublicAccessVerifier = { verify: async (workId, linkToken, code) => { const env = publicEnv(); if (!verifyPublicLinkToken(workId, linkToken, env.PUBLIC_FORM_CODE_PEPPER)) return false; // `estado = 'activa'` desde que el enlace es general: con un enlace por obra el destino venía
+    // firmado, pero el general vale para cualquier obra, así que la única defensa contra radicar
+    // sobre una obra cerrada es esta. Además deja el endpoint alineado con /api/public/works, que
+    // solo ofrece obras activas: lo que se ofrece es exactamente lo que se acepta.
+    const rows = await sql<DbRow[]>`select o.public_submission_enabled and o.estado = 'activa' and public.verificar_codigo_publico(${code}) as valid from obras o where o.id=${workId}`; return rows[0]?.valid === true; } };
   const transactionPorts = transactionRepositories(ports);
   return { ...transactionPorts, pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) }, publicAccess, features: ports, items: ports, catalogs: ports, notifications: ports, transactions: new PostgresTransactionManager(sql), clock: { now: () => new Date() }, ids: { next: () => crypto.randomUUID() } as IdGenerator };
 }
