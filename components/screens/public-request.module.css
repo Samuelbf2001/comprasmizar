@@ -4,7 +4,7 @@
 .brandMark{width:36px;height:36px;display:grid;place-items:center;flex:none;border-radius:11px;background:var(--navy);color:#fff;font:800 var(--text-sm) var(--font-display)}
 .brandName{display:block;font-size:var(--text-sm);font-weight:800;letter-spacing:.13em}
 .brandSubtitle{display:block;margin-top:1px;font-size:var(--text-3xs);color:var(--muted)}
-.mobileBadge{display:inline-flex;align-items:center;min-height:32px;padding:0 var(--space-2);border-radius:999px;background:#e7efe9;color:#285d43;font-size:var(--text-3xs);font-weight:800;white-space:nowrap}
+
 .main{width:min(100% - 32px,600px);margin:0 auto;padding:var(--space-6) 0 var(--space-8);flex:1}
 .footer{width:min(100% - 32px,600px);margin:0 auto;padding:var(--space-4) 0 var(--space-5);border-top:1px solid var(--line);display:flex;align-items:flex-start;gap:var(--space-2);color:var(--muted);font-size:var(--text-3xs);line-height:1.45}
 .footer svg{flex:none;margin-top:2px}
@@ -84,4 +84,18 @@
 .successDemo b{display:block;margin-bottom:2px;font-size:var(--text-3xs);letter-spacing:.07em;text-transform:uppercase}
 .trackingCode{display:inline-block;margin-top:var(--space-4);padding:var(--space-2) var(--space-3);border-radius:10px;background:#e8edf0;color:var(--navy);font:800 var(--text-sm) var(--font-mono);letter-spacing:.04em}
 .closedGate{max-width:580px}
-@media(max-width:430px){.header{min-height:66px;padding:0 var(--space-3)}.brandMark{width:32px;height:32px;border-radius:10px}.brandName{font-size:var(--text-xs)}.main,.footer{width:calc(100% - 28px)}.main{padding-top:var(--space-5)}.mobileBadge{padding:0 var(--space-2);font-size:10px}.stepHeader,.stepBody,.accessCard{padding:var(--space-4)}.choiceGrid,.twoColumns{grid-template-columns:1fr}.progressStep{padding:0 var(--space-2)}.progressStep span{font-size:10px}.actionRow{grid-template-columns:1fr}.secondaryButton{width:100%}.footer{font-size:10px}}
+@media(max-width:430px){.header{min-height:66px;padding:0 var(--space-3)}.brandMark{width:32px;height:32px;border-radius:10px}.brandName{font-size:var(--text-xs)}.main,.footer{width:calc(100% - 28px)}.main{padding-top:var(--space-5)}.stepHeader,.stepBody,.accessCard{padding:var(--space-4)}.choiceGrid,.twoColumns{grid-template-columns:1fr}.progressStep{padding:0 var(--space-2)}.progressStep span{font-size:10px}.actionRow{grid-template-columns:1fr}.secondaryButton{width:100%}.footer{font-size:10px}}
+
+/* Una sola pantalla para todos los dispositivos (2026-09-11). El layout ya era fluido —columna
+   centrada con tope de 600px—, que es exactamente lo que debe ser un formulario en escritorio: no
+   se estira a todo el ancho porque una línea de 1400px es ilegible. Lo único que cambia en pantalla
+   grande es el aire: algo más de ancho para que las filas a dos columnas no queden apretadas, y más
+   respiración dentro de las tarjetas. Deliberadamente NO se funden los dos pasos en uno solo: eso
+   duplicaría las ramas de validación a cambio de estética. */
+@media(min-width:900px){
+  .header{min-height:80px;padding:0 max(var(--space-6),calc((100vw - 720px)/2))}
+  .main,.footer{width:min(100% - 48px,680px)}
+  .main{padding-top:var(--space-7)}
+  .accessCard,.stepHeader,.stepBody{padding:var(--space-6)}
+  .accessCard{gap:var(--space-5)}
+}

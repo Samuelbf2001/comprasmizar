@@ -126,7 +126,7 @@ Además, cada clic en el menú hace `router.push`, que vuelve a ejecutar el serv
 
 - **Dónde:** `app/globals.css` (105 KB fuente, ~1 000 reglas, 22 media queries) cargado en `/login`, `/pantalla` y el portal público.
 - **Qué pasa:** layouts de 138–200 ms con menos de 500 nodos apuntan a estilos costosos (28 `box-shadow`, 47 transiciones, 2 `backdrop-filter`).
-- **Acción:** CSS Modules por pantalla (como ya hace `public-request-mobile.module.css`); revisar `transition: all`; `content-visibility: auto` en tablas largas; mover estilos de login/pantalla a sus módulos.
+- **Acción:** CSS Modules por pantalla (como ya hace `public-request.module.css`); revisar `transition: all`; `content-visibility: auto` en tablas largas; mover estilos de login/pantalla a sus módulos.
 
 ### H8 · Observabilidad inexistente — Medio
 

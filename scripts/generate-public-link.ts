@@ -16,11 +16,13 @@ if (!appUrl) throw new Error("NEXT_PUBLIC_APP_URL no está configurado");
 const fragment = workId
   ? new URLSearchParams({ obra: workId, token: hmacSha256(workId, pepper) })
   : new URLSearchParams({ token: generalLinkToken(pepper) });
-for (const path of ["/requisiciones/publica", "/requisiciones/publica-movil"]) {
-  const target = new URL(path, appUrl);
-  target.hash = fragment.toString();
-  process.stdout.write(`${target.toString()}\n`);
-}
+// Una sola URL (2026-09-11). Antes se emitían dos, una por cada formulario —escritorio y móvil—, y
+// había que acertar cuál repartir a quién. Ahora el formulario es uno y es responsive, así que el
+// enlace también es uno. `/requisiciones/publica-movil` sigue viva y reenvía en cliente conservando
+// el fragmento, para no romper los enlaces ya repartidos, pero ya no se emite.
+const target = new URL("/requisiciones/publica", appUrl);
+target.hash = fragment.toString();
+process.stdout.write(`${target.toString()}\n`);
 process.stdout.write(workId
   ? "Enlace POR OBRA. La contraseña del portal es GLOBAL (una sola para todas las obras) y se fija desde Catálogos -> Acceso público, no con este script.\n"
   : "Enlace GENERAL: sirve para todas las obras habilitadas y el solicitante elige la suya en el formulario. La contraseña se fija desde Catálogos -> Acceso público, no con este script.\n");
