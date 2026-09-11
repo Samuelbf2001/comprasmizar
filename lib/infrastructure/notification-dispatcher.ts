@@ -3,6 +3,7 @@ import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 import { asJsonb } from "./jsonb";
 import { parametrosDePlantilla } from "./plantillas-whatsapp";
+import { META_ERRORES_PLANTILLA_AUSENTE } from "./kapso";
 
 /** Only `sendTemplate` is needed to dispatch; no webhook secret or event store required. */
 export type NotificationSendAdapter = Pick<KapsoAdapter, "sendTemplate"> & {
@@ -81,6 +82,35 @@ const MAX_BACKOFF_MS = 30 * 60_000;
 function defaultBackoffMs(attempts: number): number { return Math.min(BASE_BACKOFF_MS * 2 ** Math.max(attempts - 1, 0), MAX_BACKOFF_MS); }
 
 function isKapsoNotConfigured(error: unknown): boolean { return error instanceof Error && error.message === "KAPSO_NOT_CONFIGURED"; }
+
+/**
+ * Espera antes de reintentar una notificación cuya plantilla Meta todavía no reconoce. Larga a
+ * propósito: la aprobación de una UTILITY tarda horas, y reintentar cada minuto solo llena
+ * `ultimo_error` de ruido sin acercar el envío.
+ */
+const PLANTILLA_AUSENTE_LEASE_MS = 10 * 60_000;
+
+/**
+ * "La plantilla no existe en Meta" NO es un fallo transitorio: es una precondición que aún no se
+ * cumple. Gastar intentos contra ella es perder la notificación — con 5 intentos y backoff de 60 s a
+ * 30 min, una notificación encolada antes de que Meta apruebe la plantilla muere `fallido` en menos
+ * de una hora y hay que reencolarla a mano. Es exactamente lo que le pasó a `requisicion_recibida`.
+ *
+ * Se distingue por el CÓDIGO DE META, no por el HTTP: un 400 puede ser esto o parámetros mal
+ * formados, y lo segundo sí debe agotar intentos y quedar `fallido` para que se vea.
+ *
+ * A diferencia de `KAPSO_NOT_CONFIGURED`, que libera el lote entero porque sin credenciales no puede
+ * salir NINGUNA, aquí se difiere solo esta: las demás plantillas del lote pueden estar aprobadas.
+ *
+ * La lista de códigos NO está medida — ver META_ERRORES_PLANTILLA_AUSENTE en kapso.ts, que explica
+ * por qué no se pudo y qué pasa si se queda corta (la notificación agota intentos y queda `fallido`,
+ * que es el comportamiento de antes).
+ */
+function isPlantillaAusente(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const codigo = Number(error.message.split("_").at(-1));
+  return Number.isFinite(codigo) && META_ERRORES_PLANTILLA_AUSENTE.has(codigo);
+}
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "error_desconocido"; }
 /**
  * Kapso template parameters are strings; the queued payload is arbitrary JSON.
@@ -146,6 +176,14 @@ export async function dispatchPendingNotifications(store: NotificationDispatchSt
         for (const remaining of batch.slice(index)) await store.release(remaining.id);
         outcome.deferred += batch.length - index;
         break;
+      }
+      if (isPlantillaAusente(error)) {
+        // `notification.attempts` sin sumar: markRetry fija `intentos` en absoluto, así que pasar el
+        // valor que ya traía deja el presupuesto de reintentos intacto. El motivo sí se guarda, para
+        // que se vea en la cola por qué no ha salido.
+        await store.markRetry(notification.id, notification.attempts, errorMessage(error), new Date(now().getTime() + PLANTILLA_AUSENTE_LEASE_MS));
+        outcome.deferred++;
+        continue;
       }
       const attempts = notification.attempts + 1;
       if (attempts >= maxAttempts) { await store.markFailed(notification.id, attempts, errorMessage(error)); outcome.failed++; }

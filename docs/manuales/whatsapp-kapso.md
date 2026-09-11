@@ -15,6 +15,23 @@ Los cambios de estado ya crean una notificación `pendiente` en el outbox dentro
 5. El solicitante y los aprobadores reciben plantillas de estado cuando estén aprobadas y activas.
 6. La sección **Mensajes** muestra el Inbox embebido y `whatsapp_eventos` registra entradas, plantillas, destinatarios, fecha y resultado de entrega.
 
+## Cómo sale un mensaje
+
+Todo lo saliente —plantillas de texto, la plantilla de aprobación con su botón y los dos Flows— va por el **proxy de Meta que expone Kapso**, no por una API propia de Kapso:
+
+```
+POST {KAPSO_META_PROXY_URL}/{KAPSO_PHONE_NUMBER_ID}/messages
+X-API-Key: {KAPSO_API_KEY}
+```
+
+con el cuerpo de la Cloud API de WhatsApp. `KAPSO_META_PROXY_URL` es opcional y por defecto vale `https://api.kapso.ai/meta/whatsapp/v24.0`.
+
+**`KAPSO_API_URL` ya no se usa.** Las plantillas de texto se enviaban a `{KAPSO_API_URL}/v1/whatsapp/messages/templates`, un endpoint que **no existe** en Kapso: responde con la página HTML «Page not found» de Django. Por eso ninguna plantilla de texto salió nunca, y el `KAPSO_SEND_FAILED_404` que quedaba en `notificaciones.ultimo_error` parecía «Meta no tiene la plantilla» — tanto que `requisicion_recibida` siguió fallando igual después de que Meta la aprobara. El transporte correcto ya estaba en el repositorio, en el emisor de la plantilla de aprobación.
+
+Las cinco plantillas de texto usan **parámetros con nombre** (`parameter_format: NAMED`), así que cada parámetro del cuerpo lleva `parameter_name` además del texto, y ese nombre debe coincidir letra por letra con la variable del texto aprobado: en ese formato Meta no interpola por posición. La de aprobación es la excepción, posicional, porque se creó así. La fuente única de nombres, textos y variables es `lib/infrastructure/plantillas-whatsapp.ts`.
+
+Cuando Meta responde que la plantilla no existe (código `132001`), la cola **no gasta intento**: difiere esa notificación diez minutos y sigue con el resto del lote. Cualquier otro error sí agota los cinco intentos con espera creciente y acaba en `fallido`, para que se vea. La distinción es por el código de Meta, no por el HTTP: un 400 puede ser cualquiera de los dos.
+
 ## Estado y seguridad
 
 La pantalla actual muestra un estado seguro sin iframe cuando falta una URL pública HTTPS válida. No hay cuenta, número, plantilla, webhook ni credencial real en este manual. El onboarding, número dedicado, sandbox, plantillas aprobadas y costos son gates externos; ver [gates-externos.md](../gates-externos.md).
