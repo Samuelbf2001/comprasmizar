@@ -34,7 +34,7 @@ declare
   v_prov3 uuid := '40000000-0000-0000-0000-000000000003';
   v_et_mat uuid; v_et_serv uuid; v_et_herr uuid; v_et_transp uuid;
   v_cemento uuid; v_arena uuid; v_varilla uuid; v_ladrillo uuid; v_pintura uuid;
-  v_cable uuid; v_guantes uuid; v_flete uuid; v_excav uuid; v_disco uuid;
+  v_cable uuid; v_guantes uuid; v_flete uuid; v_excav uuid; v_alambre uuid;
   v_req uuid; v_orden uuid;
 begin
   -- Guardia de idempotencia: si ya hay movimiento demo, no se duplica.
@@ -57,7 +57,20 @@ begin
   select id into v_guantes  from public.items where nombre_normalizado = 'guantes de seguridad';
   select id into v_flete    from public.items where nombre_normalizado = 'flete materiales';
   select id into v_excav    from public.items where nombre_normalizado = 'servicio de excavacion';
-  select id into v_disco    from public.items where nombre_normalizado = 'disco de corte';
+  select id into v_alambre    from public.items where nombre_normalizado = 'alambre de amarre';
+
+  -- Guardia de integridad con el seed. Estos ítems y etiquetas los siembra supabase/seed.sql; si
+  -- alguien lo reordena o renombra uno, la variable queda en NULL y el INSERT de más abajo revienta
+  -- con "requisicion_items_item_check", un error que no dice cuál fue la causa. Comprobarlo aquí
+  -- convierte media hora de depuración en una línea. (Pasó: el seed se reescribió el 2026-09-11 y
+  -- "disco de corte" desapareció.)
+  if v_et_mat is null or v_et_serv is null or v_et_herr is null or v_et_transp is null then
+    raise exception 'seed-demo: falta alguna etiqueta del seed (Materiales/Servicios/Herramientas/Transporte)';
+  end if;
+  if v_cemento is null or v_arena is null or v_varilla is null or v_ladrillo is null or v_pintura is null
+     or v_cable is null or v_guantes is null or v_flete is null or v_excav is null or v_alambre is null then
+    raise exception 'seed-demo: algún ítem esperado no existe en supabase/seed.sql; revisa los nombres normalizados';
+  end if;
 
   -- Lista blanca del Flow de WhatsApp (RF-902): sin esto el canal rechaza toda requisición.
   insert into public.solicitantes_autorizados (nombre, telefono, activo) values
@@ -80,7 +93,7 @@ begin
   insert into public.requisiciones (id, consecutivo, tipo, obra_id, sociedad_id, solicitante_id, canal, fecha_requerida, destino, etiqueta_id, estado, created_at)
   values (v_req, '', 'compra', v_obra2, v_soc2, v_solicitante, 'web', current_date + 5, 'Frente 2', v_et_herr, 'enviada', now() - interval '2 days');
   insert into public.requisicion_items (requisicion_id, item_id, cantidad, unidad, valor_base, iva, iva_tasa, posible_proveedor_texto) values
-    (v_req, v_disco, 20, 'unidad', 12000, 2280, 0.19, 'Ferretería del centro'),
+    (v_req, v_alambre, 25, 'kg', 9500, 1805, 0.19, 'Ferretería del centro'),
     (v_req, v_guantes, 30, 'par', 8000, 1520, 0.19, 'Dotaciones SAS');
   update public.requisiciones set estado = 'en_revision' where id = v_req;
 
