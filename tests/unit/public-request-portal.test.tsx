@@ -98,6 +98,63 @@ describe("portal público unificado — enlace por obra", () => {
   });
 });
 
+describe("lo tecleado ANTES de hidratar no se pierde", () => {
+  beforeEach(() => {
+    setHash({ obra: workId, token });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 202, json: async () => ({ accepted: true }) }));
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
+
+  it("con los valores escritos directamente en el DOM, la compuerta se abre igual", async () => {
+    // Reproduce el caso real: el navegador pinta el HTML del servidor y acepta escritura de
+    // inmediato, pero React aún no ha hidratado, así que esas pulsaciones NO pasan por ningún
+    // `onChange`. Escribir en `input.value` sin despachar evento es exactamente eso.
+    //
+    // Con la compuerta controlada, el estado seguía vacío y pulsar Continuar respondía "Ingresa la
+    // contraseña del portal y un teléfono válido" con los campos a la vista y llenos — el maestro no
+    // tenía forma de entender qué pasaba. Con la compuerta no controlada, los valores se leen del
+    // formulario al enviar y entra.
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+
+    (document.querySelector('input[name="access-code"]') as HTMLInputElement).value = "clave-1234";
+    (document.querySelector('input[name="access-phone"]') as HTMLInputElement).value = "3001234567";
+    fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
+
+    expect(await screen.findByText(/¿Para quién y cuándo\?/i)).toBeInTheDocument();
+  });
+
+  it("y ese valor llega al envío, no uno vacío", async () => {
+    // No basta con que la compuerta se abra: la contraseña viaja en el cuerpo del POST y el servidor
+    // la valida. Si se hubiera perdido, el portal respondería 202 neutro y la requisición no se
+    // crearía — el fallo más caro de todos, porque no se ve por ninguna parte.
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    (document.querySelector('input[name="access-code"]') as HTMLInputElement).value = "clave-1234";
+    (document.querySelector('input[name="access-phone"]') as HTMLInputElement).value = "3001234567";
+    fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
+    await screen.findByText(/¿Para quién y cuándo\?/i);
+
+    await rellenarYEnviar();
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    expect(body.code).toBe("clave-1234");
+    expect(body.phone).toBe("3001234567");
+  });
+
+  it("al volver con «Cambiar datos» los campos conservan lo ya escrito", async () => {
+    // Efecto colateral de quitar el estado controlado: al desmontarse la compuerta, los campos
+    // volverían en blanco. `defaultValue` lo evita, y obligar a reescribir la contraseña sería un
+    // castigo gratuito.
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    fireEvent.click(screen.getByRole("button", { name: /Cambiar datos/i }));
+    await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
+    expect((document.querySelector('input[name="access-code"]') as HTMLInputElement).value).toBe("clave-1234");
+    expect((document.querySelector('input[name="access-phone"]') as HTMLInputElement).value).toBe("3001234567");
+  });
+});
+
 describe("portal público unificado — enlace general", () => {
   beforeEach(() => {
     // Sin `obra` en el fragmento: el enlace es general y la obra se elige en el formulario.
