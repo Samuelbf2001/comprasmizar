@@ -4,8 +4,13 @@ import type { KapsoWebhookEvent } from "../services";
 import { MAX_PRIVATE_ATTACHMENT_BYTES, PRIVATE_ATTACHMENT_BUCKET } from "../services/attachment-service";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
-import { createSupabaseServiceClient } from "./supabase";
+import { createLocalBucketStorage } from "./local-storage";
 import { asJsonb } from "./jsonb";
+// Reexportado desde su propio modulo (attachment-mime.ts) porque ahora tambien lo usa la subida del
+// navegador via /api/storage/object. Se mantiene el nombre exportado aqui: era la ruta de import
+// publica de este simbolo (ver tests/integration/kapso-attachments.test.ts).
+export { sniffAttachmentMime } from "./attachment-mime";
+import { sniffAttachmentMime } from "./attachment-mime";
 
 export function createPostgresKapsoEventStore(databaseUrl = runtimeEnv().DATABASE_URL): KapsoEventStore {
   const sql = sharedPostgres(databaseUrl);
@@ -18,23 +23,6 @@ export function createPostgresKapsoEventStore(databaseUrl = runtimeEnv().DATABAS
 export function createPostgresKapsoProcessingStore(databaseUrl = runtimeEnv().DATABASE_URL, leaseMs = 300_000): KapsoProcessingStore {
   const sql = sharedPostgres(databaseUrl);
   return { claim: async (event) => sql.begin(async (tx) => { await tx`select pg_advisory_xact_lock(hashtextextended(${event.eventId}, 0))`; const rows = await tx<{ estado: string; stale: boolean }[]>`select estado, updated_at <= now() - (${leaseMs} * interval '1 millisecond') as stale from kapso_procesamiento where event_id=${event.eventId} for update`; const row = rows[0]; if (row?.estado === "completed") return "completed" as KapsoClaim; if (row?.estado === "processing" && !row.stale) return "in_progress" as KapsoClaim; await tx`insert into kapso_procesamiento (event_id, tipo_evento, estado, payload, updated_at) values (${event.eventId}, ${event.type}, 'processing', ${asJsonb(tx, event)}, now()) on conflict (event_id) do update set tipo_evento=excluded.tipo_evento, estado='processing', payload=excluded.payload, updated_at=now()`; const phone = event.submission?.phone ?? "unknown"; await tx`insert into whatsapp_eventos (direccion, telefono, tipo, payload_json, kapso_message_id, estado_entrega, fecha) values ('entrada', ${phone}, ${event.type === "flow_submission" ? "flow" : "mensaje"}, ${asJsonb(tx, event)}, ${event.eventId}, ${event.deliveryStatus ?? null}, ${event.receivedAt}) on conflict (kapso_message_id) where kapso_message_id is not null do nothing`; return "claimed" as KapsoClaim; }), complete: async (eventId, requisitionId) => { await sql.begin(async (tx) => { await tx`update kapso_procesamiento set estado='completed', requisicion_id=${requisitionId ?? null}, updated_at=now() where event_id=${eventId}`; if (requisitionId) await tx`update whatsapp_eventos set requisicion_id=${requisitionId} where kapso_message_id=${eventId}`; }); }, release: async (eventId) => { await sql`update kapso_procesamiento set estado='retryable', updated_at=now() where event_id=${eventId}`; }, findRequisitionId: async (eventId) => { const rows = await sql<{ id: string }[]>`select id from requisiciones where kapso_event_id=${eventId} limit 1`; return rows[0]?.id ?? null; } };
-}
-
-const ATTACHMENT_SIGNATURES: ReadonlyArray<{ mimeType: string; extension: string; matches: (bytes: Buffer) => boolean }> = [
-  { mimeType: "application/pdf", extension: "pdf", matches: (b) => b.length >= 4 && b.subarray(0, 4).toString("latin1") === "%PDF" },
-  { mimeType: "image/jpeg", extension: "jpg", matches: (b) => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
-  { mimeType: "image/png", extension: "png", matches: (b) => b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
-  { mimeType: "image/webp", extension: "webp", matches: (b) => b.length >= 12 && b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP" },
-];
-/**
- * Same four-type allowlist enforced by `PrivateAttachmentService.validate` (attachment-service.ts) —
- * reused here, not redefined, via its exported `MAX_PRIVATE_ATTACHMENT_BYTES`/`PRIVATE_ATTACHMENT_BUCKET`.
- * Unlike the browser upload flow (which trusts a signed URL's declared Content-Type because the
- * server never sees the bytes directly), a Kapso download IS untrusted network input the server
- * holds in memory, so its real file signature is checked before anything is written to storage.
- */
-export function sniffAttachmentMime(bytes: Buffer): { mimeType: string; extension: string } | null {
-  return ATTACHMENT_SIGNATURES.find((signature) => signature.matches(bytes)) ?? null;
 }
 
 export interface KapsoAttachmentDownloader { download(url: string): Promise<{ bytes: Buffer; contentType?: string }>; }
@@ -85,7 +73,7 @@ function safeFailureReason(error: unknown): string { return error instanceof Err
  */
 export function createKapsoAttachmentCopier(databaseUrl = runtimeEnv().DATABASE_URL, downloader: KapsoAttachmentDownloader = defaultKapsoAttachmentDownloader): KapsoAttachmentCopier {
   const sql = sharedPostgres(databaseUrl);
-  const storage = createSupabaseServiceClient().storage.from(PRIVATE_ATTACHMENT_BUCKET);
+  const storage = createLocalBucketStorage(PRIVATE_ATTACHMENT_BUCKET);
   const audit = (entidadId: string, evento: string, data: Record<string, unknown>) => sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values ('requisicion_item', ${entidadId}, ${evento.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}, 'kapso', null, now(), ${asJsonb(sql, data)})`;
   const logFailure = async (event: KapsoWebhookEvent, requisitionId: string, itemId: string, reason: string) => {
     const phone = event.submission?.phone ?? "desconocido";
@@ -104,8 +92,10 @@ export function createKapsoAttachmentCopier(databaseUrl = runtimeEnv().DATABASE_
           const nombre = `evidencia-kapso.${signature.extension}`;
           const path = `${KAPSO_ATTACHMENT_PATH_PREFIX}/${source.itemId}/${adjuntoId}/${nombre}`;
           const checksum = createHash("sha256").update(bytes).digest("hex");
-          const upload = await storage.upload(path, bytes, { contentType: signature.mimeType, upsert: false });
-          if (upload.error) throw new Error("KAPSO_ATTACHMENT_UPLOAD_FAILED");
+          // Autoalojado: `writeObject` lanza (incluido STORAGE_OBJECT_EXISTS, que preserva la
+          // semántica `upsert: false` que pedía la versión Supabase). Se traduce al mismo código de
+          // fallo de antes para que el registro en whatsapp_eventos/auditoría no cambie de forma.
+          try { await storage.upload(path, bytes, signature.mimeType); } catch { throw new Error("KAPSO_ATTACHMENT_UPLOAD_FAILED"); }
           await sql`insert into adjuntos (id, entidad, entidad_id, storage_bucket, url_storage, tipo, nombre_original, mime_type, tamano_bytes, subido_por, checksum_sha256, fecha) values (${adjuntoId}, 'requisicion_item', ${source.itemId}, ${PRIVATE_ATTACHMENT_BUCKET}, ${path}, 'foto', ${nombre}, ${signature.mimeType}, ${bytes.byteLength}, null, ${checksum}, now())`;
           await audit(source.itemId, "adjunto_kapso_disponible", { requisitionId, sizeBytes: bytes.byteLength, mimeType: signature.mimeType });
         } catch (error) {

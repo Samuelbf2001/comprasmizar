@@ -35,6 +35,11 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# STORAGE_ROOT de los soportes privados (migracion a autoalojado). El directorio se crea AQUI, en la
+# imagen, y no solo en compose.yaml: cuando Docker monta un volumen nombrado sobre una ruta que ya
+# existe en la imagen, copia su propietario y permisos al volumen nuevo. Sin esto el volumen nace
+# root:root y el proceso, que corre como nextjs, no podria escribir ni un adjunto.
+RUN mkdir -p /var/lib/mizar/storage && chown -R nextjs:nodejs /var/lib/mizar
 USER nextjs
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

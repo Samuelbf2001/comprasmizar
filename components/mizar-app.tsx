@@ -2,27 +2,88 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
+import dynamic from "next/dynamic";
 import { Inbox, TriangleAlert } from "lucide-react";
 import { navigation, type Role } from "../lib/demo-data";
 import { AppShell, roleAllowed } from "./layout/app-shell";
-import { PublicRequestScreen } from "./screens/public-request";
-import { MobilePublicRequestScreen } from "./screens/public-request-mobile";
-import { DashboardScreen } from "./screens/dashboard";
-import {
-  ReviewScreen,
-  ApprovalsScreen,
-  RequestDetailScreen,
-} from "./screens/workflow";
-import { OrdersScreen, ExpensesScreen } from "./screens/operations";
-import { ReportsScreen, AdminScreen } from "./screens/reports-admin";
-import { MessagesScreen } from "./screens/messages";
 import { SectionTitle } from "./screens/screen-primitives";
-import {
-  ConnectedScreen,
-  DemoRequisitionScreen,
-  isConnectedReadRoute,
-} from "./screens/connected";
-import { SuppliersScreen } from "./screens/suppliers";
+// Fase 2 (rendimiento, docs/plan-rendimiento.md, hallazgo H4): antes este archivo importaba
+// TODAS las pantallas (demo y conectadas) de forma estática, así que cualquier rol en
+// cualquier ruta descargaba el bundle completo. Ahora:
+//   - ConnectedScreen/isConnectedReadRoute se importan directo de screen.tsx/data.ts (no del
+//     barrel components/screens/connected.tsx) para no arrastrar ni los tipos de las
+//     pantallas pesadas.
+//   - Las pantallas demo (DashboardScreen, workflow, operations, reports-admin) viven en el
+//     barrel ./screens/demo-screens y se cargan una por una con next/dynamic; en producción
+//     (demoMode=false) NINGUNA de ellas llega a pedirse.
+//   - MessagesScreen y SuppliersScreen se usan en ambos modos pero rara vez las dos a la vez
+//     en la misma sesión; PublicRequestScreen/MobilePublicRequestScreen solo en el portal
+//     público. Las cuatro se difieren igual con next/dynamic.
+// Sin `loading`: estas pantallas no tienen esqueleto propio (RF-1105 solo cubre las rutas
+// conectadas, ver components/screens/connected/screen.tsx) y son ligeras; un fallback nulo
+// evita inventar un esqueleto nuevo solo para este caso (ver aprendizaje "pantallas sin
+// esqueleto equivalente" del encargo).
+import { ConnectedScreen } from "./screens/connected/screen";
+import { isConnectedReadRoute } from "./screens/connected/data";
+
+const PublicRequestScreen = dynamic(
+  () => import("./screens/public-request").then((mod) => mod.PublicRequestScreen),
+  { loading: () => null },
+);
+const MobilePublicRequestScreen = dynamic(
+  () =>
+    import("./screens/public-request-mobile").then(
+      (mod) => mod.MobilePublicRequestScreen,
+    ),
+  { loading: () => null },
+);
+const MessagesScreen = dynamic(
+  () => import("./screens/messages").then((mod) => mod.MessagesScreen),
+  { loading: () => null },
+);
+const SuppliersScreen = dynamic(
+  () => import("./screens/suppliers").then((mod) => mod.SuppliersScreen),
+  { loading: () => null },
+);
+const DemoRequisitionScreen = dynamic(
+  () =>
+    import("./screens/connected/new-requisition").then(
+      (mod) => mod.DemoRequisitionScreen,
+    ),
+  { loading: () => null },
+);
+const DashboardScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.DashboardScreen),
+  { loading: () => null },
+);
+const ReviewScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.ReviewScreen),
+  { loading: () => null },
+);
+const ApprovalsScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.ApprovalsScreen),
+  { loading: () => null },
+);
+const RequestDetailScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.RequestDetailScreen),
+  { loading: () => null },
+);
+const OrdersScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.OrdersScreen),
+  { loading: () => null },
+);
+const ExpensesScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.ExpensesScreen),
+  { loading: () => null },
+);
+const ReportsScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.ReportsScreen),
+  { loading: () => null },
+);
+const AdminScreen = dynamic(
+  () => import("./screens/demo-screens").then((mod) => mod.AdminScreen),
+  { loading: () => null },
+);
 
 function AccessDenied({
   go,
@@ -106,7 +167,7 @@ function IntegrationGate({ role }: { role: Role }) {
           operación.
         </p>
         <ul>
-          <li>Supabase/Auth y permisos por rol</li>
+          <li>Autenticación y permisos por rol</li>
           <li>Servicios de requisiciones, órdenes y gastos</li>
           <li>Auditoría y exportación contable</li>
         </ul>

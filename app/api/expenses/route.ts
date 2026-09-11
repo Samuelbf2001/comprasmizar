@@ -1,6 +1,31 @@
-import { authenticatedJson } from "../../../lib/http/api";
+import { z } from "zod";
+import { DomainError } from "../../../lib/domain";
+import { authenticatedJson, hasListFilters, parseListQuery } from "../../../lib/http/api";
 import { createPostgresDependencies } from "../../../lib/infrastructure/postgres-repositories";
 import { ProcurementService } from "../../../lib/services";
 
 export const runtime = "nodejs";
-export function GET() { return authenticatedJson((actor) => new ProcurementService(createPostgresDependencies()).listExpenses({ actor })); }
+const referenceIdSchema = z.string().uuid();
+
+// H2 (docs/plan-rendimiento.md): `?referenceId=` es aditivo — sin el parámetro, comportamiento intacto
+// (todos los gastos visibles, como hoy). Con él, filtra a los gastos de una requisición (directos o vía
+// sus órdenes, ver `listByReference` en postgres-repositories.ts) sin traer los demás. Tiene prioridad
+// sobre los filtros/paginación de H3 (Fase 3, abajo): si viene `referenceId`, el resto se ignora.
+// H3: `?workId=&from=&to=&limit=&cursor=` son ADITIVOS — mismo contrato que las demás rutas de listas.
+// Sin `status`: gastos no tiene columna de estado (ver ListQuery en lib/services/list-query.ts); un
+// `?status=` en esta ruta se ignora en vez de fallar (parseListQuery sin `statusValues`).
+export function GET(request: Request) {
+  return authenticatedJson((actor) => {
+    const url = new URL(request.url);
+    const rawReferenceId = url.searchParams.get("referenceId");
+    if (rawReferenceId !== null) {
+      const parsed = referenceIdSchema.safeParse(rawReferenceId);
+      if (!parsed.success) throw new DomainError("INVALID_INPUT", "referenceId debe ser un uuid válido");
+      return new ProcurementService(createPostgresDependencies()).listExpensesByReference(parsed.data, { actor });
+    }
+    const { query, paginated } = parseListQuery(url);
+    const service = new ProcurementService(createPostgresDependencies());
+    if (!paginated && !hasListFilters(query)) return service.listExpenses({ actor });
+    return service.listExpensesPage(query, { actor }).then((page) => (paginated ? page : page.rows));
+  });
+}

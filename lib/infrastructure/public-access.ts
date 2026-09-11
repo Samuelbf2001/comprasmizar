@@ -1,32 +1,69 @@
 import { runtimeEnv } from "../security/env";
+import type { PublicAccessAdminRepository, PublicAccessStatus } from "../services";
 import { sharedPostgres } from "./postgres-repositories";
+// GRAVE 2 (QA Postgres real): normalizeCoPhone vive en su propio módulo (ver phone.ts) para que
+// postgres-repositories.ts también la reutilice (alta de solicitantes_autorizados vía catálogo) sin
+// crear un ciclo de imports con este archivo, que ya importa sharedPostgres desde ese módulo.
+import { normalizeCoPhone } from "./phone";
 /** Applies the optional obra phone allowlist; the code/link verifier remains a separate concern. */
 export async function isAuthorizedPublicRequester(workId: string, phone: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<boolean> { const sql = sharedPostgres(databaseUrl), rows = await sql`select o.require_authorized_requester, exists(select 1 from obra_solicitantes_autorizados s where s.obra_id=o.id and s.activo and s.telefono_normalizado=regexp_replace(${phone}, '[^0-9]', '', 'g')) as phone_allowed from obras o where o.id=${workId}`; return Boolean(rows[0] && (!rows[0].require_authorized_requester || rows[0].phone_allowed)); }
 
 /**
- * Identidad del solicitante del WhatsApp Flow a partir de su número (RF-902). El Flow ya no pide
- * nombre ni teléfono: se busca el número en la lista blanca por obra y se devuelve el nombre
- * autorizado. Devuelve `null` cuando el número NO puede solicitar para esa obra, para que el
- * adaptador rechace la requisición como no autorizada.
+ * Identidad del solicitante del WhatsApp Flow a partir de su número (RF-902), contra la lista
+ * blanca GLOBAL `solicitantes_autorizados` (migración 202609010001). El Flow ya no pide nombre ni
+ * teléfono: se busca el número en la lista y se devuelve el nombre autorizado. Devuelve `null`
+ * cuando el número no está autorizado, para que el adaptador rechace la requisición.
  *
- * Respeta la misma regla que `isAuthorizedPublicRequester`: si la obra no exige solicitante
- * autorizado (`require_authorized_requester = false`), cualquier número puede solicitar y se usa un
- * nombre genérico basado en los últimos dígitos; si la exige, el número debe estar en la lista.
+ * Reunión 2026-08-31: antes la lista era por obra (`obra_solicitantes_autorizados`, con su regla de
+ * "obra sin exigir autorización" propia de esa tabla) porque el Flow pedía obra. Ahora el
+ * solicitante elige empresa, no obra, y ya no hay obra sobre la cual anclar la lista — de ahí la
+ * lista GLOBAL, sin la opción de "no exigir autorización" (siempre se exige). La tabla vieja se
+ * conserva intacta: la sigue usando el portal público (`isAuthorizedPublicRequester`, arriba), que
+ * sigue anclado a la obra.
  */
-export async function resolveAuthorizedRequesterName(workId: string, phone: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<{ name: string } | null> {
+export async function resolveAuthorizedRequesterName(phone: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<{ name: string } | null> {
   const sql = sharedPostgres(databaseUrl);
-  const digits = phone.replace(/[^0-9]/g, "");
-  const rows = await sql<{ nombre: string | null; require_authorized_requester: boolean }[]>`
-    select s.nombre, o.require_authorized_requester
-    from obras o
-    left join obra_solicitantes_autorizados s
-      on s.obra_id = o.id and s.activo and s.telefono_normalizado = ${digits}
-    where o.id = ${workId}
-    order by s.nombre nulls last
-    limit 1`;
+  const rows = await sql<{ nombre: string }[]>`
+    select nombre from solicitantes_autorizados where activo and telefono_normalizado = ${normalizeCoPhone(phone)} limit 1`;
   const row = rows[0];
-  if (!row) return null; // la obra no existe
-  if (row.nombre) return { name: String(row.nombre) }; // número autorizado: su nombre real
-  if (row.require_authorized_requester === false) return { name: `Solicitante ${digits.slice(-4)}` };
-  return null; // la obra exige autorización y el número no está en la lista
+  return row ? { name: String(row.nombre) } : null;
+}
+
+/**
+ * Reunión: la contraseña del portal público dejó de ser por obra (`obras.public_code_hash`, obsoleta)
+ * y pasó a ser GLOBAL, guardada en la tabla singleton `acceso_publico` (migración 202609070002 —
+ * GRAVE del QA contra Postgres real: NO se guarda en `configuracion.valor` porque esa columna la
+ * comparte cualquier clave de configuración y `auditoria_campo_sensible` redacta por nombre de
+ * columna; con `configuracion` el hash habría quedado en texto plano en `auditoria` cada vez que se
+ * cambiara, o habría exigido redactar TODO `configuracion.valor` — incluidas claves de negocio sin
+ * nada secreto como `impuestos_v1`. La tabla propia con columna `public_code_hash` hereda la
+ * redacción por nombre que ya existe desde la migración base, sin ese costo colateral). Este
+ * repositorio administra esa fila única: nunca ve el hash en claro fuera de la base (extensions.crypt
+ * corre en la base) y nunca lo devuelve al llamador (getStatus solo informa si hay uno configurado y
+ * cuándo cambió).
+ */
+export function createPublicAccessAdminRepository(databaseUrl = runtimeEnv().DATABASE_URL): PublicAccessAdminRepository {
+  const sql = sharedPostgres(databaseUrl);
+  return {
+    async getStatus(): Promise<PublicAccessStatus> {
+      const rows = await sql<{ configured: boolean; updated_at: string | null }[]>`
+        select public_code_hash is not null as configured, updated_at
+        from acceso_publico where id = '00000000-0000-0000-0000-000000000001'`;
+      const row = rows[0];
+      return { configured: row?.configured === true, updatedAt: row?.updated_at ? new Date(row.updated_at).toISOString() : null };
+    },
+    // GRAVE (QA Postgres real): antes no se comprobaban las filas afectadas — un PATCH corriendo
+    // contra una fila singleton borrada/ausente (no debería pasar nunca en operación normal, pero una
+    // base mal migrada sí podría dejarla sin filas) devolvía 200 sin haber cambiado nada.
+    // `gen_salt('bf', 12)` fija el costo de bcrypt explícito (sin el argumento, sale en $2a$06$ — 2^6
+    // rondas, muy por debajo de lo razonable para una contraseña de portal público).
+    async setPassword(code: string, actorId: string): Promise<void> {
+      const result = await sql`
+        update acceso_publico
+        set public_code_hash = extensions.crypt(${code}, extensions.gen_salt('bf', 12)),
+            updated_at = now(), updated_by = ${actorId}
+        where id = '00000000-0000-0000-0000-000000000001'`;
+      if (result.count === 0) throw new Error("No se pudo actualizar la contraseña del portal: la fila de configuración no existe");
+    },
+  };
 }

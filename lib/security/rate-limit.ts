@@ -18,3 +18,16 @@ export const publicWorkRateLimiter = new FixedWindowRateLimiter(10, 60_000);
  */
 export const publicWorkAggregateRateLimiter = new FixedWindowRateLimiter(30, 60_000);
 export const mcpRateLimiter = new FixedWindowRateLimiter(120, 60_000);
+/**
+ * Autoalojado (2026-09-10): con Supabase Auth, el freno de fuerza bruta contra el login lo ponía
+ * Supabase. Al traer la autenticación a casa hay que ponerlo aquí, o el formulario queda abierto a
+ * probar contraseñas sin límite.
+ *
+ * Dos limitadores por el mismo motivo que en el portal público: el de `ip:correo` deja que cada IP
+ * distinta estrene presupuesto, así que un atacante repartido entre proxies no encontraría techo. El
+ * agregado por correo pone el tope real sobre la CUENTA, sin importar desde dónde se intente.
+ * Los números (10 por IP, 20 en total por minuto) dejan holgura para el usuario que se equivoca
+ * varias veces seguidas y siguen muy por debajo de lo que sirve para adivinar una contraseña.
+ */
+export const loginRateLimiter = new FixedWindowRateLimiter(10, 60_000);
+export const loginAggregateRateLimiter = new FixedWindowRateLimiter(20, 60_000);

@@ -17,6 +17,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectedScreen, clearRouteCache } from "../../components/screens/connected";
+import { initialLoadState, invalidateCatalogs } from "../../components/screens/connected/data";
 
 afterEach(() => {
   cleanup();
@@ -25,9 +26,11 @@ afterEach(() => {
 
 // El cache de rutas es un singleton de módulo (a propósito: debe sobrevivir a la
 // navegación real de la SPA). Entre pruebas hay que vaciarlo para que una no herede
-// datos cacheados por la anterior.
+// datos cacheados por la anterior. Fase 3 (H6): los catálogos viven en un slot propio que
+// clearRouteCache() NO toca, así que también hay que invalidarlos aquí.
 beforeEach(() => {
   clearRouteCache();
+  invalidateCatalogs();
 });
 
 const catalogsPayload = {
@@ -107,23 +110,28 @@ describe("RF-1105: stale-while-revalidate", () => {
     let requisitionCalls = 0;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
       routedFetch({
-        "/api/requisitions/req-1": () => {
+        // Fase 3 (H2): el detalle llega en un solo GET compuesto (`/detail`) en vez de
+        // requisición + historial + adjuntos por separado.
+        "/api/requisitions/req-1/detail": () => {
           requisitionCalls += 1;
           return jsonResponse({
-            id: "req-1",
-            consecutive: "RQ-001",
-            type: "compra",
-            workId: "work-1",
-            channel: "interno",
-            requiredDate: "2026-08-24",
-            status: requisitionCalls === 1 ? "en_revision" : "en_aprobacion",
-            items: [],
+            requisition: {
+              id: "req-1",
+              consecutive: "RQ-001",
+              type: "compra",
+              workId: "work-1",
+              channel: "interno",
+              requiredDate: "2026-08-24",
+              status: requisitionCalls === 1 ? "en_revision" : "en_aprobacion",
+              items: [],
+            },
+            orders: [],
+            expenses: [],
+            history: [],
+            attachments: [],
           });
         },
         "/api/catalogs": () => jsonResponse(catalogsPayload),
-        "/api/requisitions/req-1/history": () => jsonResponse([]),
-        "/api/attachments/requisicion/req-1": () =>
-          jsonResponse({ attachments: [] }),
       }),
     );
 
@@ -162,7 +170,10 @@ describe("RF-1105: stale-while-revalidate", () => {
     );
     expect(screen.getByText("RQ-001")).toBeInTheDocument();
     expect(container).not.toHaveClass("is-revalidating");
-    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(8);
+    // El refresco vuelve a pedir el detalle (dato fresco), pero NO los catálogos: Fase 3 (H6)
+    // los sirve de su caché por sesión. Antes esta línea contaba 8 llamadas sueltas.
+    expect(requisitionCalls).toBe(2);
+    expect(fetchMock.mock.calls.length).toBe(3);
   });
 });
 
@@ -172,7 +183,13 @@ describe("RF-1105: cache en memoria por ruta", () => {
       routedFetch({
         "/api/dashboard": () => jsonResponse({ byStatus: { en_revision: 3 } }),
         "/api/catalogs": () => jsonResponse(catalogsPayload),
-        "/api/requisitions": () => jsonResponse([]),
+        // Fase 3 (H3): la bandeja se pide paginada (`?status=...&limit=100`) y responde
+        // `{ rows, nextCursor }`, ya no un array plano.
+        "/api/requisitions": () => jsonResponse({ rows: [], nextCursor: null }),
+        // BLOQUEANTE 2: /revision ahora también pide /api/orders (mismo permiso que /ordenes)
+        // para saber qué "aprobada" ya generó su orden y separar el grupo "Listas para
+        // generar orden" — sin este handler, routedFetch tumbaría la carga con un error.
+        "/api/orders": () => jsonResponse([]),
       }),
     );
 
@@ -180,12 +197,16 @@ describe("RF-1105: cache en memoria por ruta", () => {
       <ConnectedScreen pathname="/" role="Revisor" go={vi.fn()} />,
     );
     expect(screen.getByTestId("dashboard-skeleton")).toBeInTheDocument();
-    await screen.findByText("3");
+    // Fase 2 (H4): cada pantalla llega por next/dynamic, así que la primera visita a una ruta
+    // espera además la resolución de su chunk. En aislamiento tarda ~400 ms, pero con toda la
+    // suite en paralelo superaba el segundo por defecto de findBy y el test fallaba de forma
+    // intermitente. El margen alto no cambia lo que se afirma: solo evita el falso rojo.
+    await screen.findByText("3", {}, { timeout: 8_000 });
 
     rerender(<ConnectedScreen pathname="/revision" role="Revisor" go={vi.fn()} />);
     // Ruta nunca visitada: sí debe pasar por su propio esqueleto.
     expect(screen.getByTestId("requisitions-skeleton")).toBeInTheDocument();
-    await screen.findByText("0 visibles");
+    await screen.findByText("0 visibles", {}, { timeout: 8_000 });
 
     rerender(<ConnectedScreen pathname="/" role="Revisor" go={vi.fn()} />);
     // De vuelta al dashboard, ya cacheado: el contenido real aparece de inmediato, sin
@@ -193,8 +214,45 @@ describe("RF-1105: cache en memoria por ruta", () => {
     expect(screen.queryByTestId("dashboard-skeleton")).toBeNull();
     expect(screen.getByText("3")).toBeInTheDocument();
 
+    // Dashboard (dashboard + catálogos) + revisión (requisiciones + órdenes; catálogos ya en
+    // caché de sesión) + revalidación del dashboard al volver = 5 llamadas. Antes eran 6 porque
+    // los catálogos se pedían en cada ruta (Fase 3, H6).
     await waitFor(() =>
-      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(6),
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(5),
     );
+  }, 20_000);
+});
+
+// Fase 3 (H6): el respaldo en sessionStorage no puede participar en el render inicial. El
+// servidor no tiene sessionStorage y pinta el esqueleto; si el cliente pintara el contenido
+// persistido en su PRIMER render, React reportaría "Hydration failed" y descartaría el HTML del
+// servidor (reproducido en el navegador el 2026-09-10). El primer render del cliente debe ser
+// idéntico al del servidor y el respaldo se adopta en un efecto, ya montados.
+describe("H6: el respaldo en sessionStorage no rompe la hidratación", () => {
+  it("con una entrada persistida, el primer render sigue siendo el esqueleto y el contenido llega tras montar", async () => {
+    window.sessionStorage.setItem(
+      "mizar-route-cache:v1",
+      JSON.stringify({
+        "/": {
+          kind: "dashboard",
+          savedAt: Date.now(),
+          data: { metrics: { byStatus: { en_revision: 7 } }, catalogs: catalogsPayload },
+        },
+      }),
+    );
+    try {
+      vi.spyOn(globalThis, "fetch").mockImplementation(pendingForever);
+      // Lo mismo que calcula el servidor: sin nada en memoria, la ruta arranca en "loading".
+      expect(initialLoadState("/", "dashboard").state).toBe("loading");
+
+      render(<ConnectedScreen pathname="/" role="Revisor" go={vi.fn()} />);
+      // Ya montado, el efecto adopta el respaldo: contenido persistido + revalidación en curso.
+      await screen.findByText("7", {}, { timeout: 8_000 });
+      const container = screen.getByText("7").closest("[aria-busy]");
+      expect(container).toHaveAttribute("aria-busy", "true");
+      expect(screen.queryByTestId("dashboard-skeleton")).toBeNull();
+    } finally {
+      window.sessionStorage.clear();
+    }
   });
 });

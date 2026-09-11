@@ -1,4 +1,4 @@
-import { calculateDashboard, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumLines } from "../../../lib/domain";
+import { calculateDashboard, colombiaDateParts, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork } from "../../../lib/domain";
 import { apiError } from "../../../lib/http/api";
 import { createPostgresDependencies } from "../../../lib/infrastructure/postgres-repositories";
 import { createScreenSessionServiceDependencies } from "../../../lib/infrastructure/screen-session-repository";
@@ -36,11 +36,17 @@ export async function GET(request: Request) {
 
     const deps = createPostgresDependencies();
     const [requisitions, expenses, orders] = await Promise.all([deps.requisitions.list(), deps.expenses.list(), deps.orders.list()]);
-    const period = new Date().toISOString().slice(0, 7);
+    // GRAVE 3 (QA reasignación, reunión 2026-09): `new Date().toISOString().slice(0,7)` toma componentes
+    // UTC — mismo bug que colombiaDateParts ya arregló en el servicio (procurement-service.ts): el último
+    // día del mes, después de las 19:00 hora Colombia, esto calculaba el mes SIGUIENTE. La pantalla de
+    // oficina corre en el servidor (TZ de proceso desconocido, a menudo UTC), no en el navegador del
+    // usuario, así que no puede fiarse de los getters locales de `Date` — reutiliza la misma función que
+    // ya vive en el dominio en vez de reimplementarla por tercera vez.
+    const period = colombiaDateParts(new Date()).period;
+    // Reunión 2026-09: inProcessValue ya lo calcula calculateDashboard (suma de gastos sin fecha de
+    // pago, "comprometido sin pagar") — esta ruta ya no lo recalcula aparte a partir de requisiciones
+    // en revisión/aprobación.
     const dashboard = calculateDashboard(expenses, orders, requisitions.map((requisition) => requisition.status), period);
-    const inProcessValue = requisitions
-      .filter((requisition) => requisition.status === "en_revision" || requisition.status === "en_aprobacion")
-      .reduce((sum, requisition) => sum + sumLines(requisition.items), 0);
 
     return Response.json(
       {
@@ -48,7 +54,7 @@ export async function GET(request: Request) {
         period,
         metrics: {
           byStatus: dashboard.byStatus,
-          inProcessValue,
+          inProcessValue: dashboard.inProcessValue,
           periodExpense: dashboard.periodExpense,
           pendingOrders: dashboard.pendingOrders,
           expenseByWork: groupExpenseByWork(expenses),

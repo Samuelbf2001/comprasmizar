@@ -16,6 +16,9 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
     save: async (value) => { requisitionMap.set(value.id, structuredClone(value)); },
     list: async () => [...requisitionMap.values()],
     listVisibleTo: async () => [...requisitionMap.values()],
+    // H3 (docs/plan-rendimiento.md): no ejercitados por este arnés (solo lo usa el dashboard), pero
+    // requeridos por el shape de RequisitionRepository.
+    listVisibleHeaders: unused, dashboardByStatus: unused,
   };
   const consecutives: ServiceDependencies["consecutives"] = { take: async (prefix, year) => `${prefix}-${year}-${String(++sequence).padStart(4, "0")}` };
   const items: ServiceDependencies["items"] = { propose: async () => ({ id: `catalog-${++sequence}`, created: true }) };
@@ -23,14 +26,13 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
   const notifications: ServiceDependencies["notifications"] = { enqueue: async () => {} };
   const repositories: TransactionRepositories = {
     requisitions,
-    orders: { save: unused, list: unused, listVisibleTo: unused, listByRequisition: unused, get: unused },
-    expenses: { get: unused, save: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused },
+    orders: { save: unused, list: unused, listVisibleTo: unused, listByRequisition: unused, get: unused, listAttentionCandidates: unused, listRecentlyUpdated: unused, dashboardPendingCount: unused },
+    expenses: { get: unused, save: unused, markPaid: unused, deleteByReference: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused, dashboardAggregates: unused, listRecentlyUpdated: unused },
     pettyCash: { save: unused, list: unused },
     audit, consecutives,
-    tags: { getApproverId: unused },
     features: { isEnabled: unused },
     items,
-    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, isEligibleApprover: unused, authUserExists: unused },
+    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, findRequesterDuplicate: unused, isEligibleApprover: unused, hasRequisitionsForWork: unused },
     notifications,
   };
   const dependencies: ServiceDependencies = {
@@ -102,9 +104,8 @@ import { issueFlowToken } from "../../lib/infrastructure/flow-sender";
 
 const ENV: Record<string, string> = {
   DATABASE_URL: "postgres://user:pass@localhost:5432/db",
-  NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: "test-anon-key-0123456789",
-  SUPABASE_SERVICE_ROLE_KEY: "test-service-role-key-0123456789",
+  STORAGE_ROOT: "/tmp/mizar-test-storage",
+  STORAGE_SIGNING_SECRET: "test-storage-signing-secret-0123456789",
   KAPSO_WEBHOOK_SECRET: "test-kapso-webhook-secret-0123456789",
 };
 const savedEnv: Record<string, string | undefined> = {};
@@ -205,8 +206,11 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
       expect(result.event.type).toBe("flow_submission");
       expect(result.event.submission?.eventId).toBe(fixture.message.id);
       expect(result.event.submission?.phone).toBe("+573001234567");
+      // Reunión 2026-08-31: el solicitante elige empresa, no obra. societyId es el campo real y
+      // obligatorio; workId se conserva solo como compatibilidad (ver nfm-reply-adapter.ts).
+      expect((result.event.submission as { societyId?: string } | undefined)?.societyId).toBe("22222222-2222-4222-8222-222222222222");
       expect(result.event.submission?.workId).toBe("11111111-1111-4111-8111-111111111111");
-      expect(result.event.submission?.destination).toBe("Frente 2 - Torre B");
+      // "destination" desaparece del contrato: su sentido ya se fusiona en observaciones desde el Flow.
       expect(result.event.submission?.observations).toBe("Urgente para la fundida del viernes");
       expect(result.event.submission?.items).toHaveLength(1);
       expect(result.event.submission?.items[0]).toMatchObject({ itemId: "33333333-3333-4333-8333-333333333333", quantity: 10, unit: "bulto", possibleSupplier: "Ferretería El Roble" });
@@ -247,9 +251,30 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
       expect(result).toMatchObject({ ok: false, reason: "no_items" });
     });
 
-    it("rechaza (invalid_fields) un workId que no es un UUID", async () => {
+    it("rechaza (invalid_fields) un societyId que no es un UUID", async () => {
+      // societyId es el campo real y obligatorio ahora (reunión 2026-08-31: empresa, no obra).
+      const badSocietyId = withResponseFields(fixture, { societyId: "no-es-un-uuid" });
+      const result = await adaptNfmReply(badSocietyId, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
+      expect(result).toMatchObject({ ok: false, reason: "invalid_fields" });
+    });
+
+    it("un workId con formato inválido se descarta en silencio, no invalida el evento (campo de compatibilidad, ya no exigido por el Flow)", async () => {
       const badWorkId = withResponseFields(fixture, { workId: "no-es-un-uuid" });
       const result = await adaptNfmReply(badWorkId, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.event.submission?.workId).toBeUndefined();
+    });
+
+    it("acepta una respuesta SIN fecha requerida (opcional en los tres canales, reunión 2026-08-31)", async () => {
+      const sinFecha = withResponseFields(fixture, { requiredDate: "" });
+      const result = await adaptNfmReply(sinFecha, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.event.submission?.requiredDate).toBeUndefined();
+    });
+
+    it("rechaza (invalid_fields) una fecha requerida presente pero con formato inválido", async () => {
+      const fechaInvalida = withResponseFields(fixture, { requiredDate: "no-es-una-fecha" });
+      const result = await adaptNfmReply(fechaInvalida, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "invalid_fields" });
     });
 
@@ -305,10 +330,17 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
       if (result.ok) expect(result.event.submission?.items[0].attachmentUrl).toBeUndefined();
     });
 
-    it("rechaza como no autorizado si el número no está en la lista blanca de la obra", async () => {
+    it("rechaza como no autorizado si el número no está en la lista blanca GLOBAL (reunión 2026-08-31: ya no es por obra)", async () => {
       const result = await adaptNfmReply(fixture, { secret, resolveRequester: async () => null, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("unauthorized_requester");
+    });
+
+    it("resolveRequester ya no recibe la obra: solo el teléfono verificado (lista blanca global)", async () => {
+      const seen: string[] = [];
+      const result = await adaptNfmReply(fixture, { secret, resolveRequester: async (phone) => { seen.push(phone); return { name: "Maestro de obra" }; }, now: FIXTURE_TOKEN_ISSUED_AT });
+      expect(result.ok).toBe(true);
+      expect(seen).toEqual(["573001234567"]);
     });
 
     it("usa el nombre resuelto de la lista blanca, no un campo del formulario", async () => {
@@ -346,7 +378,9 @@ describe("POST /api/kapso — nfm_reply real de WhatsApp Flows", () => {
     expect(requisition.items).toHaveLength(1);
     expect(requisition.kapsoEventId).toBe(fixture.message.id);
     expect(requisition.externalRequester).toEqual({ name: "Maestro de obra", phone: "+573001234567" });
-    expect(requisition.destination).toBe("Frente 2 - Torre B");
+    // Reunión 2026-08-31: el solicitante elige empresa, no obra — societyId llega al servicio.
+    expect(requisition.societyId).toBe("22222222-2222-4222-8222-222222222222");
+    // "destination" desaparece del contrato: ya no hay nada que fusionar, observations llega tal cual.
     expect(requisition.observations).toBe("Urgente para la fundida del viernes");
     // La evidencia se resuelve y viaja hasta la copia de adjuntos existente (kapso-store.ts).
     expect(hoisted.copyAllCalls).toEqual([{ requisitionId: requisition.id, sources: [{ itemId: requisition.items[0].id, attachmentUrl: FAKE_ATTACHMENT_URL }] }]);

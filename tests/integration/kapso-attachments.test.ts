@@ -16,6 +16,9 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
     save: async (value) => { requisitionMap.set(value.id, structuredClone(value)); },
     list: async () => [...requisitionMap.values()],
     listVisibleTo: async () => [...requisitionMap.values()],
+    // H3 (docs/plan-rendimiento.md): no ejercitados por este arnés (solo lo usa el dashboard), pero
+    // requeridos por el shape de RequisitionRepository.
+    listVisibleHeaders: unused, dashboardByStatus: unused,
   };
   const consecutives: ServiceDependencies["consecutives"] = { take: async (prefix, year) => `${prefix}-${year}-${String(++sequence).padStart(4, "0")}` };
   const items: ServiceDependencies["items"] = { propose: async () => ({ id: `catalog-${++sequence}`, created: true }) };
@@ -23,14 +26,13 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
   const notifications: ServiceDependencies["notifications"] = { enqueue: async () => {} };
   const repositories: TransactionRepositories = {
     requisitions,
-    orders: { save: unused, list: unused, listVisibleTo: unused, listByRequisition: unused, get: unused },
-    expenses: { get: unused, save: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused },
+    orders: { save: unused, list: unused, listVisibleTo: unused, listByRequisition: unused, get: unused, listAttentionCandidates: unused, listRecentlyUpdated: unused, dashboardPendingCount: unused },
+    expenses: { get: unused, save: unused, markPaid: unused, deleteByReference: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused, dashboardAggregates: unused, listRecentlyUpdated: unused },
     pettyCash: { save: unused, list: unused },
     audit, consecutives,
-    tags: { getApproverId: unused },
     features: { isEnabled: unused },
     items,
-    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, isEligibleApprover: unused, authUserExists: unused },
+    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, findRequesterDuplicate: unused, isEligibleApprover: unused, hasRequisitionsForWork: unused },
     notifications,
   };
   const dependencies: ServiceDependencies = {
@@ -82,9 +84,8 @@ import { POST } from "../../app/api/kapso/route";
 
 const ENV: Record<string, string> = {
   DATABASE_URL: "postgres://user:pass@localhost:5432/db",
-  NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: "test-anon-key-0123456789",
-  SUPABASE_SERVICE_ROLE_KEY: "test-service-role-key-0123456789",
+  STORAGE_ROOT: "/tmp/mizar-test-storage",
+  STORAGE_SIGNING_SECRET: "test-storage-signing-secret-0123456789",
   KAPSO_WEBHOOK_SECRET: "test-kapso-webhook-secret-0123456789",
 };
 const savedEnv: Record<string, string | undefined> = {};
@@ -183,7 +184,7 @@ describe("POST /api/kapso", () => {
     });
 
     it("no invoca la copia de adjuntos cuando ningún ítem trae attachmentUrl", async () => {
-      const noAttachmentEvent = { eventId: "evt-sin-adjunto", type: "flow_submission" as const, receivedAt: "2026-08-24T12:00:00.000Z", submission: { eventId: "evt-sin-adjunto", phone: "+573001234567", workId: "11111111-1111-4111-8111-111111111111", requiredDate: "2026-08-30", type: "compra" as const, requesterName: "Maestro sin evidencia", items: [{ quantity: 1, unit: "unidad", proposedDescription: "Ítem sin foto" }] } };
+      const noAttachmentEvent = { eventId: "evt-sin-adjunto", type: "flow_submission" as const, receivedAt: "2026-08-24T12:00:00.000Z", submission: { eventId: "evt-sin-adjunto", phone: "+573001234567", societyId: "22222222-2222-4222-8222-222222222222", workId: "11111111-1111-4111-8111-111111111111", requiredDate: "2026-08-30", type: "compra" as const, requesterName: "Maestro sin evidencia", items: [{ quantity: 1, unit: "unidad", proposedDescription: "Ítem sin foto" }] } };
       const raw = JSON.stringify(noAttachmentEvent);
       const response = await postRaw(raw);
       expect(response.status).toBe(200);

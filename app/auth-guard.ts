@@ -1,4 +1,5 @@
-import { createSupabaseUserClient } from '../lib/infrastructure/supabase';
+import { cookies } from 'next/headers';
+import { resolveServerActor } from '../lib/infrastructure/auth';
 import type { Role } from '../lib/demo-data';
 import { demoModeEnabled } from '../lib/security/demo-mode';
 
@@ -24,31 +25,41 @@ export function loginErrorParam(reason: AuthSnapshot['reason']): string {
   return '';
 }
 
+// H1 (docs/plan-rendimiento.md): getAuthSnapshot() ya no repite la consulta getUser() + 2 consultas
+// PostgREST — delega en resolveServerActor() (lib/infrastructure/auth.ts), que hace UNA sola consulta
+// SQL (con caché en proceso de 60 s) y está envuelta en `cache()` de react para deduplicar dentro de
+// un mismo render cuando más de un Server Component la invoca en la misma petición.
 export async function getAuthSnapshot(): Promise<AuthSnapshot> {
   if (isDemoMode()) return { authenticated: true, demoMode: true, role: 'Revisor', displayName: 'Daniel Hernández', email: 'demo@mizar.local' };
+  // BLOQUEANTE DE PRODUCCIÓN, encontrado corriendo la pila real en Docker (2026-09-10): esta lectura
+  // va FUERA del try a propósito.
+  //
+  // Next marca una página como dinámica lanzando un error especial desde `cookies()` durante el
+  // prerender. El `catch` de abajo, que existe para fallar cerrado, se tragaba también esa señal: la
+  // página quedaba PRERENDERIZADA como estática con el resultado "config" congelado dentro, y en
+  // producción `/`, `/cambiar-clave` y `/pantalla` servían ese HTML a todo el mundo. Nadie podía
+  // entrar, con la sesión creándose correctamente en la base. En desarrollo no se ve, porque no hay
+  // prerender; `next build` tampoco se queja, porque para él la página simplemente resultó estática.
+  //
+  // Tocar la cookie aquí deja escapar la señal y ancla la decisión donde se entiende: cualquier
+  // pantalla cuyo contenido dependa de quién mira no puede cachearse nunca.
+  await cookies();
   try {
-    const client = await createSupabaseUserClient();
-    const { data, error } = await client.auth.getUser();
-    if (error || !data.user) return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'unauthenticated' };
-    // Ambas consultas dependen solo de data.user.id y son independientes entre si: en
-    // secuencia costaban dos viajes a Supabase en CADA peticion autenticada. En paralelo
-    // cuestan uno. Si el usuario resulta inactivo se descarta el resultado de roles, que es
-    // el caso raro; el comun se ahorra un viaje completo.
-    const [userResult, rolesResult] = await Promise.all([
-      client.from('usuarios').select('estado,nombre,email').eq('id', data.user.id).maybeSingle(),
-      client.from('usuario_roles').select('rol').eq('usuario_id', data.user.id),
-    ]);
-    const userRow = userResult.data as unknown as { estado: string; nombre: string; email: string } | null;
-    if (userResult.error || !userRow || userRow.estado !== 'activo') return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: userRow ? 'inactive' : 'role' };
-    if (rolesResult.error) return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'role' };
-    const roleRows = (rolesResult.data ?? []) as Array<{ rol: string }>;
-    const roleKeys = new Set(roleRows.map(row => String(row.rol)));
-    const selected = priority.find(item => roleKeys.has(item.key));
+    const actor = await resolveServerActor();
+    // roles ya viene filtrado contra ALL_ROLES (mismo conjunto de claves que `priority`), así que
+    // este find siempre encuentra una coincidencia salvo un error de programación — se conserva el
+    // fallback por si algún día ambas listas se desalinean.
+    const roleKeys = new Set<string>(actor.roles);
+    const selected = priority.find((item) => roleKeys.has(item.key));
     if (!selected) return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'role' };
-    const role = selected.role;
-    return { authenticated: true, demoMode: false, role, displayName: String(userRow.nombre || data.user.user_metadata?.full_name || data.user.email || 'Usuario'), email: data.user.email ?? undefined };
-  } catch {
-    // Missing runtime credentials must fail closed; never turn this into demo mode.
+    return { authenticated: true, demoMode: false, role: selected.role, displayName: actor.displayName, email: actor.email };
+  } catch (error) {
+    const code = error instanceof Error ? error.message : '';
+    if (code === 'UNAUTHENTICATED') return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'unauthenticated' };
+    if (code === 'ACCOUNT_INACTIVE') return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'inactive' };
+    if (code === 'ROLE_REQUIRED') return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'role' };
+    // AUTHZ_LOOKUP_FAILED (falla la consulta SQL) y credenciales de runtime ausentes deben fallar
+    // cerrado igual: nunca se traduce en demo mode, siempre en 'config' (falla del servidor).
     return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'config' };
   }
 }

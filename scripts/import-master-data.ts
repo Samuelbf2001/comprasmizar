@@ -6,7 +6,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import ExcelJS from "exceljs";
-import { createClient } from "@supabase/supabase-js";
+import postgres from "postgres";
 
 type Entity = "items" | "proveedores" | "obras";
 type SourceRow = { row: number; values: Record<string, string> };
@@ -163,31 +163,41 @@ function validate(entity: Entity, source: SourceRow[]) {
 }
 
 async function apply(entity: Entity, valid: Array<Record<string, string>>): Promise<number> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error("--apply requiere NEXT_PUBLIC_SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en el entorno; no se imprimen secretos.");
-  const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  // Migración a autoalojado (2026-09-10): antes esto entraba por PostgREST con el service role de
+  // Supabase. Ahora escribe por SQL directo con DATABASE_URL, igual que el resto de la plataforma.
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error("--apply requiere DATABASE_URL en el entorno; no se imprimen secretos.");
+  const sql = postgres(databaseUrl, { max: 1 });
 
-  if (entity === "items") {
-    const payload = valid.map((row) => ({ ...row, estado: "activo" }));
-    const { error } = await supabase.from("items").upsert(payload, { onConflict: "nombre_normalizado" });
-    if (error) throw new Error(`Error de BD al importar items: ${error.code ?? "unknown"}`);
-    return payload.length;
-  }
-  if (entity === "proveedores") {
-    const payload = valid.map((row) => ({
-      razon_social: row.razon_social,
-      nit: row.nit || null,
-      contacto: { nombre: row.contacto_nombre || undefined, telefono: row.contacto_telefono || undefined },
-      datos_bancarios: {},
-      activo: true,
-    }));
-    const { error } = await supabase.from("proveedores").upsert(payload, { onConflict: "nit_normalizado" });
-    if (error) throw new Error(`Error de BD al importar proveedores: ${error.code ?? "unknown"}`);
-    return payload.length;
-  }
-  // Inalcanzable: main bloquea obras antes de entrar aquí. Se mantiene como defensa por si cambia el flujo.
-  throw new Error(`La aplicación de obras requiere una RPC transaccional aprobada (filas válidas: ${valid.length}).`);
+  try {
+    // Una sola transacción por corrida: una importación a medias es peor que ninguna, porque deja
+    // el catálogo en un estado que nadie revisó.
+    return await sql.begin(async (tx) => {
+      if (entity === "items") {
+        const payload = valid.map((row) => ({ ...row, estado: "activo" }));
+        // nombre_normalizado es una columna generada: el conflicto se resuelve sobre ella, no sobre
+        // el nombre crudo, para que "Cemento" y "cemento " sean el mismo ítem.
+        for (const row of payload) {
+          await tx`insert into items ${tx(row)} on conflict (nombre_normalizado) do update set estado = excluded.estado`;
+        }
+        return payload.length;
+      }
+      if (entity === "proveedores") {
+        const payload = valid.map((row) => ({
+          razon_social: row.razon_social,
+          nit: row.nit || null,
+          contacto: tx.json({ nombre: row.contacto_nombre || undefined, telefono: row.contacto_telefono || undefined }),
+          datos_bancarios: tx.json({}),
+          activo: true,
+        }));
+        for (const row of payload) {
+          await tx`insert into proveedores ${tx(row)} on conflict (nit_normalizado) do update set razon_social = excluded.razon_social, contacto = excluded.contacto`;
+        }
+        return payload.length;
+      }
+      throw new Error(`La aplicación de obras requiere una RPC transaccional aprobada (filas válidas: ${valid.length}).`);
+    });
+  } finally { await sql.end(); }
 }
 
 async function main(): Promise<void> {

@@ -59,16 +59,18 @@ const requesterName = "Juliana Pérez", requesterPhone = "+573001112233";
 function fixtureCollections(): { requisitions: Requisition[]; expenses: Expense[]; orders: Order[] } {
   const items = [{ id: "item-1", description: "Cemento", quantity: 2, unit: "bulto", unitBase: 50_000, unitIva: 9_500 }];
   const requisitions: Requisition[] = [
-    { id: "req-1", consecutive: "REQ-2026-0001", type: "compra", workId: "work-1", requesterId: "user-1", channel: "web", requiredDate: "2026-08-20", status: "en_revision", items },
-    { id: "req-2", consecutive: "REQ-2026-0002", type: "compra", workId: "work-2", channel: "publico", requiredDate: "2026-08-21", status: "en_aprobacion", externalRequester: { name: requesterName, phone: requesterPhone }, items },
-    { id: "req-3", consecutive: "REQ-2026-0003", type: "compra", workId: "work-1", requesterId: "user-2", channel: "web", requiredDate: "2026-08-19", status: "aprobada", items },
+    { id: "req-1", consecutive: "REQ-2026-0001", type: "compra", societyId: "soc-1", workId: "work-1", requesterId: "user-1", channel: "web", requiredDate: "2026-08-20", status: "en_revision", items },
+    { id: "req-2", consecutive: "REQ-2026-0002", type: "compra", societyId: "soc-1", workId: "work-2", channel: "publico", requiredDate: "2026-08-21", status: "en_aprobacion", externalRequester: { name: requesterName, phone: requesterPhone }, items },
+    { id: "req-3", consecutive: "REQ-2026-0003", type: "compra", societyId: "soc-1", workId: "work-1", requesterId: "user-2", channel: "web", requiredDate: "2026-08-19", status: "aprobada", items },
   ];
   const orders: Order[] = [
-    { id: "order-1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "req-3", supplierId: "supplier-1", itemIds: ["item-1"], status: "generada" },
+    { id: "order-1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "req-3", supplierId: "supplier-1", itemIds: ["item-1"], status: "generada", adminStatus: "pendiente" },
   ];
   const period = new Date().toISOString().slice(0, 7);
   const expenses: Expense[] = [
-    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "order-1", tagId: "tag-1", supplierId: "supplier-1", date: `${period}-05`, base: 100_000, iva: 19_000, total: 119_000, period },
+    // Reunión 2026-09: orderDate (nace con el registro) y date (fecha de pago) son fechas
+    // independientes; esta orden se generó y se pagó el mismo día del fixture.
+    { id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "order-1", tagId: "tag-1", supplierId: "supplier-1", orderDate: `${period}-05`, date: `${period}-05`, base: 100_000, iva: 19_000, total: 119_000, period },
   ];
   return { requisitions, expenses, orders };
 }
@@ -112,10 +114,33 @@ describe("GET /api/pantalla", () => {
     const body = await response.json();
     expect(body.sessionName).toBe("TV oficina");
     expect(body.metrics.byStatus).toMatchObject({ en_revision: 1, en_aprobacion: 1, aprobada: 1 });
-    expect(body.metrics.inProcessValue).toBe(119_000 * 2); // req-1 (en_revision) + req-2 (en_aprobacion), misma línea cada una
+    // Reunión 2026-09: inProcessValue ya no depende de requisiciones en revisión/aprobación — suma
+    // gastos sin fecha de pago. El único gasto del fixture (exp-1) ya está pagado, así que da 0.
+    expect(body.metrics.inProcessValue).toBe(0);
     expect(body.metrics.periodExpense).toBe(119_000);
     expect(body.metrics.pendingOrders).toBe(1);
     expect(body.metrics.expenseByWork).toEqual([{ key: "work-1", total: 119_000 }]);
+  });
+
+  // GRAVE 3 (QA reasignación, reunión 2026-09): esta ruta calculaba el periodo con
+  // `new Date().toISOString().slice(0,7)` — componentes UTC. El servidor corre con TZ de proceso
+  // desconocido (a menudo UTC), así que el último día del mes, después de las 19:00 hora Colombia,
+  // mostraba el mes SIGUIENTE en la pantalla de oficina. Ahora reutiliza `colombiaDateParts` (movida al
+  // dominio, mismo criterio que ya usa procurement-service.ts). Reloj congelado en la frontera exacta:
+  // 2026-09-01T03:30:00Z == 2026-08-31T22:30:00-05:00, debe seguir cayendo en agosto.
+  it("calcula el periodo en hora de Colombia, no en UTC (frontera 2026-09-01T03:30:00Z -> 2026-08)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T03:30:00.000Z"));
+    try {
+      const service = new ScreenSessionService(mocks.screenSessionDeps!);
+      const { token } = await service.create({ id: "admin-1", roles: ["admin_mizar"] }, { name: "TV oficina" });
+      const response = await GET(requestWithToken(token));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.period).toBe("2026-08");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("nunca incluye nombres, teléfonos, ids ni consecutivos de requisiciones individuales", async () => {

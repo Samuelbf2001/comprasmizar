@@ -25,7 +25,7 @@ describe("requisicion.flow.json — estructura", () => {
 
   it("define las 6 pantallas del diseño (un artículo por pantalla)", () => {
     const ids = flow.screens.map((screen) => screen.id);
-    expect(ids).toEqual(["TIPO_Y_OBRA", "ARTICULO_UNO", "ARTICULO_DOS", "ARTICULO_TRES", "DETALLES", "RESUMEN"]);
+    expect(ids).toEqual(["TIPO_Y_EMPRESA", "ARTICULO_UNO", "ARTICULO_DOS", "ARTICULO_TRES", "DETALLES", "RESUMEN"]);
   });
 
   it("los id de pantalla solo usan letras y guion bajo (Meta rechaza dígitos)", () => {
@@ -49,9 +49,9 @@ describe("requisicion.flow.json — estructura", () => {
     expect(terminals[0].success).toBe(true);
   });
 
-  it("TIPO_Y_OBRA es la pantalla de entrada y la navegación avanza en cadena", () => {
+  it("TIPO_Y_EMPRESA es la pantalla de entrada y la navegación avanza en cadena", () => {
     const referenced = flow.screens.flatMap((screen) => componentsOf(screen).flatMap((component) => component["on-click-action"]?.next?.name ? [component["on-click-action"]!.next!.name] : []));
-    expect(referenced).not.toContain("TIPO_Y_OBRA");
+    expect(referenced).not.toContain("TIPO_Y_EMPRESA");
     for (const next of ["ARTICULO_UNO", "ARTICULO_DOS", "ARTICULO_TRES", "DETALLES", "RESUMEN"]) expect(referenced).toContain(next);
   });
 
@@ -63,16 +63,17 @@ describe("requisicion.flow.json — estructura", () => {
     }
   });
 
-  it("pantalla 1: tipo (compra|pago) y obra requeridos, obra es dropdown data-driven", () => {
-    const screen = findScreen("TIPO_Y_OBRA");
+  it("pantalla 1: tipo (compra|pago) y empresa requeridos, empresa es dropdown data-driven", () => {
+    // Reunión 2026-08-31: el solicitante elige EMPRESA, no obra — la obra la asigna el revisor.
+    const screen = findScreen("TIPO_Y_EMPRESA");
     const tipo = fieldByName(screen, "tipo_solicitud");
     expect(tipo.type).toBe("RadioButtonsGroup");
     expect(tipo.required).toBe(true);
     expect(tipo["data-source"]).toEqual([{ id: "compra", title: "Compra" }, { id: "pago", title: "Pago" }]);
-    const obra = fieldByName(screen, "obra");
-    expect(obra.type).toBe("Dropdown");
-    expect(obra.required).toBe(true);
-    expect(obra["data-source"]).toBe("${data.obras}"); // llega por data channel al enviar el flow
+    const empresa = fieldByName(screen, "empresa");
+    expect(empresa.type).toBe("Dropdown");
+    expect(empresa.required).toBe(true);
+    expect(empresa["data-source"]).toBe("${data.sociedades}"); // llega por data channel al enviar el flow
   });
 
   it("NO pide datos del solicitante: la identidad sale del número de WhatsApp, no del formulario", () => {
@@ -98,10 +99,17 @@ describe("requisicion.flow.json — estructura", () => {
     }
   });
 
-  it("DETALLES tiene fecha requerida y ya no lleva selector de foto (está por ítem)", () => {
+  it("DETALLES: fecha requerida es OPCIONAL (reunión 2026-08-31, los tres canales) y ya no lleva selector de foto (está por ítem)", () => {
     const screen = findScreen("DETALLES");
-    expect(fieldByName(screen, "fecha_requerida").type).toBe("DatePicker");
+    const fecha = fieldByName(screen, "fecha_requerida");
+    expect(fecha.type).toBe("DatePicker");
+    expect(fecha.required).toBe(false);
     expect(componentsOf(screen).some((c) => c.type === "PhotoPicker" || c.type === "DocumentPicker")).toBe(false);
+  });
+
+  it("DETALLES: ya no tiene un campo de destino separado — se fusiona en observaciones", () => {
+    const screen = findScreen("DETALLES");
+    expect(componentsOf(screen).some((c) => c.name === "destino")).toBe(false);
   });
 
   it("ningún selector de fotos aparece en el payload de un navigate (restricción de Meta)", () => {
@@ -112,19 +120,22 @@ describe("requisicion.flow.json — estructura", () => {
     }
   });
 
-  it("el complete mapea al contrato del webhook, sin nombre ni teléfono del formulario", () => {
+  it("el complete mapea al contrato del webhook, sin nombre ni teléfono del formulario, sin destino y con societyId en vez de workId", () => {
     const payload = footerOf(findScreen("RESUMEN"))["on-click-action"]?.payload ?? {};
-    for (const key of ["type", "workId", "requiredDate", "item_1_descripcion", "item_1_cantidad", "item_1_unidad", "item_1_foto", "item_2_foto", "item_3_foto"]) {
+    for (const key of ["type", "societyId", "requiredDate", "item_1_descripcion", "item_1_cantidad", "item_1_unidad", "item_1_foto", "item_2_foto", "item_3_foto"]) {
       expect(payload).toHaveProperty(key);
     }
     // La identidad la resuelve la lista blanca por teléfono; el Flow no debe enviarla.
     expect(payload).not.toHaveProperty("requesterName");
     expect(payload).not.toHaveProperty("phone");
+    // El solicitante elige empresa, no obra; "destino" se fusionó en "observaciones".
+    expect(payload).not.toHaveProperty("workId");
+    expect(payload).not.toHaveProperty("destination");
     // Los ítems 1..3 salen de sus pantallas ARTICULO_* pero conservan las claves item_N_* del contrato.
     for (const n of [1, 2, 3]) expect(payload).toHaveProperty(`item_${n}_descripcion`);
   });
 
-  it("cada artículo referencia el catálogo compartido declarado en TIPO_Y_OBRA", () => {
-    for (const id of ITEM_SCREENS) expect(fieldByName(findScreen(id), "catalogo")["data-source"]).toBe("${screen.TIPO_Y_OBRA.data.catalogo}");
+  it("cada artículo referencia el catálogo compartido declarado en TIPO_Y_EMPRESA", () => {
+    for (const id of ITEM_SCREENS) expect(fieldByName(findScreen(id), "catalogo")["data-source"]).toBe("${screen.TIPO_Y_EMPRESA.data.catalogo}");
   });
 });

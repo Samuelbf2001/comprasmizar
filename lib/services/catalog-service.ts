@@ -1,5 +1,5 @@
 import { DomainError, assertPermission, type Actor } from "../domain";
-import type { CatalogCreateRecord, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogSociety, CatalogSupplier, CatalogTag, CatalogUser, ServiceDependencies } from "./contracts";
+import type { CatalogCreateRecord, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogUser, CatalogWork, ServiceDependencies } from "./contracts";
 
 export type CatalogCreateInput = CatalogCreateRecord;
 export type CatalogPatchInput = CatalogPatchRecord;
@@ -22,6 +22,11 @@ function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
   // los roles no son datos personales y sí quedan trazados. Este chequeo va primero porque
   // CatalogUser también tiene "email"/"phone", que de otro modo calzarían con proveedores.
   if ("roles" in value) { const user = value as CatalogUser; return { active: user.active, roles: [...user.roles].sort() }; }
+  // HUECO 1: la migración 202609010001 marca "nombre" Y "telefono_normalizado" como sensibles para
+  // `solicitantes_autorizados` (auditoria_campo_sensible) — más estricto que proveedores, donde el
+  // nombre comercial sí se audita en claro. Este chequeo va antes que el de proveedores (abajo):
+  // CatalogRequester solo tiene "phone" entre las claves que ese chequeo mira, nunca nit/email/address.
+  if ("phone" in value && !("nit" in value) && !("email" in value) && !("address" in value)) { const requester = value as CatalogRequester; return { active: requester.active }; }
   if ("societyId" in value) return { name: value.name, societyId: value.societyId, active: value.active };
   if ("approverId" in value) return { name: value.name, approverAssigned: Boolean(value.approverId), active: value.active };
   if ("unit" in value) return { name: value.name, unit: value.unit, category: value.category, active: value.active };
@@ -53,11 +58,10 @@ export class CatalogService {
   }
   private conflict(error: unknown, kind: CatalogKind): never {
     if (typeof error === "object" && error !== null && "code" in error) {
-      if (error.code === "23505") throw new DomainError("CONFLICT", kind === "suppliers" ? "Ya existe un proveedor con el mismo nombre o NIT" : kind === "societies" ? "Ya existe una sociedad con el mismo nombre o NIT" : kind === "users" ? "Ya existe un usuario con ese correo electrónico" : "Ya existe un registro equivalente en el catálogo");
-      // Defensa adicional ante una condición de carrera: el chequeo explícito de validateUserExists ya
-      // cubre el caso normal, pero si el id dejó de existir entre el chequeo y el INSERT, la FK de
-      // `usuarios.id -> auth.users.id` sigue protegiendo la integridad y aquí se traduce el error.
-      if (kind === "users" && error.code === "23503") throw new DomainError("AUTH_ACCOUNT_NOT_FOUND", "El id indicado no corresponde a una cuenta existente en Supabase Auth. Cree primero la cuenta en Auth y luego vincúlela aquí.");
+      if (error.code === "23505") throw new DomainError("CONFLICT", kind === "suppliers" ? "Ya existe un proveedor con el mismo nombre o NIT" : kind === "societies" ? "Ya existe una sociedad con el mismo nombre o NIT" : kind === "users" ? "Ya existe un usuario con ese correo electrónico" : kind === "requesters" ? "Ya existe un solicitante autorizado con ese número de teléfono" : "Ya existe un registro equivalente en el catálogo");
+      // La FK `usuarios.id -> auth.users.id` ya no puede violarse en el alta (ambas filas se crean en la
+      // misma transacción, ver postgres-repositories.ts), pero sí en una edición contra un id inventado.
+      if (kind === "users" && error.code === "23503") throw new DomainError("NOT_FOUND", "El usuario indicado no existe.");
       // Los triggers de BD (validar_baja_usuario_con_etiquetas_activas y
       // validar_retiro_ultimo_rol_aprobador) protegen que una etiqueta activa nunca se quede sin
       // aprobador elegible; aquí se traducen a mensajes útiles en vez de dejarlos explotar crudos.
@@ -69,11 +73,6 @@ export class CatalogService {
     }
     throw error;
   }
-  /** RF-004: nunca se crea la cuenta en `auth.users` desde aquí; solo se vincula un id que ya debe existir en Auth. */
-  private async validateUserExists(value: CatalogCreateInput, repository: CatalogRepository): Promise<void> {
-    const user = value as CatalogUser;
-    if (!(await repository.authUserExists(user.id))) throw new DomainError("AUTH_ACCOUNT_NOT_FOUND", "No existe una cuenta de Supabase Auth con este id. Esta plataforma no crea cuentas nuevas: cree primero el usuario en Supabase Auth y luego vincúlelo aquí con su id.");
-  }
   private async audit(action: string, kind: CatalogKind, id: string, actor: Actor, before: CatalogRecord | undefined, after: CatalogRecord, repository: { append(event: Parameters<ServiceDependencies["audit"]["append"]>[0]): Promise<void> }): Promise<void> {
     await repository.append({ entity: kind, entityId: id, event: action, actorId: actor.id, at: this.deps.clock.now(), origin: "web", data: { ...(before ? { before: safeSnapshot(before) } : {}), after: safeSnapshot(after) } });
   }
@@ -84,10 +83,41 @@ export class CatalogService {
     if (duplicate) throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o NIT");
   }
   private async validateTag(record: CatalogRecord, repository: CatalogRepository): Promise<void> { const tag = record as CatalogTag; if (tag.active && (!tag.approverId || !(await repository.isEligibleApprover(tag.approverId)))) throw new DomainError("INVALID_INPUT", "Una etiqueta activa requiere un aprobador activo y elegible"); }
+  // HUECO 1: chequeo previo (además del 23505 genérico de arriba) para dar un mensaje claro ANTES de
+  // tocar la BD; el repositorio normaliza con el mismo criterio que la columna generada
+  // telefono_normalizado (ver lib/infrastructure/phone.ts), así que "3001112233" y "+57 300 111 2233"
+  // chocan como el mismo solicitante aunque su texto crudo difiera.
+  private async requesterConflict(repository: CatalogRepository, value: CatalogCreateInput | CatalogPatchInput, exceptId?: string): Promise<void> {
+    if (!("phone" in value) || typeof value.phone !== "string" || !value.phone) return;
+    if (await repository.findRequesterDuplicate(value.phone, exceptId)) throw new DomainError("CONFLICT", "Ya existe un solicitante autorizado con ese número de teléfono");
+  }
   async create(kind: CatalogKind, value: CatalogCreateInput, actor: Actor): Promise<CatalogRecord> {
-    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.authorize(actor, kind, tx.features); if (kind === "suppliers") await this.supplierConflict(tx.catalogs, value); if (kind === "tags") await this.validateTag(value as CatalogRecord, tx.catalogs); if (kind === "users") await this.validateUserExists(value, tx.catalogs); const created = await tx.catalogs.create(kind, value); await this.audit("creada", kind, created.id, actor, undefined, created, tx.audit); return created; }); } catch (error) { this.conflict(error, kind); }
+    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.authorize(actor, kind, tx.features); if (kind === "suppliers") await this.supplierConflict(tx.catalogs, value); if (kind === "requesters") await this.requesterConflict(tx.catalogs, value); if (kind === "tags") await this.validateTag(value as CatalogRecord, tx.catalogs); const created = await tx.catalogs.create(kind, value); await this.audit("creada", kind, created.id, actor, undefined, created, tx.audit); return created; }); } catch (error) { this.conflict(error, kind); }
   }
   async patch(kind: CatalogKind, id: string, value: CatalogPatchInput, actor: Actor): Promise<CatalogRecord> {
-    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.authorize(actor, kind, tx.features); const before = await tx.catalogs.get(kind, id); if (!before) throw new DomainError("NOT_FOUND", "Registro de catálogo no encontrado"); const candidate = { ...before, ...value } as CatalogRecord; if (kind === "suppliers") await this.supplierConflict(tx.catalogs, candidate, id); if (kind === "tags") await this.validateTag(candidate, tx.catalogs); const after = await tx.catalogs.update(kind, id, value); await this.audit("actualizada", kind, id, actor, before, after, tx.audit); return after; }); } catch (error) { this.conflict(error, kind); }
+    try {
+      return await this.deps.transactions.transaction(undefined, async (tx) => {
+        await this.authorize(actor, kind, tx.features);
+        const before = await tx.catalogs.get(kind, id);
+        if (!before) throw new DomainError("NOT_FOUND", "Registro de catálogo no encontrado");
+        const candidate = { ...before, ...value } as CatalogRecord;
+        if (kind === "suppliers") await this.supplierConflict(tx.catalogs, candidate, id);
+        if (kind === "requesters") await this.requesterConflict(tx.catalogs, candidate, id);
+        if (kind === "tags") await this.validateTag(candidate, tx.catalogs);
+        // GRAVE 3 (QA Postgres real): mover una obra de sociedad deja inservibles sus requisiciones
+        // existentes — saveRequisition siempre reenvía obra_id en su on conflict, así que cualquier
+        // UPDATE posterior de una de esas requisiciones revienta contra el trigger
+        // validar_catalogos_activos_requisicion (23514, "La obra asignada no pertenece a la sociedad
+        // de la requisición"). Más simple y honesto impedir el cambio aquí que intentar
+        // re-sincronizar requisiciones históricas con la obra que cambió de dueño.
+        if (kind === "works" && "societyId" in value) {
+          const work = before as CatalogWork, nextSocietyId = (candidate as CatalogWork).societyId;
+          if (nextSocietyId !== work.societyId && (await tx.catalogs.hasRequisitionsForWork(id))) throw new DomainError("WORK_HAS_REQUISITIONS", "No se puede cambiar la sociedad de una obra que ya tiene requisiciones asociadas");
+        }
+        const after = await tx.catalogs.update(kind, id, value);
+        await this.audit("actualizada", kind, id, actor, before, after, tx.audit);
+        return after;
+      });
+    } catch (error) { this.conflict(error, kind); }
   }
 }

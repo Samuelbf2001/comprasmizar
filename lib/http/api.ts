@@ -1,6 +1,7 @@
 import { z, type ZodType } from "zod";
 import { DomainError, type Actor } from "../domain";
 import { requireServerActor } from "../infrastructure/auth";
+import type { ListQuery } from "../services/list-query";
 
 const noStore = { "Cache-Control": "no-store" };
 class RequestValidationError extends Error { constructor(readonly issues: z.core.$ZodIssue[]) { super("INVALID_INPUT"); } }
@@ -34,20 +35,82 @@ export function assertSameOrigin(request: Request): void {
   if (!origin || origin !== expected) throw new DomainError("ORIGIN_FORBIDDEN", "Origen de solicitud no permitido");
 }
 
+const roundMs = (ms: number) => Math.round(ms * 10) / 10;
+/** H8 (docs/plan-rendimiento.md): sin esto no había forma de saber, desde afuera, cuánto de una
+ *  respuesta lenta era autenticación (H1) vs el trabajo propio del endpoint — Caddy ya loguea la
+ *  latencia total por request, pero no la partición. Formato estándar `Server-Timing` (un `dur` por
+ *  métrica), legible por la pestaña Red de cualquier navegador sin instrumentación adicional. */
+function serverTimingHeader(authMs: number, workMs: number): string { return `auth;dur=${roundMs(authMs)}, work;dur=${roundMs(workMs)}`; }
+
 export async function authenticatedJson(work: (actor: Actor) => Promise<unknown>, successStatus = 200): Promise<Response> {
-  try { return Response.json(await work(await requireServerActor()), { status: successStatus, headers: noStore }); }
-  catch (error) { return apiError(error); }
+  const start = performance.now();
+  let afterAuth: number | undefined;
+  try {
+    const actor = await requireServerActor();
+    afterAuth = performance.now();
+    const result = await work(actor);
+    return Response.json(result, { status: successStatus, headers: { ...noStore, "Server-Timing": serverTimingHeader(afterAuth - start, performance.now() - afterAuth) } });
+  } catch (error) {
+    const now = performance.now();
+    // afterAuth solo queda definido si requireServerActor() ya había resuelto: separa cuánto tiempo se
+    // fue en autenticar de cuánto en el `work` que falló, sin fingir un tiempo de trabajo que nunca corrió.
+    const authMs = afterAuth === undefined ? now - start : afterAuth - start;
+    const workMs = afterAuth === undefined ? 0 : now - afterAuth;
+    return apiError(error, serverTimingHeader(authMs, workMs));
+  }
 }
 
-export function apiError(error: unknown): Response {
-  if (error instanceof RequestValidationError) return Response.json({ error: "invalid_input", issues: error.issues.map((issue) => ({ path: issue.path.join("."), code: issue.code })) }, { status: 400, headers: noStore });
+const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * H3 (docs/plan-rendimiento.md, Fase 3): parsea los parámetros de query compartidos por requisiciones,
+ * órdenes, gastos y caja menor (`status`, `workId`, `from`, `to`, `limit`, `cursor`) en un `ListQuery`.
+ * `statusValues`, cuando se pasa, restringe `status` a los valores válidos de esa entidad — se omite en
+ * las rutas de gastos/caja menor (no tienen columna de estado): un `?status=` en esas rutas se IGNORA a
+ * propósito, no falla (ver el comentario de `ListQuery` en lib/services/list-query.ts). `paginated` es
+ * la señal exacta que cada ruta usa para decidir el shape de la respuesta: `true` solo si `limit` o
+ * `cursor` vinieron en la URL (responde `{ rows, nextCursor }`); `false` si no (responde el array de
+ * siempre, con filtros aplicados si los hay).
+ */
+export function parseListQuery(url: URL, statusValues?: readonly string[]): { query: ListQuery; paginated: boolean } {
+  const params = url.searchParams, query: ListQuery = {};
+  const rawStatus = params.get("status");
+  if (rawStatus !== null && statusValues) {
+    const values = rawStatus.split(",").map((value) => value.trim()).filter(Boolean);
+    if (!values.length) throw new DomainError("INVALID_INPUT", "status no puede estar vacío");
+    for (const value of values) if (!statusValues.includes(value)) throw new DomainError("INVALID_INPUT", `status inválido: ${value}`);
+    query.status = values;
+  }
+  const rawWorkId = params.get("workId");
+  if (rawWorkId !== null) { if (!z.string().uuid().safeParse(rawWorkId).success) throw new DomainError("INVALID_INPUT", "workId debe ser un uuid válido"); query.workId = rawWorkId; }
+  for (const field of ["from", "to"] as const) {
+    const raw = params.get(field);
+    if (raw !== null) { if (!isoDatePattern.test(raw) || Number.isNaN(Date.parse(raw))) throw new DomainError("INVALID_INPUT", `${field} debe ser una fecha YYYY-MM-DD`); query[field] = raw; }
+  }
+  const rawLimit = params.get("limit");
+  if (rawLimit !== null) {
+    const parsedLimit = Number(rawLimit);
+    if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) throw new DomainError("INVALID_INPUT", "limit debe ser un entero entre 1 y 200");
+    query.limit = parsedLimit;
+  }
+  const rawCursor = params.get("cursor");
+  if (rawCursor !== null) { if (!rawCursor.trim()) throw new DomainError("INVALID_INPUT", "cursor inválido"); query.cursor = rawCursor; }
+  return { query, paginated: rawLimit !== null || rawCursor !== null };
+}
+/** `true` si `query` trae algún filtro (status/workId/from/to) — decide si el modo "array sin paginar"
+ *  debe reutilizar el camino filtrado (con el límite por defecto de `pageLimit`, ver
+ *  lib/services/list-query.ts) o el camino sin `query` de siempre, más barato. */
+export function hasListFilters(query: ListQuery): boolean { return query.status !== undefined || query.workId !== undefined || query.from !== undefined || query.to !== undefined; }
+
+export function apiError(error: unknown, serverTiming?: string): Response {
+  const headers = serverTiming ? { ...noStore, "Server-Timing": serverTiming } : noStore;
+  if (error instanceof RequestValidationError) return Response.json({ error: "invalid_input", issues: error.issues.map((issue) => ({ path: issue.path.join("."), code: issue.code })) }, { status: 400, headers });
   if (error instanceof DomainError) {
     const status = error.code === "NOT_FOUND" ? 404 : error.code === "UNAUTHENTICATED" ? 401 : ["FORBIDDEN", "NOT_ASSIGNED_APPROVER", "ORIGIN_FORBIDDEN"].includes(error.code) ? 403 : error.code === "CONFLICT" ? 409 : error.code === "PAYLOAD_TOO_LARGE" ? 413 : 422;
-    return Response.json({ error: error.code.toLowerCase(), message: error.message }, { status, headers: noStore });
+    return Response.json({ error: error.code.toLowerCase(), message: error.message }, { status, headers });
   }
   const code = error instanceof Error ? error.message : "";
-  if (code === "UNAUTHENTICATED") return Response.json({ error: "unauthenticated" }, { status: 401, headers: noStore });
-  if (["ACCOUNT_INACTIVE", "AUTHZ_LOOKUP_FAILED", "ROLE_REQUIRED"].includes(code)) return Response.json({ error: "forbidden" }, { status: 403, headers: noStore });
-  if (code === "APP_ORIGIN_NOT_CONFIGURED" || error instanceof z.ZodError) return Response.json({ error: "service_unavailable" }, { status: 503, headers: noStore });
-  return Response.json({ error: "internal_error" }, { status: 500, headers: noStore });
+  if (code === "UNAUTHENTICATED") return Response.json({ error: "unauthenticated" }, { status: 401, headers });
+  if (["ACCOUNT_INACTIVE", "AUTHZ_LOOKUP_FAILED", "ROLE_REQUIRED"].includes(code)) return Response.json({ error: "forbidden" }, { status: 403, headers });
+  if (code === "APP_ORIGIN_NOT_CONFIGURED" || error instanceof z.ZodError) return Response.json({ error: "service_unavailable" }, { status: 503, headers });
+  return Response.json({ error: "internal_error" }, { status: 500, headers });
 }

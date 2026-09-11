@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("portal público de requisiciones", () => {
-  test("no muestra shell interno y exige código y teléfono antes del formulario", async ({ page }) => {
+  test("no muestra shell interno y exige contraseña del portal y teléfono antes del formulario", async ({ page }) => {
     await page.goto("/requisiciones/publica");
 
     await expect(page.locator(".public-frame")).toBeVisible();
@@ -9,9 +9,9 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.getByRole("heading", { name: "Solicita lo que tu obra necesita." })).toBeVisible();
 
     await page.getByRole("button", { name: "Continuar" }).click();
-    await expect(page.locator("#public-access-error")).toHaveText("Ingresa el código de obra y un teléfono válido para continuar.");
+    await expect(page.locator("#public-access-error")).toHaveText("Ingresa la contraseña del portal y un teléfono válido para continuar.");
 
-    await page.getByLabel("Código de obra").fill("MIZAR-PRADERA");
+    await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
     await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
     await page.getByRole("button", { name: "Continuar" }).click();
 
@@ -21,7 +21,7 @@ test.describe("portal público de requisiciones", () => {
 
   test("valida campos esenciales y deja claro que el éxito es demostrativo", async ({ page }) => {
     await page.goto("/requisiciones/publica");
-    await page.getByLabel("Código de obra").fill("MIZAR-PRADERA");
+    await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
     await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
     await page.getByRole("button", { name: "Continuar" }).click();
 

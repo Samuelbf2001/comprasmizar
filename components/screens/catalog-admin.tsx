@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   Database,
   Edit3,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   ToggleLeft,
   ToggleRight,
@@ -13,6 +14,11 @@ import {
 import type { Role } from "../../lib/demo-data";
 import { SectionTitle } from "./screen-primitives";
 import { apiRequest, friendlyErrorText } from "../../lib/http/friendly-error";
+// H2/H6 (docs/plan-rendimiento.md): esta pantalla escribe con su propio `apiRequest` (no el
+// `mutate` de connected/data.ts, que invalida por afectación según la URL) — así que tiene que
+// invalidar los catálogos a mano tras cada escritura. Import liviano: data.ts no arrastra
+// recharts ni ninguna pantalla pesada (ver tests/unit/bundle-boundaries.test.ts).
+import { invalidateCatalogs } from "./connected/data";
 
 type CatalogKind =
   | "works"
@@ -20,7 +26,10 @@ type CatalogKind =
   | "items"
   | "suppliers"
   | "societies"
-  | "users";
+  | "users"
+  // HUECO 1 (reunión 2026-08-31): lista blanca global de quién puede pedir por WhatsApp
+  // (tabla solicitantes_autorizados, migración 202609010001).
+  | "requesters";
 type CatalogRecord = {
   id: string;
   name: string;
@@ -55,23 +64,34 @@ type CatalogData = {
   userRecords?: CatalogRecord[];
   // RF-004: admin_mizar puede leer usuarios aunque `access.users` sea false (solo escribe admin_sixteam).
   canReadUsers?: boolean;
+  // HUECO 1: listado completo (incluye inactivos) de quién puede pedir por WhatsApp.
+  requesters?: CatalogRecord[];
+  // Igual que canReadUsers: revisor puede CONSULTAR aunque access.requesters (escritura) sea false.
+  canReadRequesters?: boolean;
 };
 type FormValues = Record<string, string | boolean | string[]>;
 
+// El término del cliente es "empresa" (no "sociedad"): unifica con el alta de requisición,
+// que ya dice "Empresa". El identificador interno (societyId, kind: "societies") no cambia
+// — solo la etiqueta visible — para no tocar la API/el modelo desde components/**.
 const labels: Record<CatalogKind, string> = {
   works: "Obras",
   tags: "Etiquetas",
   items: "Ítems",
   suppliers: "Proveedores",
-  societies: "Sociedades",
+  societies: "Empresas",
   users: "Usuarios",
+  // Lenguaje de producto (HUECO 1): quien administra esto piensa en "quién puede pedir por
+  // WhatsApp", no en el nombre de la tabla `solicitantes_autorizados`.
+  requesters: "Solicitantes WhatsApp",
 };
 // El título "Nuevo X" por defecto solo quita la "s" final de labels[kind] (falla en géneros y en
-// plurales irregulares como "Sociedades"); para las dos pestañas nuevas se declara explícito en vez
+// plurales irregulares como "Empresas"); para las pestañas nuevas se declara explícito en vez
 // de heredar ese atajo.
 const NEW_RECORD_LABEL: Partial<Record<CatalogKind, string>> = {
-  societies: "Nueva sociedad",
+  societies: "Nueva empresa",
   users: "Nuevo usuario",
+  requesters: "Nuevo solicitante autorizado",
 };
 // RF-004: debe coincidir exactamente con el tipo Role de lib/domain (lib/domain/model.ts) y con
 // `roleLiteral` en app/api/catalogs/route.ts.
@@ -94,7 +114,7 @@ const emptyForm: FormValues = {
   phone: "",
   email: "",
   address: "",
-  id: "",
+  password: "",
   roles: [],
 };
 function rolesFromForm(values: FormValues): string[] {
@@ -179,14 +199,26 @@ function canViewKind(
       canManageKind(kind, role, data, featureEnabled) ||
       data.canReadUsers === true
     );
+  // HUECO 1: mismo patrón intermedio que "users" — Revisor puede CONSULTAR quién puede pedir por
+  // WhatsApp (RLS "solicitantes_autorizados_lectura_operativa") aunque no pueda administrar la lista.
+  if (kind === "requesters")
+    return (
+      canManageKind(kind, role, data, featureEnabled) ||
+      data.canReadRequesters === true
+    );
   return canManageKind(kind, role, data, featureEnabled);
 }
 async function writeCatalog(method: "POST" | "PATCH", body: unknown) {
-  return apiRequest<CatalogRecord>("/api/catalogs", {
+  const result = await apiRequest<CatalogRecord>("/api/catalogs", {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  // H2/H6: sin esto, otras pantallas (detail.tsx, new-requisition.tsx, requisitions.tsx…) que
+  // leen `catalogs` de su propia caché de sesión seguirían mostrando obras/etiquetas/ítems/
+  // proveedores viejos hasta que expirara el TTL de 5 minutos.
+  invalidateCatalogs();
+  return result;
 }
 
 function payloadFor(
@@ -218,11 +250,15 @@ function payloadFor(
     const nit = String(values.nit || "").trim();
     if (editing || nit) data.nit = nit || null;
   }
+  // HUECO 1: a diferencia de proveedores/usuarios, el teléfono es OBLIGATORIO (columna NOT NULL) y
+  // nunca se envía como null: sin teléfono la fila no tiene ninguna función.
+  if (kind === "requesters") data.phone = String(values.phone || "").trim();
   if (kind === "users") {
-    // RF-004: id/correo son inmutables tras el alta (el correo vive en Supabase Auth, no en este
-    // catálogo); el esquema de PATCH ni siquiera acepta esas claves, así que solo se envían al crear.
+    // El correo es inmutable tras el alta (vive en auth.users, no en este catálogo) y la contraseña
+    // solo se fija al crear: cambiarla después es otro flujo (POST /api/usuarios/:id/clave, que además
+    // cierra las sesiones abiertas). El esquema de PATCH ni siquiera acepta estas claves.
     if (!editing) {
-      data.id = String(values.id || "").trim();
+      data.password = String(values.password || "");
       data.email = String(values.email || "").trim();
     }
     const phone = String(values.phone || "").trim();
@@ -264,7 +300,9 @@ export function ConnectedCatalogAdmin({
             ? "societies"
             : pathname.startsWith("/catalogos/usuarios")
               ? "users"
-              : undefined;
+              : pathname.startsWith("/catalogos/solicitantes-whatsapp")
+                ? "requesters"
+                : undefined;
   const initialFeatureEnabled = dataFeatureEnabled(initialData);
   const firstAllowed = (Object.keys(labels) as CatalogKind[]).find((option) =>
     canViewKind(option, role, initialData, initialFeatureEnabled),
@@ -322,7 +360,7 @@ export function ConnectedCatalogAdmin({
       (!String(form.societyId || "").trim() ||
         !UUID_RE.test(String(form.societyId)))
     )
-      return "Selecciona una sociedad elegible con un UUID válido.";
+      return "Selecciona una empresa elegible con un UUID válido.";
     if (
       kind === "tags" &&
       (!editing || editing.active !== false) &&
@@ -347,8 +385,12 @@ export function ConnectedCatalogAdmin({
       (String(form.nit).length < 3 || String(form.nit).length > 32)
     )
       return "El NIT debe tener entre 3 y 32 caracteres.";
+    // HUECO 1: a diferencia de proveedores/usuarios, el teléfono es obligatorio para un solicitante
+    // autorizado (sin él la fila no identifica a nadie en el canal WhatsApp).
+    if (kind === "requesters" && !String(form.phone || "").trim())
+      return "El teléfono es obligatorio.";
     if (
-      (kind === "suppliers" || kind === "users") &&
+      (kind === "suppliers" || kind === "users" || kind === "requesters") &&
       String(form.phone || "").trim() &&
       !/^\+?[0-9 ()-]{7,20}$/.test(String(form.phone))
     )
@@ -360,11 +402,11 @@ export function ConnectedCatalogAdmin({
     )
       return "Ingresa un correo válido o deja el campo vacío.";
     if (kind === "users" && !editing) {
-      // RF-004: el id debe ser el de una cuenta que ya existe en Supabase Auth; esta plataforma nunca
+      // RF-004: el id debe ser el de una cuenta que ya existe en auth.users; esta plataforma nunca
       // la crea. El servicio vuelve a validarlo (AUTH_ACCOUNT_NOT_FOUND) — esto solo evita un viaje
       // redondo con un valor que ni siquiera tiene forma de UUID.
-      if (!UUID_RE.test(String(form.id || "").trim()))
-        return "El id de usuario debe ser el UUID de una cuenta existente en Supabase Auth.";
+      if (String(form.password || "").length < 8)
+        return "La contraseña inicial debe tener al menos 8 caracteres.";
       if (!/^\S+@\S+\.\S+$/.test(String(form.email || "")))
         return "Ingresa un correo válido.";
     }
@@ -461,13 +503,15 @@ export function ConnectedCatalogAdmin({
       ? "Los ítems solo pueden administrarse con item:manage (Revisor o Administrador Sixteam)."
       : kind === "users"
         ? "La administración de usuarios es exclusiva de Administrador Sixteam. Administrador Mizar puede consultarla en modo lectura; el resto de roles no tiene acceso."
-        : kind === "societies"
-          ? "Las sociedades solo pueden administrarse desde Administrador Mizar o Administrador Sixteam."
-          : role === "Administrador Mizar" && !featureEnabled
-            ? "El autoservicio de Administrador Mizar está bloqueado hasta habilitar el módulo catalogos_admin_mizar."
-            : kind === "suppliers"
-              ? "Necesitas supplier:manage para administrar proveedores."
-              : "Necesitas catalog:manage para administrar este catálogo.";
+        : kind === "requesters"
+          ? "Solo Administrador Sixteam (o Administrador Mizar con el autoservicio habilitado) puede administrar quién puede pedir por WhatsApp. Revisor puede consultar la lista en modo lectura."
+          : kind === "societies"
+            ? "Las empresas solo pueden administrarse desde Administrador Mizar o Administrador Sixteam."
+            : role === "Administrador Mizar" && !featureEnabled
+              ? "El autoservicio de Administrador Mizar está bloqueado hasta habilitar el módulo catalogos_admin_mizar."
+              : kind === "suppliers"
+                ? "Necesitas supplier:manage para administrar proveedores."
+                : "Necesitas catalog:manage para administrar este catálogo.";
   return (
     <>
       <SectionTitle
@@ -535,6 +579,12 @@ export function ConnectedCatalogAdmin({
           <div className="panel-head">
             <div>
               <h2>{labels[kind]}</h2>
+              {kind === "requesters" && (
+                <p className="panel-sub">
+                  Quién puede radicar una requisición por WhatsApp identificándose con su número de
+                  teléfono. Desactivar aquí revoca el acceso de inmediato, sin borrar el registro.
+                </p>
+              )}
               <p className="panel-sub">
                 {rows.length
                   ? `${rows.length} registros recibidos por API`
@@ -553,8 +603,9 @@ export function ConnectedCatalogAdmin({
           </div>
           {!canManage && (
             <p className="catalog-readonly-note" role="note">
-              Modo lectura: la administración de usuarios es exclusiva de
-              Administrador Sixteam.
+              {kind === "requesters"
+                ? "Modo lectura: solo Administrador Sixteam (o Administrador Mizar con el autoservicio habilitado) puede administrar quién puede pedir por WhatsApp."
+                : "Modo lectura: la administración de usuarios es exclusiva de Administrador Sixteam."}
             </p>
           )}
           {feedback && (
@@ -596,7 +647,7 @@ export function ConnectedCatalogAdmin({
                 <thead>
                   <tr>
                     <th>Nombre</th>
-                    {kind === "works" && <th>Sociedad</th>}
+                    {kind === "works" && <th>Empresa</th>}
                     {kind === "items" && (
                       <>
                         <th>Unidad</th>
@@ -621,6 +672,7 @@ export function ConnectedCatalogAdmin({
                         <th>Roles</th>
                       </>
                     )}
+                    {kind === "requesters" && <th>Teléfono</th>}
                     <th>Estado</th>
                     <th className="align-right">Acciones</th>
                   </tr>
@@ -687,6 +739,7 @@ export function ConnectedCatalogAdmin({
                           </td>
                         </>
                       )}
+                      {kind === "requesters" && <td>{row.phone || "—"}</td>}
                       <td>
                         <span
                           className={`badge ${isActive(row) ? "badge-success" : "badge-muted"}`}
@@ -732,7 +785,177 @@ export function ConnectedCatalogAdmin({
           )}
         </section>
       )}
+      {/* Acceso público (reunión: "una sola contraseña para todo el mundo") es administración de
+          plataforma, no un CatalogKind más — vive fuera de /api/catalogs y del pestañeo de arriba,
+          como un panel independiente al mismo nivel (nunca anidado dentro de otro .panel). */}
+      {(role === "Administrador Mizar" || role === "Administrador Sixteam") && (
+        <PublicAccessPanel />
+      )}
     </>
+  );
+}
+
+type PublicAccessStatus = { configured: boolean; updatedAt: string | null };
+
+function formatPublicAccessDate(iso: string): string {
+  // toLocaleString puede lanzar con una fecha corrupta; nunca vale la pena tumbar el panel por un
+  // dato de solo lectura — se muestra el ISO crudo antes que romper la pantalla.
+  try {
+    return new Date(iso).toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * Reunión (literal): "yo digo que sea solamente una contraseña para todo el mundo". Administra la
+ * contraseña GLOBAL del portal público (app/api/public-access, lib/services/public-access-service.ts)
+ * — deliberadamente fuera de /api/catalogs: no es un CatalogKind, es una fila de configuración única.
+ * El hash nunca llega aquí: el GET solo informa si hay una contraseña fijada y cuándo cambió.
+ */
+function PublicAccessPanel() {
+  const [status, setStatus] = useState<PublicAccessStatus | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [code, setCode] = useState("");
+  const [confirmCode, setConfirmCode] = useState("");
+  const [fieldError, setFieldError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    apiRequest<PublicAccessStatus>("/api/public-access")
+      .then((value) => {
+        if (active) setStatus(value);
+      })
+      .catch((error: unknown) => {
+        if (active) setLoadError(friendlyErrorText(error, "No fue posible consultar el estado del acceso público."));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setFeedback("");
+    setSuccess("");
+    if (code.length < 8) {
+      setFieldError("La contraseña debe tener al menos 8 caracteres.");
+      return;
+    }
+    if (code !== confirmCode) {
+      setFieldError("Las dos contraseñas no coinciden.");
+      return;
+    }
+    setFieldError("");
+    setSaving(true);
+    try {
+      const next = await apiRequest<PublicAccessStatus>("/api/public-access", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      setStatus(next);
+      setCode("");
+      setConfirmCode("");
+      setSuccess("Contraseña del portal actualizada.");
+    } catch (error) {
+      setFeedback(friendlyErrorText(error, "No fue posible actualizar la contraseña."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="panel catalog-admin-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Acceso público</h2>
+          <p className="panel-sub">
+            Contraseña del portal de requisiciones: una sola clave para todas las obras que lo tengan
+            habilitado. El enlace sigue siendo por obra; solo la contraseña es global.
+          </p>
+        </div>
+      </div>
+      {loadError ? (
+        <p className="field-error catalog-feedback" role="alert">
+          {loadError}
+        </p>
+      ) : status === null ? (
+        <p className="public-access-status">Consultando estado…</p>
+      ) : status.configured ? (
+        <p className="public-access-status">
+          {`Contraseña configurada. Último cambio: ${status.updatedAt ? formatPublicAccessDate(status.updatedAt) : "fecha no disponible"}.`}
+        </p>
+      ) : (
+        // GRAVE (QA Postgres real): el día del despliegue, el hash global nace en NULL y TODA obra con
+        // portal habilitado deja de aceptar cualquier código — el solicitante recibe un 202 neutro
+        // indistinguible del éxito, así que nadie se entera desde el lado público. Este aviso es la
+        // única señal del lado admin: tiene que ser imposible de pasar por alto, no un texto gris más.
+        <p className="public-access-closed-alert" role="alert">
+          <ShieldAlert aria-hidden="true" size={18} />
+          <span>
+            El portal de requisiciones está <b>cerrado</b>: no hay contraseña configurada. Nadie puede
+            radicar por el enlace hasta que la fijes.
+          </span>
+        </p>
+      )}
+      <form className="catalog-edit-form" onSubmit={submit} noValidate>
+        <div className="field-grid">
+          <label className="field">
+            <span>
+              Nueva contraseña <em>*</em>
+            </span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              minLength={8}
+              aria-invalid={Boolean(fieldError)}
+              aria-describedby={fieldError ? "public-access-field-error" : undefined}
+            />
+          </label>
+          <label className="field">
+            <span>
+              Confirmar contraseña <em>*</em>
+            </span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirmCode}
+              onChange={(event) => setConfirmCode(event.target.value)}
+              minLength={8}
+              aria-invalid={Boolean(fieldError)}
+              aria-describedby={fieldError ? "public-access-field-error" : undefined}
+            />
+          </label>
+        </div>
+        {fieldError && (
+          <small className="field-error" id="public-access-field-error">
+            {fieldError}
+          </small>
+        )}
+        {feedback && (
+          <p className="field-error catalog-feedback" role="alert">
+            {feedback}
+          </p>
+        )}
+        {success && (
+          <p className="catalog-success" role="status">
+            {success}
+          </p>
+        )}
+        <div className="form-footer">
+          <span>Se audita quién y cuándo la cambia; la contraseña nunca queda en claro en el registro.</span>
+          <button className="button button-dark" type="submit" disabled={saving}>
+            {saving ? "Guardando…" : "Fijar contraseña"}
+          </button>
+        </div>
+      </form>
+    </section>
   );
 }
 
@@ -809,7 +1032,7 @@ function CatalogForm({
         {kind === "works" && (
           <label className="field">
             <span>
-              Sociedad <em>*</em>
+              Empresa <em>*</em>
             </span>
             <select
               value={String(values.societyId || "")}
@@ -831,8 +1054,8 @@ function CatalogForm({
             >
               <option value="">
                 {societies.length
-                  ? "Selecciona una sociedad elegible"
-                  : "No hay sociedades elegibles"}
+                  ? "Selecciona una empresa elegible"
+                  : "No hay empresas elegibles"}
               </option>
               {societies.map((society) => (
                 <option key={society.id} value={society.id}>
@@ -844,7 +1067,7 @@ function CatalogForm({
               (!String(values.societyId || "").trim() ||
                 !UUID_RE.test(String(values.societyId))) && (
                 <small className="field-error" id="catalog-society-error">
-                  Selecciona una sociedad elegible.
+                  Selecciona una empresa elegible.
                 </small>
               )}
           </label>
@@ -990,26 +1213,64 @@ function CatalogForm({
             />
           </label>
         )}
+        {kind === "requesters" && (
+          <label className="field">
+            <span>
+              Teléfono <em>*</em>
+            </span>
+            <input
+              value={String(values.phone || "")}
+              maxLength={20}
+              required
+              inputMode="tel"
+              aria-invalid={Boolean(
+                feedback && !String(values.phone || "").trim(),
+              )}
+              aria-describedby={
+                feedback && !String(values.phone || "").trim()
+                  ? "catalog-requester-phone-error"
+                  : undefined
+              }
+              onChange={(event) => update("phone", event.target.value)}
+            />
+            <small>
+              Acepta el número local (3001112233) o con indicativo
+              (+57 300 111 2233): ambos identifican al mismo solicitante.
+            </small>
+            {feedback && !String(values.phone || "").trim() && (
+              <small className="field-error" id="catalog-requester-phone-error">
+                El teléfono es obligatorio.
+              </small>
+            )}
+          </label>
+        )}
         {kind === "users" && (
           <>
             {!editing && (
               <label className="field field-wide">
                 <span>
-                  Id de usuario (Supabase Auth) <em>*</em>
+                  Contraseña inicial <em>*</em>
                 </span>
+                {/* Sin enmascarar a propósito: es una clave temporal que el administrador tiene que
+                    leer para entregársela a la persona, en una pantalla que solo ve un administrador.
+                    Enmascararla obligaría a escribirla a ciegas dos veces sin ganar nada. */}
                 <input
-                  value={String(values.id || "")}
-                  maxLength={36}
+                  type="text"
+                  value={String(values.password || "")}
+                  minLength={8}
+                  maxLength={200}
                   required
-                  placeholder="00000000-0000-4000-8000-000000000000"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="Mínimo 8 caracteres"
                   aria-invalid={Boolean(
-                    feedback && !UUID_RE.test(String(values.id || "").trim()),
+                    feedback && String(values.password || "").length < 8,
                   )}
-                  onChange={(event) => update("id", event.target.value)}
+                  onChange={(event) => update("password", event.target.value)}
                 />
                 <small>
-                  Debe existir previamente en Supabase Auth; esta plataforma
-                  nunca crea la cuenta, solo la vincula.
+                  Anótala y entrégasela a la persona: no vuelve a mostrarse. Que
+                  la cambie al entrar desde &ldquo;Cambiar contraseña&rdquo;.
                 </small>
               </label>
             )}

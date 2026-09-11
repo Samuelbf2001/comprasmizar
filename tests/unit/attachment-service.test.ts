@@ -24,6 +24,11 @@ function fixture(options: { info?: { sizeBytes: number; mimeType: string } | nul
     list: async (entity: AttachmentEntity, entityId: string) => [...attachments.values()].filter((entry) => entry.entity === entity && entry.entityId === entityId).map((entry) => structuredClone(entry)),
     get: async (entity: AttachmentEntity, entityId: string, id: string) => { const found = attachments.get(id); return found?.entity === entity && found.entityId === entityId ? structuredClone(found) : null; },
     insert: async (value: PrivateAttachment) => { if (attachments.has(value.id)) throw Object.assign(new Error("duplicate"), { code: "23505" }); attachments.set(value.id, structuredClone(value)); return value; },
+    // Fixture de un solo requisitionId (constante del archivo): "itemId" es siempre su único ítem, así
+    // que filtrar por ambas entidades basta para emular el `or` de la consulta real (ver
+    // PostgresAttachmentRepository.listForRequisition).
+    listForRequisition: async (id: string) => [...attachments.values()].filter((entry) => (entry.entity === "requisicion" && entry.entityId === id) || (entry.entity === "requisicion_item" && entry.entityId === itemId && id === requisitionId)).map((entry) => structuredClone(entry)),
+    listMany: async (entity: AttachmentEntity, entityIds: string[]) => [...attachments.values()].filter((entry) => entry.entity === entity && entityIds.includes(entry.entityId)).map((entry) => structuredClone(entry)),
   };
   const deps: PrivateAttachmentServiceDependencies = {
     transactions: { transaction: async <T>(_entity: AttachmentEntity, _entityId: string, work: (tx: PrivateAttachmentTransaction) => Promise<T>): Promise<T> => { const snapshot = structuredClone([...attachments.entries()]), auditLength = audits.length; try { return await work({ attachments: repository, audit: { append: async (event) => { audits.push(event); } } }); } catch (error) { attachments.clear(); snapshot.forEach(([id, value]) => attachments.set(id, value)); audits.splice(auditLength); throw error; } } },
@@ -79,6 +84,29 @@ describe("PrivateAttachmentService", () => {
     await expect(state.service.complete("requisicion", requisitionId, attachmentId, upload, requester)).resolves.toMatchObject({ attachment: { id: attachmentId } });
     await expect(state.service.complete("requisicion", requisitionId, attachmentId, upload, requester)).resolves.toMatchObject({ attachment: { id: attachmentId } });
     await expect(state.service.complete("requisicion", requisitionId, attachmentId, { ...upload, sizeBytes: 129 }, requester)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  // H2 (docs/plan-rendimiento.md): listForRequisition reemplaza pedir /api/attachments/requisicion/:id
+  // más una llamada por ítem (N+1) — mismo `assertRead` que list("requisicion", ...), ahora cubriendo
+  // también los adjuntos de los ítems en la misma respuesta.
+  it("listForRequisition combina adjuntos de la requisición y de sus ítems bajo el mismo assertRead del padre", async () => {
+    const state = fixture();
+    await state.service.complete("requisicion", requisitionId, attachmentId, upload, requester);
+    await expect(state.service.listForRequisition(requisitionId, requester)).resolves.toMatchObject({ attachments: [{ id: attachmentId, entity: "requisicion", entityId: requisitionId }] });
+    await expect(state.service.listForRequisition(requisitionId, approver)).resolves.toMatchObject({ attachments: [{ id: attachmentId }] });
+    await expect(state.service.listForRequisition(requisitionId, { id: "stranger", roles: ["solicitante"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  // H2: listMany respalda /api/attachments/:entity?ids= para caja menor (el caso real de la pantalla de
+  // gastos); requisicion/requisicion_item quedan fuera a propósito (ver comentario en el servicio).
+  it("listMany limita a caja_menor, exige 1-100 ids y aplica el mismo chequeo de rol que list()", async () => {
+    const state = fixture();
+    await state.service.complete("caja_menor", cashId, attachmentId, upload, reviewer);
+    await expect(state.service.listMany("caja_menor", [cashId], accountant)).resolves.toMatchObject({ attachments: [{ id: attachmentId, entity: "caja_menor", entityId: cashId }] });
+    await expect(state.service.listMany("caja_menor", [cashId], requester)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.listMany("requisicion", [requisitionId], reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.listMany("caja_menor", [], reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(state.service.listMany("caja_menor", Array.from({ length: 101 }, () => cashId), reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
   });
 
   it("rejects unsafe paths/types and audits only safe metadata", async () => {

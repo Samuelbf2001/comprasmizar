@@ -8,12 +8,29 @@ const PREFIX: Record<AttachmentEntity, string> = { requisicion: "requisiciones",
 
 export interface PrivateAttachmentUpload { type: (typeof PRIVATE_ATTACHMENT_TYPES)[number]; name: string; mimeType: string; sizeBytes: number; }
 export interface AttachmentParent { entity: AttachmentEntity; id: string; requesterId?: string; requisitionStatus?: RequisitionStatus; approverId?: string; }
-export interface PrivateAttachmentRepository { getParent(entity: AttachmentEntity, entityId: string): Promise<AttachmentParent | null>; list(entity: AttachmentEntity, entityId: string): Promise<PrivateAttachment[]>; get(entity: AttachmentEntity, entityId: string, attachmentId: string): Promise<PrivateAttachment | null>; insert(value: PrivateAttachment): Promise<PrivateAttachment>; }
+export interface PrivateAttachmentRepository {
+  getParent(entity: AttachmentEntity, entityId: string): Promise<AttachmentParent | null>;
+  list(entity: AttachmentEntity, entityId: string): Promise<PrivateAttachment[]>;
+  get(entity: AttachmentEntity, entityId: string, attachmentId: string): Promise<PrivateAttachment | null>;
+  insert(value: PrivateAttachment): Promise<PrivateAttachment>;
+  /** H2 (docs/plan-rendimiento.md): adjuntos de la requisición Y de todos sus ítems en una sola
+   *  consulta — antes el cliente pedía `/api/attachments/requisicion/:id` y luego UNA llamada más por
+   *  cada ítem (N+1). */
+  listForRequisition(requisitionId: string): Promise<PrivateAttachment[]>;
+  /** H2: adjuntos de varias entidades del MISMO tipo en una sola consulta (`entidad_id = any(...)`) —
+   *  reemplaza el N+1 de pedir un adjunto por fila de caja menor. */
+  listMany(entity: AttachmentEntity, entityIds: string[]): Promise<PrivateAttachment[]>;
+}
 export interface PrivateAttachmentTransaction { attachments: PrivateAttachmentRepository; audit: { append(event: { entity: string; entityId: string; event: string; actorId?: string; at: Date; origin: "web"; data?: Record<string, unknown> }): Promise<void> }; }
 export interface PrivateAttachmentTransactionManager { transaction<T>(entity: AttachmentEntity, entityId: string, work: (tx: PrivateAttachmentTransaction) => Promise<T>): Promise<T>; }
 export interface PrivateAttachmentStorage { createUploadUrl(path: string): Promise<{ url: string }>; info(path: string): Promise<{ sizeBytes: number; mimeType: string } | null>; createDownloadUrl(path: string, expiresInSeconds: number): Promise<string>; }
 export interface PrivateAttachmentServiceDependencies { transactions: PrivateAttachmentTransactionManager; storage: PrivateAttachmentStorage; clock: { now(): Date }; ids: { next(): string }; }
 type AttachmentView = Omit<PrivateAttachment, "entity" | "entityId" | "storagePath" | "uploadedBy">;
+/** listForRequisition/listMany mezclan entidades (requisicion + requisicion_item, o varias filas de
+ *  caja_menor): a diferencia de `list()` (una sola entidad+id ya conocida por el llamador), el cliente
+ *  necesita saber a qué fila pertenece cada adjunto devuelto. */
+type AttachmentBatchView = AttachmentView & { entity: AttachmentEntity; entityId: string };
+const MAX_BATCH_IDS = 100;
 
 function filename(value: string): string {
   const normalized = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
@@ -53,6 +70,41 @@ export class PrivateAttachmentService {
 
   async list(entity: AttachmentEntity, entityId: string, actor: Actor): Promise<{ attachments: AttachmentView[] }> {
     return this.deps.transactions.transaction(entity, entityId, async (tx) => { const parent = await this.parent(tx, entity, entityId); await this.assertRead(parent, actor); return { attachments: (await tx.attachments.list(entity, entityId)).map(publicView) }; });
+  }
+  /**
+   * H2: respalda `GET /api/requisitions/:id/detail` — un solo `assertRead` sobre el padre "requisicion"
+   * (misma regla que ya protege sus adjuntos propios) cubre también sus ítems: un actor que puede leer
+   * los soportes de la requisición puede leer los de sus líneas, no hay un permiso más fino por ítem.
+   */
+  async listForRequisition(requisitionId: string, actor: Actor): Promise<{ attachments: AttachmentBatchView[] }> {
+    return this.deps.transactions.transaction("requisicion", requisitionId, async (tx) => {
+      const parent = await this.parent(tx, "requisicion", requisitionId);
+      await this.assertRead(parent, actor);
+      const rows = await tx.attachments.listForRequisition(requisitionId);
+      return { attachments: rows.map((entry) => ({ ...publicView(entry), entity: entry.entity, entityId: entry.entityId })) };
+    });
+  }
+  /**
+   * H2: respalda `GET /api/attachments/:entity?ids=` — DELIBERADAMENTE restringido a "caja_menor".
+   * `assertRead` para requisicion/requisicion_item depende del padre de CADA fila (requesterId/
+   * approverId/estado, ver getParent); comprobarlo id por id reintroduciría el mismo N+1 que este lote
+   * existe para eliminar. El caso real que dispara este endpoint (gastos con M filas de caja menor, ver
+   * H2 en docs/plan-rendimiento.md) siempre es caja_menor, cuyo acceso de lectura es solo por rol
+   * (revisor/admin_sixteam/contabilidad — ver assertRead), sin dueño por fila: un único chequeo basta.
+   * Si algún día se necesita batching real de requisicion/requisicion_item, ese caso ya lo cubre
+   * `listForRequisition` (agrupado por requisición padre, sin N+1).
+   */
+  async listMany(entity: AttachmentEntity, entityIds: string[], actor: Actor): Promise<{ attachments: AttachmentBatchView[] }> {
+    if (!entityIds.length || entityIds.length > MAX_BATCH_IDS) throw new DomainError("INVALID_INPUT", `Se admiten entre 1 y ${MAX_BATCH_IDS} ids`);
+    if (entity !== "caja_menor") throw new DomainError("FORBIDDEN", "La consulta por lote solo admite caja_menor");
+    // entityIds[0] solo ancla la transacción (mismo mecanismo que usa el resto del servicio, ver
+    // PrivateAttachmentTransactionManager): assertRead("caja_menor", ...) no depende de una fila
+    // concreta, así que no hace falta bloquear cada id — es una lectura, no una escritura.
+    return this.deps.transactions.transaction(entity, entityIds[0], async (tx) => {
+      await this.assertRead({ entity: "caja_menor", id: entityIds[0] }, actor);
+      const rows = await tx.attachments.listMany(entity, entityIds);
+      return { attachments: rows.map((entry) => ({ ...publicView(entry), entity: entry.entity, entityId: entry.entityId })) };
+    });
   }
   async prepare(entity: AttachmentEntity, entityId: string, input: PrivateAttachmentUpload, actor: Actor): Promise<{ attachment: AttachmentView; upload: { method: "PUT"; url: string; multipart: { cacheControl: "3600"; fileField: "" } } }> {
     const validated = this.validate(entity, input), attachmentId = this.deps.ids.next(), storagePath = this.path(entity, entityId, attachmentId, validated.name);

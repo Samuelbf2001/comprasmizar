@@ -13,9 +13,9 @@ import { sharedPostgres } from "./postgres-repositories";
  * Límite de opciones de un `Dropdown` con `data-source` dinámico: **200** si ninguna
  * opción trae imagen, 100 si alguna la trae (`flows/reference/components.md`, tabla
  * "Limits and restrictions" — "Max dropdown options: 200 if no images are present in
- * the data-source, 100 otherwise"). Ninguna opción de `obras`/`catalogo` lleva imagen,
+ * the data-source, 100 otherwise"). Ninguna opción de `sociedades`/`catalogo` lleva imagen,
  * así que el tope aplicable es 200. Se deja como tope EXPLÍCITO (no "lo que devuelva
- * la BD") para que agregar una obra u item número 201 no rompa el envío del Flow.
+ * la BD") para que agregar una sociedad u item número 201 no rompa el envío del Flow.
  */
 export const MAX_DROPDOWN_OPTIONS = 200;
 
@@ -40,22 +40,24 @@ function truncateTitle(value: string): string {
 /** Fuente de los dos dropdowns dinámicos del Flow. Inyectable para pruebas — la BD real la da
  * `createPostgresFlowCatalogSource`. */
 export interface FlowCatalogSource {
-  listActiveWorks(limit: number): Promise<FlowOption[]>;
+  /** Reunión 2026-08-31: el solicitante elige EMPRESA, no obra (la asigna el revisor). El Flow ya
+   * no ofrece un dropdown de obras — ver `requisicion.flow.json`, pantalla TIPO_Y_OBRA renombrada. */
+  listActiveSocieties(limit: number): Promise<FlowOption[]>;
   listActiveCatalogItems(limit: number): Promise<FlowOption[]>;
 }
 
 /**
- * Lee obras activas y catálogo de items activos, ya listos como `{id, title}` para
+ * Lee sociedades activas y catálogo de items activos, ya listos como `{id, title}` para
  * `flow_action_payload.data`. Mismo patrón que los demás adaptadores de infraestructura:
- * `sharedPostgres()` (una sola conexión compartida en el proceso) y filtros de estado
- * idénticos a los que ya usa `GET /api/catalogs` (`estado = 'activa'` / `estado = 'activo'`).
+ * `sharedPostgres()` (una sola conexión compartida en el proceso) y el mismo filtro de estado que
+ * ya usa `GET /api/catalogs` para sociedades (`activa = true`) e items (`estado = 'activo'`).
  */
 export function createPostgresFlowCatalogSource(databaseUrl = runtimeEnv().DATABASE_URL): FlowCatalogSource {
   const sql = sharedPostgres(databaseUrl);
   return {
-    async listActiveWorks(limit) {
+    async listActiveSocieties(limit) {
       const rows = await sql<{ id: string; name: string }[]>`
-        select id, nombre as name from obras where estado = 'activa' order by nombre limit ${limit}`;
+        select id, nombre as name from sociedades where activa = true order by nombre limit ${limit}`;
       return rows.map((row) => ({ id: row.id, title: truncateTitle(row.name) }));
     },
     // Orden: uso más reciente primero cuando hay señal (última vez que el item se pidió en una
@@ -122,9 +124,9 @@ export interface FlowMessagePayload {
         flow_token: string;
         mode?: "draft" | "published";
         flow_action_payload: {
-          screen: "TIPO_Y_OBRA";
+          screen: "TIPO_Y_EMPRESA";
           data: {
-            obras: FlowOption[];
+            sociedades: FlowOption[];
             catalogo: FlowOption[];
           };
         };
@@ -146,7 +148,7 @@ export function buildFlowSendPayload(input: {
   flowToken: string;
   mode?: "draft" | "published";
   bodyText: string;
-  obras: FlowOption[];
+  sociedades: FlowOption[];
   catalogo: FlowOption[];
 }): FlowMessagePayload {
   return {
@@ -167,9 +169,9 @@ export function buildFlowSendPayload(input: {
           flow_token: input.flowToken,
           ...(input.mode ? { mode: input.mode } : {}),
           flow_action_payload: {
-            screen: "TIPO_Y_OBRA",
+            screen: "TIPO_Y_EMPRESA",
             data: {
-              obras: input.obras,
+              sociedades: input.sociedades,
               catalogo: input.catalogo,
             },
           },
@@ -250,8 +252,8 @@ export async function sendRequisitionFlow(to: string, deps: FlowSenderDeps = {})
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date());
 
-  const [obras, catalogo] = await Promise.all([
-    catalogSource.listActiveWorks(MAX_DROPDOWN_OPTIONS),
+  const [sociedades, catalogo] = await Promise.all([
+    catalogSource.listActiveSocieties(MAX_DROPDOWN_OPTIONS),
     catalogSource.listActiveCatalogItems(MAX_DROPDOWN_OPTIONS),
   ]);
 
@@ -263,7 +265,7 @@ export async function sendRequisitionFlow(to: string, deps: FlowSenderDeps = {})
     flowToken,
     mode: config.mode,
     bodyText: config.bodyText,
-    obras,
+    sociedades,
     catalogo,
   });
 

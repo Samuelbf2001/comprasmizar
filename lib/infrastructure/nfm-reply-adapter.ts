@@ -170,21 +170,34 @@ function compactItems(fields: Record<string, unknown>): { ok: true; items: Compa
   return { ok: true, items, fotoMediaIds };
 }
 
-interface TopLevelFields { type: "compra" | "pago"; workId: string; requiredDate: string; destination?: string; observations?: string; }
+// Reunión 2026-08-31: el solicitante elige EMPRESA, no obra — la obra la asigna el revisor más
+// adelante. `societyId` reemplaza a `workId` como campo de nivel superior del payload del Flow
+// (ver integrations/whatsapp-flow/requisicion.flow.json, pantalla TIPO_Y_OBRA renombrada a
+// TIPO_Y_EMPRESA). `destination` desaparece del contrato (su sentido se fusiona en
+// `observaciones` desde el propio Flow — ver requisicion.flow.json, pantalla DETALLES).
+//
+// `workId` se conserva aquí como campo OPCIONAL de compatibilidad: `KapsoFlowSubmission.workId`
+// (lib/services/kapso-contracts.ts) y `ProcurementService.create` (lib/services/procurement-service.ts)
+// ya lo modelan/exigen como opcional para el canal whatsapp — un envío real del Flow, sin `workId`
+// y con `societyId`, ya no es rechazado con `FORBIDDEN` (bloqueante cerrado).
+interface TopLevelFields { type: "compra" | "pago"; societyId: string; workId?: string; requiredDate?: string; observations?: string; }
 
 function extractTopLevelFields(fields: Record<string, unknown>): { ok: true; value: TopLevelFields } | { ok: false; reason: "invalid_fields" } {
   const type = asString(fields.type);
   if (type !== "compra" && type !== "pago") return { ok: false, reason: "invalid_fields" };
-  const workId = asString(fields.workId);
-  if (!UUID_RE.test(workId)) return { ok: false, reason: "invalid_fields" };
-  const requiredDate = asString(fields.requiredDate);
-  if (!DATE_RE.test(requiredDate)) return { ok: false, reason: "invalid_fields" };
-  // Nota: las claves del payload `complete` del Flow son "destination"/"observations" (inglés),
-  // aunque el campo de formulario subyacente se llama "destino"/"observaciones" — ver
-  // integrations/whatsapp-flow/requisicion.flow.json, pantalla RESUMEN.
-  const destination = asString(fields.destination);
+  const societyId = asString(fields.societyId);
+  if (!UUID_RE.test(societyId)) return { ok: false, reason: "invalid_fields" };
+  // requiredDate opcional en los tres canales (reunión 2026-08-31): la validación de FORMATO solo
+  // se aplica si viene un valor — un vacío ya no invalida el evento completo.
+  const requiredDateRaw = asString(fields.requiredDate);
+  if (requiredDateRaw !== "" && !DATE_RE.test(requiredDateRaw)) return { ok: false, reason: "invalid_fields" };
+  // Ver comentario del módulo, arriba: workId de compatibilidad, no validado (un valor con formato
+  // inválido simplemente se descarta en silencio, no invalida el evento — a diferencia de
+  // societyId, que sí es la identidad real y obligatoria ahora).
+  const workIdRaw = asString(fields.workId);
+  const workId = UUID_RE.test(workIdRaw) ? workIdRaw : undefined;
   const observations = asString(fields.observations);
-  return { ok: true, value: { type, workId, requiredDate, destination: destination || undefined, observations: observations || undefined } };
+  return { ok: true, value: { type, societyId, workId, requiredDate: requiredDateRaw || undefined, observations: observations || undefined } };
 }
 
 /**
@@ -211,12 +224,16 @@ export interface AdaptNfmReplyConfig {
    * unitarias puras: en ese caso la evidencia simplemente no se adjunta. Nunca debe lanzar. */
   resolveAttachmentUrl?: (mediaId: string) => Promise<string | null>;
   /**
-   * Identifica al solicitante por su número de WhatsApp contra la lista blanca por obra
-   * (`obra_solicitantes_autorizados`). El Flow ya NO pide nombre ni teléfono: la identidad es el
-   * remitente verificado. Devuelve el nombre autorizado, o `null` si el número no está permitido
-   * para esa obra → la requisición se rechaza como `unauthorized_requester`. Nunca debe lanzar.
+   * Identifica al solicitante por su número de WhatsApp contra la lista blanca GLOBAL
+   * (`solicitantes_autorizados`, migración 202609010001) — reunión 2026-08-31: el solicitante
+   * elige empresa, no obra, así que la lista deja de estar anclada a una obra que el Flow ni
+   * siquiera pide. `obra_solicitantes_autorizados` se conserva intacta para el portal público
+   * (Fase 6, anclado a la obra), que no pasa por este adaptador. El Flow ya NO pide nombre ni
+   * teléfono: la identidad es el remitente verificado. Devuelve el nombre autorizado, o `null` si
+   * el número no está permitido → la requisición se rechaza como `unauthorized_requester`. Nunca
+   * debe lanzar.
    */
-  resolveRequester: (workId: string, phone: string) => Promise<{ name: string } | null>;
+  resolveRequester: (phone: string) => Promise<{ name: string } | null>;
 }
 
 export type AdaptNfmReplyResult = { ok: true; event: KapsoWebhookEvent } | { ok: false; reason: NfmReplyRejectionReason; wamid?: string; phone?: string };
@@ -249,11 +266,12 @@ export async function adaptNfmReply(payload: RawKapsoWebhookPayload, config: Ada
   const topLevel = extractTopLevelFields(fields);
   if (!topLevel.ok) return { ok: false, reason: topLevel.reason, wamid, phone: verifiedPhone };
 
-  // Identidad por lista blanca: el número de WhatsApp debe estar autorizado para la obra. Sin esto
-  // cualquiera que consiga la línea podría crear requisiciones a nombre de una obra ajena.
+  // Identidad por lista blanca GLOBAL: el número de WhatsApp debe estar autorizado en la
+  // plataforma (ya no por obra — reunión 2026-08-31). Sin esto cualquiera que consiga la línea
+  // podría crear requisiciones a nombre de otra persona.
   let requester: { name: string } | null = null;
   try {
-    requester = await config.resolveRequester(topLevel.value.workId, verifiedPhone);
+    requester = await config.resolveRequester(verifiedPhone);
   } catch {
     // Un fallo de la consulta no debe convertirse en 500: se trata como no autorizado (fail-closed).
     requester = null;
@@ -285,17 +303,16 @@ export async function adaptNfmReply(payload: RawKapsoWebhookPayload, config: Ada
   // Formato de presentación E.164 con "+" (convención ya usada por fixtures/kapso-flow.json);
   // distinto del formato solo-dígitos que exige el HMAC del flow_token (normalizePhoneForToken).
   const phone = `+${normalizePhoneForToken(verifiedPhone)}`;
-  const event: KapsoWebhookEvent = {
-    eventId: wamid,
-    type: "flow_submission",
-    receivedAt: now.toISOString(),
-    submission: {
-      eventId: wamid, phone, workId: topLevel.value.workId, requiredDate: topLevel.value.requiredDate,
-      type: topLevel.value.type, requesterName: requester.name,
-      destination: topLevel.value.destination, observations: topLevel.value.observations,
-      items,
-    },
+  // `KapsoFlowSubmission` (lib/services/kapso-contracts.ts) ya declara `societyId` obligatorio,
+  // `workId`/`requiredDate` opcionales y (MENOR, QA Postgres real) ya NO declara un `destination?:
+  // string` heredado, así que el objeto construido aquí calza estructuralmente con ese contrato sin
+  // necesitar ningún cast.
+  const submission = {
+    eventId: wamid, phone, workId: topLevel.value.workId, requiredDate: topLevel.value.requiredDate,
+    type: topLevel.value.type, requesterName: requester.name, observations: topLevel.value.observations,
+    items, societyId: topLevel.value.societyId,
   };
+  const event: KapsoWebhookEvent = { eventId: wamid, type: "flow_submission", receivedAt: now.toISOString(), submission };
   return { ok: true, event };
 }
 
@@ -357,7 +374,10 @@ export async function resolveKapsoMediaDownloadUrl(mediaId: string): Promise<str
 // ---------------------------------------------------------------------------------------------
 
 export interface NfmReplyRejectionRecorder {
-  record(input: { wamid?: string; phone?: string; reason: NfmReplyRejectionReason; rawPayload: unknown }): Promise<void>;
+  /** `reason` es `string` y no `NfmReplyRejectionReason` porque el mismo registro sirve al Flow de
+   * aprobación (`ApprovalRejectionReason` en approval-reply-adapter.ts), que tiene su propio
+   * conjunto de motivos. Es una auditoría de entradas inválidas, no un enum de dominio. */
+  record(input: { wamid?: string; phone?: string; reason: string; rawPayload: unknown }): Promise<void>;
 }
 
 export function createPostgresNfmReplyRejectionRecorder(databaseUrl = runtimeEnv().DATABASE_URL): NfmReplyRejectionRecorder {

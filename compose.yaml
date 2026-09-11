@@ -1,19 +1,65 @@
 services:
+  # Migración a autoalojado (2026-09-10): la base deja de estar en Supabase y pasa a este servicio.
+  # Ver docs/migracion-autoalojado.md. Versión 18 a propósito: es la misma con la que corre el arnés
+  # de esquema (embedded-postgres 18.4 en scripts/verify-schema.ts), así que CI prueba contra el
+  # mismo motor que sirve producción.
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mizar}
+      POSTGRES_USER: ${POSTGRES_USER:-mizar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      # Checksums de página: detectan corrupción silenciosa de disco en el propio motor. En una base
+      # que ahora operamos nosotros, enterarse tarde de un bloque corrupto es la peor variante.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    # `/var/lib/postgresql`, NO `/var/lib/postgresql/data`. Las imágenes de Postgres 18+ guardan los
+    # datos en un subdirectorio por versión mayor (para que `pg_upgrade --link` no cruce un límite de
+    # montaje) y ABORTAN el arranque si encuentran el montaje en la ruta antigua:
+    # "Error: in 18+, these Docker images are configured to store database data in a format which is
+    # compatible with pg_ctlcluster". Ver docker-library/postgres#1259.
+    # Verificado corriendo la pila de verdad: con la ruta vieja el contenedor queda `unhealthy` y la
+    # aplicación nunca arranca, porque depende de `service_healthy`.
+    volumes:
+      - db_data:/var/lib/postgresql
+    # Solo en la red interna: la base NO es alcanzable desde fuera del host, ni siquiera por Caddy.
+    # No se publica ningún puerto a propósito — para conectarse desde el VPS se usa
+    # `docker compose exec db psql`, que no expone nada a la red.
+    networks:
+      - interna
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mizar} -d ${POSTGRES_DB:-mizar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   app:
     build:
       context: .
     restart: unless-stopped
     env_file:
       - .env.production
+    depends_on:
+      db:
+        condition: service_healthy
     expose:
       - "3000"
     networks:
       - web
+      - interna
     security_opt:
       - no-new-privileges:true
     read_only: true
     tmpfs:
       - /tmp
+    # Soportes y documentos de proveedor en disco propio (STORAGE_ROOT). El volumen es escribible
+    # aunque la raíz del contenedor sea de solo lectura, que es justo lo que se quiere: la aplicación
+    # solo puede escribir aquí.
+    volumes:
+      - storage_data:/var/lib/mizar/storage
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 30s
@@ -44,8 +90,13 @@ services:
 
 networks:
   web:
+  # `internal: true` deja esta red sin ruta de salida: aunque alguien lograra ejecutar código en el
+  # contenedor de la base, no podría hablar con internet desde ahí.
+  interna:
+    internal: true
 
 volumes:
+  db_data:
+  storage_data:
   caddy_data:
   caddy_config:
-

@@ -16,11 +16,16 @@ const publicItemSchema = z.object({
   productLink: z.string().url().max(2_048).refine((value) => new URL(value).protocol === "https:", "HTTPS URL required").optional(),
 }).strict().refine((item) => Boolean(item.itemId || item.description), { message: "itemId or description is required" });
 
-/** Public clients may identify a catalogue item, but never line IDs or quoted amounts. */
+/**
+ * Public clients may identify a catalogue item, but never line IDs or quoted amounts. El portal público
+ * sigue anclado a la obra (su enlace ES por obra y el HMAC va sobre workId): la sociedad se deriva de la
+ * obra en la base de datos, nunca se le pide al solicitante público. `requiredDate` queda opcional
+ * (reunión 2026-08-31, los tres canales); `destination` sale del formulario, se fusiona en observations.
+ */
 export const publicRequisitionSchema = z.object({
   workId: z.string().uuid(), code: z.string().trim().min(4).max(64), type: z.enum(["compra", "pago"]),
-  requiredDate: z.string().date(), name: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(20),
-  destination: z.string().trim().min(1).max(500).optional(), observations: z.string().trim().min(1).max(3000).optional(),
+  requiredDate: z.string().date().optional(), name: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(20),
+  observations: z.string().trim().min(1).max(3000).optional(),
   items: z.array(publicItemSchema).min(1).max(100),
 }).strict();
 
@@ -44,5 +49,5 @@ export async function POST(request: Request) {
   // x-public-link-token, y (b) usar el timing de esa consulta de teléfonos para enumerar solicitantes
   // autorizados en una obra sin siquiera poseer un enlace válido. Con HMAC inválido, verify() nunca toca
   // la BD, así que ese primer filtro es efectivamente gratis para nosotros y costoso de eludir.
-  try { const dependencies = createPostgresDependencies(); if (!(await dependencies.publicAccess.verify(parsed.data.workId, linkToken, parsed.data.code))) return neutral(); if (!(await isAuthorizedPublicRequester(parsed.data.workId, phone))) return neutral(); const service = new ProcurementService(dependencies); await service.create({ type: parsed.data.type, workId: parsed.data.workId, requiredDate: parsed.data.requiredDate, channel: "publico", publicCode: parsed.data.code, publicLinkToken: linkToken, externalRequester: { name: parsed.data.name, phone }, destination: parsed.data.destination, observations: parsed.data.observations, items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, {}); return neutral(); } catch { return neutral(); }
+  try { const dependencies = createPostgresDependencies(); if (!(await dependencies.publicAccess.verify(parsed.data.workId, linkToken, parsed.data.code))) return neutral(); if (!(await isAuthorizedPublicRequester(parsed.data.workId, phone))) return neutral(); const service = new ProcurementService(dependencies); await service.create({ type: parsed.data.type, workId: parsed.data.workId, requiredDate: parsed.data.requiredDate, channel: "publico", publicCode: parsed.data.code, publicLinkToken: linkToken, externalRequester: { name: parsed.data.name, phone }, observations: parsed.data.observations, items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, {}); return neutral(); } catch { return neutral(); }
 }

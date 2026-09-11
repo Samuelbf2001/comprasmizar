@@ -128,7 +128,9 @@ export function PantallaClient() {
       <section className="pantalla-grid pantalla-grid-money" aria-label="Montos agregados">
         <div className="pantalla-tile pantalla-tile-money">
           <strong>{copFormatter.format(metrics.inProcessValue)}</strong>
-          <span>Valor en trámite</span>
+          {/* Reunión 2026-09: la fecha del gasto es la del pago — este monto es lo comprometido en
+              órdenes ya generadas y aún sin pagar, no "en trámite" de aprobación. */}
+          <span>Comprometido sin pagar</span>
         </div>
         <div className="pantalla-tile pantalla-tile-money">
           <strong>{copFormatter.format(metrics.periodExpense)}</strong>

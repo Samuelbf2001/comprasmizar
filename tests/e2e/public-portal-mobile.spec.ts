@@ -7,9 +7,9 @@ test.describe("versión móvil del portal público de requisiciones", () => {
     await expect(page.getByText("Versión móvil")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Pide lo que tu obra necesita." })).toBeVisible();
     await page.getByRole("button", { name: "Continuar" }).click();
-    await expect(page.locator("#mobile-access-error")).toContainText("Ingresa el código de obra");
+    await expect(page.locator("#mobile-access-error")).toContainText("Ingresa la contraseña del portal");
 
-    await page.getByLabel("Código de obra").fill("MIZAR-PRADERA");
+    await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
     await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
     await page.getByRole("button", { name: "Continuar" }).click();
     await expect(page.getByRole("heading", { name: "¿Para quién y cuándo?" })).toBeVisible();
@@ -42,15 +42,15 @@ test.describe("versión móvil del portal público de requisiciones", () => {
       expect(box!.height).toBeGreaterThanOrEqual(48);
     };
 
-    for (const locator of [page.getByLabel("Código de obra"), page.getByLabel("Teléfono autorizado"), page.getByRole("button", { name: "Continuar" })]) {
+    for (const locator of [page.getByLabel("Contraseña del portal"), page.getByLabel("Teléfono autorizado"), page.getByRole("button", { name: "Continuar" })]) {
       await expectTouchTarget(locator);
     }
 
-    await page.getByLabel("Código de obra").focus();
-    const focusStyle = await page.getByLabel("Código de obra").evaluate((element) => getComputedStyle(element).outlineStyle);
+    await page.getByLabel("Contraseña del portal").focus();
+    const focusStyle = await page.getByLabel("Contraseña del portal").evaluate((element) => getComputedStyle(element).outlineStyle);
     expect(focusStyle).not.toBe("none");
 
-    await page.getByLabel("Código de obra").fill("MIZAR-PRADERA");
+    await page.getByLabel("Contraseña del portal").fill("MIZAR-PRADERA");
     await page.getByLabel("Teléfono autorizado").fill("300 555 0101");
     await page.getByRole("button", { name: "Continuar" }).click();
     for (const locator of [page.getByLabel("Obra"), page.getByLabel("Fecha requerida"), page.getByLabel("Tu nombre"), page.getByRole("button", { name: "Continuar a material" })]) {

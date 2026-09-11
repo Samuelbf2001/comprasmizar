@@ -41,7 +41,7 @@ En términos del plan de 8 semanas del PRD, el código cubre las Fases 1–4 cas
 
 ### 3.1 Despliegue (bloquea el uso real) — responsable: Sixteam
 
-- [ ] **Apuntar el DNS** de `compras.grupomizar.com.co` al VPS `72.60.67.214`.
+- [ ] **Apuntar el DNS** de `comprasmizar.sixteam.pro` (provisional, en Hostinger; el definitivo `compras.grupomizar.com.co` lo maneja el registrador de Mizar) al VPS `72.60.67.214`.
 - [ ] **Crear el proyecto en EasyPanel** (aislado; el VPS ya aloja otros clientes) con la imagen de GHCR. Guía completa en [docs/despliegue.md](despliegue.md).
 - [ ] Definir las variables de entorno de producción (Supabase, peppers, Kapso, secretos internos).
 - [ ] Definir la variable de build `NEXT_PUBLIC_APP_URL` en GitHub Actions.
@@ -52,14 +52,15 @@ En términos del plan de 8 semanas del PRD, el código cubre las Fases 1–4 cas
 - [ ] Cargar las **17 obras reales** con su sociedad (hoy hay 3 de prueba).
 - [ ] Cargar el **catálogo de ítems** real desde los Excel de Mizar (importador ya construido: `scripts/import-master-data.ts`).
 - [ ] Cargar **proveedores** reales con sus documentos.
-- [ ] Crear los **usuarios reales** (Daniel, Nelson, Claudia, Juliana…) con sus roles, vinculados a cuentas de Supabase Auth.
+- [ ] Crear los **usuarios reales** (Daniel, Nelson, Claudia, Juliana…) con sus roles, vinculados a filas de `auth.users` con contraseña temporal (`POST /api/usuarios/:id/clave`, ver [migración a autoalojado](migracion-autoalojado.md)).
 - [ ] ⚠️ **Cargar la lista blanca de teléfonos autorizados** (`obra_solicitantes_autorizados`). **Hoy está vacía**: con el nuevo modelo de identidad del Flow, ningún número puede solicitar hasta que se registren los teléfonos permitidos por obra. Sin esto, el WhatsApp Flow rechaza todas las solicitudes.
 
 ### 3.3 WhatsApp / Kapso — responsable: Sixteam + decisión de Mizar
 
 - [ ] **Publicar el Flow** (hoy es borrador). Es una acción de una sola vía (queda inmutable); requiere el "sí" de Mizar. Comando en `integrations/whatsapp-flow/README.md`.
-- [ ] **Conectar el webhook de Kapso** a `https://compras.grupomizar.com.co/api/kapso` con el `KAPSO_WEBHOOK_SECRET`. Hasta que el sitio esté desplegado, la vuelta completa (respuesta del Flow → requisición en la plataforma) no se puede probar: Kapso no alcanza `localhost`.
+- [ ] **Conectar el webhook de Kapso** a `https://comprasmizar.sixteam.pro/api/kapso` con el `KAPSO_WEBHOOK_SECRET`. Hasta que el sitio esté desplegado, la vuelta completa (respuesta del Flow → requisición en la plataforma) no se puede probar: Kapso no alcanza `localhost`.
 - [ ] **Plantillas de mensaje** (aprobación de Meta) para: notificar al solicitante (recibida/aprobada/devuelta) y a los aprobadores, e iniciar la conversación fuera de la ventana de 24 h. Yo las redacto; Meta las aprueba.
+- [ ] **Flow de APROBACIÓN por WhatsApp** (`integrations/whatsapp-flow/aprobacion.flow.json`): construido, probado en unitarias y **ya publicado en Meta** (Flow `2249539985776722`, PUBLISHED) con su plantilla de utilidad **aprobada** (`aprobacion_requisicion`, la que atraviesa la ventana de 24 h). El envío se probó en vivo al número de prueba. Falta para que opere: (1) `WHATSAPP_APPROVAL_FLOW_ID` en el entorno de producción; (2) `usuarios.telefono` de cada aprobador; (3) la vuelta completa (respuesta → requisición aprobada), que exige el sitio desplegado con el webhook de Kapso conectado. Detalle en `integrations/whatsapp-flow/README.md`.
 - [ ] Confirmar el **plan de Kapso** y quién asume las tarifas de conversación de Meta.
 
 ### 3.4 Validación contable (bloquea producción) — responsable: Sixteam + contabilidad Mizar
@@ -84,7 +85,7 @@ En términos del plan de 8 semanas del PRD, el código cubre las Fases 1–4 cas
 - [ ] **RLS como segunda barrera no se ejecuta:** la app se conecta con un rol que evade RLS; la autorización real vive en la capa de servicio + triggers (que sí funcionan). Decidir si se conecta por rol `authenticated` o se corrige el PRD para no prometer una barrera que hoy es inerte.
 - [ ] **Rotar credenciales** compartidas por chat (Supabase, contraseña BD, EasyPanel, Kapso).
 - [ ] Región de Supabase quedó en **us-east-2 (Ohio)**, no São Paulo; barato de mover mientras la base esté casi vacía.
-- [ ] Programar el **backup automático** (`backup.yml` existe; falta crear el secreto `DATABASE_URL` en GitHub Actions).
+- [ ] Programar el **respaldo automático**: el cron de `ops/backup-daily.sh` en el VPS (03:00 Colombia) y el consentimiento OAuth de Google Drive. El workflow `backup.yml` se retiró en la migración a autoalojado — hacía `pg_dump` por internet y la base ya no expone puerto público. Ver docs/migracion-autoalojado.md paso 4 y 5.
 
 ---
 

@@ -279,12 +279,14 @@ function ExpensesSkeleton({ pathname }: { pathname: string }) {
 // cabecera fija, la tabla se ensancharia al llegar los datos, que es justo el salto
 // que estos esqueletos existen para evitar.
 const COLUMNAS_CATALOGO: Record<string, string[]> = {
-  works: ["Nombre", "Sociedad", "Estado", "Acciones"],
+  works: ["Nombre", "Empresa", "Estado", "Acciones"],
   tags: ["Nombre", "Aprobador", "Estado", "Acciones"],
   items: ["Nombre", "Unidad", "Categoría", "Estado", "Acciones"],
   suppliers: ["Nombre", "NIT", "Contacto", "Estado", "Acciones"],
   societies: ["Nombre", "NIT", "Estado", "Acciones"],
   users: ["Nombre", "Correo", "Roles", "Estado", "Acciones"],
+  // HUECO 1 (reunión 2026-08-31): lista blanca de quién puede pedir por WhatsApp.
+  requesters: ["Nombre", "Teléfono", "Estado", "Acciones"],
 };
 function columnasDesdeRuta(pathname: string): string[] {
   if (pathname.startsWith("/proveedores")) return COLUMNAS_CATALOGO.suppliers;
@@ -293,6 +295,7 @@ function columnasDesdeRuta(pathname: string): string[] {
   if (pathname.startsWith("/catalogos/items")) return COLUMNAS_CATALOGO.items;
   if (pathname.startsWith("/catalogos/sociedades")) return COLUMNAS_CATALOGO.societies;
   if (pathname.startsWith("/catalogos/usuarios")) return COLUMNAS_CATALOGO.users;
+  if (pathname.startsWith("/catalogos/solicitantes-whatsapp")) return COLUMNAS_CATALOGO.requesters;
   // Sin tipo en la ruta la pantalla real abre la primera pestana permitida (Obras
   // para los roles que la ven); es la aproximacion mas cercana disponible.
   return COLUMNAS_CATALOGO.works;
@@ -304,8 +307,9 @@ function CatalogsSkeleton({ pathname }: { pathname: string }) {
     "Etiquetas",
     "Ítems",
     "Proveedores",
-    "Sociedades",
+    "Empresas",
     "Usuarios",
+    "Solicitantes WhatsApp",
   ];
   return (
     <div aria-busy="true" data-testid="catalogs-skeleton">

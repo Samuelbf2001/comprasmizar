@@ -5,14 +5,22 @@ Definición versionada del formulario de requisición dentro del chat de WhatsAp
 proxy de Kapso. Antes de este cambio solo existía el receptor del webhook
 (`app/api/kapso/route.ts`); el Flow en sí no existía en ningún lado.
 
+> **Hay dos Flows en este directorio.** Este documento describe primero el de
+> **captura** (`requisicion.flow.json`, RF-902), que es el que existía. El de
+> **aprobación** (`aprobacion.flow.json`) es posterior y tiene su propia sección
+> al final: [WhatsApp Flow — Aprobación de requisición](#whatsapp-flow--aprobación-de-requisición).
+
 ## Archivos
 
-- `requisicion.flow.json` — fuente de verdad del Flow. Cualquier cambio de UX se
+- `requisicion.flow.json` — fuente de verdad del Flow de captura. Cualquier cambio de UX se
   hace aquí y se sube con el script; nunca se edita a mano en el Builder de Meta.
+- `aprobacion.flow.json` — fuente de verdad del Flow de aprobación (misma regla).
 - `../../scripts/publish-whatsapp-flow.ts` — crea el Flow (si no existe, por nombre)
   o actualiza su Flow JSON (si ya existe). Siempre dentro del estado `DRAFT`.
-- `../../tests/unit/whatsapp-flow.test.ts` — valida la estructura local del JSON
-  (pantallas, requeridos, terminal/complete) sin llamar a ninguna API.
+  Recibe cuál de los dos: `requisicion` (por defecto) o `aprobacion`.
+- `../../tests/unit/whatsapp-flow.test.ts` y `../../tests/unit/approval-flow.test.ts` —
+  validan la estructura local de cada JSON (pantallas, requeridos, terminal/complete)
+  sin llamar a ninguna API.
 
 ## Diseño del Flow
 
@@ -21,14 +29,18 @@ cifrado, sin health checks). Toda la navegación es `navigate`/`complete` en el
 cliente. **Un artículo por pantalla** para que cada ítem se distinga con claridad
 del anterior (feedback de la prueba real):
 
-1. **TIPO_Y_OBRA** (entrada) — tipo (`compra`/`pago`) y obra (`Dropdown`). El
-   listado de obras **no está quemado**: llega dinámico por `data.obras`.
+1. **TIPO_Y_EMPRESA** (entrada) — tipo (`compra`/`pago`) y **empresa** (`Dropdown`,
+   reunión 2026-08-31: el solicitante elige empresa, no obra — la obra/centro de
+   costo la asigna el revisor en la oficina). El listado de sociedades **no
+   está quemado**: llega dinámico por `data.sociedades`.
 2. **ARTICULO_UNO** — artículo obligatorio: catálogo (opcional), descripción,
    cantidad, unidad, posible proveedor y link. Es el único obligatorio.
 3. **ARTICULO_DOS** — segundo artículo, todo opcional (se omite con Continuar).
 4. **ARTICULO_TRES** — tercer artículo, todo opcional.
-5. **DETALLES** — fecha requerida (`DatePicker`), destino/frente, observaciones,
-   y un **`PhotoPicker` con `photo-source: camera_gallery`**: el solicitante puede
+5. **DETALLES** — fecha requerida (`DatePicker`, **opcional** desde la reunión
+   2026-08-31, en los tres canales), observaciones (ya sin el campo "destino"
+   separado: su sentido se fusiona aquí — la ayuda del campo pide decir a dónde
+   va la compra), y un **`PhotoPicker` con `photo-source: camera_gallery`**: el solicitante puede
    **tomar una foto con la cámara** o elegirla de la galería.
 6. **RESUMEN** (terminal, `success: true`) — dispara `complete` con el payload
    plano. Las claves item_N_* se conservan aunque cada ítem venga de su pantalla.
@@ -57,12 +69,12 @@ Meta no soporta listas dinámicas sin Data Endpoint. Se usan 3 pantallas fijas
 (1 obligatoria + 2 opcionales). Una requisición con más de 3 ítems requiere otro
 envío; subir el límite es duplicar una pantalla `ARTICULO_*`.
 
-## Cómo se llenan los dropdowns dinámicos (obra y catálogo)
+## Cómo se llenan los dropdowns dinámicos (empresa y catálogo)
 
 Sin Data Endpoint, el **único** momento en que la pantalla de entrada recibe
 datos dinámicos es cuando el negocio **envía** el mensaje interactivo que abre
 el Flow. Ese envío incluye `interactive.action.parameters.flow_action_payload.data`,
-un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
+un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_EMPRESA`
 (`flows/guides/sendingaflow.md`):
 
 ```json
@@ -83,9 +95,9 @@ un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_OBRA`
         "flow_action": "navigate",
         "flow_token": "<timestampISO>.<hex>",
         "flow_action_payload": {
-          "screen": "TIPO_Y_OBRA",
+          "screen": "TIPO_Y_EMPRESA",
           "data": {
-            "obras": [{ "id": "<uuid-obra>", "title": "Obra La Pradera" }],
+            "sociedades": [{ "id": "<uuid-sociedad>", "title": "Constructora Mizar S.A.S." }],
             "catalogo": [{ "id": "<uuid-item>", "title": "Cemento gris 50kg" }]
           }
         }
@@ -132,20 +144,20 @@ Respuesta: solo `{ ok, messageId }` — nunca teléfonos ni el cuerpo de Kapso.
 
 **Fallo cerrado:** sin `KAPSO_API_KEY`, `WHATSAPP_FLOW_ID`,
 `KAPSO_PHONE_NUMBER_ID` o `KAPSO_WEBHOOK_SECRET`, `sendRequisitionFlow` lanza
-`FLOW_SEND_NOT_CONFIGURED` **antes** de consultar obras/catálogo — nunca toca
+`FLOW_SEND_NOT_CONFIGURED` **antes** de consultar sociedades/catálogo — nunca toca
 la BD a medias.
 
-**Origen de `obras` y `catalogo`:** `createPostgresFlowCatalogSource` (misma
-`sharedPostgres()` que usan los demás adaptadores) consulta obras con
-`estado = 'activa'` e items con `estado = 'activo'` — los mismos filtros que ya
-usa `GET /api/catalogs`. Orden: obras alfabético por nombre; items por uso más
+**Origen de `sociedades` y `catalogo`:** `createPostgresFlowCatalogSource` (misma
+`sharedPostgres()` que usan los demás adaptadores) consulta sociedades con
+`activa = true` e items con `estado = 'activo'` — los mismos filtros que ya
+usa `GET /api/catalogs`. Orden: sociedades alfabético por nombre; items por uso más
 reciente primero cuando hay señal (`max(requisicion_items.created_at)` por
 `item_id`), alfabético para lo nunca usado.
 
 **Tope de opciones — 200:** `flows/reference/components.md` (tabla "Limits and
 restrictions" de `Dropdown`) fija el máximo de opciones de un `data-source`
 dinámico en **200 si ninguna opción trae imagen, 100 si alguna la trae**.
-Ninguna opción de `obras`/`catalogo` lleva imagen, así que el tope aplicado es
+Ninguna opción de `sociedades`/`catalogo` lleva imagen, así que el tope aplicado es
 `MAX_DROPDOWN_OPTIONS = 200` (constante exportada de `flow-sender.ts`), pasado
 explícito a cada consulta — nunca "lo que devuelva la BD". La misma tabla fija
 en 30 caracteres el máximo de `title`; nombres más largos se recortan con
@@ -182,7 +194,17 @@ hex        = HMAC-SHA256(telefono + "." + timestampISO, KAPSO_WEBHOOK_SECRET)  /
   Rechazar (o degradar a "sin verificar") un `flow_token` cuyo `timestampISO`
   sea demasiado viejo, ya que no lleva expiración propia.
 
-## Mapeo requerido hacia el contrato del webhook (no implementado; NO se tocó `app/api/kapso/route.ts`)
+## Mapeo hacia el contrato del webhook (implementado en `lib/infrastructure/nfm-reply-adapter.ts` — Fase 6, reunión 2026-08-31)
+
+**Nota de esta fase:** el mapeo de abajo describe el diseño original, ya
+**implementado** (`adaptNfmReply`, `app/api/kapso/route.ts`) — la sección se
+conserva por su valor de referencia, con los campos actualizados a los
+vigentes tras la reunión 2026-08-31 (empresa en vez de obra; sin "destino";
+fecha requerida opcional). El manejo real de `item_N_foto` (evidencia por
+ítem, media id + descarga vía el proxy de Kapso) vive en
+`resolveKapsoMediaDownloadUrl`/`firstEvidenceMediaId` (`nfm-reply-adapter.ts`)
+y difiere del esquema `evidencia`/`cdn_url` cifrado que describe la sección
+siguiente (ese es el camino de un **Data Endpoint**, que este Flow no tiene).
 
 El payload de `complete` de `RESUMEN` es plano (Meta no permite objetos
 anidados salvo para `PhotoPicker`/`DocumentPicker`, que además solo pueden ir
@@ -194,25 +216,24 @@ es (`flows/guides/receiveflowresponse.md`):
   "interactive": {
     "type": "nfm_reply",
     "nfm_reply": {
-      "response_json": "{\"flow_token\":\"...\", \"type\":\"compra\", \"workId\":\"...\", ...}"
+      "response_json": "{\"flow_token\":\"...\", \"type\":\"compra\", \"societyId\":\"...\", ...}"
     }
   }
 }
 ```
 
-Eso **no** calza con `kapsoWebhookSchema`/`KapsoFlowSubmission`
+Eso **no** calza directo con `kapsoWebhookSchema`/`KapsoFlowSubmission`
 (`lib/services/kapso-contracts.ts`, `app/api/kapso/route.ts`), que esperan un
 evento ya envuelto (`eventId`, `type: "flow_submission"`, `receivedAt`,
-`submission.items[]`). Alguien —Kapso como proxy normalizador, o un adaptador
-propio si Kapso entrega el `nfm_reply` crudo— tiene que traducir antes de
-llamar al webhook existente. Documentamos el mapeo exacto en vez de tocar ese
-archivo (pertenece a otro agente):
+`submission.items[]`) — `adaptNfmReply` (`lib/infrastructure/nfm-reply-adapter.ts`)
+es ese traductor, ya implementado. Tabla de referencia (actualizada a los
+campos vigentes tras la reunión 2026-08-31):
 
 | Campo del Flow (`response_json`) | Campo de `KapsoFlowSubmission` | Nota |
 | --- | --- | --- |
 | `type` | `type` | Coincide tal cual (`"compra"\|"pago"`). |
-| `workId` | `workId` | UUID de la obra elegida en el dropdown dinámico. |
-| `requiredDate` | `requiredDate` | Ya viene `YYYY-MM-DD` (DatePicker ≥5.0); coincide con `z.string().date()`. |
+| `societyId` | `societyId` | UUID de la empresa elegida en el dropdown dinámico — el solicitante elige empresa, no obra (la asigna el revisor). Obligatorio en `KapsoFlowSubmission` y exigido por `ProcurementService.create` para el canal whatsapp. `workId` se conserva como campo OPCIONAL de compatibilidad (ver comentario en `extractTopLevelFields`, `nfm-reply-adapter.ts`); el Flow vigente ya no lo manda. |
+| `requiredDate` | `requiredDate` | **Opcional** (reunión 2026-08-31): si viene, ya llega `YYYY-MM-DD` (DatePicker ≥5.0) y se valida el formato; si no viene, se omite en vez de rechazar el evento. |
 | `requesterName` | `requesterName` | Coincide tal cual. |
 | `phone` | `phone` | **Decisión pendiente**: el Flow deja editar el teléfono aunque lo precarga con el remitente real de WhatsApp. Recomendado: para el campo de identidad usar el remitente verificado del mensaje (`context.from`/`from` en el webhook de mensajes de Meta) y tratar `phone` del Flow solo como dato de contacto alternativo, no como identidad. |
 | `item_N_catalogo` (N=1..3, si no vacío) | `items[i].itemId` | Solo incluir el ítem N en el arreglo si `item_N_catalogo` **o** `item_N_descripcion` no están vacíos; las franjas 2/3 vacías se descartan completas, no se envían como ítem con cantidad 0. |
@@ -269,20 +290,21 @@ Variables requeridas (ya están en `.env.local`, no se imprimen aquí):
   `https://api.kapso.ai/meta/whatsapp/v24.0`.
 
 ```sh
-npx tsx scripts/publish-whatsapp-flow.ts
+npx tsx scripts/publish-whatsapp-flow.ts             # Flow de captura (por defecto)
+npx tsx scripts/publish-whatsapp-flow.ts aprobacion  # Flow de aprobación
 ```
 
-El script busca un Flow con el nombre exacto `Requisición de obra – Mizar` en
-la WABA:
+El script busca un Flow por su nombre exacto en la WABA (`Requisición de obra – Mizar`
+para el de captura, `Aprobación de requisición – Mizar` para el de aprobación):
 
 - Si no existe, lo crea con `POST /{waba}/flows` y `"publish": false`
   (queda en `DRAFT`).
 - Si ya existe, sube el JSON actualizado con
   `POST /{flow_id}/assets` (`asset_type: "FLOW_JSON"`), sin tocar su estado.
 
-Al final imprime `{ action, flow_id, validation_errors }`. Si
+Al final imprime `{ flow, action, flow_id, validation_errors }`. Si
 `validation_errors` no está vacío, el script sale con código distinto de cero
-y hay que corregir `requisicion.flow.json` antes de reintentar.
+y hay que corregir el `.flow.json` correspondiente antes de reintentar.
 
 **Estado verificado (2026-08-24, corrida real contra la API):** `flow_id
 1972861836748301`, `status DRAFT`, `validation_errors: []`. Preview embebible
@@ -321,3 +343,210 @@ curl -X POST "https://api.kapso.ai/meta/whatsapp/v24.0/<FLOW_ID>/publish?busines
 adaptador del webhook (pendiente, ver "Mapeo requerido..." arriba) ya existe —
 publicar el Flow sin el adaptador del webhook deja a un solicitante llenando
 un formulario que nadie procesa.
+
+---
+
+# WhatsApp Flow — Aprobación de requisición
+
+El otro extremo del ciclo: cuando el revisor manda una requisición a aprobación, el
+**aprobador asignado** recibe en WhatsApp los ítems ya cotizados, desmarca lo que no
+aprueba y decide, sin entrar a la plataforma.
+
+No corresponde a ningún RF del PRD (que llega hasta RF-1206 y no contempla este canal).
+Es una extensión del canal WhatsApp a las operaciones que la reunión del 2026-08-31 ya
+definió y el dominio ya implementa —`decideItems` + `approve`/`returnForCorrection`—, no
+un concepto de negocio nuevo. **No introduce ninguna capacidad que la app web no tenga.**
+
+## Diseño
+
+2 pantallas, **sin Data Endpoint** (igual que el Flow de captura: sin `endpoint_uri`, sin
+cifrado, sin health checks). Los ítems reales viajan como datos dinámicos del mensaje que
+abre el Flow, en `flow_action_payload.data`, exactamente el mismo mecanismo con el que el
+Flow de captura llena sus dropdowns.
+
+1. **REVISION** (entrada) — cabecera (`REQ-…· obra`), resumen (solicitante, fecha
+   requerida, total vigente) y un **`CheckboxGroup`** con un ítem por línea, **todos
+   marcados de entrada**. El aprobador solo desmarca lo que no aprueba: el camino
+   frecuente ("apruebo todo") queda en dos toques.
+2. **DECISION** (terminal, `success: true`) — `RadioButtonsGroup` obligatorio
+   (`Aprobar` / `Devolver al revisor`) y un `TextArea` de motivo opcional. Dispara
+   `complete` con `{kind, requisitionId, aprobados, accion, motivo}`.
+
+Solo se muestran las líneas **no declinadas**: lo que el revisor ya descartó no reaparece.
+
+### Límites de la pantalla (verificados en la documentación de Meta, 2026-09-10)
+
+Tabla de límites de `CheckboxGroup` en `whatsapp/flows/reference/components`:
+
+| Propiedad | Límite de Meta | Lo que usamos |
+|---|---|---|
+| Máx. opciones | **20** | `MAX_APPROVAL_ITEMS = 20` (el tope real, no una precaución) |
+| `title` de la opción | 30 | 30 |
+| `description` de la opción | 300 | 80, por legibilidad en teléfono |
+| `label` del componente | 30 | 15 (`Ítems a aprobar`) |
+
+Ojo con el label: **30** es el tope de `CheckboxGroup`/`RadioButtonsGroup`; los 20 caracteres
+que documenta la sección del Flow de captura aplican a `TextInput`/`TextArea`/`Dropdown`.
+
+Las 20 opciones son un techo de Meta, así que una requisición con más ítems vigentes **no se
+puede aprobar por WhatsApp** por más que se quiera: el despachador cae al aviso de plantilla
+y esa persona entra por la web. Otros límites relevantes del Flow JSON: el archivo no puede
+pasar de **10 MB** y el modelo de rutas admite hasta **10 ramas** (`reference/flowjson`);
+este Flow usa 2 pantallas y una sola rama, así que sobra margen.
+
+## Contrato de `flow_token` — distinto al del Flow de captura
+
+```
+flow_token = "<timestampISO>.<hex>"
+hex        = HMAC-SHA256(telefono + "." + timestampISO + "." + requisicionId, KAPSO_WEBHOOK_SECRET)
+```
+
+El `requisicionId` entra en la firma porque este token no autoriza "responder un
+formulario" sino **decidir sobre esa requisición concreta**: sin él, un token legítimo
+emitido para la requisición A serviría para aprobar la B cambiando un campo del payload.
+Como efecto colateral buscado, los dos contratos son mutuamente excluyentes — un token de
+captura nunca valida como token de aprobación ni al revés. Caduca a los **7 días** (el de
+captura, a las 24 h): una aprobación es una tarea humana con plazo laboral.
+
+## Identidad y por qué esto no contradice RF-1205
+
+RF-1205 (verificado en `PRD.md`) excluye aprobar/denegar **del MCP**: "la aprobación es el
+acto de control interno de Mizar y debe ocurrir en la interfaz con la persona autenticada,
+no delegable a un agente". Está implementado como `mcpForbidden` en `lib/domain/rules.ts`,
+que deniega esos permisos cuando `origin === "mcp"`.
+
+Este canal entra con `origin: "kapso"`, que `authOrigin()` trata como `"web"`. No es un
+rodeo: lo que RF-1205 prohíbe es que **un agente** decida, no que la persona decida desde
+otra pantalla. La identidad se sostiene en cuatro capas independientes, todas verificadas
+antes de llamar al servicio:
+
+1. La firma del webhook (`verifyKapsoSignature`), que ya protege todo el canal.
+2. El remitente verificado por Meta (`message.from`): no lo declara el payload.
+3. El `flow_token` HMAC atado a ese número **y** a esa requisición, emitido únicamente al
+   teléfono del aprobador asignado.
+4. `requisition.approverId === actor.id`, que sigue comprobándose dentro de
+   `decideItems`/`approve`/`returnForCorrection`.
+
+Ninguna se debilita para que este canal funcione.
+
+**Sobre `usuarios.telefono`:** el teléfono remitente se resuelve contra esa columna, que es
+dato de contacto (nullable, sin índice único) y por sí sola no sería una credencial
+aceptable. Aquí no lo es: la autorización la dan el token y el chequeo del dominio; la
+consulta solo le pone **nombre** al actor. Por eso exige unicidad — si dos usuarios activos
+con rol de aprobación comparten teléfono, la resolución es ambigua y se **rechaza** en vez
+de elegir uno. Se decidió no crear una tabla nueva de "teléfonos que pueden aprobar"
+justamente porque no es ahí donde vive la autorización.
+
+## Piezas
+
+| Pieza | Archivo |
+|---|---|
+| Flow JSON | `aprobacion.flow.json` |
+| Emisor + token + contexto desde la BD | `../../lib/infrastructure/approval-flow-sender.ts` |
+| Adaptador de la respuesta (valida y traduce) | `../../lib/infrastructure/approval-reply-adapter.ts` |
+| Plan y aplicación de la decisión | `../../lib/infrastructure/approval-processor.ts` |
+| Entrada del webhook | `../../app/api/kapso/route.ts` |
+| Reenvío manual | `POST /api/internal/send-approval-flow` |
+| Pruebas | `../../tests/unit/approval-flow.test.ts` |
+
+## La ventana de 24 h manda sobre todo esto (verificado en vivo, 2026-09-10)
+
+Un Flow es un mensaje **interactivo**, no una plantilla, y WhatsApp solo admite mensajes
+interactivos dentro de la ventana de servicio de 24 h que abre la propia persona al
+escribirle al negocio. Fuera de esa ventana el proxy responde:
+
+```
+422 {"error":"Cannot send non-template messages outside the 24-hour window.",
+     "next_steps":"Send a WhatsApp template message to reopen the session."}
+```
+
+**Esto no es un caso raro: es el caso normal.** Un aprobador rara vez le ha escrito al
+número de Mizar el mismo día en que le toca aprobar algo.
+
+### La solución: el Flow dentro de una plantilla
+
+Una plantilla **sí** atraviesa la ventana (es para lo que existe), y **puede llevar el Flow
+adentro** como botón de tipo `FLOW`. Los datos dinámicos viajan igual, solo cambia el
+nombre del campo: `flow_action_data` en vez de `flow_action_payload.data` — por eso este
+Flow sigue sin necesitar Data Endpoint por ninguno de los dos caminos.
+
+Plantilla registrada: **`aprobacion_requisicion`** (id `1974324693523971`, categoría
+`UTILITY`, idioma `es`), definida y reproducible en
+[`scripts/publish-approval-template.ts`](../../scripts/publish-approval-template.ts):
+
+> Hola {{1}}. La requisicion {{2}} de la obra {{3}} esta esperando tu aprobacion.
+> Total: {{4}}. Abre el boton para revisar los items y decidir.
+> `[Revisar y aprobar]` → abre el Flow en la pantalla `REVISION`
+
+**Meta exige que el Flow esté PUBLICADO** para aceptar el botón: con el Flow en borrador la
+creación de la plantilla falla con "Debe publicarse el flujo asociado con el botón"
+(`error_subcode 2388142`). Por eso el Flow se publicó (ver estado más abajo).
+
+### El orden de intentos, y por qué ese orden
+
+El despachador prueba en este orden, que es una decisión de **costo**:
+
+1. **Mensaje interactivo** — gratis mientras la sesión de 24 h esté abierta.
+2. **Plantilla con botón de Flow** (`APPROVAL_FLOW_SESSION_CLOSED`) — atraviesa la ventana,
+   pero abre una conversación de utilidad **facturable**.
+3. **Aviso de texto** — solo si el Flow no cabe de ninguna forma (requisición ya no está en
+   aprobación, más de 20 ítems, canal sin configurar). La persona entra por la web.
+
+Invertir 1 y 2 pagaría una conversación en cada aviso, incluso con el chat abierto. El
+costo por conversación es justamente la decisión P6 abierta del PRD ("costos WhatsApp"):
+esto la vuelve concreta — se paga una conversación de utilidad por cada requisición que
+llegue a aprobación con la sesión cerrada.
+
+## Cómo se dispara
+
+`sendForApproval` ya encolaba una notificación `pendiente_aprobador` al aprobador por
+WhatsApp. **No se creó ninguna cola ni cron nuevo:** el despachador
+(`POST /api/internal/dispatch-notifications`) ahora entrega esa notificación como el Flow
+en vez de como plantilla de texto, reutilizando su lease, reintentos y auditoría.
+
+El canal se activa solo con configurar `WHATSAPP_APPROVAL_FLOW_ID`. Sin esa variable, el
+despachador ni siquiera intenta el Flow y todo se comporta exactamente como antes. Si el
+Flow no se puede armar para una requisición concreta (demasiados ítems, ya no está en
+aprobación, aprobador sin teléfono), cae a la plantilla: la persona siempre se entera.
+
+`POST /api/internal/send-approval-flow` (secreto `SEND_FLOW_SECRET` en `x-dispatch-secret`,
+body `{"requisitionId": "…"}`) reenvía a mano, para el caso real de "se le perdió el
+mensaje" o "cargaron su teléfono después". **No acepta un número destino**: el
+destinatario sale siempre de `aprobador_id` en la BD, así que un llamador interno
+comprometido no puede desviar una aprobación a un tercero.
+
+## Qué hace cada respuesta
+
+| Respuesta del aprobador | Efecto |
+|---|---|
+| Aprobar, todo marcado | `decideItems` marca cada línea `aprobado` + `approve` |
+| Aprobar, algo desmarcado | lo desmarcado queda `declinado` con el motivo escrito (o uno por defecto que dice que se desmarcó en WhatsApp sin motivo) + `approve` |
+| Aprobar, todo desmarcado | **rechazado**: el dominio no tiene "declinar la requisición" desde `en_aprobacion`; debe usar Devolver |
+| Devolver sin motivo | **rechazado**: `assertTransition` exige comentario para `devuelta` |
+| Devolver con motivo | `returnForCorrection` |
+| La requisición ya no está `en_aprobacion` | **ignorado** (reintento del webhook o respuesta tardía), no es un error |
+
+Los rechazos se registran en `whatsapp_eventos` como entrada inválida, igual que los del
+Flow de captura, y nunca devuelven 5xx.
+
+## Pendiente antes de que este canal funcione en real
+
+1. ~~Crear el Flow en Meta~~ **HECHO (2026-09-10)**: `flow_id 2249539985776722`,
+   `validation_errors: []`. Meta aceptó el JSON sin objeciones, lo que confirma que
+   `CheckboxGroup` con `data-source`/`init-value` dinámicos y un arreglo en el payload del
+   `complete` son válidos. Se actualiza con `npx tsx scripts/publish-whatsapp-flow.ts aprobacion`.
+2. ~~Publicar el Flow~~ **HECHO (2026-09-10)**: estado `PUBLISHED`. Fue obligatorio para
+   poder adjuntarlo a la plantilla. **No se recorrió antes en un teléfono real**: si aparece
+   un problema de UX, corregirlo puede exigir un Flow nuevo.
+3. ~~Crear la plantilla~~ **HECHO (2026-09-10)**: `aprobacion_requisicion`, id
+   `1974324693523971`, categoría `UTILITY`. **En estado `PENDING`**: hasta que Meta la
+   apruebe, el envío fuera de la ventana de 24 h no funciona. Consultar con
+   `npx tsx --env-file=.env.local scripts/publish-approval-template.ts --status`.
+4. **Cargar `WHATSAPP_APPROVAL_FLOW_ID=2249539985776722`** en el entorno de producción (en
+   `.env.local` ya está). Sin esa variable el canal ni se intenta y todo sigue como antes.
+5. **Cargar el teléfono de cada aprobador** en `usuarios.telefono`. Sin él no hay a quién
+   enviarle y la notificación cae al aviso de texto.
+6. **Recorrido real de punta a punta**: falta la vuelta de regreso. El envío ya se ejercitó
+   contra la API real (y devolvió el 422 de la ventana, que es lo que motivó la plantilla);
+   la respuesta (webhook → requisición aprobada) no se puede probar desde local porque Kapso
+   no alcanza `localhost`, así que exige el sitio desplegado con el webhook conectado.
