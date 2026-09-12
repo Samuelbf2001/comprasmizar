@@ -16,7 +16,9 @@ export function GET() {
     // "users" solo habilita ESCRITURA aquí (ver canReadUsers para su lectura, exclusiva de admin_mizar/admin_sixteam).
     // "costCenters" (2026-09-12) sigue el mismo criterio genérico que "works"/"tags" (admin_sixteam, o
     // admin_mizar con el autoservicio habilitado) — canManageCatalog no lo trata como caso especial.
-    const access = { works: canManageCatalog(actor, "works", feature), tags: canManageCatalog(actor, "tags", feature), items: canManageCatalog(actor, "items", feature), suppliers: canManageCatalog(actor, "suppliers", feature), societies: canManageCatalog(actor, "societies", feature), users: canManageCatalog(actor, "users", feature), requesters: canManageCatalog(actor, "requesters", feature), costCenters: canManageCatalog(actor, "costCenters", feature) };
+    // "cashBoxes" (2026-09-12) sigue el mismo criterio genérico que "costCenters" — canManageCatalog
+    // no lo trata como caso especial.
+    const access = { works: canManageCatalog(actor, "works", feature), tags: canManageCatalog(actor, "tags", feature), items: canManageCatalog(actor, "items", feature), suppliers: canManageCatalog(actor, "suppliers", feature), societies: canManageCatalog(actor, "societies", feature), users: canManageCatalog(actor, "users", feature), requesters: canManageCatalog(actor, "requesters", feature), costCenters: canManageCatalog(actor, "costCenters", feature), cashBoxes: canManageCatalog(actor, "cashBoxes", feature) };
     const canReadUsers = access.users || actor.roles.includes("admin_mizar");
     // HUECO 1: mismo criterio que la policy RLS de lectura de solicitantes_autorizados
     // ("solicitantes_autorizados_lectura_operativa" = can_operate_compras() or can_manage_catalogos()),
@@ -24,7 +26,7 @@ export function GET() {
     // CONSULTAR quién puede pedir por WhatsApp aunque no pueda administrar la lista.
     const canReadRequesters = access.requesters || actor.roles.includes("revisor");
     if (!Object.values(access).some(Boolean) && !canReadUsers && !canReadRequesters) throw new DomainError("FORBIDDEN", "No puede administrar catálogos");
-    const [works, tags, items, suppliers, societies, approvers, societyRecords, userRecords, requesters, costCenters, costCenterRecords] = await Promise.all([
+    const [works, tags, items, suppliers, societies, approvers, societyRecords, userRecords, requesters, costCenters, costCenterRecords, cashBoxRecords] = await Promise.all([
       access.works ? sql<Array<{ id: string; name: string; societyId: string; costCenterId: string | null; active: boolean }>>`select id, nombre as name, sociedad_id as "societyId", centro_costo_id as "costCenterId", estado='activa' as active from obras order by nombre` : Promise.resolve([]),
       access.tags ? sql<Array<{ id: string; name: string; approverId: string | null; active: boolean }>>`select id, nombre as name, aprobador_id as "approverId", activa as active from etiquetas order by nombre` : Promise.resolve([]),
       access.items ? sql<Array<{ id: string; name: string; specification: string | null; unit: string; category: string | null; status: string; active: boolean }>>`select id, nombre as name, especificacion as specification, unidad_defecto as unit, categoria as category, estado as status, estado='activo' as active from items where estado <> 'fusionado' order by nombre` : Promise.resolve([]),
@@ -45,7 +47,10 @@ export function GET() {
       // "societies"/"societyRecords" son dos claves distintas (ver CatalogData en catalog-admin.tsx).
       access.works ? sql<Array<{ id: string; name: string }>>`select id, nombre as name from centros_costo where activo=true order by nombre` : Promise.resolve([]),
       access.costCenters ? sql<Array<{ id: string; name: string; code: string | null; societyId: string | null; active: boolean }>>`select id, nombre as name, codigo as code, sociedad_id as "societyId", activo as active from centros_costo order by nombre` : Promise.resolve([]),
+      // Cajas (2026-09-12): listado COMPLETO (incluye inactivas) para la pestaña de administración —
+      // mismo patrón que costCenters/costCenterRecords arriba.
+      access.cashBoxes ? sql<Array<{ id: string; name: string; type: string; societyId: string | null; costCenterId: string | null; active: boolean }>>`select id, nombre as name, tipo as type, sociedad_id as "societyId", centro_costo_id as "costCenterId", activo as active from cajas order by nombre` : Promise.resolve([]),
     ]);
-    return { works, tags, items, suppliers, societies, approvers, societyRecords, userRecords, requesters, costCenters, costCenterRecords, access, canReadUsers, canReadRequesters, features: { catalogos_admin_mizar: feature } };
+    return { works, tags, items, suppliers, societies, approvers, societyRecords, userRecords, requesters, costCenters, costCenterRecords, cashBoxRecords, access, canReadUsers, canReadRequesters, features: { catalogos_admin_mizar: feature } };
   });
 }

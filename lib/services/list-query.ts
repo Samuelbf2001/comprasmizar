@@ -18,6 +18,9 @@ export interface ListQuery {
    *  (columna propia `requisiciones.centro_costo_id`, el centro EFECTIVO de la requisición); el resto de
    *  entidades lo ignora, igual que `status` no aplica a gastos/caja menor. */
   costCenterId?: string;
+  /** Cajas (2026-09-12): filtro adicional por `caja_id` — aplica a gastos, caja menor e ingresos;
+   *  el resto de entidades lo ignora, mismo patrón aditivo que `costCenterId`. */
+  cashBoxId?: string;
   from?: string;
   to?: string;
   limit?: number;

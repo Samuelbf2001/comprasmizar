@@ -82,6 +82,10 @@ const HARNESSES = [
   // Centros de costo (2026-09-12, decisión del dueño): catálogo nuevo + herencia obra->requisición y
   // copia (no derivación) en gasto.
   path.join(ROOT, "supabase", "tests", "centros_costo_verification.sql"),
+  // Cajas, ingresos y cierres mensuales (2026-09-12, reunión con el cliente): catálogo de cajas,
+  // ingresos como tabla aparte (nunca un gasto negativo), el trigger que bloquea movimientos de un
+  // periodo ya cerrado, y el cruce ingresos/gastos por centro de costo.
+  path.join(ROOT, "supabase", "tests", "cajas_ingresos_cierres_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

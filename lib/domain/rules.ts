@@ -16,14 +16,21 @@ const permissions: Record<Role, readonly string[]> = {
   // poder descargar (el botón de XLSX provisional de gastos solo se pinta para Contabilidad/Administrador
   // Mizar/Administrador Sixteam, ver app/api/reports/expenses-report.ts) — separar los dos permisos
   // conserva exactamente esa asimetría con el reporte nuevo en vez de dársela de regalo.
-  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "petty_cash:create", "petty_cash:read", "expense:read", "report:read", "order:read", "order:update", "order:create", "order:pay", "payment:register", "dashboard:read"],
+  // "income:register" (cliente, 11-sep-2026, cajas/ingresos/cierres): mismo conjunto de roles que
+  // "payment:register" arriba — revisor/contabilidad/admin_sixteam — registrar un ingreso de caja es
+  // el mismo tipo de gesto operativo/contable que registrar un pago parcial de orden.
+  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "petty_cash:create", "petty_cash:read", "expense:read", "report:read", "order:read", "order:update", "order:create", "order:pay", "payment:register", "income:register", "dashboard:read"],
   // Juliana (aprobadora) pidió poder ver y descargar "todo lo que aprobé este mes" desde Reportes — hasta
   // hoy el rol no tenía ninguno de los dos permisos. Esto no amplía lo que puede VER: el repositorio
   // sigue acotando su lectura a public.es_aprobador_de(r.id, actor.id) (cabecera o ítem propio), la misma
   // visibilidad que ya aplica en /aprobaciones — estos permisos solo abren la puerta del módulo, no el
   // alcance de datos.
   aprobador: ["requisition:read:assigned", "requisition:approve", "requisition:return", "order:read", "report:read", "report:export", "dashboard:read"],
-  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:read", "report:export", "order:read", "order:account", "payment:register", "dashboard:read"],
+  // "income:register"/"cash:close" (cliente, 11-sep-2026): Daniel (contabilidad) cierra la caja
+  // administrativa a inicio de mes e ingresa los gastos para el reporte — es quien más registra
+  // ingresos y quien cierra el mes. "cash:close" NO la tiene el revisor (a diferencia de
+  // "income:register"): cerrar caja es un gesto contable, no de compras.
+  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:read", "report:export", "order:read", "order:account", "payment:register", "income:register", "cash:close", "dashboard:read"],
   admin_mizar: ["requisition:create", "catalog:manage", "dashboard:read", "expense:read", "report:read", "report:export"],
   admin_sixteam: ["*"],
 };

@@ -32,7 +32,10 @@ type CatalogKind =
   | "requesters"
   // DECISIÓN DEL DUEÑO (Ernesto, 2026-09-12): catálogo nuevo de centros de costo (migración
   // 202609120001) — el DEFAULT de una obra, y el valor efectivo (editable) de una requisición.
-  | "costCenters";
+  | "costCenters"
+  // Cajas (2026-09-12, migración 202609120003): dónde vive la plata — caja menor de obra,
+  // administrativa, banco o personal.
+  | "cashBoxes";
 type CatalogRecord = {
   id: string;
   name: string;
@@ -56,6 +59,9 @@ type CatalogRecord = {
   code?: string;
   costCenterId?: string;
   costCenterName?: string;
+  // Cajas (2026-09-12): tipo de caja (caja_menor/administrativa/banco/personal); costCenterId/
+  // societyId ya existen arriba (reutilizados, mismo patrón que costCenters).
+  type?: string;
 };
 type CatalogData = {
   works: CatalogRecord[];
@@ -81,6 +87,9 @@ type CatalogData = {
   // — mismo patrón por el que "societies"/"societyRecords" son dos claves distintas.
   costCenters?: Array<{ id: string; name: string }>;
   costCenterRecords?: CatalogRecord[];
+  // Cajas (2026-09-12): mismo patrón que costCenters/costCenterRecords — "cashBoxRecords" es el
+  // listado COMPLETO (incluye inactivas) que sirve /api/catalogs/manage para esta pestaña.
+  cashBoxRecords?: CatalogRecord[];
 };
 type FormValues = Record<string, string | boolean | string[]>;
 
@@ -98,6 +107,7 @@ const labels: Record<CatalogKind, string> = {
   // WhatsApp", no en el nombre de la tabla `solicitantes_autorizados`.
   requesters: "Solicitantes WhatsApp",
   costCenters: "Centros de costo",
+  cashBoxes: "Cajas",
 };
 // El título "Nuevo X" por defecto solo quita la "s" final de labels[kind] (falla en géneros y en
 // plurales irregulares como "Empresas"); para las pestañas nuevas se declara explícito en vez
@@ -107,9 +117,17 @@ const NEW_RECORD_LABEL: Partial<Record<CatalogKind, string>> = {
   users: "Nuevo usuario",
   requesters: "Nuevo solicitante autorizado",
   costCenters: "Nuevo centro de costo",
+  cashBoxes: "Nueva caja",
 };
 // RF-004: debe coincidir exactamente con el tipo Role de lib/domain (lib/domain/model.ts) y con
 // `roleLiteral` en app/api/catalogs/route.ts.
+// Cajas (2026-09-12): EXACTAMENTE los valores de `public.tipo_caja` (202609120003_cajas_ingresos_cierres.sql).
+const CASH_BOX_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "caja_menor", label: "Caja menor" },
+  { value: "administrativa", label: "Administrativa" },
+  { value: "banco", label: "Banco" },
+  { value: "personal", label: "Personal" },
+];
 const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "solicitante", label: "Solicitante" },
   { value: "revisor", label: "Revisor" },
@@ -135,6 +153,8 @@ const emptyForm: FormValues = {
   // que gana el formulario de Obras (kind "works"), reutilizando el mismo selector de la pestaña nueva.
   code: "",
   costCenterId: "",
+  // Cajas (2026-09-12): "type" es propio (tipo_caja); societyId/costCenterId ya existen arriba.
+  type: "",
 };
 function rolesFromForm(values: FormValues): string[] {
   return Array.isArray(values.roles) ? values.roles : [];
@@ -142,10 +162,11 @@ function rolesFromForm(values: FormValues): string[] {
 
 // RF-002/RF-004: la clave de estado real difiere del `kind` para sociedades/usuarios (ver CatalogData);
 // rowsFor y las actualizaciones optimistas de save/toggle comparten este único mapeo para no divergir.
-function fieldFor(kind: CatalogKind): "societyRecords" | "userRecords" | "costCenterRecords" | Exclude<CatalogKind, "societies" | "users" | "costCenters"> {
+function fieldFor(kind: CatalogKind): "societyRecords" | "userRecords" | "costCenterRecords" | "cashBoxRecords" | Exclude<CatalogKind, "societies" | "users" | "costCenters" | "cashBoxes"> {
   if (kind === "societies") return "societyRecords";
   if (kind === "users") return "userRecords";
   if (kind === "costCenters") return "costCenterRecords";
+  if (kind === "cashBoxes") return "cashBoxRecords";
   return kind;
 }
 function rowsFor(data: CatalogData, kind: CatalogKind) {
@@ -265,6 +286,15 @@ function payloadFor(
     const code = String(values.code || "").trim();
     if (editing || code) data.code = code || null;
   }
+  if (kind === "cashBoxes") {
+    data.type = String(values.type || "").trim();
+    // societyId ausente = caja compartida; costCenterId ausente = sin centro por defecto (ambos
+    // mismo patrón que costCenters/works arriba).
+    const societyId = String(values.societyId || "").trim();
+    if (editing || societyId) data.societyId = societyId || null;
+    const costCenterId = String(values.costCenterId || "").trim();
+    if (editing || costCenterId) data.costCenterId = costCenterId || null;
+  }
   if (kind === "tags") data.approverId = String(values.approverId || "").trim();
   if (kind === "items") {
     data.unit = String(values.unit || "").trim();
@@ -338,7 +368,9 @@ export function ConnectedCatalogAdmin({
                 ? "requesters"
                 : pathname.startsWith("/catalogos/centros-costo")
                   ? "costCenters"
-                  : undefined;
+                  : pathname.startsWith("/catalogos/cajas")
+                    ? "cashBoxes"
+                    : undefined;
   const initialFeatureEnabled = dataFeatureEnabled(initialData);
   const firstAllowed = (Object.keys(labels) as CatalogKind[]).find((option) =>
     canViewKind(option, role, initialData, initialFeatureEnabled),
@@ -413,6 +445,25 @@ export function ConnectedCatalogAdmin({
       return "Selecciona una empresa válida, o deja el centro compartido (sin empresa).";
     if (kind === "costCenters" && String(form.code || "").trim().length > 32)
       return "El código admite hasta 32 caracteres.";
+    if (
+      kind === "cashBoxes" &&
+      !["caja_menor", "administrativa", "banco", "personal"].includes(
+        String(form.type || ""),
+      )
+    )
+      return "Selecciona un tipo de caja válido.";
+    if (
+      kind === "cashBoxes" &&
+      String(form.societyId || "").trim() &&
+      !UUID_RE.test(String(form.societyId))
+    )
+      return "Selecciona una empresa válida, o deja la caja compartida (sin empresa).";
+    if (
+      kind === "cashBoxes" &&
+      String(form.costCenterId || "").trim() &&
+      !UUID_RE.test(String(form.costCenterId))
+    )
+      return "Selecciona un centro de costo válido, o deja el campo sin elegir.";
     if (
       kind === "tags" &&
       (!editing || editing.active !== false) &&
@@ -712,6 +763,13 @@ export function ConnectedCatalogAdmin({
                         <th>Empresa</th>
                       </>
                     )}
+                    {kind === "cashBoxes" && (
+                      <>
+                        <th>Tipo</th>
+                        <th>Empresa</th>
+                        <th>Centro de costo</th>
+                      </>
+                    )}
                     {kind === "items" && (
                       <>
                         <th>Unidad</th>
@@ -784,6 +842,29 @@ export function ConnectedCatalogAdmin({
                               (row.societyId
                                 ? "No configurada"
                                 : "Compartido")}
+                          </td>
+                        </>
+                      )}
+                      {kind === "cashBoxes" && (
+                        <>
+                          <td>
+                            {CASH_BOX_TYPE_OPTIONS.find(
+                              (option) => option.value === row.type,
+                            )?.label ?? row.type}
+                          </td>
+                          <td className="mono-id">
+                            {data.societies?.find(
+                              (society) => society.id === row.societyId,
+                            )?.name ||
+                              (row.societyId
+                                ? "No configurada"
+                                : "Compartida")}
+                          </td>
+                          <td className="mono-id">
+                            {data.costCenters?.find(
+                              (costCenter) =>
+                                costCenter.id === row.costCenterId,
+                            )?.name || "Sin centro"}
                           </td>
                         </>
                       )}
@@ -1214,6 +1295,68 @@ function CatalogForm({
                 {societies.map((society) => (
                   <option key={society.id} value={society.id}>
                     {society.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+        {kind === "cashBoxes" && (
+          <>
+            <label className="field">
+              <span>
+                Tipo <em>*</em>
+              </span>
+              <select
+                value={String(values.type || "")}
+                required
+                onChange={(event) => update("type", event.target.value)}
+              >
+                <option value="">Selecciona un tipo</option>
+                {CASH_BOX_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>
+                Empresa <small>opcional: vacío = compartida</small>
+              </span>
+              <select
+                value={String(values.societyId || "")}
+                onChange={(event) =>
+                  update("societyId", event.target.value)
+                }
+              >
+                <option value="">Compartida entre empresas</option>
+                {societies.map((society) => (
+                  <option key={society.id} value={society.id}>
+                    {society.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>
+                Centro de costo <small>opcional</small>
+              </span>
+              <select
+                value={String(values.costCenterId || "")}
+                disabled={!costCenters.length}
+                onChange={(event) =>
+                  update("costCenterId", event.target.value)
+                }
+              >
+                <option value="">
+                  {costCenters.length
+                    ? "Sin centro por defecto"
+                    : "No hay centros de costo activos"}
+                </option>
+                {costCenters.map((costCenter) => (
+                  <option key={costCenter.id} value={costCenter.id}>
+                    {costCenter.name}
                   </option>
                 ))}
               </select>

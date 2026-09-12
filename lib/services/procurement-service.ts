@@ -34,7 +34,15 @@ export interface CreateRequisitionInput { type: RequisitionType; societyId?: str
  * vacío = asignar ese centro (validado en `review()` contra el mismo catálogo que `isEligibleApprover`).
  */
 export interface ReviewInput { tagId: string; approverId?: string | null; workId?: string; costCenterId?: string | null; paymentTerms?: string; items: ItemLine[]; }
-export interface PettyCashInput { workId: string; date: string; concept: string; tagId: string; amount: number; attachmentUrl?: string; }
+/**
+ * `cashBoxId`/`paymentMethod` obligatorios (2026-09-12): TODO movimiento de caja vive bajo una caja
+ * del catálogo `cajas` con un medio de pago — ya no es exclusivo de la caja menor clásica de obra (ver
+ * migración 202609120003). `costCenterId` es el mismo patrón "hereda-o-elige" que
+ * `ReviewInput.costCenterId`: ausente = hereda el de la obra (`resolveCostCenter`); informado, gana
+ * sobre el de la obra. `iva`: ausente = 0 (compatibilidad con lo que ya se llamaba caja menor, que
+ * nunca llevaba IVA); informado, es el "gasto directo" de la pestaña Gastos y caja.
+ */
+export interface PettyCashInput { workId: string; date: string; concept: string; tagId: string; amount: number; attachmentUrl?: string; cashBoxId: string; paymentMethod: PaymentMethod; costCenterId?: string; iva?: number; }
 /** Reunión agosto 2026: entrada de `registerOrderPayment` — `date`/`amount`/`method` obligatorios, igual que `OrderPayment` en lib/domain/model.ts. */
 export interface OrderPaymentInput { date: string; amount: number; method: PaymentMethod; externalReference?: string; }
 /** Reunión 2026-08-31: decisión por ítem del aprobador. No cambia el estado de la requisición. */
@@ -600,7 +608,26 @@ export class ProcurementService {
     return this.deps.orderPayments.listByOrder(orderId);
   }
   async redistribute(expenseId: string, total: number, shares: ExpenseShare[], context: RequestContext): Promise<void> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); if (shares.some((share) => share.expenseId !== expenseId)) throw new DomainError("INVALID_SHARE", "Todas las líneas deben pertenecer al gasto"); await this.transaction(`expense:${expenseId}`, async (tx) => { const expense = await tx.expenses.get(expenseId); if (!expense) throw new DomainError("NOT_FOUND", "Gasto no encontrado"); if (expense.total !== total) throw new DomainError("EXPENSE_TOTAL_MISMATCH", "El total del reparto no coincide con el gasto"); validateShares(expense.total, shares); await tx.expenses.saveShares(shares); await this.audit("gasto", expenseId, "repartido", actor, { total: expense.total }, this.origin(context), tx.audit); }); }
-  async registerPettyCash(input: PettyCashInput, context: RequestContext): Promise<{ entry: PettyCash; expense: Expense }> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:create", this.authOrigin(context)); if (!input.workId || !input.concept.trim() || !input.tagId) throw new DomainError("INVALID_INPUT", "Campos de caja menor obligatorios"); assertCop(input.amount, "Valor"); if (input.amount === 0) throw new DomainError("INVALID_MONEY", "El valor debe ser mayor a cero"); const entry: PettyCash = { id: this.deps.ids.next(), ...input, registeredBy: actor.id }; return this.transaction(undefined, async (tx) => { const expense = await tx.pettyCash.save(entry); await this.audit("caja_menor", entry.id, "registrada", actor, { expenseId: expense.id }, this.origin(context), tx.audit); await this.audit("gasto", expense.id, "registrado", actor, { origin: "caja_menor" }, this.origin(context), tx.audit); return { entry, expense }; }); }
+  async registerPettyCash(input: PettyCashInput, context: RequestContext): Promise<{ entry: PettyCash; expense: Expense }> {
+    const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:create", this.authOrigin(context));
+    if (!input.workId || !input.concept.trim() || !input.tagId || !input.cashBoxId || !input.paymentMethod) throw new DomainError("INVALID_INPUT", "Campos de caja obligatorios");
+    assertCop(input.amount, "Valor"); if (input.amount === 0) throw new DomainError("INVALID_MONEY", "El valor debe ser mayor a cero");
+    assertCop(input.iva ?? 0, "IVA");
+    const entry: PettyCash = { id: this.deps.ids.next(), ...input, registeredBy: actor.id };
+    return this.transaction(undefined, async (tx) => {
+      // La caja debe existir y estar activa — mismo criterio que `works`/`costCenters` en review().
+      const cashBox = await tx.catalogs.get("cashBoxes", input.cashBoxId);
+      if (!cashBox || !cashBox.active) throw new DomainError("INVALID_INPUT", "La caja indicada no existe o está inactiva");
+      if (input.costCenterId) {
+        const costCenter = await tx.catalogs.get("costCenters", input.costCenterId);
+        if (!costCenter || !costCenter.active) throw new DomainError("INVALID_INPUT", "El centro de costo indicado no existe o está inactivo");
+      }
+      const expense = await tx.pettyCash.save(entry);
+      await this.audit("caja_menor", entry.id, "registrada", actor, { expenseId: expense.id }, this.origin(context), tx.audit);
+      await this.audit("gasto", expense.id, "registrado", actor, { origin: "caja_menor" }, this.origin(context), tx.audit);
+      return { entry, expense };
+    });
+  }
   private assertCanReadRequisitions(context: RequestContext): Actor { const actor = this.actor(context); if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor.roles, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones"); return actor; }
   async listRequisitions(context: RequestContext): Promise<Requisition[]> { const actor = this.assertCanReadRequisitions(context); return this.deps.requisitions.listVisibleTo(actor) as Promise<Requisition[]>; }
   /**

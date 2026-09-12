@@ -82,7 +82,10 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   };
   const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
   // Reunión 2026-09: caja menor nace pagada — orderDate y date coinciden siempre con la fecha del movimiento.
-  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty };
+  // Cajas (2026-09-12): reproduce lo que sincronizar_gasto_caja_menor hace de verdad — copia
+  // caja_id/medio_pago/iva/centro_costo_id/registrado_por al gasto, en vez de forzar iva=0 (el
+  // bloqueante que esa migración corrigió).
+  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: p.iva ?? 0, total: p.amount + (p.iva ?? 0), period: p.date.slice(0, 7), cashBoxId: p.cashBoxId, paymentMethod: p.paymentMethod, costCenterId: p.costCenterId, registeredBy: p.registeredBy }; expensesData.push(generated); return generated; }, list: async () => petty };
   // "works"/"work" con sociedad "soc": único caso que review() debe resolver como obra válida y de la
   // misma sociedad que usan los fixtures de este archivo; cualquier otro id (p.ej. una obra de otra
   // empresa) resuelve a null para poder probar el rechazo INVALID_INPUT.
@@ -111,14 +114,18 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
     : kind === "works" && id === "obra-sin-centro" ? { id: "obra-sin-centro", name: "Obra Sin Centro", societyId: "soc", active: true }
     : kind === "suppliers" && ["p1", "p2", "p3"].includes(id) ? { id, name: `Proveedor ${id}`, active: !inactiveSuppliers.has(id) }
     : kind === "suppliers" && id === "p-inactivo" ? { id, name: "Proveedor inactivo", active: false }
+    // Cajas (2026-09-12): "caja-menor" es la única caja activa de este arnés — registerPettyCash la
+    // valida antes de guardar (ver procurement-service.ts).
+    : kind === "cashBoxes" && id === "caja-menor" ? { id: "caja-menor", name: "Caja Menor", type: "caja_menor", active: true }
+    : kind === "cashBoxes" && id === "caja-inactiva" ? { id: "caja-inactiva", name: "Caja Inactiva", type: "caja_menor", active: false }
     : null
   ), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, findRequesterDuplicate: async () => null, isEligibleApprover: async (id: string) => id !== "no-elegible", hasRequisitionsForWork: async () => false };
   const transactions = { transaction: async <T>(_id: string | undefined, work: (repositories: Parameters<ServiceDependencies["transactions"]["transaction"]>[1] extends (repositories: infer R) => Promise<unknown> ? R : never) => Promise<T>) => {
     const snapshot = { req: structuredClone([...req.entries()]), orders: structuredClone(ordersData), expenses: structuredClone(expensesData), payments: structuredClone(paymentsData), petty: structuredClone(petty), audits: structuredClone(audits), shares: structuredClone(shares), proposed: structuredClone([...proposed.entries()]), notifications: structuredClone(notificationData) };
-    try { return await work({ requisitions, orders, expenses, orderPayments, pettyCash, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
+    try { return await work({ requisitions, orders, expenses, orderPayments, pettyCash, incomes: {} as never, cashCloses: {} as never, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
     catch (error) { req.clear(); for (const [id, value] of snapshot.req) req.set(id, value); ordersData.splice(0, ordersData.length, ...snapshot.orders); expensesData.splice(0, expensesData.length, ...snapshot.expenses); paymentsData.splice(0, paymentsData.length, ...snapshot.payments); petty.splice(0, petty.length, ...snapshot.petty); audits.splice(0, audits.length, ...snapshot.audits); shares.splice(0, shares.length, ...snapshot.shares); proposed.clear(); for (const [key, value] of snapshot.proposed) proposed.set(key, value); notificationData.splice(0, notificationData.length, ...snapshot.notifications); throw error; }
   } };
-  return { req, ordersData, expensesData, paymentsData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234", verifySociety: async (societyId, token, code) => societyId === "society" && token === null && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, orderPayments, pettyCash, audit, inactiveSuppliers };
+  return { req, ordersData, expensesData, paymentsData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234", verifySociety: async (societyId, token, code) => societyId === "society" && token === null && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, orderPayments, pettyCash, incomes: {} as never, cashCloses: {} as never, audit, inactiveSuppliers };
 }
 const reviewer = { actor: { id: "daniel", roles: ["revisor"] as const } }, approver = { actor: { id: "nelson", roles: ["aprobador"] as const } }, requester = { actor: { id: "sol", roles: ["solicitante"] as const } };
 // "sonia": segundo actor aprobador, distinto de "nelson" — usado para probar que el aprobador ELEGIDO
@@ -462,7 +469,7 @@ describe("ProcurementService", () => {
     await service.redistribute(expenses[0].id, expenses[0].total, [{ expenseId: expenses[0].id, workId: "a", amount: expenses[0].total }], reviewer);
     await expect(service.updateOrderStatus(orders[0].id, "cumplida", reviewer)).resolves.toMatchObject({ status: "cumplida" });
     await expect(service.updateOrderStatus(orders[0].id, "no_cumplida", reviewer)).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
-    const cash = await service.registerPettyCash({ workId: "work", date: "2026-08-03", concept: "Taxi", tagId: "t", amount: 500 }, reviewer);
+    const cash = await service.registerPettyCash({ workId: "work", date: "2026-08-03", concept: "Taxi", tagId: "t", amount: 500, cashBoxId: "caja-menor", paymentMethod: "efectivo" }, reviewer);
     expect(cash.expense.origin).toBe("caja_menor");
     // Reunión 2026-09: la caja menor nace pagada — orderDate y date coinciden siempre con la fecha del
     // movimiento, y el periodo queda calculado de inmediato (nunca un compromiso sin pagar).
@@ -483,6 +490,20 @@ describe("ProcurementService", () => {
     await expect(service.dashboard("bad", reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
     await expect(service.startReview("missing", reviewer)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(service.lineTotal(items[0])).toBe(238);
+  });
+  // Cajas (2026-09-12): "gasto directo" de la pestaña Gastos y caja — registerPettyCash ya no es
+  // exclusivo de la caja menor clásica de obra; el gasto sincronizado debe copiar caja/medio de pago/
+  // centro de costo/IVA, y el IVA YA NO se fuerza a 0 (bloqueante corregido por 202609120003).
+  it("un gasto directo de caja copia caja_id/medio_pago/centro_costo_id/iva al gasto sincronizado", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const cash = await service.registerPettyCash({ workId: "work", date: "2026-09-05", concept: "Factura de ferretería con IVA", tagId: "t", amount: 100000, cashBoxId: "caja-menor", paymentMethod: "tarjeta", costCenterId: "cc-alterno", iva: 19000 }, reviewer);
+    expect(cash.expense).toMatchObject({ cashBoxId: "caja-menor", paymentMethod: "tarjeta", costCenterId: "cc-alterno", iva: 19000, total: 119000, registeredBy: "daniel" });
+  });
+  it("rechaza una caja inactiva o inexistente antes de guardar nada", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    await expect(service.registerPettyCash({ workId: "work", date: "2026-09-05", concept: "No debería pasar", tagId: "t", amount: 1000, cashBoxId: "caja-inactiva", paymentMethod: "efectivo" }, reviewer)).rejects.toThrow();
+    await expect(service.registerPettyCash({ workId: "work", date: "2026-09-05", concept: "No debería pasar", tagId: "t", amount: 1000, cashBoxId: "caja-inexistente", paymentMethod: "efectivo" }, reviewer)).rejects.toThrow();
+    expect(deps.pettyData).toHaveLength(0);
   });
   it("declines a requisition with an audited reason, notifies the requester and never generates orders or expenses", async () => {
     // RF-304/PRD §5.2/§3.2: "declinada... nunca genera gasto". decline() no tenía ninguna prueba en ningún nivel.
@@ -589,7 +610,7 @@ describe("ProcurementService", () => {
 
     const cashDeps = fakeDeps(), cashService = new ProcurementService(cashDeps);
     cashDeps.pettyCash.save = async (entry) => { cashDeps.pettyData.push(entry); throw new Error("expense unavailable"); };
-    await expect(cashService.registerPettyCash({ workId: "work", date: "2026-08-03", concept: "Taxi", tagId: "tag", amount: 500 }, reviewer)).rejects.toThrow("expense unavailable");
+    await expect(cashService.registerPettyCash({ workId: "work", date: "2026-08-03", concept: "Taxi", tagId: "tag", amount: 500, cashBoxId: "caja-menor", paymentMethod: "efectivo" }, reviewer)).rejects.toThrow("expense unavailable");
     expect(cashDeps.pettyData).toHaveLength(0);
     expect(cashDeps.expensesData).toHaveLength(0);
 

@@ -12,6 +12,9 @@ export const runtime = "nodejs";
 type NamedRow = { id: string; name: string };
 type WorkRow = NamedRow & { societyId: string; costCenterId: string | null };
 type CostCenterRow = NamedRow & { societyId: string | null };
+// Cajas (2026-09-12): lista mínima (activas) para los formularios de "Gastos y caja" — mismo criterio
+// que "costCenters" arriba.
+type CashBoxRow = NamedRow & { type: string };
 const uuid = z.string().uuid();
 const name = z.string().trim().min(2).max(160);
 const active = z.boolean().optional();
@@ -21,6 +24,8 @@ const phone = z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/);
 const nit = z.string().trim().min(3).max(32);
 // Centros de costo (2026-09-12): código opcional, más corto que el NIT (no es un identificador legal).
 const costCenterCode = z.string().trim().min(1).max(32);
+// Cajas (2026-09-12): EXACTAMENTE los valores de `public.tipo_caja` (202609120003_cajas_ingresos_cierres.sql).
+const cashBoxType = z.enum(["caja_menor", "administrativa", "banco", "personal"]);
 const tagCreateData = z.object({ name, approverId: uuid.optional(), active }).strict().superRefine((value, context) => { if (value.active !== false && !value.approverId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["approverId"], message: "Active tags require an approver" }); });
 const createCatalogSchema = z.discriminatedUnion("kind", [
   // costCenterId (2026-09-12): DEFAULT de la obra, opcional — una obra puede crearse sin centro
@@ -44,6 +49,9 @@ const createCatalogSchema = z.discriminatedUnion("kind", [
   // HUECO 1: lista blanca global de solicitantes autorizados por WhatsApp (RF-902). `phone` es
   // obligatorio (a diferencia de proveedores/usuarios): la columna `telefono` es NOT NULL.
   z.object({ kind: z.literal("requesters"), data: z.object({ name, phone, active }).strict() }),
+  // Cajas (2026-09-12): societyId/costCenterId opcionales, mismo criterio que costCenters arriba
+  // (ausente = compartida entre empresas / sin centro por defecto).
+  z.object({ kind: z.literal("cashBoxes"), data: z.object({ name, type: cashBoxType, societyId: uuid.optional(), costCenterId: uuid.optional(), active }).strict() }),
 ]);
 const patchCatalogSchema = z.discriminatedUnion("kind", [
   // costCenterId admite null: el revisor de catálogos debe poder DESASIGNAR el centro default de una
@@ -59,6 +67,7 @@ const patchCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("users"), id: uuid, data: z.object({ name: name.optional(), phone: phone.nullable().optional(), roles: z.array(roleLiteral).max(6).optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   // HUECO 1: `phone` no admite null (nunca opcional-a-vacío) porque la columna es NOT NULL.
   z.object({ kind: z.literal("requesters"), id: uuid, data: z.object({ name: name.optional(), phone: phone.optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  z.object({ kind: z.literal("cashBoxes"), id: uuid, data: z.object({ name: name.optional(), type: cashBoxType.optional(), societyId: uuid.nullable().optional(), costCenterId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
 ]);
 
 /**
@@ -92,7 +101,7 @@ export function GET() {
     // Centros de costo (2026-09-12): lista mínima (activos) para que la ficha de revisión (fuera del
     // alcance de esta entrega) pueda ofrecer el selector, y para que el formulario de Obras (catalog-
     // admin.tsx) elija el DEFAULT de una obra nueva — mismo criterio que "societies" arriba.
-    const [works, tags, suppliers, items, societies, users, approvers, costCenters] = await Promise.all([
+    const [works, tags, suppliers, items, societies, users, approvers, costCenters, cashBoxes] = await Promise.all([
       sql<WorkRow[]>`select id, nombre as name, sociedad_id as "societyId", centro_costo_id as "costCenterId" from obras where estado = 'activa' order by nombre`,
       sql<Array<NamedRow & { approverId: string | null }>>`select id, nombre as name, aprobador_id as "approverId" from etiquetas where activa = true order by nombre`,
       canReadSuppliers ? sql<NamedRow[]>`select id, razon_social as name from proveedores where activo = true order by razon_social` : Promise.resolve([]),
@@ -101,8 +110,10 @@ export function GET() {
       sql<NamedRow[]>`select id, nombre as name from usuarios order by nombre`,
       sql<NamedRow[]>`select distinct u.id, u.nombre as name from usuarios u join usuario_roles ur on ur.usuario_id=u.id where u.estado='activo' and ur.rol in ('aprobador', 'revisor', 'admin_sixteam') order by u.nombre`,
       sql<CostCenterRow[]>`select id, nombre as name, sociedad_id as "societyId" from centros_costo where activo = true order by nombre`,
+      // Cajas (2026-09-12): lista mínima activa para los selectores de "Gastos y caja".
+      sql<CashBoxRow[]>`select id, nombre as name, tipo as type from cajas where activo = true order by nombre`,
     ]);
-    return { works, tags, suppliers, items, societies, users, approvers, costCenters, features };
+    return { works, tags, suppliers, items, societies, users, approvers, costCenters, cashBoxes, features };
   });
 }
 

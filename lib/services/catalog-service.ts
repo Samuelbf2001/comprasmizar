@@ -1,5 +1,5 @@
 import { DomainError, assertPermission, type Actor } from "../domain";
-import type { CatalogCostCenter, CatalogCreateRecord, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogUser, CatalogWork, ServiceDependencies } from "./contracts";
+import type { CatalogCashBox, CatalogCostCenter, CatalogCreateRecord, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogUser, CatalogWork, ServiceDependencies } from "./contracts";
 
 export type CatalogCreateInput = CatalogCreateRecord;
 export type CatalogPatchInput = CatalogPatchRecord;
@@ -32,6 +32,9 @@ function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
   // (perdiendo `code`, su dato propio). `code` es el discriminador: ninguna otra forma de CatalogRecord
   // lo tiene.
   if ("code" in value) { const costCenter = value as CatalogCostCenter; return { name: costCenter.name, code: costCenter.code ?? null, societyId: costCenter.societyId ?? null, active: costCenter.active }; }
+  // Cajas (2026-09-12): comprobado ANTES que el de "work" de abajo por la MISMA razón que costCenters
+  // — "type" es el discriminador (ninguna otra forma de CatalogRecord lo tiene).
+  if ("type" in value) { const cashBox = value as CatalogCashBox; return { name: cashBox.name, type: cashBox.type, societyId: cashBox.societyId ?? null, costCenterId: cashBox.costCenterId ?? null, active: cashBox.active }; }
   if ("societyId" in value) return { name: value.name, societyId: value.societyId, active: value.active };
   if ("approverId" in value) return { name: value.name, approverAssigned: Boolean(value.approverId), active: value.active };
   if ("unit" in value) return { name: value.name, unit: value.unit, category: value.category, active: value.active };
@@ -63,7 +66,7 @@ export class CatalogService {
   }
   private conflict(error: unknown, kind: CatalogKind): never {
     if (typeof error === "object" && error !== null && "code" in error) {
-      if (error.code === "23505") throw new DomainError("CONFLICT", kind === "suppliers" ? "Ya existe un proveedor con el mismo nombre o NIT" : kind === "societies" ? "Ya existe una sociedad con el mismo nombre o NIT" : kind === "users" ? "Ya existe un usuario con ese correo electrónico" : kind === "requesters" ? "Ya existe un solicitante autorizado con ese número de teléfono" : kind === "costCenters" ? "Ya existe un centro de costo con el mismo nombre o código" : "Ya existe un registro equivalente en el catálogo");
+      if (error.code === "23505") throw new DomainError("CONFLICT", kind === "suppliers" ? "Ya existe un proveedor con el mismo nombre o NIT" : kind === "societies" ? "Ya existe una sociedad con el mismo nombre o NIT" : kind === "users" ? "Ya existe un usuario con ese correo electrónico" : kind === "requesters" ? "Ya existe un solicitante autorizado con ese número de teléfono" : kind === "costCenters" ? "Ya existe un centro de costo con el mismo nombre o código" : kind === "cashBoxes" ? "Ya existe una caja con ese nombre" : "Ya existe un registro equivalente en el catálogo");
       // La FK `usuarios.id -> auth.users.id` ya no puede violarse en el alta (ambas filas se crean en la
       // misma transacción, ver postgres-repositories.ts), pero sí en una edición contra un id inventado.
       if (kind === "users" && error.code === "23503") throw new DomainError("NOT_FOUND", "El usuario indicado no existe.");

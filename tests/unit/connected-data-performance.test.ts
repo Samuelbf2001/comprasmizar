@@ -139,6 +139,9 @@ describe("H2: gastos hace una sola llamada de adjuntos con todos los ids de caja
       if (path === "/api/expenses") return jsonResponse([]);
       if (path === "/api/catalogs") return jsonResponse(catalogsPayload);
       if (path === "/api/petty-cash") return jsonResponse(pettyRows);
+      // Cajas/ingresos (2026-09-12): loadRoute("expenses") ahora también pide /api/incomes para el
+      // mismo rol que ya lee caja menor (income:register comparte ese conjunto de roles).
+      if (path === "/api/incomes") return jsonResponse([]);
       if (path === "/api/attachments/caja_menor") return attachmentsBatchHandler();
       throw new Error(`Fetch no simulado para "${path}"`);
     });
@@ -167,6 +170,7 @@ describe("H2: gastos hace una sola llamada de adjuntos con todos los ids de caja
         "/api/expenses": () => jsonResponse([]),
         "/api/catalogs": () => jsonResponse(catalogsPayload),
         "/api/petty-cash": () => jsonResponse([]),
+        "/api/incomes": () => jsonResponse([]),
       }),
     );
     await loadRoute("/gastos", "Contabilidad");
