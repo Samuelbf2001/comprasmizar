@@ -213,6 +213,41 @@ export type OrdersBundle = {
   rows: OrderRow[];
   catalogs: CatalogData;
 };
+// RF-1301 (Reportes, reunión 2026-09-11): fila del reporte de requisiciones tal como la devuelve
+// GET /api/reports (ver ReportRow en lib/services/report-service.ts) — ids crudos a propósito: esta
+// pantalla YA tiene `CatalogData` (obras/etiquetas/usuarios/proveedores), así que resuelve nombres igual
+// que el resto de connected/* (`resolveUserName`, `catalogs.works.find(...)`) en vez de que el servidor
+// los duplique aquí. Solo el Excel (que no tiene una pantalla que lo traduzca después) resuelve nombres
+// en el servidor — ver lib/reports/xlsx.ts.
+export type ReportItemRow = {
+  id: string;
+  description: string;
+  quantity: number;
+  unit: string;
+  status: string;
+  approverId?: string;
+  finalSupplierId?: string;
+  base: number;
+  iva: number;
+  total: number;
+};
+export type ReportRow = {
+  id: string;
+  consecutive: string;
+  date?: string;
+  societyId?: string;
+  workId?: string;
+  tagId?: string;
+  approverIds: string[];
+  status: string;
+  supplierIds: string[];
+  base: number;
+  iva: number;
+  total: number;
+  items: ReportItemRow[];
+};
+export type ReportBundle = { rows: ReportRow[]; catalogs: CatalogData };
+
 // RF-1102: elemento de la cola de "qué espera algo de mí"; producido por
 // lib/domain/rules.ts#buildAttentionQueue y expuesto tal cual por /api/dashboard.
 export type DashboardQueueItem = {
@@ -437,6 +472,36 @@ export function groupExpensesByWorkAndTag(
         workName: workName(workId),
         subtotal: tags.reduce((sum, tag) => sum + tag.subtotal, 0),
         tags,
+      };
+    })
+    .sort((a, b) => a.workName.localeCompare(b.workName, "es"));
+}
+
+// RF-1301 (Reportes, "compilado mensual"): subtotal por obra/centro de costo — Daniel: "el compilado
+// debe ir por obra/centro de costo". Mismo criterio que `groupExpensesByWorkAndTag` (id sin nombre en
+// catálogos -> "—", nunca el UUID crudo en pantalla), pero sobre `ReportRow` en vez de `ExpenseRow`.
+export type ReportWorkGroup = { workId: string; workName: string; subtotal: number; rows: ReportRow[] };
+export function groupReportRowsByWork(
+  rows: ReportRow[],
+  catalogs: CatalogData,
+): ReportWorkGroup[] {
+  const workName = (id: string) =>
+    catalogs.works.find((work) => work.id === id)?.name ?? "—";
+  const order: string[] = [];
+  const byWork = new Map<string, ReportRow[]>();
+  for (const row of rows) {
+    const key = row.workId ?? "";
+    if (!byWork.has(key)) { byWork.set(key, []); order.push(key); }
+    byWork.get(key)!.push(row);
+  }
+  return order
+    .map((workId) => {
+      const groupRows = byWork.get(workId) as ReportRow[];
+      return {
+        workId,
+        workName: workId ? workName(workId) : "Sin obra",
+        subtotal: groupRows.reduce((sum, row) => sum + row.total, 0),
+        rows: groupRows,
       };
     })
     .sort((a, b) => a.workName.localeCompare(b.workName, "es"));

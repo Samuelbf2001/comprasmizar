@@ -2,6 +2,7 @@ export * from "./contracts";
 export * from "./list-query";
 export * from "./kapso-contracts";
 export * from "./procurement-service";
+export * from "./report-service";
 export * from "./catalog-service";
 export * from "./supplier-service";
 export * from "./attachment-service";

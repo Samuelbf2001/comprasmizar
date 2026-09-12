@@ -138,7 +138,6 @@ describe("superficies demo de adjuntos operativos", () => {
     render(
       <ConnectedExpenses
         role="Revisor"
-        pathname="/gastos"
         refresh={refresh}
         data={{
           expenses: [],

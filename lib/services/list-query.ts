@@ -17,6 +17,15 @@ export interface ListQuery {
   to?: string;
   limit?: number;
   cursor?: string;
+  /**
+   * RF-1301 (Reportes, reunión 2026-09-11): filtro por aprobador — solo lo consume
+   * `listVisibleRequisitions` (cabecera O algún ítem, vía `public.es_aprobador_de`, la misma función
+   * que ya resuelve la visibilidad por rol). Aditivo como el resto de este contrato: los adaptadores que
+   * no lo soportan (órdenes, gastos, caja menor) lo ignoran en vez de fallar.
+   */
+  approverId?: string;
+  /** RF-1301: filtro por etiqueta — hoy solo lo consume `listVisibleRequisitions`; ver nota de `approverId`. */
+  tagId?: string;
 }
 /** Página de resultados de un `ListQuery`. `nextCursor` es `null` en la última página. */
 export interface Page<T> { rows: T[]; nextCursor: string | null; }

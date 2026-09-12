@@ -7,10 +7,20 @@ const permissions: Record<Role, readonly string[]> = {
   // "order:create" (generar órdenes) es del revisor, NO del aprobador: aprobar y designar proveedor/generar
   // órdenes son roles distintos por decisión explícita de la reunión 2026-08-31 — exigirle al aprobador
   // proveedor o generación de órdenes rompería su rol de solo aprobar.
-  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "petty_cash:create", "petty_cash:read", "expense:read", "order:read", "order:update", "order:create", "order:pay", "dashboard:read"],
-  aprobador: ["requisition:read:assigned", "requisition:approve", "requisition:return", "order:read", "dashboard:read"],
-  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:export", "order:read", "order:account", "dashboard:read"],
-  admin_mizar: ["requisition:create", "catalog:manage", "dashboard:read", "expense:read", "report:export"],
+  // RF-1301 (Reportes, reunión 2026-09-11): "report:read" (ver el reporte de requisiciones) y
+  // "report:export" (descargar su Excel) se separan porque el revisor ya podía ENTRAR a /reportes sin
+  // poder descargar (el botón de XLSX provisional de gastos solo se pinta para Contabilidad/Administrador
+  // Mizar/Administrador Sixteam, ver app/api/reports/expenses-report.ts) — separar los dos permisos
+  // conserva exactamente esa asimetría con el reporte nuevo en vez de dársela de regalo.
+  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "petty_cash:create", "petty_cash:read", "expense:read", "report:read", "order:read", "order:update", "order:create", "order:pay", "dashboard:read"],
+  // Juliana (aprobadora) pidió poder ver y descargar "todo lo que aprobé este mes" desde Reportes — hasta
+  // hoy el rol no tenía ninguno de los dos permisos. Esto no amplía lo que puede VER: el repositorio
+  // sigue acotando su lectura a public.es_aprobador_de(r.id, actor.id) (cabecera o ítem propio), la misma
+  // visibilidad que ya aplica en /aprobaciones — estos permisos solo abren la puerta del módulo, no el
+  // alcance de datos.
+  aprobador: ["requisition:read:assigned", "requisition:approve", "requisition:return", "order:read", "report:read", "report:export", "dashboard:read"],
+  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:read", "report:export", "order:read", "order:account", "dashboard:read"],
+  admin_mizar: ["requisition:create", "catalog:manage", "dashboard:read", "expense:read", "report:read", "report:export"],
   admin_sixteam: ["*"],
 };
 // "requisition:review" protege decline/review/startReview/sendForApproval (procurement-service.ts):
@@ -98,6 +108,16 @@ export function calculateLineAmounts(line: ItemLine): { base: Money; iva: Money;
 }
 export function calculateLineTotal(line: ItemLine): Money { return calculateLineAmounts(line).total; }
 export function sumLines(lines: readonly ItemLine[]): Money { return lines.reduce((sum, line) => sum + calculateLineTotal(line), 0); }
+/**
+ * RF-1301 (Reportes, reunión 2026-09-11): mismo cálculo que `sumLines`, pero conservando base e IVA por
+ * separado — el reporte de requisiciones (lib/services/report-service.ts) necesita las tres columnas
+ * ("total base", "IVA", "total") y no solo el total. Única fuente de verdad de nuevo: reutiliza
+ * `calculateLineAmounts` línea por línea en vez de que el reporte reimplemente la aritmética del
+ * descuento/IVA por su cuenta.
+ */
+export function sumLineAmounts(lines: readonly ItemLine[]): { base: Money; iva: Money; total: Money } {
+  return lines.reduce((sum, line) => { const amounts = calculateLineAmounts(line); return { base: sum.base + amounts.base, iva: sum.iva + amounts.iva, total: sum.total + amounts.total }; }, { base: 0, iva: 0, total: 0 });
+}
 /** Reunión 2026-08-31: "pendiente" cuenta como vigente (aún no decidido); solo "declinado" queda fuera. */
 export function approvedLines(lines: readonly ItemLine[]): ItemLine[] { return lines.filter((line) => line.status !== "declinado"); }
 /** Alimenta órdenes y gastos. `sumLines` NO cambia de semántica (la usan create() y dashboard.inProcessValue). */

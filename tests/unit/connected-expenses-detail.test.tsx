@@ -58,7 +58,6 @@ describe("RF-702: subtotal por etiqueta dentro de cada obra", () => {
     render(
       <ConnectedExpenses
         data={{ expenses: rows, catalogs, pettyCash: [], pettyAttachments: {} }}
-        pathname="/gastos"
         role="Contabilidad"
         refresh={vi.fn()}
       />,
@@ -98,12 +97,12 @@ describe("RF-305: interfaz de gastos compartidos entre obras", () => {
   beforeEach(() => vi.restoreAllMocks());
 
   it("no ofrece repartir el gasto a un rol sin permiso (Contabilidad)", () => {
-    render(<ConnectedExpenses data={expenseData} pathname="/gastos" role="Contabilidad" refresh={vi.fn()} />);
+    render(<ConnectedExpenses data={expenseData} role="Contabilidad" refresh={vi.fn()} />);
     expect(screen.queryByTestId("expense-share-trigger")).toBeNull();
   });
 
   it("bloquea el envío mientras la suma no cuadre al peso o repita una obra", () => {
-    render(<ConnectedExpenses data={expenseData} pathname="/gastos" role="Revisor" refresh={vi.fn()} />);
+    render(<ConnectedExpenses data={expenseData} role="Revisor" refresh={vi.fn()} />);
     fireEvent.click(screen.getByTestId("expense-share-trigger"));
     const form = screen.getByTestId("expense-share-form");
     const submit = within(form).getByRole("button", { name: "Confirmar reparto" });
@@ -136,7 +135,7 @@ describe("RF-305: interfaz de gastos compartidos entre obras", () => {
       }),
     );
     const refresh = vi.fn();
-    render(<ConnectedExpenses data={expenseData} pathname="/gastos" role="Revisor" refresh={refresh} />);
+    render(<ConnectedExpenses data={expenseData} role="Revisor" refresh={refresh} />);
     fireEvent.click(screen.getByTestId("expense-share-trigger"));
     const form = screen.getByTestId("expense-share-form");
     const [, workSelect2] = within(form).getAllByRole("combobox");

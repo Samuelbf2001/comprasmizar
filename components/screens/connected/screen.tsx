@@ -32,6 +32,7 @@ import {
   type ExpenseBundle,
   type LoadState,
   type OrdersBundle,
+  type ReportBundle,
   type RequisitionsBundle,
 } from "./shared";
 import { getPersistedRoute, initialLoadState, loadRoute, routeKind, setCachedRoute } from "./data";
@@ -53,6 +54,9 @@ const ConnectedOrders = dynamic(() =>
 );
 const ConnectedExpenses = dynamic(() =>
   import("./expenses").then((mod) => mod.ConnectedExpenses),
+);
+const ConnectedReports = dynamic(() =>
+  import("./reports").then((mod) => mod.ConnectedReports),
 );
 const ConnectedCatalogAdmin = dynamic(() =>
   import("../catalog-admin").then((mod) => mod.ConnectedCatalogAdmin),
@@ -288,10 +292,12 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
         {kind === "expenses" && (
           <ConnectedExpenses
             data={load.data as ExpenseBundle}
-            pathname={pathname}
             role={role}
             refresh={refresh}
           />
+        )}
+        {kind === "reports" && (
+          <ConnectedReports data={load.data as ReportBundle} role={role} />
         )}
       </Suspense>
     </div>

@@ -22,12 +22,10 @@ import { mutate } from "./data";
 
 export function ConnectedExpenses({
   data,
-  pathname,
   role,
   refresh,
 }: {
   data: ExpenseBundle;
-  pathname: string;
   role: Role;
   /** Recarga los datos de la ruta. Devuelve una promesa: espérala antes de soltar el estado ocupado,
    *  o la pantalla se rehabilita mostrando todavía los datos anteriores. */
@@ -247,27 +245,8 @@ export function ConnectedExpenses({
     <>
       <SectionTitle
         eyebrow="Datos conectados"
-        title={
-          pathname.startsWith("/reportes")
-            ? "Reporte operativo"
-            : "Gastos por obra"
-        }
+        title="Gastos por obra"
         description="Lectura autorizada del libro común de gastos, incluidas las entradas de caja menor."
-        action={
-          pathname.startsWith("/reportes") &&
-          [
-            "Contabilidad",
-            "Administrador Mizar",
-            "Administrador Sixteam",
-          ].includes(role) ? (
-            <a
-              className="button button-dark"
-              href={`/api/reports/expenses?period=${periodFilter || new Date().toISOString().slice(0, 7)}`}
-            >
-              Descargar XLSX provisional
-            </a>
-          ) : undefined
-        }
       />
       {(rows.length > 0 || pettyRows.length > 0) && (
         <div className="filter-bar">
@@ -657,7 +636,7 @@ export function ConnectedExpenses({
             )}
           </section>
         )}
-        {canCreate && !pathname.startsWith("/reportes") && (
+        {canCreate && (
           <form
             className="panel connected-summary"
             onSubmit={submit}

@@ -26,6 +26,8 @@ import type {
   OrderRow,
   OrdersBundle,
   PettyRow,
+  ReportBundle,
+  ReportRow,
   RequisitionRow,
   RequisitionsBundle,
 } from "./shared";
@@ -44,8 +46,13 @@ export function routeKind(pathname: string): RouteKind | undefined {
   )
     return "requisitions";
   if (pathname.startsWith("/ordenes")) return "orders";
-  if (pathname.startsWith("/gastos") || pathname.startsWith("/reportes"))
-    return "expenses";
+  if (pathname.startsWith("/gastos")) return "expenses";
+  // RF-1301 (Reportes, reunión 2026-09-11): /reportes tenía el mismo RouteKind que /gastos ("expenses")
+  // y reutilizaba ConnectedExpenses con un puñado de `if (pathname.startsWith("/reportes"))` — el reporte
+  // de requisiciones (filtros por aprobador/etiqueta, Excel, compilado mensual) necesita su propio bundle
+  // (consecutivo, aprobador(es), estado, ítems — nada de eso vive en /api/expenses), así que gana su
+  // propio kind en vez de seguir forzando dos pantallas distintas dentro de la misma.
+  if (pathname.startsWith("/reportes")) return "reports";
   if (pathname.startsWith("/catalogos") || pathname.startsWith("/proveedores"))
     return "catalogs";
 }
@@ -226,6 +233,20 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
       pettyCash: pettyRows,
       pettyAttachments,
     } satisfies ExpenseBundle;
+  }
+  if (kind === "reports") {
+    // RF-1301 (Reportes): igual que /gastos, se trae TODO lo visible para el actor (visibilidad ya
+    // acotada en el servidor, ver ReportService.listReport) y los cuatro filtros (obra, mes, aprobador,
+    // etiqueta) se aplican en cliente sobre esta misma colección — el mismo criterio que ya usa
+    // ConnectedExpenses para obra/periodo, así que un cambio de filtro no dispara una llamada nueva.
+    const [report, catalogs] = await Promise.all([
+      readJson("/api/reports"),
+      getCatalogs(),
+    ]);
+    return {
+      rows: (report as { rows: ReportRow[] }).rows,
+      catalogs: catalogs as CatalogData,
+    } satisfies ReportBundle;
   }
   if (kind === "catalogs") return readJson("/api/catalogs/manage");
   throw new Error("Ruta operativa no soportada.");
@@ -434,10 +455,12 @@ const REQUISITION_ID_URL_RE = /^\/api\/requisitions\/([^/?]+)(?:\/|$)/;
 
 // H6 (docs/plan-rendimiento.md): invalidación por afectación en vez de `clearRouteCache()` total
 // tras CUALQUIER mutación. Tabla (prefijo de URL mutada -> qué se invalida):
-//   /api/requisitions          -> dashboard, requisitions, y el detalle de ESE id si la URL lo
-//                                 trae (PATCH de cabecera, POST de acciones); si la acción es
-//                                 "generate_orders" también invalida "orders" (es la única acción
-//                                 de requisiciones que además crea órdenes nuevas).
+//   /api/requisitions          -> dashboard, requisitions, reports (RF-1301: una cabecera editada,
+//                                 aprobada, devuelta o declinada cambia exactamente las columnas que
+//                                 reporta /reportes — estado, aprobador, etiqueta), y el detalle de ESE
+//                                 id si la URL lo trae (PATCH de cabecera, POST de acciones); si la
+//                                 acción es "generate_orders" también invalida "orders" (es la única
+//                                 acción de requisiciones que además crea órdenes nuevas).
 //   /api/orders                -> orders, detail (no se puede acotar a un id: una orden no es
 //                                 una requisición), dashboard, expenses.
 //   /api/expenses               -> expenses, dashboard.
@@ -454,7 +477,7 @@ function invalidateForMutation(url: string, body: unknown): void {
   }
   const requisitionMatch = REQUISITION_ID_URL_RE.exec(url);
   if (url === "/api/requisitions" || requisitionMatch) {
-    clearRouteCacheByKind(["dashboard", "requisitions"]);
+    clearRouteCacheByKind(["dashboard", "requisitions", "reports"]);
     if (requisitionMatch) clearDetailCacheForRequisition(decodeURIComponent(requisitionMatch[1]));
     if (isGenerateOrdersAction(body)) clearRouteCacheByKind(["orders"]);
     return;

@@ -46,6 +46,11 @@ export interface Requisition {
   declineReason?: string; returnReason?: string; /** Trusted Kapso event ID only; DB enforces uniqueness. */ kapsoEventId?: string; items: ItemLine[];
   /** RF-1102: última modificación (ISO), poblada solo por el adaptador Postgres; ausente en objetos construidos en memoria. */
   updatedAt?: string;
+  /** Reunión 2026-09-11 (Reportes, RF-1301): fecha de radicación (ISO), poblada solo por el adaptador
+   *  Postgres (columna `created_at`, nunca escrita desde el dominio). El reporte de requisiciones la usa
+   *  como columna "fecha" y como base del filtro de periodo/mes — la misma columna que `from`/`to` ya
+   *  filtraban en `listVisibleRequisitions` sin necesidad de exponerla hasta ahora. */
+  createdAt?: string;
 }
 export interface Order {
   id: string; consecutive: string; type: OrderType; requisitionId: string; supplierId?: string; itemIds: string[]; status: OrderStatus;
