@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, calculateDashboard, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumApprovedLines, sumLines, type AuditEvent, type Expense, type ExpenseShare, type Order, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
+import { DomainError, calculateDashboard, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumApprovedLines, sumLines, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
 import { ProcurementService, type ServiceDependencies } from "../../lib/services";
 
 const ZERO_BY_STATUS: Record<RequisitionStatus, number> = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
 
-function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; ordersData: Order[]; expensesData: Expense[]; pettyData: PettyCash[]; proposedItems: Map<string, string>; notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }>; audits: AuditEvent[]; shares: ExpenseShare[]; visibleActors: string[]; transactionCalls: number; inactiveSuppliers: Set<string> } {
-  const req = new Map<string, Requisition>(), ordersData: Order[] = [], expensesData: Expense[] = [], petty: PettyCash[] = [], audits: AuditEvent[] = [], shares: ExpenseShare[] = [], visibleActors: string[] = []; let seq = 0;
+function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; ordersData: Order[]; expensesData: Expense[]; paymentsData: OrderPayment[]; pettyData: PettyCash[]; proposedItems: Map<string, string>; notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }>; audits: AuditEvent[]; shares: ExpenseShare[]; visibleActors: string[]; transactionCalls: number; inactiveSuppliers: Set<string> } {
+  const req = new Map<string, Requisition>(), ordersData: Order[] = [], expensesData: Expense[] = [], paymentsData: OrderPayment[] = [], petty: PettyCash[] = [], audits: AuditEvent[] = [], shares: ExpenseShare[] = [], visibleActors: string[] = []; let seq = 0;
   // H3 (docs/plan-rendimiento.md): mismo criterio de visibilidad que listVisibleTo (arriba), reutilizado
   // por los métodos nuevos del dashboard (dashboardByStatus/listVisibleHeaders) — un solo lugar donde
   // ese criterio vive en este arnés, para que ambos no puedan divergir por accidente.
@@ -16,6 +16,12 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // nunca los puebla, así que sin esto el backfill de ProcurementService.dashboard() (orderWorkById)
   // nunca tendría nada que ejercitar en este arnés.
   const withRequisitionJoin = (o: Order): Order => { const owner = req.get(o.requisitionId); return { ...o, workId: owner?.workId, requisitionConsecutive: owner?.consecutive }; };
+  // Reunión agosto 2026: mismo criterio que el `left join lateral` del adaptador Postgres real
+  // (orderSelectColumns()/orderFromJoins() en postgres-repositories.ts) — `Order.paidAmount` es
+  // sum(valor) de pagos_orden, resuelto aquí para que `orders.get()` (el único método que
+  // registerOrderPayment/updateOrderAdminStatus usan para leer y devolver la orden) refleje pagos
+  // recién registrados en la MISMA transacción, igual que el SELECT real.
+  const withPayments = (o: Order): Order => ({ ...o, paidAmount: paymentsData.filter((p) => p.orderId === o.id).reduce((sum, p) => sum + p.amount, 0) });
   const requisitions = {
     get: async (id: string) => req.get(id) ? structuredClone(req.get(id)!) : null, save: async (r: Requisition) => void req.set(r.id, structuredClone(r)), list: async () => [...req.values()].map((value) => structuredClone(value)),
     listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`req:${actor.id}`); return visibleRequisitions(actor.id).map((value) => structuredClone(value)); },
@@ -31,7 +37,7 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   const orders = {
     save: async (o: Order) => { const i = ordersData.findIndex((x) => x.id === o.id); if (i >= 0) ordersData[i] = o; else ordersData.push(o); }, list: async () => ordersData,
     listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id); },
-    listByRequisition: async (id: string) => ordersData.filter((o) => o.requisitionId === id), get: async (id: string) => ordersData.find((o) => o.id === id) ?? null,
+    listByRequisition: async (id: string) => ordersData.filter((o) => o.requisitionId === id), get: async (id: string) => { const found = ordersData.find((o) => o.id === id); return found ? withPayments(found) : null; },
     listAttentionCandidates: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id).filter((o) => o.status === "generada" || o.status === "no_cumplida" || (o.adminStatus === "pendiente" && o.status !== "no_necesario")).map(withRequisitionJoin); },
     listRecentlyUpdated: async (actor: { id: string }, limit: number) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id).slice(0, limit).map(withRequisitionJoin); },
     dashboardPendingCount: async (actor: { id: string }) => { visibleActors.push(`order:${actor.id}`); return visibleOrders(actor.id).filter((o) => o.status === "generada" || o.status === "no_cumplida").length; },
@@ -66,6 +72,13 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
     },
     listRecentlyUpdated: async (actor: { id: string }, limit: number) => { visibleActors.push(`expense:${actor.id}`); return [...visibleExpenses(actor.id)].sort((a, b) => (b.date ?? b.orderDate).localeCompare(a.date ?? a.orderDate)).slice(0, limit); },
   };
+  // Reunión agosto 2026: pagos parciales de orden — `save` es INSERT puro (igual que el adaptador
+  // Postgres real, ver saveOrderPayment en postgres-repositories.ts), `listByOrder` ordena por fecha
+  // (mismo criterio que el índice `pagos_orden_orden_fecha_idx`).
+  const orderPayments = {
+    save: async (p: OrderPayment) => void paymentsData.push(p),
+    listByOrder: async (orderId: string) => paymentsData.filter((p) => p.orderId === orderId).sort((a, b) => a.date.localeCompare(b.date)),
+  };
   const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
   // Reunión 2026-09: caja menor nace pagada — orderDate y date coinciden siempre con la fecha del movimiento.
   const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty };
@@ -83,11 +96,11 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // los dos actores aprobador de este archivo) es elegible.
   const catalogs = { create: async (_kind: string, value: never) => value, get: async (kind: string, id: string) => (kind === "works" && id === "work" ? { id: "work", name: "Obra Test", societyId: "soc", active: true } : kind === "suppliers" && ["p1", "p2", "p3"].includes(id) ? { id, name: `Proveedor ${id}`, active: !inactiveSuppliers.has(id) } : kind === "suppliers" && id === "p-inactivo" ? { id, name: "Proveedor inactivo", active: false } : null), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, findRequesterDuplicate: async () => null, isEligibleApprover: async (id: string) => id !== "no-elegible", hasRequisitionsForWork: async () => false };
   const transactions = { transaction: async <T>(_id: string | undefined, work: (repositories: Parameters<ServiceDependencies["transactions"]["transaction"]>[1] extends (repositories: infer R) => Promise<unknown> ? R : never) => Promise<T>) => {
-    const snapshot = { req: structuredClone([...req.entries()]), orders: structuredClone(ordersData), expenses: structuredClone(expensesData), petty: structuredClone(petty), audits: structuredClone(audits), shares: structuredClone(shares), proposed: structuredClone([...proposed.entries()]), notifications: structuredClone(notificationData) };
-    try { return await work({ requisitions, orders, expenses, pettyCash, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
-    catch (error) { req.clear(); for (const [id, value] of snapshot.req) req.set(id, value); ordersData.splice(0, ordersData.length, ...snapshot.orders); expensesData.splice(0, expensesData.length, ...snapshot.expenses); petty.splice(0, petty.length, ...snapshot.petty); audits.splice(0, audits.length, ...snapshot.audits); shares.splice(0, shares.length, ...snapshot.shares); proposed.clear(); for (const [key, value] of snapshot.proposed) proposed.set(key, value); notificationData.splice(0, notificationData.length, ...snapshot.notifications); throw error; }
+    const snapshot = { req: structuredClone([...req.entries()]), orders: structuredClone(ordersData), expenses: structuredClone(expensesData), payments: structuredClone(paymentsData), petty: structuredClone(petty), audits: structuredClone(audits), shares: structuredClone(shares), proposed: structuredClone([...proposed.entries()]), notifications: structuredClone(notificationData) };
+    try { return await work({ requisitions, orders, expenses, orderPayments, pettyCash, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
+    catch (error) { req.clear(); for (const [id, value] of snapshot.req) req.set(id, value); ordersData.splice(0, ordersData.length, ...snapshot.orders); expensesData.splice(0, expensesData.length, ...snapshot.expenses); paymentsData.splice(0, paymentsData.length, ...snapshot.payments); petty.splice(0, petty.length, ...snapshot.petty); audits.splice(0, audits.length, ...snapshot.audits); shares.splice(0, shares.length, ...snapshot.shares); proposed.clear(); for (const [key, value] of snapshot.proposed) proposed.set(key, value); notificationData.splice(0, notificationData.length, ...snapshot.notifications); throw error; }
   } };
-  return { req, ordersData, expensesData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234", verifySociety: async (societyId, token, code) => societyId === "society" && token === null && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, pettyCash, audit, inactiveSuppliers };
+  return { req, ordersData, expensesData, paymentsData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234", verifySociety: async (societyId, token, code) => societyId === "society" && token === null && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, orderPayments, pettyCash, audit, inactiveSuppliers };
 }
 const reviewer = { actor: { id: "daniel", roles: ["revisor"] as const } }, approver = { actor: { id: "nelson", roles: ["aprobador"] as const } }, requester = { actor: { id: "sol", roles: ["solicitante"] as const } };
 // "sonia": segundo actor aprobador, distinto de "nelson" — usado para probar que el aprobador ELEGIDO
@@ -773,6 +786,118 @@ describe("ProcurementService", () => {
     deps.expensesData.splice(index, 1); // simula el estado inconsistente: el gasto ya no existe
     await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
     await expect(service.updateOrderAdminStatus(orderA.id, "pagada", reviewer)).rejects.toMatchObject({ code: "ORDER_EXPENSE_MISSING" });
+  });
+
+  // Reunión agosto 2026: pagos parciales de orden — "saber cuánto se ha pagado de cada orden" sin
+  // romper el marcado de "pagada" que ya usan la pantalla de órdenes y el flujo (assertAdminTransition,
+  // updateOrderAdminStatus arriba). Cada línea con supplier p1 (items[0]) genera una orden con total
+  // 238 (quantity 2 × unitBase 100 = 200 de base, + iva 2×19=38 — ver el comentario de `items` arriba).
+  describe("registerOrderPayment / listOrderPayments — pagos parciales de orden", () => {
+    it("un pago parcial reduce el saldo, aparece en el historial y NO toca adminStatus", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      const { payment, order } = await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 100, method: "efectivo" }, reviewer);
+      expect(payment).toMatchObject({ orderId: orderA.id, date: "2026-08-05", amount: 100, method: "efectivo", registeredBy: "daniel" });
+      expect(order.paidAmount).toBe(100);
+      expect(order.adminStatus).toBe("pendiente"); // un pago parcial no cierra ningún eje por sí solo
+      const history = await service.listOrderPayments(orderA.id, reviewer);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ amount: 100, method: "efectivo" });
+      expect(deps.audits.some((a) => a.entity === "orden" && a.entityId === orderA.id && a.event === "pago_registrado" && a.data?.amount === 100)).toBe(true);
+    });
+    it("dos pagos que suman EXACTO el total se aceptan — el límite es 'excede', no 'alcanza'", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 100, method: "efectivo" }, reviewer);
+      const { order } = await service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 138, method: "transferencia" }, reviewer);
+      expect(order.paidAmount).toBe(238);
+      expect(deps.paymentsData.filter((p) => p.orderId === orderA.id)).toHaveLength(2);
+    });
+    it("un pago que excede el saldo se rechaza con PAYMENT_EXCEEDS_ORDER, sin dejar rastro en pagos_orden", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 200, method: "efectivo" }, reviewer);
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 39, method: "efectivo" }, reviewer)).rejects.toMatchObject({ code: "PAYMENT_EXCEEDS_ORDER" }); // 200+39=239 > 238
+      expect(deps.paymentsData.filter((p) => p.orderId === orderA.id)).toHaveLength(1); // el rechazado no quedó grabado
+    });
+    it("exige el permiso payment:register (revisor/contabilidad/admin_sixteam) — un aprobador o el solicitante no pueden", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, requester)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, { actor: { id: "cont", roles: ["contabilidad"] } })).resolves.toBeTruthy();
+    });
+    it("sin gasto asociado falla con ORDER_EXPENSE_MISSING (misma señal que updateOrderAdminStatus)", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      const index = deps.expensesData.findIndex((e) => e.referenceId === orderA.id);
+      deps.expensesData.splice(index, 1); // simula el estado inconsistente: el gasto ya no existe
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, reviewer)).rejects.toMatchObject({ code: "ORDER_EXPENSE_MISSING" });
+    });
+    it("una orden ya pagada no admite más pagos (ORDER_ALREADY_PAID) — no existe flujo de devolución", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+      await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 10, method: "efectivo" }, reviewer)).rejects.toMatchObject({ code: "ORDER_ALREADY_PAID" });
+    });
+    it("listOrderPayments respeta la MISMA visibilidad que listOrders: NOT_FOUND si el actor no ve la orden", async () => {
+      const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, reviewer);
+      await expect(service.listOrderPayments(orderA.id, approver)).rejects.toMatchObject({ code: "NOT_FOUND" }); // fakeDeps: solo "daniel" ve órdenes
+      await expect(service.listOrderPayments(orderA.id, reviewer)).resolves.toHaveLength(1);
+    });
+  });
+
+  // Reunión agosto 2026 (compatibilidad clave del pedido): updateOrderAdminStatus(...,'pagada') se
+  // CONSERVA y ahora paga el SALDO PENDIENTE internamente, en vez de solo cambiar un estado.
+  describe("updateOrderAdminStatus('pagada') — compatibilidad con pagos parciales", () => {
+    it("sin pagos previos: registra internamente un pago por el saldo TOTAL, con la fecha de hoy", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+      const paid = await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
+      expect(paid.paidAmount).toBe(238);
+      const history = deps.paymentsData.filter((p) => p.orderId === orderA.id);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ amount: 238, method: "otro", registeredBy: "daniel" });
+      expect(deps.audits.some((a) => a.entity === "orden" && a.entityId === orderA.id && a.event === "pago_registrado" && a.data?.auto === true && a.data?.amount === 238)).toBe(true);
+    });
+    it("con un pago parcial previo: paga solo lo que falta, no el total otra vez", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-10", amount: 100, method: "efectivo" }, reviewer);
+      const paid = await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
+      expect(paid.paidAmount).toBe(238);
+      const history = deps.paymentsData.filter((p) => p.orderId === orderA.id);
+      expect(history).toHaveLength(2);
+      expect(history[1].amount).toBe(138); // saldo exacto restante
+    });
+    it("cuando el saldo ya está cubierto por pagos parciales: no inventa un pago de $0 y usa la fecha del ÚLTIMO pago real", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-10", amount: 100, method: "efectivo" }, reviewer);
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-15", amount: 138, method: "transferencia" }, reviewer);
+      const paid = await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
+      expect(paid.paidAmount).toBe(238);
+      const history = deps.paymentsData.filter((p) => p.orderId === orderA.id);
+      expect(history).toHaveLength(2); // no se agregó un tercer pago de saldo $0
+      const expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
+      expect(expense.date).toBe("2026-08-15"); // fecha del ÚLTIMO pago, no la de "hoy" (reloj congelado en 2026-08-24)
+    });
   });
 
   // H2 (docs/plan-rendimiento.md): getRequisition() ya no carga TODAS las requisiciones visibles para

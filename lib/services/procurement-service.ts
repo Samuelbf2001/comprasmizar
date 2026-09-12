@@ -1,4 +1,4 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
@@ -29,6 +29,8 @@ export interface CreateRequisitionInput { type: RequisitionType; societyId?: str
  */
 export interface ReviewInput { tagId: string; approverId?: string | null; workId?: string; paymentTerms?: string; items: ItemLine[]; }
 export interface PettyCashInput { workId: string; date: string; concept: string; tagId: string; amount: number; attachmentUrl?: string; }
+/** Reunión agosto 2026: entrada de `registerOrderPayment` — `date`/`amount`/`method` obligatorios, igual que `OrderPayment` en lib/domain/model.ts. */
+export interface OrderPaymentInput { date: string; amount: number; method: PaymentMethod; externalReference?: string; }
 /** Reunión 2026-08-31: decisión por ítem del aprobador. No cambia el estado de la requisición. */
 export interface ItemDecision { itemId: string; status: ItemStatus; declineReason?: string; quantity?: number; }
 /** Bloqueante de atasco (reunión 2026-08-31): shape deliberadamente acotado a {itemId, supplierId} — nada de cantidad/precio/tasas/estado cabe aquí, así que assignSuppliers no puede tocarlos aunque quisiera. */
@@ -440,22 +442,90 @@ export class ProcurementService {
       if (status === "contabilizada") { order.accountedAt = this.now().toISOString(); }
       else {
         order.paidAt = this.now().toISOString();
-        // Reunión 2026-09: "la fecha del gasto es la del pago" — al marcar la orden pagada, se fija
-        // (misma transacción) la fecha de pago del gasto que esa orden generó, en hora Colombia
-        // (colombiaDateParts, mismo criterio que generateOrders). saveExpense no sirve para esto: su
-        // `on conflict do nothing` nunca actualiza un gasto ya guardado.
-        const { day: paidDate } = colombiaDateParts(this.now());
-        // GRAVE 3 (QA reasignación): 0 filas actualizadas significa que esta orden no tiene gasto propio
-        // — un estado inconsistente (contabilizada/pagada son un eje independiente del cumplimiento, así
-        // que nada más lo garantiza) que antes quedaba en "pagada" en silencio. Se falla explícito en vez
-        // de dejarla pasar: una orden "pagada" sin gasto es peor que rechazar la transición.
-        const paidRows = await tx.expenses.markPaid(order.id, paidDate);
+        /**
+         * Reunión agosto 2026 (pagos parciales, compatibilidad clave): "Marcar pagada" NO desaparece
+         * ni se sustituye por el panel de pagos — sigue siendo el botón de siempre, y ahora significa
+         * "pagar el saldo pendiente". Si a la orden le queda saldo (el caso de SIEMPRE, una orden que
+         * nunca tuvo un abono parcial propio, `paid = 0`), se registra aquí mismo un pago interno de
+         * `pagos_orden` por ese saldo EXACTO — mismo camino, mismo trigger de la base
+         * (`validar_pago_no_excede_orden`) que `registerOrderPayment`, así que nunca puede excederlo.
+         * Si el saldo ya es 0 (alguien ya cubrió el total a punta de pagos parciales desde el panel
+         * nuevo antes de pulsar este botón), NO se inventa un pago de $0 — `assertPaymentWithinOrder`
+         * y el `check (valor > 0)` de la base lo rechazarían — y se usa la fecha del último pago real.
+         */
+        const [expense] = await tx.expenses.listByReference(orderId);
+        // GRAVE 3 (QA reasignación), preservado: una orden "pagada" sin gasto es un estado
+        // inconsistente (contabilizada/pagada son un eje independiente del cumplimiento, así que nada
+        // más lo garantiza) que antes quedaba en silencio. Ahora se detecta ANTES de tocar
+        // `pagos_orden`, con el mismo código de error que ya usa `registerOrderPayment`.
+        if (!expense) throw new DomainError("ORDER_EXPENSE_MISSING", "La orden no tiene un gasto asociado; no se puede marcar como pagada");
+        const payments = await tx.orderPayments.listByOrder(orderId);
+        const paid = payments.reduce((sum, payment) => sum + payment.amount, 0);
+        const balance = expense.total - paid;
+        const { day: today } = colombiaDateParts(this.now());
+        // "la fecha del gasto es la del pago" (reunión 2026-09) sigue siendo el criterio, pero ahora
+        // puede haber pagos parciales anteriores: la fecha que se fija es la del ÚLTIMO pago, no
+        // necesariamente HOY (si el saldo ya estaba en 0, hoy no se registró ningún pago nuevo).
+        let lastPaymentDate = payments.reduce<string | undefined>((latest, payment) => (!latest || payment.date > latest ? payment.date : latest), undefined);
+        if (balance > 0) {
+          assertPaymentWithinOrder(expense.total, paid, balance);
+          const payment: OrderPayment = { id: this.deps.ids.next(), orderId, date: today, amount: balance, method: "otro", registeredBy: actor.id };
+          await tx.orderPayments.save(payment);
+          await this.audit("orden", orderId, "pago_registrado", actor, { amount: balance, method: "otro", auto: true }, this.origin(context), tx.audit);
+          lastPaymentDate = today;
+        }
+        // saveExpense no sirve para fijar esta fecha: su `on conflict do nothing` nunca actualiza un
+        // gasto ya guardado (ver markPaid en contracts.ts). El chequeo de 0 filas se conserva: no
+        // debería dispararse nunca (ya se comprobó arriba que el gasto existe), pero sigue siendo la
+        // única señal de un estado inconsistente si algún día dejara de ser así.
+        const paidRows = await tx.expenses.markPaid(order.id, lastPaymentDate ?? today);
         if (paidRows === 0) throw new DomainError("ORDER_EXPENSE_MISSING", "La orden no tiene un gasto asociado; no se puede marcar como pagada");
       }
       await tx.orders.save(order);
       await this.audit("orden", order.id, "estado_administrativo_actualizado", actor, { status }, this.origin(context), tx.audit);
-      return order;
+      // Refresca `paidAmount` (derivado de `pagos_orden`, ver order(row) en postgres-repositories.ts):
+      // el `order` de arriba puede llevar el de ANTES del pago interno que se acaba de registrar.
+      return (await tx.orders.get(order.id)) ?? order;
     });
+  }
+  /**
+   * Reunión agosto 2026: registra un pago PARCIAL de una orden — el gesto nuevo, más frecuente, que
+   * ni "contabilizar" ni "pagar el saldo" (arriba) cubren por sí solos. NO toca `adminStatus`/`paidAt`:
+   * cerrar la orden como "pagada" sigue siendo un gesto aparte y deliberado (ver la nota grande de
+   * compatibilidad en `updateOrderAdminStatus`), nunca algo que un abono parcial dispare solo. Igual
+   * que `registerPettyCash`, devuelve {payment, order} — `order` con `paidAmount` fresco — para que
+   * la pantalla actualice la columna "Pagado / Total" sin un segundo viaje.
+   */
+  async registerOrderPayment(orderId: string, input: OrderPaymentInput, context: RequestContext): Promise<{ payment: OrderPayment; order: Order }> {
+    const actor = this.actor(context); assertPermission(actor.roles, "payment:register", this.authOrigin(context));
+    return this.transaction(`order:${orderId}`, async (tx) => {
+      const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
+      // Mismo criterio que ORDER_ALREADY_PAID en updateOrderStatus: una orden ya pagada no admite más
+      // pagos — revertir uno exige un flujo de devolución que no existe todavía.
+      if (order.adminStatus === "pagada") throw new DomainError("ORDER_ALREADY_PAID", "La orden ya está pagada; no admite más pagos");
+      const [expense] = await tx.expenses.listByReference(orderId);
+      if (!expense) throw new DomainError("ORDER_EXPENSE_MISSING", "La orden no tiene un gasto asociado; no se puede registrar el pago");
+      const payments = await tx.orderPayments.listByOrder(orderId);
+      const paid = payments.reduce((sum, payment) => sum + payment.amount, 0);
+      assertPaymentWithinOrder(expense.total, paid, input.amount);
+      const payment: OrderPayment = { id: this.deps.ids.next(), orderId, date: input.date, amount: input.amount, method: input.method, externalReference: input.externalReference, registeredBy: actor.id };
+      await tx.orderPayments.save(payment);
+      await this.audit("orden", orderId, "pago_registrado", actor, { amount: input.amount, method: input.method }, this.origin(context), tx.audit);
+      return { payment, order: (await tx.orders.get(orderId)) ?? order };
+    });
+  }
+  /** Visibilidad de UNA orden reutilizando `listOrders` (permiso order:read + visibilidad por fila ya
+   *  resuelta ahí) en vez de duplicar el criterio isElevated/aprobador/solicitante — mismo patrón que
+   *  ya usa app/api/orders/[id]/document/route.ts (`(await service.listOrders(...)).find(...)`). */
+  private async getVisibleOrder(orderId: string, context: RequestContext): Promise<Order> {
+    const order = (await this.listOrders(context)).find((candidate) => candidate.id === orderId);
+    if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
+    return order;
+  }
+  /** Reunión agosto 2026: historial de pagos de una orden, para el panel "Pagos" de su ficha. */
+  async listOrderPayments(orderId: string, context: RequestContext): Promise<OrderPayment[]> {
+    await this.getVisibleOrder(orderId, context);
+    return this.deps.orderPayments.listByOrder(orderId);
   }
   async redistribute(expenseId: string, total: number, shares: ExpenseShare[], context: RequestContext): Promise<void> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); if (shares.some((share) => share.expenseId !== expenseId)) throw new DomainError("INVALID_SHARE", "Todas las líneas deben pertenecer al gasto"); await this.transaction(`expense:${expenseId}`, async (tx) => { const expense = await tx.expenses.get(expenseId); if (!expense) throw new DomainError("NOT_FOUND", "Gasto no encontrado"); if (expense.total !== total) throw new DomainError("EXPENSE_TOTAL_MISMATCH", "El total del reparto no coincide con el gasto"); validateShares(expense.total, shares); await tx.expenses.saveShares(shares); await this.audit("gasto", expenseId, "repartido", actor, { total: expense.total }, this.origin(context), tx.audit); }); }
   async registerPettyCash(input: PettyCashInput, context: RequestContext): Promise<{ entry: PettyCash; expense: Expense }> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:create", this.authOrigin(context)); if (!input.workId || !input.concept.trim() || !input.tagId) throw new DomainError("INVALID_INPUT", "Campos de caja menor obligatorios"); assertCop(input.amount, "Valor"); if (input.amount === 0) throw new DomainError("INVALID_MONEY", "El valor debe ser mayor a cero"); const entry: PettyCash = { id: this.deps.ids.next(), ...input, registeredBy: actor.id }; return this.transaction(undefined, async (tx) => { const expense = await tx.pettyCash.save(entry); await this.audit("caja_menor", entry.id, "registrada", actor, { expenseId: expense.id }, this.origin(context), tx.audit); await this.audit("gasto", expense.id, "registrado", actor, { origin: "caja_menor" }, this.origin(context), tx.audit); return { entry, expense }; }); }

@@ -28,6 +28,7 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
     requisitions,
     orders: { save: unused, list: unused, listVisibleTo: unused, listByRequisition: unused, get: unused, listAttentionCandidates: unused, listRecentlyUpdated: unused, dashboardPendingCount: unused },
     expenses: { get: unused, save: unused, markPaid: unused, deleteByReference: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused, dashboardAggregates: unused, listRecentlyUpdated: unused },
+    orderPayments: { save: unused, listByOrder: unused },
     pettyCash: { save: unused, list: unused },
     audit, consecutives,
     features: { isEnabled: unused },

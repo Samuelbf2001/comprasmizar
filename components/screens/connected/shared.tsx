@@ -138,6 +138,23 @@ export type OrderRow = {
   // (lib/domain/rules.ts) — nunca aquí (BLOQUEANTE 1, QA 2026-08-31).
   requiredDate?: string;
   lines?: RequisitionItem[];
+  // Reunión agosto 2026: "cuánto se ha pagado de cada orden" — suma de sus pagos parciales
+  // (`pagos_orden`), resuelta por el servidor en el MISMO join (ver `Order.paidAmount` en
+  // lib/domain/model.ts). Ausente en los mismos caminos donde requisitionConsecutive/lines también
+  // lo están; orders.tsx lo trata como 0 al mostrar la columna "Pagado / Total".
+  paidAmount?: number;
+};
+// Reunión agosto 2026: un pago parcial de una orden — mismo shape que OrderPayment en
+// lib/domain/model.ts, tal como lo sirve GET /api/orders/:id/payments.
+export type OrderPaymentMethod = "efectivo" | "transferencia" | "cheque" | "tarjeta" | "otro";
+export type OrderPaymentRow = {
+  id: string;
+  orderId: string;
+  date: string;
+  amount: number;
+  method: OrderPaymentMethod;
+  externalReference?: string;
+  registeredBy?: string;
 };
 // Reunión 2026-09: "la fecha del gasto es la del pago" — orderDate (nace con el registro) siempre
 // viaja; date/period (fecha y periodo de PAGO) faltan mientras la orden no se ha pagado.

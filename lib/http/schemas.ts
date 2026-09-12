@@ -105,6 +105,17 @@ export const orderStatusSchema = z.union([
   z.object({ adminStatus: z.enum(["contabilizada", "pagada"]) }).strict(),
 ]);
 export const expenseSharesSchema = z.object({ total: z.number().int().positive(), shares: z.array(z.object({ workId: z.string().uuid(), amount: z.number().int().positive() }).strict()).min(1).max(100) }).strict();
+// Reunión agosto 2026: registro de un pago parcial de orden (POST /api/orders/[id]/payments).
+// `amount` entero (mismo criterio que expenseSharesSchema/pettyCashSchema arriba: el dominio entero
+// asume peso colombiano entero, ver lib/domain/model.ts). `method` son EXACTAMENTE los valores de
+// `public.medio_pago` (202609120002_pagos_orden.sql) — lista aparte a propósito, mismo criterio que
+// ORDER_STATUS_VALUES más abajo: zod no puede derivar un enum desde un `type` de TypeScript.
+export const orderPaymentSchema = z.object({
+  date: z.string().date(),
+  amount: z.number().int().positive(),
+  method: z.enum(["efectivo", "transferencia", "cheque", "tarjeta", "otro"]),
+  externalReference: z.string().trim().min(1).max(240).optional(),
+}).strict();
 export const pettyCashSchema = z.object({ workId: z.string().uuid(), date: z.string().date(), concept: z.string().trim().min(1).max(500), tagId: z.string().uuid(), amount: z.number().int().positive() }).strict();
 
 // Edición de cabecera de requisición (ficha editable). Solo campos que no alteran la identidad ni

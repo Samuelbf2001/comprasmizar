@@ -1007,6 +1007,13 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .supplier-order-total{display:flex;align-items:center;justify-content:space-between;padding:var(--space-3);margin-bottom:var(--space-2);border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--navy-soft)}
 .supplier-order-total span{font-size:var(--text-3xs);color:#556072}
 .supplier-order-total b{font-size:var(--text-sm);color:var(--navy)}
+/* Reunión agosto 2026: formulario mínimo del panel "Pagos" de la ficha de una orden — fecha, valor,
+   medio, referencia y UN botón. Mismos `.field` que el resto del repo (etiqueta + input apilados);
+   este solo añade la fila flexible que los agrupa, con el botón alineado a la base de los inputs
+   (`align-items:flex-end`) para que no quede más alto que ellos. */
+.order-payment-form{display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:flex-end;margin-top:var(--space-3)}
+.order-payment-form .field{flex:1 1 140px;min-width:120px}
+.order-payment-form button{height:42px}
 .role-production{cursor:default}
 .role-production b{color:#e8ecf1}
 /* "Ver como": lente de presentación del Administrador Sixteam. El aviso debe leerse como un

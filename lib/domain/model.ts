@@ -9,6 +9,8 @@ export type OrderStatus = "generada" | "cumplida" | "no_cumplida" | "no_necesari
 export type ItemStatus = "pendiente" | "aprobado" | "declinado";
 /** Reunión 2026-08-31: eje administrativo/contable de una orden, independiente de OrderStatus (cumplimiento). */
 export type OrderAdminStatus = "pendiente" | "contabilizada" | "pagada";
+/** Reunión agosto 2026: "saber cuánto se ha pagado de cada orden" — medio con el que se hizo un pago parcial. */
+export type PaymentMethod = "efectivo" | "transferencia" | "cheque" | "tarjeta" | "otro";
 export type Money = number;
 
 export interface Actor { id: string; roles: readonly Role[]; }
@@ -82,7 +84,25 @@ export interface Order {
    * también usada por el PDF.
    */
   requiredDate?: string; lines?: ItemLine[];
+  /**
+   * Reunión agosto 2026: "cuánto se ha pagado de cada orden" con pagos parciales, SIN romper el
+   * marcado de "pagada" que ya usan la pantalla de órdenes y updateOrderAdminStatus — por eso esto es
+   * un campo ADITIVO y derivado (sum(valor) de `pagos_orden`, nunca escrito directamente en
+   * `ordenes`), no una sustitución de `adminStatus`/`paidAt`. Resuelto en el mismo SELECT que ya trae
+   * `requisitionConsecutive`/`lines` (ver `order(row)` en postgres-repositories.ts, un
+   * `left join lateral` sobre `pagos_orden`, no una consulta por orden). Ausente en los mismos
+   * caminos donde `requisitionConsecutive`/`lines` también lo están (fakes en memoria de los tests,
+   * lecturas que no hacen ese join) — nunca `0` falso que insinúe "sin pagos" cuando en realidad es
+   * "no se preguntó".
+   */
+  paidAmount?: Money;
 }
+/**
+ * Un pago parcial de una orden. `date`/`amount`/`method` son obligatorios; `externalReference`
+ * (referencia de la transferencia/consignación) y `registeredBy` son opcionales — ver
+ * `pagos_orden` (202609120002) y `ProcurementService.registerOrderPayment`.
+ */
+export interface OrderPayment { id: string; orderId: string; date: string; amount: Money; method: PaymentMethod; externalReference?: string; registeredBy?: string; }
 /**
  * Decisión del cliente (reunión 2026-09, literal): "que quede como fechas aparte cuándo se sube y
  * cuándo se paga; la del gasto es la del pago". `orderDate`: fecha en que nace el registro (generación

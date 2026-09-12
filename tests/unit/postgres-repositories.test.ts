@@ -306,6 +306,68 @@ describe("PostgresPorts.saveOrder — proveedor_id persistido y sin huérfanos e
   });
 });
 
+// Reunión agosto 2026: pagos parciales de orden — `Order.paidAmount` resuelto en el MISMO select
+// (left join lateral sobre pagos_orden), y el repositorio dedicado de pagos_orden.
+describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrderPayment, listOrderPayments)", () => {
+  it("orderSelectColumns/orderFromJoins suman un left join lateral a pagos_orden y max(pago.pagado) as pagado_total", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text) ? [] : []));
+    const ports = new PostgresPorts(sql);
+    await ports.getOrder("o1");
+    const select = sql.calls.find((call) => /^select o\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/left join lateral \(select coalesce\(sum\(po\.valor\), 0\) as pagado from pagos_orden po where po\.orden_id = o\.id\) pago on true/);
+    expect(select.text).toMatch(/max\(pago\.pagado\) as pagado_total/);
+  });
+  it("getOrder mapea pagado_total a Order.paidAmount (asNumber, no un string crudo del numeric)", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada", pagado_total: "150.00" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    const order = await ports.getOrder("o1");
+    expect(order?.paidAmount).toBe(150);
+  });
+  // Ausente (no `0`) cuando el select no trae `pagado_total` — mismo criterio que
+  // requisitionConsecutive/lines (ver el comentario de Order.paidAmount en lib/domain/model.ts):
+  // "0" falso insinuaría "sin pagos" cuando en realidad es "no se preguntó".
+  it("getOrder deja paidAmount undefined cuando la fila no trae pagado_total", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    const order = await ports.getOrder("o1");
+    expect(order?.paidAmount).toBeUndefined();
+  });
+  it("saveOrderPayment inserta en pagos_orden; los campos opcionales ausentes escriben NULL, no undefined", async () => {
+    const sql = fakeSql();
+    const ports = new PostgresPorts(sql);
+    await ports.saveOrderPayment({ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "efectivo" });
+    const insert = sql.calls.find((call) => /^insert into pagos_orden/i.test(call.text));
+    expect(insert).toBeDefined();
+    expect(insert!.text).toMatch(/insert into pagos_orden \(id, orden_id, fecha, valor, medio_pago, referencia_externa, registrado_por\)/);
+    expect(insert!.values).toEqual(["pago-1", "orden-1", "2026-08-05", 100, "efectivo", null, null]);
+  });
+  it("saveOrderPayment escribe referencia_externa/registrado_por cuando vienen informados", async () => {
+    const sql = fakeSql();
+    const ports = new PostgresPorts(sql);
+    await ports.saveOrderPayment({ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "transferencia", externalReference: "CONS-123", registeredBy: "daniel" });
+    const insert = sql.calls.find((call) => /^insert into pagos_orden/i.test(call.text));
+    expect(insert!.values).toEqual(["pago-1", "orden-1", "2026-08-05", 100, "transferencia", "CONS-123", "daniel"]);
+  });
+  // Mismo criterio que el índice pagos_orden_orden_fecha_idx (202609120002_pagos_orden.sql): orden
+  // cronológico, el que necesita la ficha de la pantalla y la "fecha del último pago" del servicio.
+  it("listOrderPayments filtra por orden_id y ordena por fecha, created_at", async () => {
+    const sql = fakeSql((call) => (/^select \* from pagos_orden/i.test(call.text)
+      ? [{ id: "pago-1", orden_id: "orden-1", fecha: "2026-08-05", valor: "100.00", medio_pago: "efectivo", referencia_externa: null, registrado_por: null }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    const rows = await ports.listOrderPayments("orden-1");
+    const select = sql.calls.find((call) => /^select \* from pagos_orden/i.test(call.text))!;
+    expect(select.text).toMatch(/where orden_id=\?/);
+    expect(select.text).toMatch(/order by fecha, created_at/);
+    expect(select.values).toEqual(["orden-1"]);
+    expect(rows).toEqual([{ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "efectivo", externalReference: undefined, registeredBy: undefined }]);
+  });
+});
+
 // H3 (docs/plan-rendimiento.md, Fase 3): filtros y paginación por cursor. `uuid(n)` produce ids con
 // forma válida de UUID v4 (versión "4", variante "8") — decodeCursor los valida con esa forma estricta,
 // así que un fixture con ids como "1"/"2" rompería la propia prueba al decodificar el cursor que ella
@@ -459,9 +521,12 @@ describe("PostgresPorts.listVisibleOrders con query — filtros, join a requisic
     expect(select.text).toMatch(/left join requisicion_items ri on ri\.id=oi\.requisicion_item_id/);
     expect(select.text).toMatch(/coalesce\(json_agg\(json_build_object\(/);
     expect(select.text).toMatch(/filter \(where ri\.id is not null\), '\[\]'\) as lines/);
-    // BLOQUEANTE 1 (QA 2026-08-31): el total NUNCA se calcula en SQL — el json_build_object solo
-    // transporta las columnas crudas de requisicion_items, sin ninguna suma/multiplicación.
-    expect(select.text).not.toMatch(/sum\(|valor_base\s*\*|valor_base\s*\+/);
+    // BLOQUEANTE 1 (QA 2026-08-31): el total de la orden NUNCA se calcula en SQL — el
+    // json_build_object solo transporta las columnas crudas de requisicion_items, sin ninguna
+    // suma/multiplicación. La excepción explícita es `sum(po.valor)` (reunión agosto 2026,
+    // `Order.paidAmount`): es una suma DISTINTA —cuánto se ha pagado de la orden, sobre
+    // `pagos_orden`— que no toca `valor_base`/`iva`/`cantidad` de `requisicion_items` para nada.
+    expect(select.text).not.toMatch(/sum\((?!po\.valor\))|valor_base\s*\*|valor_base\s*\+/);
   });
 
   it("pagina por fecha_generacion desc, id desc — nextCursor null en la última página", async () => {

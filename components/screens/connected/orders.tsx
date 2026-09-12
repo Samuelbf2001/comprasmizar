@@ -10,6 +10,7 @@ import {
   Inbox,
   SearchX,
   Truck,
+  Wallet,
   X,
 } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
@@ -23,9 +24,17 @@ import {
   estadoLabel,
   formatIsoDate,
   money,
+  type OrderPaymentMethod,
+  type OrderPaymentRow,
   type OrdersBundle,
 } from "./shared";
 import { mutate } from "./data";
+
+// Reunión agosto 2026: los cinco medios de `public.medio_pago` (202609120002_pagos_orden.sql).
+// `estadoLabel` (shared.tsx) ya capitaliza cualquier valor sin mapa propio ("efectivo" -> "Efectivo"),
+// así que las etiquetas del <select> se escriben una vez aquí y el resto de la pantalla reutiliza
+// `estadoLabel(payment.method)` para mostrarlas — una sola fuente para el texto visible.
+const PAYMENT_METHODS: OrderPaymentMethod[] = ["efectivo", "transferencia", "cheque", "tarjeta", "otro"];
 
 export function ConnectedOrders({
   data,
@@ -57,7 +66,11 @@ export function ConnectedOrders({
     // Reunión 2026-08-31: eje administrativo/contable, independiente del cumplimiento de arriba.
     // "contabilizada" es de contabilidad (order:account); "pagada" es del revisor (order:pay).
     canAccount = role === "Contabilidad" || role === "Administrador Sixteam",
-    canPay = role === "Revisor" || role === "Administrador Sixteam";
+    canPay = role === "Revisor" || role === "Administrador Sixteam",
+    // Reunión agosto 2026: `payment:register` en lib/domain/rules.ts es revisor/contabilidad/
+    // admin_sixteam — el registro de un abono parcial es un gesto más frecuente que "contabilizar" o
+    // "pagar el saldo", así que junta a quien puede hacer cualquiera de los dos.
+    canRegisterPayment = canPay || canAccount;
   // Expediente del proveedor (RUT, cámara de comercio…) para que el contador lo descargue
   // junto con la orden sin buscarlo por otro lado (GET /api/suppliers/:id ya lo expone).
   const [supplierDocuments, setSupplierDocuments] = useState<Record<string, Array<{ id: string; name: string }>>>({});
@@ -140,9 +153,15 @@ export function ConnectedOrders({
   // (adminStatus) en vez del de entrega (status) — son ejes independientes.
   const setAdminStatus = async (id: string, adminStatus: "contabilizada" | "pagada", consecutive?: string) => {
     const ref = consecutive ?? id;
+    // Reunión agosto 2026: "Marcar pagada" ya no es un simple cambio de estado — ahora, por
+    // compatibilidad, paga el SALDO PENDIENTE (ver ProcurementService.updateOrderAdminStatus). El
+    // texto de la confirmación lo dice explícito para que quien lo pulsa sepa qué va a pasar.
+    const description = adminStatus === "pagada"
+      ? `La orden ${ref} quedará marcada como "Pagada": se registrará automáticamente un pago por el saldo pendiente (si queda alguno) con la fecha de hoy. Esta acción es irreversible.`
+      : `La orden ${ref} quedará marcada como "${estadoLabel(adminStatus)}" en contabilidad. Esta acción es irreversible.`;
     const ok = await confirm({
       title: `Marcar la orden como "${estadoLabel(adminStatus)}"`,
-      description: `La orden ${ref} quedará marcada como "${estadoLabel(adminStatus)}" en contabilidad. Esta acción es irreversible.`,
+      description,
       confirmLabel: "Confirmar",
     });
     if (!ok) return;
@@ -174,6 +193,62 @@ export function ConnectedOrders({
       // Silencioso: el expediente es un plus de la ficha, no bloquea la ficha de la orden.
     } finally {
       setDossierLoading((current) => (current === supplierId ? null : current));
+    }
+  };
+  // Reunión agosto 2026: historial de pagos de la orden — mismo patrón perezoso que
+  // loadSupplierDossier (se pide una vez, solo al abrir la ficha; GET /api/orders/:id/payments).
+  const [paymentsByOrder, setPaymentsByOrder] = useState<Record<string, OrderPaymentRow[]>>({});
+  const [paymentsLoading, setPaymentsLoading] = useState<string | null>(null);
+  const loadPayments = async (orderId: string, force = false) => {
+    if ((!force && paymentsByOrder[orderId]) || paymentsLoading === orderId) return;
+    setPaymentsLoading(orderId);
+    try {
+      const result = (await apiRequest(`/api/orders/${orderId}/payments`)) as OrderPaymentRow[];
+      setPaymentsByOrder((current) => ({ ...current, [orderId]: result }));
+    } catch {
+      // Silencioso, igual que loadSupplierDossier: el historial es un plus de la ficha.
+    } finally {
+      setPaymentsLoading((current) => (current === orderId ? null : current));
+    }
+  };
+  // Formulario mínimo del panel "Pagos": fecha, valor, medio, referencia — UN botón, "Registrar pago".
+  const [paymentDate, setPaymentDate] = useState("");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<OrderPaymentMethod>("transferencia");
+  const [paymentReference, setPaymentReference] = useState("");
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const resetPaymentForm = () => {
+    setPaymentDate("");
+    setPaymentAmount("");
+    setPaymentMethod("transferencia");
+    setPaymentReference("");
+  };
+  const registerPayment = async (order: { id: string; consecutive: string }) => {
+    const amount = Math.round(Number(paymentAmount));
+    if (!paymentDate || !Number.isFinite(amount) || amount <= 0) {
+      setFeedback("Indica una fecha y un valor mayor a cero para registrar el pago.");
+      return;
+    }
+    setFeedback("");
+    setSuccess("");
+    setPaymentSubmitting(true);
+    try {
+      const result = (await mutate(`/api/orders/${order.id}/payments`, "POST", {
+        date: paymentDate,
+        amount,
+        method: paymentMethod,
+        ...(paymentReference.trim() ? { externalReference: paymentReference.trim() } : {}),
+      })) as { payment: OrderPaymentRow };
+      setSuccess(`Se registró un pago de ${money.format(result.payment.amount)} para la orden ${order.consecutive}.`);
+      resetPaymentForm();
+      await loadPayments(order.id, true);
+      refresh();
+    } catch (error) {
+      setFeedback(
+        error instanceof Error ? error.message : "No fue posible registrar el pago.",
+      );
+    } finally {
+      setPaymentSubmitting(false);
     }
   };
   return (
@@ -339,6 +414,10 @@ export function ConnectedOrders({
                       en el mismo SELECT del servidor, así que mostrarla para TODAS las filas ya no
                       exige una llamada por orden. */}
                   <th className="align-right">Valor</th>
+                  {/* Reunión agosto 2026: "cuánto se ha pagado de cada orden" — Order.paidAmount ya
+                      viaja en el mismo SELECT (ver el comentario en shared.tsx), así que se muestra
+                      para TODAS las filas sin una llamada por orden. */}
+                  <th className="align-right">Pagado / Total</th>
                   {/* GRAVE 2: "Entrega"/"Contabilidad" en vez de "Estado"/"Estado admin." — dos ejes
                       independientes con su propio nombre, no una secuencia con abreviatura de sistema. */}
                   <th>Entrega</th>
@@ -350,7 +429,9 @@ export function ConnectedOrders({
                 {filteredRows.map((row) => {
                   const openRow = () => {
                     setOpenOrderId(row.id);
+                    resetPaymentForm();
                     if (row.supplierId) void loadSupplierDossier(row.supplierId);
+                    void loadPayments(row.id);
                   };
                   return (
                     <tr
@@ -376,6 +457,9 @@ export function ConnectedOrders({
                       <td>{row.requiredDate ? formatIsoDate(row.requiredDate) : "—"}</td>
                       <td>{supplierName(row.supplierId)}</td>
                       <td className="align-right money">{money.format(sumLines(row.lines ?? []))}</td>
+                      <td className="align-right money">
+                        {money.format(row.paidAmount ?? 0)} / {money.format(sumLines(row.lines ?? []))}
+                      </td>
                       <td>
                         {/* Eje de entrega: punto de color (dot), lenguaje visual propio. */}
                         <Tone
@@ -420,6 +504,12 @@ export function ConnectedOrders({
         // antes esto sumaba precios unitarios sin cantidad ni descuento y usaba unitIva (vacío en el modelo
         // nuevo), así que 400 bultos a $38.000 se veían como "$38.000" aquí y "$18.088.000" en el PDF.
         const total = sumLines(orderItems);
+        // Reunión agosto 2026: saldo pendiente de la orden (para el aviso junto a "Marcar pagada" y
+        // el encabezado del panel "Pagos"). `order.paidAmount` puede faltar (ver el comentario del
+        // campo en shared.tsx) en algún camino que no haga el join — se trata como 0, nunca como
+        // "ya pagada", que sería el error más caro de los dos.
+        const paidTotal = order.paidAmount ?? 0;
+        const pendingBalance = Math.max(0, total - paidTotal);
         const requisitionHref = order.requisitionId ? `/requisiciones/${order.requisitionId}` : null;
         return (
           <div
@@ -538,6 +628,13 @@ export function ConnectedOrders({
                   ) : order.adminStatus === "contabilizada" && canPay ? (
                     <div className="order-status-actions">
                       <button className="button button-secondary" type="button" onClick={() => void setAdminStatus(order.id, "pagada", order.consecutive)}>Marcar pagada</button>
+                      {/* Reunión agosto 2026: "Marcar pagada" ahora paga el SALDO, no solo cambia un
+                          estado — este aviso dice, antes de pulsarlo, cuánto va a pagar. */}
+                      <p className="supplier-muted">
+                        {pendingBalance > 0
+                          ? `Quedan ${money.format(pendingBalance)} por pagar; se registrarán automáticamente al confirmar.`
+                          : "Ya está cubierto el total con pagos parciales; esto solo cierra el estado."}
+                      </p>
                     </div>
                   ) : (
                     <p className="supplier-muted">
@@ -545,6 +642,118 @@ export function ConnectedOrders({
                         ? "Esta orden ya está pagada. El estado de contabilidad es definitivo."
                         : sinPermiso(`puede avanzar la contabilidad desde "${estadoLabel(order.adminStatus ?? "pendiente")}"`)}
                     </p>
+                  )}
+                </section>
+                {/*
+                  Reunión agosto 2026 (pedido del cliente): "saber cuánto se ha pagado de cada orden"
+                  con pagos parciales, sin romper "Marcar pagada" de arriba. Panel sobrio: lista de
+                  pagos + UN formulario con UN botón, "Registrar pago". El diálogo de confirmación de
+                  "Marcar pagada" (arriba, mismo `confirm()` de useConfirmDialog) ya se pinta DENTRO
+                  de esta ficha gracias al arreglo de capas de 230056f (z-index del diálogo por
+                  encima de `.supplier-overlay`, ver app/globals.css) — este panel no introduce
+                  ningún mecanismo de diálogo nuevo, así que hereda esa misma corrección.
+                */}
+                <section className="supplier-section">
+                  <div className="supplier-section-head">
+                    <div><h3>Pagos</h3><p>Pagos parciales registrados para esta orden.</p></div>
+                    <Wallet aria-hidden="true" size={17} />
+                  </div>
+                  {order.status === "no_necesario" ? (
+                    <p className="supplier-muted">Una orden marcada &ldquo;no necesaria&rdquo; no tiene gasto asociado: no admite pagos.</p>
+                  ) : (
+                    <>
+                      <div className="supplier-order-total">
+                        <span>Pagado / Total</span>
+                        <b>{money.format(paidTotal)} / {money.format(total)}</b>
+                      </div>
+                      {paymentsLoading === order.id ? (
+                        <p className="supplier-muted">Cargando pagos…</p>
+                      ) : (paymentsByOrder[order.id] ?? []).length ? (
+                        <div className="table-wrap supplier-orders-table">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Fecha</th>
+                                <th>Medio</th>
+                                <th className="align-right">Valor</th>
+                                <th>Referencia</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(paymentsByOrder[order.id] ?? []).map((payment) => (
+                                <tr key={payment.id}>
+                                  <td>{formatIsoDate(payment.date)}</td>
+                                  <td>{estadoLabel(payment.method)}</td>
+                                  <td className="align-right money">{money.format(payment.amount)}</td>
+                                  <td>{payment.externalReference ?? "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <p className="supplier-muted">Sin pagos registrados todavía.</p>
+                      )}
+                      {order.adminStatus === "pagada" ? (
+                        <p className="supplier-muted">Esta orden ya está pagada; no admite más pagos.</p>
+                      ) : canRegisterPayment ? (
+                        <form
+                          className="order-payment-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void registerPayment(order);
+                          }}
+                        >
+                          <label className="field">
+                            <span>Fecha</span>
+                            <input
+                              type="date"
+                              value={paymentDate}
+                              onChange={(event) => setPaymentDate(event.target.value)}
+                              required
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Valor</span>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={paymentAmount}
+                              onChange={(event) => setPaymentAmount(event.target.value)}
+                              required
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Medio</span>
+                            <select
+                              value={paymentMethod}
+                              onChange={(event) => setPaymentMethod(event.target.value as OrderPaymentMethod)}
+                            >
+                              {PAYMENT_METHODS.map((methodOption) => (
+                                <option key={methodOption} value={methodOption}>
+                                  {estadoLabel(methodOption)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="field">
+                            <span>Referencia (opcional)</span>
+                            <input
+                              type="text"
+                              value={paymentReference}
+                              onChange={(event) => setPaymentReference(event.target.value)}
+                              maxLength={240}
+                            />
+                          </label>
+                          <button className="button button-secondary" type="submit" disabled={paymentSubmitting}>
+                            {paymentSubmitting ? "Registrando…" : "Registrar pago"}
+                          </button>
+                        </form>
+                      ) : (
+                        <p className="supplier-muted">{sinPermiso("puede registrar pagos de esta orden")}</p>
+                      )}
+                    </>
                   )}
                 </section>
                 {/* Bandeja del contador: descarga la orden (arriba) y el expediente del
