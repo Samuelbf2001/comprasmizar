@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DomainError } from "../../lib/domain";
-import { reviewedItemSchema, requisitionActionSchema } from "../../lib/http/schemas";
+import { createRequisitionSchema, reviewedItemSchema, requisitionActionSchema } from "../../lib/http/schemas";
 
 // H8 (docs/plan-rendimiento.md): authenticatedJson() llama a requireServerActor() — se mockea igual que
 // tests/unit/public-access-route.test.ts para probar SOLO la cabecera Server-Timing, sin Supabase/Postgres.
@@ -177,6 +177,31 @@ describe("reviewedItemSchema — declinado exige motivo (MENOR, QA Postgres real
   it("acepta approverId por ítem (uuid) y rechaza uno que no sea uuid", () => {
     expect(reviewedItemSchema.safeParse({ ...base, approverId: "33333333-3333-4333-8333-333333333333" }).success).toBe(true);
     expect(reviewedItemSchema.safeParse({ ...base, approverId: "no-uuid" }).success).toBe(false);
+  });
+});
+
+// Solicitud de pago (feat/solicitud-de-pago): a diferencia de una compra, el beneficiario y el
+// valor cotizado se capturan desde la CREACIÓN — no hay paso de revisión previo que los complete.
+// `finalSupplierId`/`unitBase`/`ivaRate` no cabían en el esquema de creación (solo existían en
+// reviewedItemSchema); cruza el esquema HTTP a propósito, mismo criterio que el bloque de arriba.
+describe("createRequisitionSchema — ítem de una solicitud de pago admite beneficiario y valor", () => {
+  const base = { type: "pago" as const, societyId: "11111111-1111-4111-8111-111111111111" };
+  it("acepta finalSupplierId/unitBase/ivaRate en un ítem de creación", () => {
+    const parsed = createRequisitionSchema.safeParse({
+      ...base,
+      items: [{ description: "Pago acta 3 - Contratista ABC", quantity: 1, unit: "servicio", finalSupplierId: "22222222-2222-4222-8222-222222222222", unitBase: 500_000, ivaRate: 0.19 }],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.items[0]).toMatchObject({ finalSupplierId: "22222222-2222-4222-8222-222222222222", unitBase: 500_000, ivaRate: 0.19 });
+    }
+  });
+  it("una compra sigue sin necesitarlos: un ítem sin esos tres campos también pasa", () => {
+    expect(createRequisitionSchema.safeParse({ type: "compra", societyId: base.societyId, items: [{ description: "Cemento", quantity: 1, unit: "bulto" }] }).success).toBe(true);
+  });
+  it("rechaza finalSupplierId que no sea uuid, y unitBase negativo", () => {
+    expect(createRequisitionSchema.safeParse({ ...base, items: [{ description: "Pago", quantity: 1, unit: "servicio", finalSupplierId: "no-uuid" }] }).success).toBe(false);
+    expect(createRequisitionSchema.safeParse({ ...base, items: [{ description: "Pago", quantity: 1, unit: "servicio", unitBase: -1 }] }).success).toBe(false);
   });
 });
 

@@ -153,6 +153,19 @@ export function validateShares(total: Money, shares: readonly ExpenseShare[]): v
 }
 export function orderTypeFor(requisitionType: "compra" | "pago"): OrderType { return requisitionType === "compra" ? "OC" : "OP"; }
 /**
+ * Solicitud de pago (encargo feat/solicitud-de-pago): el modelo es una requisición con UNA sola
+ * línea de concepto (item_id NULL, descripcion_libre = concepto) que además, a diferencia de una
+ * compra, no tiene un paso de revisión previo que complete beneficiario y valor — ambos se exigen
+ * desde `create()` y se vuelven a exigir en `review()` (el revisor puede editar la línea). Se
+ * exporta como función de dominio en vez de vivir duplicada en ambos métodos del servicio.
+ */
+export function assertPaymentRequestShape(items: readonly ItemLine[]): void {
+  if (items.length !== 1) throw new DomainError("PAYMENT_SINGLE_LINE", "Una solicitud de pago debe tener exactamente un concepto");
+  const [line] = items;
+  if (!line.finalSupplierId) throw new DomainError("PAYMENT_BENEFICIARY_REQUIRED", "La solicitud de pago requiere un beneficiario");
+  if (calculateLineTotal(line) <= 0) throw new DomainError("PAYMENT_VALUE_REQUIRED", "La solicitud de pago requiere un valor mayor a cero");
+}
+/**
  * La generación de órdenes ya no admite el parámetro `multiSupplier`: siempre agrupa por proveedor final,
  * y lo exige en TODAS las líneas (antes, una orden de pago sin proveedor pasaba silenciosamente con clave
  * `undefined`). El llamador (generateOrders) debe pasar únicamente líneas aprobadas — esta función se

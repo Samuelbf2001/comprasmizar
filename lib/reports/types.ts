@@ -15,7 +15,14 @@ export interface ReportExpense { orderDate: string; date?: string; work: string;
  * como porcentaje, nunca la fracción cruda.
  */
 export interface OrderDocumentCompany { name: string; nit?: string; }
-export interface OrderDocumentSupplier { name: string; nit?: string; contact?: string; address?: string; email?: string; phone?: string; }
+/**
+ * Solicitud de pago (feat/solicitud-de-pago): `bankDetails` solo se puebla (y solo se imprime,
+ * ver pdf.ts) para una OP — los datos bancarios del proveedor (`proveedores.datos_bancarios`) hoy
+ * nunca salían de su ficha (components/screens/suppliers.tsx); una orden de pago es la primera
+ * superficie que los necesita impresos, para que el beneficiario sepa a qué cuenta se le pagó.
+ */
+export interface OrderDocumentBankDetails { bankName?: string; accountType?: "ahorros" | "corriente"; accountNumber?: string; accountHolder?: string; accountHolderNit?: string; }
+export interface OrderDocumentSupplier { name: string; nit?: string; contact?: string; address?: string; email?: string; phone?: string; bankDetails?: OrderDocumentBankDetails; }
 export interface OrderDocumentItem { description: string; unit: string; quantity: number; unitPrice: number; discountRate: number; ivaRate: number; base: number; iva: number; total: number; }
 export interface OrderDocument {
   consecutive: string; type: "OC" | "OP"; date: string;

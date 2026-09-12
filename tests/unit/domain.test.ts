@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, approvedLines, assertAdminTransition, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeItemName, orderTypeFor, sumApprovedLines, sumLines, validateShares, type Order, type Requisition } from "../../lib/domain";
+import { DomainError, approvedLines, assertAdminTransition, assertHasApprovedLine, assertPaymentRequestShape, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeItemName, orderTypeFor, sumApprovedLines, sumLines, validateShares, type Order, type Requisition } from "../../lib/domain";
 
 const line = { id: "i1", quantity: 2, unit: "und", unitBase: 100, unitIva: 19, unitTotal: 119 };
 describe("domain permissions", () => {
@@ -76,6 +76,17 @@ describe("domain calculations", () => {
     // Reunión 2026-08-31: el proveedor ahora es obligatorio en TODA línea, también en "pago" (antes una
     // orden de pago sin proveedor pasaba silenciosamente con clave `undefined`; ya no).
     expect(() => groupOrderItems([{ ...line, finalSupplierId: undefined }], "pago")).toThrow("proveedor");
+  });
+  // feat/solicitud-de-pago, ítem 2 del encargo: una solicitud de pago es una requisición con
+  // EXACTAMENTE una línea de concepto, con beneficiario y valor cotizado > 0 desde la creación
+  // (create() y review() la exigen — ver procurement-service.test.ts para el camino completo).
+  it("assertPaymentRequestShape exige exactamente un ítem, con beneficiario y valor mayor a cero", () => {
+    const paid = { ...line, finalSupplierId: "p1" };
+    expect(() => assertPaymentRequestShape([paid])).not.toThrow();
+    expect(() => assertPaymentRequestShape([])).toThrow("un concepto");
+    expect(() => assertPaymentRequestShape([paid, { ...paid, id: "i2" }])).toThrow("un concepto");
+    expect(() => assertPaymentRequestShape([{ ...line, finalSupplierId: undefined }])).toThrow("beneficiario");
+    expect(() => assertPaymentRequestShape([{ ...paid, unitBase: 0, unitIva: 0, unitTotal: 0 }])).toThrow("mayor a cero");
   });
   it("returns period metrics", () => {
     const result = calculateDashboard([{ id: "e", workId: "w", origin: "requisicion", referenceId: "r", orderDate: "2026-08-02", date: "2026-08-02", base: 10, iva: 2, total: 12, period: "2026-08" }], [{ id: "o", consecutive: "OC", type: "OC", requisitionId: "r", itemIds: [], status: "no_cumplida", adminStatus: "pendiente" }, { id: "o2", consecutive: "OC2", type: "OC", requisitionId: "r", itemIds: [], status: "generada", adminStatus: "pendiente" }], ["en_revision"], "2026-08");

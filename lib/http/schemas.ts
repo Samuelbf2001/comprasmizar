@@ -15,6 +15,18 @@ const rateFraction = z.number().min(0).max(1);
 // Reunión 2026-08-31: el solicitante elige EMPRESA, no obra (la asigna el revisor en la revisión);
 // workId y requiredDate quedan opcionales en los tres canales. `destination` sale del formulario: se
 // fusiona en observations.
+// Solicitud de pago (feat/solicitud-de-pago): a diferencia de una compra, un pago no tiene un paso
+// de revisión previo que complete beneficiario y valor cotizado — se capturan desde esta misma
+// petición. `finalSupplierId`/`unitBase`/`ivaRate` quedan opcionales para no tocar el contrato de
+// "compra" (que los sigue dejando en 0/ausente y los completa en review()); ProcurementService.create
+// exige los tres cuando `type === "pago"` (assertPaymentRequestShape, lib/domain/rules.ts).
+const createItemSchema = z.object({
+  ...itemIdentity,
+  finalSupplierId: z.string().uuid().optional(),
+  unitBase: z.number().int().nonnegative().optional(),
+  ivaRate: rateFraction.optional(),
+}).strict().refine((item) => Boolean(item.itemId || item.description), "itemId or description is required");
+
 export const createRequisitionSchema = z.object({
   type: z.enum(["compra", "pago"]),
   societyId: z.string().uuid(),
@@ -22,7 +34,7 @@ export const createRequisitionSchema = z.object({
   requesterId: z.string().uuid().optional(),
   requiredDate: z.string().date().optional(),
   observations: z.string().trim().min(1).max(3_000).optional(),
-  items: z.array(z.object(itemIdentity).strict().refine((item) => Boolean(item.itemId || item.description), "itemId or description is required")).min(1).max(100),
+  items: z.array(createItemSchema).min(1).max(100),
 }).strict();
 
 // "unitIva" pasa a derivado: el servidor lo calcula desde ivaRate/unitBase, ya no lo captura el cliente.
