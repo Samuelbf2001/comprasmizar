@@ -82,7 +82,10 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   };
   const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
   // Reunión 2026-09: caja menor nace pagada — orderDate y date coinciden siempre con la fecha del movimiento.
-  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: 0, total: p.amount, period: p.date.slice(0, 7) }; expensesData.push(generated); return generated; }, list: async () => petty };
+  // Cajas (2026-09-12): reproduce lo que sincronizar_gasto_caja_menor hace de verdad — copia
+  // caja_id/medio_pago/iva/centro_costo_id/registrado_por al gasto, en vez de forzar iva=0 (el
+  // bloqueante que esa migración corrigió).
+  const pettyCash = { save: async (p: PettyCash) => { petty.push(p); const generated: Expense = { id: `expense-${p.id}`, workId: p.workId, origin: "caja_menor", referenceId: p.id, tagId: p.tagId, orderDate: p.date, date: p.date, base: p.amount, iva: p.iva ?? 0, total: p.amount + (p.iva ?? 0), period: p.date.slice(0, 7), cashBoxId: p.cashBoxId, paymentMethod: p.paymentMethod, costCenterId: p.costCenterId, registeredBy: p.registeredBy }; expensesData.push(generated); return generated; }, list: async () => petty };
   // "works"/"work" con sociedad "soc": único caso que review() debe resolver como obra válida y de la
   // misma sociedad que usan los fixtures de este archivo; cualquier otro id (p.ej. una obra de otra
   // empresa) resuelve a null para poder probar el rechazo INVALID_INPUT.
@@ -487,6 +490,20 @@ describe("ProcurementService", () => {
     await expect(service.dashboard("bad", reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
     await expect(service.startReview("missing", reviewer)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(service.lineTotal(items[0])).toBe(238);
+  });
+  // Cajas (2026-09-12): "gasto directo" de la pestaña Gastos y caja — registerPettyCash ya no es
+  // exclusivo de la caja menor clásica de obra; el gasto sincronizado debe copiar caja/medio de pago/
+  // centro de costo/IVA, y el IVA YA NO se fuerza a 0 (bloqueante corregido por 202609120003).
+  it("un gasto directo de caja copia caja_id/medio_pago/centro_costo_id/iva al gasto sincronizado", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const cash = await service.registerPettyCash({ workId: "work", date: "2026-09-05", concept: "Factura de ferretería con IVA", tagId: "t", amount: 100000, cashBoxId: "caja-menor", paymentMethod: "tarjeta", costCenterId: "cc-alterno", iva: 19000 }, reviewer);
+    expect(cash.expense).toMatchObject({ cashBoxId: "caja-menor", paymentMethod: "tarjeta", costCenterId: "cc-alterno", iva: 19000, total: 119000, registeredBy: "daniel" });
+  });
+  it("rechaza una caja inactiva o inexistente antes de guardar nada", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    await expect(service.registerPettyCash({ workId: "work", date: "2026-09-05", concept: "No debería pasar", tagId: "t", amount: 1000, cashBoxId: "caja-inactiva", paymentMethod: "efectivo" }, reviewer)).rejects.toThrow();
+    await expect(service.registerPettyCash({ workId: "work", date: "2026-09-05", concept: "No debería pasar", tagId: "t", amount: 1000, cashBoxId: "caja-inexistente", paymentMethod: "efectivo" }, reviewer)).rejects.toThrow();
+    expect(deps.pettyData).toHaveLength(0);
   });
   it("declines a requisition with an audited reason, notifies the requester and never generates orders or expenses", async () => {
     // RF-304/PRD §5.2/§3.2: "declinada... nunca genera gasto". decline() no tenía ninguna prueba en ningún nivel.
