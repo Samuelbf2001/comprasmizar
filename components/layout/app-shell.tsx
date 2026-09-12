@@ -75,6 +75,10 @@ export const roleAllowed: Record<Role, string[]> = {
     "/proveedores",
     "/reportes",
     "/mensajes",
+    // RF-1401: Configuración no vive en `navigation` (es un ítem aparte, ver nav-secondary más
+    // abajo) — sin este href explícito, mizar-app.tsx negaría el acceso a este rol aunque el botón
+    // ya se muestre para él.
+    "/configuracion",
     "/ayuda",
   ],
   "Administrador Sixteam": navigation.map((item) => item.href),
@@ -280,7 +284,7 @@ export function AppShell({
         </nav>
         <div className="nav-divider" />
         <nav className="nav-secondary">
-          {role === "Administrador Sixteam" && (
+          {(role === "Administrador Sixteam" || role === "Administrador Mizar") && (
             <button
               className={
                 pathname.startsWith("/configuracion") ? "is-active" : ""

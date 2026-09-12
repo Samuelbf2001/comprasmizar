@@ -645,6 +645,17 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .settings-section{padding:var(--space-6);border-bottom:1px solid var(--line)}
 .settings-section>div:first-child h2{font:600 var(--text-xl) var(--font-display);margin:0 0 var(--space-1)}
 .settings-section>div:first-child p{font-size:var(--text-xs);color:var(--muted);margin:0 0 var(--space-5)}
+/* RF-1401 (Configuración real): fila de solo-lectura para el enlace del portal público + su botón
+   de copiar, y edición en línea (teléfono de un usuario, contraseña temporal) — ambas fuera de
+   `.field`, así que reciben aquí la misma superficie de `input` que ya define `.field input` en
+   vez de heredar el borde por defecto del navegador. */
+.settings-copy-row{display:flex;gap:var(--space-3)}
+.settings-copy-row input{flex:1;border:1px solid var(--line-strong);background:var(--surface-strong);border-radius:var(--radius-sm);height:42px;padding:0 var(--space-3);font-size:var(--text-sm);color:var(--muted)}
+.settings-inline-edit{display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap}
+.settings-inline-edit .field{flex:1;min-width:200px}
+.settings-inline-edit>input{flex:1;min-width:160px;border:1px solid var(--line-strong);background:var(--paper);border-radius:var(--radius-sm);height:42px;padding:0 var(--space-3);font-size:var(--text-sm);color:var(--ink)}
+.settings-section table td{vertical-align:top}
+.settings-section>*+*{margin-top:var(--space-4)}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:var(--space-3) 0;border-top:1px solid var(--line)}
 .toggle-row span b,.toggle-row span small{display:block}
 .toggle-row b{font-size:var(--text-xs)}
