@@ -228,7 +228,6 @@ describe("RF-703: filtros de gastos por obra y periodo", () => {
     render(
       <ConnectedExpenses
         data={expenseData}
-        pathname="/gastos"
         role="Contabilidad"
         refresh={vi.fn()}
       />,
@@ -254,7 +253,6 @@ describe("RF-703: filtros de gastos por obra y periodo", () => {
     render(
       <ConnectedExpenses
         data={expenseData}
-        pathname="/gastos"
         role="Contabilidad"
         refresh={vi.fn()}
       />,

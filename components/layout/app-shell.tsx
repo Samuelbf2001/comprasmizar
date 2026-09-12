@@ -55,7 +55,11 @@ export const roleAllowed: Record<Role, string[]> = {
     "/ayuda",
   ],
   Revisor: navigation.map((item) => item.href),
-  Aprobador: ["/", "/aprobaciones", "/mensajes", "/ayuda"],
+  // RF-1301 (reunión 2026-09-11): Juliana (aprobadora) pidió ver "todo lo que aprobé este mes" desde
+  // Reportes — hasta hoy el rol no tenía la ruta. El servidor sigue acotando qué ve dentro de ella
+  // (visibilidad por `public.es_aprobador_de`, ver lib/services/report-service.ts): esto solo abre la
+  // puerta del menú, no el alcance de datos.
+  Aprobador: ["/", "/aprobaciones", "/reportes", "/mensajes", "/ayuda"],
   Contabilidad: [
     "/",
     "/ordenes",

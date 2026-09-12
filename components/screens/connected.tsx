@@ -13,6 +13,7 @@
 //   - connected/detail.tsx           ConnectedRequisitionDetail
 //   - connected/orders.tsx           ConnectedOrders
 //   - connected/expenses.tsx         ConnectedExpenses
+//   - connected/reports.tsx          ConnectedReports (RF-1301, /reportes ya no comparte pantalla con /gastos)
 //   - connected/screen.tsx           ConnectedScreen (carga cada pantalla con next/dynamic)
 // components/mizar-app.tsx NO importa este barrel: importa ConnectedScreen desde
 // "./screens/connected/screen" e isConnectedReadRoute desde "./screens/connected/data"
@@ -26,3 +27,4 @@ export { ConnectedRequisitions } from "./connected/requisitions";
 export { ConnectedRequisitionDetail } from "./connected/detail";
 export { ConnectedOrders } from "./connected/orders";
 export { ConnectedExpenses } from "./connected/expenses";
+export { ConnectedReports } from "./connected/reports";

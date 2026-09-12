@@ -27,6 +27,7 @@ export type RouteKind =
   | "requisitions"
   | "orders"
   | "expenses"
+  | "reports"
   | "catalogs";
 
 function SkeletonPiece({
@@ -134,8 +135,13 @@ export function bandejaTitle(pathname: string): string {
   return "Mis requisiciones";
 }
 
-export function expensesTitle(pathname: string): string {
-  return pathname.startsWith("/reportes") ? "Reporte operativo" : "Gastos por obra";
+// RF-1301 (Reportes, reunión 2026-09-11): /reportes gana su propio RouteKind ("reports", ver
+// ReportsSkeleton más abajo) en vez de compartir el de /gastos — antes las dos rutas caían en el mismo
+// `kind: "expenses"` y esta función distinguía el título según `pathname`. Con el reporte de
+// requisiciones (filtros por aprobador/etiqueta, Excel, compilado mensual) ya no tiene sentido fingir
+// que son la misma pantalla; `expensesTitle` vuelve a devolver un único título fijo.
+export function expensesTitle(): string {
+  return "Gastos por obra";
 }
 
 function DashboardSkeleton() {
@@ -244,12 +250,12 @@ function OrdersSkeleton() {
   );
 }
 
-function ExpensesSkeleton({ pathname }: { pathname: string }) {
+function ExpensesSkeleton() {
   return (
     <div aria-busy="true" data-testid="expenses-skeleton">
       <SectionTitle
         eyebrow="Datos conectados"
-        title={expensesTitle(pathname)}
+        title={expensesTitle()}
         description="Lectura autorizada del libro común de gastos, incluidas las entradas de caja menor."
       />
       <div className="connected-detail-grid">
@@ -270,6 +276,38 @@ function ExpensesSkeleton({ pathname }: { pathname: string }) {
         </section>
       </div>
       <LoadingStatus label="Cargando gastos…" />
+    </div>
+  );
+}
+
+// RF-1301 (Reportes): esqueleto propio de /reportes — filtros (obra, mes, aprobador, etiqueta) + tabla
+// de requisiciones + resumen por obra, en vez del layout de /gastos que usaba antes de tener su propio
+// RouteKind.
+function ReportsSkeleton() {
+  return (
+    <div aria-busy="true" data-testid="reports-skeleton">
+      <SectionTitle
+        eyebrow="Datos conectados"
+        title="Reporte operativo"
+        description="Lectura autorizada de requisiciones, filtrable por obra, periodo, aprobador y etiqueta."
+      />
+      <div className="filter-bar" aria-hidden="true">
+        {Array.from({ length: 4 }, (_, index) => (
+          <span className="skeleton skeleton-text" key={index} />
+        ))}
+      </div>
+      <div className="connected-detail-grid">
+        <section className="panel">
+          <TableSkeleton
+            headers={["Consecutivo", "Fecha", "Obra", "Etiqueta", "Aprobador(es)", "Estado", "Total"]}
+          />
+        </section>
+        <section className="panel connected-summary">
+          <PanelHeadSkeleton withBadge={false} />
+          <TableSkeleton headers={["Obra", "Subtotal"]} rows={4} />
+        </section>
+      </div>
+      <LoadingStatus label="Cargando reporte…" />
     </div>
   );
 }
@@ -431,7 +469,8 @@ export function RouteSkeleton({
   if (kind === "dashboard") return <DashboardSkeleton />;
   if (kind === "requisitions") return <RequisitionsSkeleton pathname={pathname} />;
   if (kind === "orders") return <OrdersSkeleton />;
-  if (kind === "expenses") return <ExpensesSkeleton pathname={pathname} />;
+  if (kind === "expenses") return <ExpensesSkeleton />;
+  if (kind === "reports") return <ReportsSkeleton />;
   if (kind === "catalogs") return <CatalogsSkeleton pathname={pathname} />;
   if (kind === "new") return <NewRequisitionSkeleton />;
   return <DetailSkeleton />;

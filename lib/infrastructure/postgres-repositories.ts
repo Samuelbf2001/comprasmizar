@@ -1,6 +1,6 @@
 import postgres, { type Sql } from "postgres";
 import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
-import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
+import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ReportCatalogSource, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
 import { generalLinkToken, verifyPublicLinkToken } from "../security/public-link";
 import { safeEqual } from "../security/crypto";
@@ -55,6 +55,10 @@ function requisition(row: DbRow, items: ItemLine[]): Requisition {
     declineReason: row.motivo_declinacion ? String(row.motivo_declinacion) : undefined, returnReason: row.motivo_devolucion ? String(row.motivo_devolucion) : undefined,
     kapsoEventId: row.kapso_event_id ? String(row.kapso_event_id) : undefined, items, updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : undefined,
     paymentTerms: row.forma_pago ? String(row.forma_pago) : undefined,
+    // RF-1301: solo presente cuando el SELECT trae `created_at` (todas las lecturas de esta clase la
+    // traen con `select r.*`/`select *`, así que en la práctica siempre viaja); undefined en fakes de
+    // test que no la incluyan en la fila cruda.
+    createdAt: row.created_at ? new Date(String(row.created_at)).toISOString() : undefined,
   };
 }
 // H3 (docs/plan-rendimiento.md): requisicion_consecutivo/requisicion_obra_id son alias deliberados (no
@@ -197,9 +201,15 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const workFilter = query.workId ? this.sql`and r.obra_id = ${query.workId}` : this.sql``;
     const fromFilter = query.from ? this.sql`and r.created_at >= ${query.from}::date` : this.sql``;
     const toFilter = query.to ? this.sql`and r.created_at < (${query.to}::date + 1)` : this.sql``;
+    // RF-1301 (Reportes): "aprobador" filtra por ASIGNACIÓN (cabecera O algún ítem, `es_aprobador_de`),
+    // no por si esa persona ya decidió — es la misma función que ya resuelve `visibility` arriba, aquí
+    // aplicada al aprobador que el REPORTE pide ver (que puede ser distinto del actor que consulta,
+    // p. ej. contabilidad filtrando por "aprobador = Juliana"). "etiqueta" es una columna directa.
+    const tagFilter = query.tagId ? this.sql`and r.etiqueta_id = ${query.tagId}` : this.sql``;
+    const approverFilter = query.approverId ? this.sql`and public.es_aprobador_de(r.id, ${query.approverId})` : this.sql``;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const cursorFilter = cursor ? this.sql`and (r.created_at, r.id) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : this.sql``;
-    const rows = await this.sql<DbRow[]>`select r.* from requisiciones r where true ${visibility} ${statusFilter} ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by r.created_at desc, r.id desc limit ${limit + 1}`;
+    const rows = await this.sql<DbRow[]>`select r.* from requisiciones r where true ${visibility} ${statusFilter} ${workFilter} ${tagFilter} ${approverFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by r.created_at desc, r.id desc limit ${limit + 1}`;
     const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows;
     const ids = pageRows.map((row) => String(row.id));
     const itemRows = ids.length ? await this.sql<DbRow[]>`select * from requisicion_items where requisicion_id = any(${ids}::uuid[]) order by created_at` : [];
@@ -564,6 +574,31 @@ function transactionRepositories(ports: PostgresPorts): TransactionRepositories 
     expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), deleteByReference: ports.deleteExpenseByReference.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports), dashboardAggregates: ports.dashboardAggregates.bind(ports), listRecentlyUpdated: ports.listExpensesRecentlyUpdated.bind(ports) },
     pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) },
     audit: ports, consecutives: ports, features: ports, items: ports, catalogs: ports, notifications: ports,
+  };
+}
+/**
+ * RF-1301 (Reportes): implementación Postgres de `ReportCatalogSource` (lib/services/report-service.ts)
+ * — resuelve obra/etiqueta/empresa/usuario/proveedor a nombre para el Excel del reporte de
+ * requisiciones. Cuatro consultas mínimas (id+nombre, sin datos sensibles), calcadas de
+ * `GET /api/catalogs` (app/api/catalogs/route.ts) pero SIN el filtro `where estado='activo'`: una
+ * requisición de meses atrás puede referenciar una obra ya cerrada o un usuario ya dado de baja, y el
+ * reporte debe poder mostrar su nombre igual (el mismo criterio que ya usa esa ruta para `users`,
+ * "un actor histórico ya desactivado igual debe poder identificarse").
+ */
+export function postgresReportCatalogSource(databaseUrl = runtimeEnv().DATABASE_URL): ReportCatalogSource {
+  return {
+    async load() {
+      const sql = sharedPostgres(databaseUrl);
+      const toMap = (rows: readonly { id: string; nombre: string }[]) => new Map(rows.map((row) => [String(row.id), String(row.nombre)]));
+      const [works, tags, societies, users, suppliers] = await Promise.all([
+        sql<{ id: string; nombre: string }[]>`select id, nombre from obras`,
+        sql<{ id: string; nombre: string }[]>`select id, nombre from etiquetas`,
+        sql<{ id: string; nombre: string }[]>`select id, nombre from sociedades`,
+        sql<{ id: string; nombre: string }[]>`select id, nombre from usuarios`,
+        sql<{ id: string; nombre: string }[]>`select id, razon_social as nombre from proveedores`,
+      ]);
+      return { works: toMap(works), tags: toMap(tags), societies: toMap(societies), users: toMap(users), suppliers: toMap(suppliers) };
+    },
   };
 }
 export function createPostgresDependencies(databaseUrl = runtimeEnv().DATABASE_URL): ServiceDependencies {

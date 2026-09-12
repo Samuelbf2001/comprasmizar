@@ -254,6 +254,15 @@ describe("PostgresPorts.getRequisition / listVisibleRequisitions — aprobador_i
     const select = sql.calls.find((call) => /^select r\.\* from requisiciones/i.test(call.text));
     expect(select!.text).not.toMatch(/etiquetas/i);
   });
+
+  // RF-1301 (Reportes): el reporte de requisiciones usa `createdAt` como columna "fecha" y como base
+  // del filtro de periodo/mes — antes se leía `created_at` en el WHERE pero nunca se exponía en el
+  // objeto de dominio.
+  it("getRequisition expone createdAt (created_at) en el objeto de dominio", async () => {
+    const sql = fakeSql((call) => (/^select \* from requisiciones/i.test(call.text) ? [{ id: "req-1", sociedad_id: "soc-1", tipo: "compra", canal: "web", estado: "enviada", consecutivo: "REQ-2026-0001", created_at: "2026-09-10T08:00:00.000Z" }] : []));
+    const requisition = await new PostgresPorts(sql).getRequisition("req-1");
+    expect(requisition?.createdAt).toBe("2026-09-10T08:00:00.000Z");
+  });
 });
 
 describe("PostgresPorts.saveOrder — proveedor_id persistido y sin huérfanos en orden_items", () => {
@@ -388,6 +397,41 @@ describe("PostgresPorts.listVisibleRequisitions con query — filtros y paginaci
     expect(selectOf(sql)!.values).toContain(201); // 200 + 1 (hasMore)
     await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, {});
     expect(selectOf(sql)!.values).toContain(101); // 100 + 1
+  });
+
+  // RF-1301 (Reportes, reunión 2026-09-11): filtros nuevos del reporte de requisiciones — etiqueta
+  // (columna directa) y aprobador (misma función `public.es_aprobador_de` que ya resuelve la
+  // visibilidad por rol, aquí aplicada al aprobador que el REPORTE pide ver, no al actor que consulta).
+  it("aplica el filtro de etiqueta en el SELECT principal", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { tagId: "tag-1" });
+    const select = selectOf(sql)!;
+    expect(select.text).toMatch(/r\.etiqueta_id = \?/);
+    expect(select.values).toContain("tag-1");
+  });
+
+  it("aplica el filtro de aprobador con public.es_aprobador_de (cabecera O ítem, no un predicado a mano)", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { approverId: "juliana" });
+    const select = selectOf(sql)!;
+    expect(select.text).toMatch(/es_aprobador_de\(r\.id, \?\)/);
+    expect(select.values).toContain("juliana");
+  });
+
+  it("el filtro de aprobador del reporte y la visibilidad del actor conviven: cada uno aporta su propio parámetro a es_aprobador_de", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "nelson", roles: ["aprobador"] }, { approverId: "juliana" });
+    const select = selectOf(sql)!;
+    const matches = select.text.match(/es_aprobador_de\(r\.id, \?\)/g);
+    expect(matches).toHaveLength(2);
+    expect(select.values.filter((value) => value === "nelson" || value === "juliana")).toEqual(["nelson", "juliana"]);
+  });
+
+  it("sin tagId/approverId, el SELECT no lleva ninguno de los dos fragmentos", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { workId: "work-1" });
+    const select = selectOf(sql)!;
+    expect(select.text).not.toMatch(/etiqueta_id|es_aprobador_de/);
   });
 });
 
