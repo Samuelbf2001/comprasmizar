@@ -198,3 +198,25 @@ describe("requisitionActionSchema — review reparte aprobador por ítem", () =>
     }
   });
 });
+
+// Centros de costo (2026-09-12, decisión del dueño): un olvido idéntico al de approverId por ítem
+// (comentario de arriba) — si el esquema no conoce esta clave, `.strict()` tumba TODA la revisión en
+// cuanto la pantalla mande costCenterId, y el error solo aparece corriendo la pila real. Se cruza aquí
+// para que un descuido futuro (p. ej. renombrar la clave) lo cace un test, no un despliegue.
+describe("requisitionActionSchema — review acepta costCenterId (centro de costo)", () => {
+  const base = { action: "review" as const, tagId: "c4867c2a-397d-4a66-b961-6e33cd551615", items: [{ id: "11111111-1111-4111-8111-111111111111", itemId: "22222222-2222-4222-8222-222222222222", quantity: 1, unit: "und", unitBase: 1000 }] };
+
+  it("acepta un uuid, admite ausente/null/\"\" para no tocar/desasignar, y rechaza un valor que no sea uuid", () => {
+    expect(requisitionActionSchema.safeParse({ ...base, costCenterId: "33333333-3333-4333-8333-333333333333" }).success).toBe(true);
+    expect(requisitionActionSchema.safeParse(base).success).toBe(true); // ausente: no tocar
+    expect(requisitionActionSchema.safeParse({ ...base, costCenterId: null }).success).toBe(true); // desasignar
+    expect(requisitionActionSchema.safeParse({ ...base, costCenterId: "" }).success).toBe(true); // desasignar
+    expect(requisitionActionSchema.safeParse({ ...base, costCenterId: "no-uuid" }).success).toBe(false);
+  });
+
+  it("conserva costCenterId al parsear (no lo descarta .strict() al combinarlo con el resto de la revisión)", () => {
+    const parsed = requisitionActionSchema.safeParse({ ...base, workId: "77777777-7777-4777-8777-777777777777", costCenterId: "33333333-3333-4333-8333-333333333333" });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.action === "review") expect(parsed.data.costCenterId).toBe("33333333-3333-4333-8333-333333333333");
+  });
+});

@@ -81,7 +81,24 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // "no-elegible": único id que review() debe rechazar como aprobador (usuario sin rol
   // aprobador/revisor/admin_sixteam, o dado de baja) — cualquier otro id (incluidos "nelson" y "sonia",
   // los dos actores aprobador de este archivo) es elegible.
-  const catalogs = { create: async (_kind: string, value: never) => value, get: async (kind: string, id: string) => (kind === "works" && id === "work" ? { id: "work", name: "Obra Test", societyId: "soc", active: true } : kind === "suppliers" && ["p1", "p2", "p3"].includes(id) ? { id, name: `Proveedor ${id}`, active: !inactiveSuppliers.has(id) } : kind === "suppliers" && id === "p-inactivo" ? { id, name: "Proveedor inactivo", active: false } : null), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, findRequesterDuplicate: async () => null, isEligibleApprover: async (id: string) => id !== "no-elegible", hasRequisitionsForWork: async () => false };
+  // Centros de costo (2026-09-12): "work" tiene "cc-work" como DEFAULT (sociedad "soc", activo) — así
+  // el 99% de los tests existentes, que ya asignan workId "work" en review() sin mencionar centro,
+  // siguen heredándolo automáticamente y sendForApproval() no los rompe (ver resolveCostCenter). Los
+  // demás ids cubren los casos de rechazo/override que ejercitan las pruebas nuevas de este archivo.
+  const catalogs = { create: async (_kind: string, value: never) => value, get: async (kind: string, id: string) => (
+    kind === "works" && id === "work" ? { id: "work", name: "Obra Test", societyId: "soc", active: true, costCenterId: "cc-work" }
+    : kind === "costCenters" && id === "cc-work" ? { id: "cc-work", name: "Centro Test", societyId: "soc", active: true }
+    : kind === "costCenters" && id === "cc-alterno" ? { id: "cc-alterno", name: "Centro Alterno", societyId: "soc", active: true }
+    : kind === "costCenters" && id === "cc-compartido" ? { id: "cc-compartido", name: "Centro Compartido", societyId: undefined, active: true }
+    : kind === "costCenters" && id === "cc-otra-sociedad" ? { id: "cc-otra-sociedad", name: "Centro de otra empresa", societyId: "otra-sociedad", active: true }
+    : kind === "costCenters" && id === "cc-inactivo" ? { id: "cc-inactivo", name: "Centro Inactivo", societyId: "soc", active: false }
+    // Obra sin centro configurado: ejercita el caso "no hay de dónde heredar" (a diferencia de "work",
+    // que siempre trae "cc-work").
+    : kind === "works" && id === "obra-sin-centro" ? { id: "obra-sin-centro", name: "Obra Sin Centro", societyId: "soc", active: true }
+    : kind === "suppliers" && ["p1", "p2", "p3"].includes(id) ? { id, name: `Proveedor ${id}`, active: !inactiveSuppliers.has(id) }
+    : kind === "suppliers" && id === "p-inactivo" ? { id, name: "Proveedor inactivo", active: false }
+    : null
+  ), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, findRequesterDuplicate: async () => null, isEligibleApprover: async (id: string) => id !== "no-elegible", hasRequisitionsForWork: async () => false };
   const transactions = { transaction: async <T>(_id: string | undefined, work: (repositories: Parameters<ServiceDependencies["transactions"]["transaction"]>[1] extends (repositories: infer R) => Promise<unknown> ? R : never) => Promise<T>) => {
     const snapshot = { req: structuredClone([...req.entries()]), orders: structuredClone(ordersData), expenses: structuredClone(expensesData), petty: structuredClone(petty), audits: structuredClone(audits), shares: structuredClone(shares), proposed: structuredClone([...proposed.entries()]), notifications: structuredClone(notificationData) };
     try { return await work({ requisitions, orders, expenses, pettyCash, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
@@ -868,5 +885,88 @@ describe("aprobador por ítem", () => {
     const r = await repartida(service);
     await expect(service.decline(r.id, "me lo pensé mejor", reviewer)).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
     expect((await service.getRequisition(r.id, reviewer)).status).toBe("en_aprobacion");
+  });
+});
+
+// CENTROS DE COSTO (Ernesto, 2026-09-12, decisión del dueño): «obra y centro de costo están
+// correlacionados, pero varias obras pueden ir a un centro de costo; en la requisición debe salir
+// predeterminado el centro asociado a esa obra y poder cambiarse». El arnés SQL
+// (supabase/tests/centros_costo_verification.sql) cubre el trigger de coherencia de sociedad/actividad
+// contra Postgres real; aquí va la regla de negocio (herencia, override, exigencia en sendForApproval,
+// copia congelada en el gasto), que es dominio puro y no debe esperar a un Postgres real para probarse.
+describe("centros de costo", () => {
+  it("review() hereda el centro de la obra cuando no hay uno explícito ni previo, y el revisor puede cambiarlo o limpiarlo", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    // Sin costCenterId en el input: hereda "cc-work" (el default de la obra "work").
+    const heredado = await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
+    expect(heredado.costCenterId).toBe("cc-work");
+
+    // El revisor lo cambia explícitamente a otro centro válido (misma sociedad, activo).
+    const cambiado = await service.review(r.id, { tagId: "tag", costCenterId: "cc-alterno", items }, reviewer);
+    expect(cambiado.costCenterId).toBe("cc-alterno");
+
+    // Un review() posterior SIN costCenterId no toca el valor ya elegido (no lo vuelve a heredar de la obra).
+    const sinTocar = await service.review(r.id, { tagId: "tag", items }, reviewer);
+    expect(sinTocar.costCenterId).toBe("cc-alterno");
+
+    // null/"" lo desasigna explícitamente, igual que approverId (M-6).
+    const limpiado = await service.review(r.id, { tagId: "tag", costCenterId: null, items }, reviewer);
+    expect(limpiado.costCenterId).toBeUndefined();
+  });
+
+  it("review() rechaza un centro de otra sociedad o inactivo, pero acepta uno compartido (sociedad NULL)", async () => {
+    const service = new ProcurementService(fakeDeps());
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    await expect(service.review(r.id, { tagId: "tag", costCenterId: "cc-otra-sociedad", items }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(service.review(r.id, { tagId: "tag", costCenterId: "cc-inactivo", items }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    const compartido = await service.review(r.id, { tagId: "tag", costCenterId: "cc-compartido", items }, reviewer);
+    expect(compartido.costCenterId).toBe("cc-compartido");
+  });
+
+  it("sendForApproval exige centro de costo (además de obra/etiqueta/aprobador)", async () => {
+    const service = new ProcurementService(fakeDeps());
+    // "obra-sin-centro" no trae costCenterId: nada de dónde heredar.
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "obra-sin-centro", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    const reviewedR = await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
+    expect(reviewedR.costCenterId).toBeUndefined();
+    await expect(service.sendForApproval(r.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
+    // Con un centro explícito, sendForApproval ya no lo bloquea (compartido: no importa la sociedad).
+    await service.review(r.id, { tagId: "tag", costCenterId: "cc-compartido", items }, reviewer);
+    await expect(service.sendForApproval(r.id, reviewer)).resolves.toMatchObject({ status: "en_aprobacion" });
+  });
+
+  it("generateOrders() copia el centro de costo heredado a cada gasto generado", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await reviewed(service); // workId "work" desde create(): hereda "cc-work" en review().
+    expect(r.costCenterId).toBe("cc-work");
+    await service.approve(r.id, approver);
+    const orders = await service.generateOrders(r.id, reviewer);
+    expect(orders.length).toBeGreaterThan(0);
+    const expensesGeneradas = deps.expensesData.filter((expense) => orders.some((order) => order.id === expense.referenceId));
+    expect(expensesGeneradas.length).toBeGreaterThan(0);
+    for (const expense of expensesGeneradas) expect(expense.costCenterId).toBe("cc-work");
+  });
+
+  // Esta prueba debe FALLAR si algún día se quita el guardián de generateOrders(): sendForApproval()
+  // bloquea el camino normal (probado arriba), pero una requisición "aprobada" ANTES de que existiera
+  // esta exigencia (dato legado, o un bypass futuro) no debe poder generar un gasto sin centro en
+  // silencio — `saveExpense` inserta con `on conflict do nothing`, así que un gasto que nace sin centro
+  // se queda así PARA SIEMPRE.
+  it("generateOrders() NUNCA deja nacer un gasto sin centro: si la requisición aprobada no tiene uno (ni su obra), falla en vez de crearlo", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "obra-sin-centro", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
+    // Simula el dato legado: se fuerza el estado a "aprobada" sin pasar por sendForApproval() (que sí
+    // exige el centro), reproduciendo una requisición que llegó a este estado antes de esta exigencia.
+    const stored = deps.req.get(r.id)!;
+    stored.status = "aprobada";
+    deps.req.set(r.id, stored);
+    await expect(service.generateOrders(r.id, reviewer)).rejects.toMatchObject({ code: "COST_CENTER_REQUIRED" });
+    expect(deps.expensesData).toHaveLength(0); // ningún gasto llegó a crearse, ni con centro ni sin él.
   });
 });
