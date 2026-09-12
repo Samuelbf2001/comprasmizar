@@ -3,6 +3,7 @@ import { hmacSha256 } from "../../lib/security/crypto";
 import {
   MAX_DROPDOWN_OPTIONS,
   buildFlowSendPayload,
+  buildSocietyOptions,
   issueFlowToken,
   sendRequisitionFlow,
   type FlowCatalogSource,
@@ -56,6 +57,54 @@ describe("issueFlowToken — contrato con el receptor del webhook", () => {
     const a = issueFlowToken("573000000000", SECRETO, now);
     const b = issueFlowToken("573000000001", SECRETO, now);
     expect(a).not.toBe(b);
+  });
+});
+
+describe("buildSocietyOptions — id = nombre de la sociedad (bloqueante Juliana: el resumen mostraba el uuid)", () => {
+  it("id y title son el MISMO valor: el nombre de la sociedad, no su uuid", () => {
+    const opciones = buildSocietyOptions([{ name: "Mizar", nit: "900123456-7" }]);
+    expect(opciones).toEqual([{ id: "Mizar", title: "Mizar" }]);
+  });
+
+  it("dos nombres distintos no se desambiguan: cada uno queda tal cual", () => {
+    const opciones = buildSocietyOptions([
+      { name: "Mizar", nit: "900123456-7" },
+      { name: "Constructora El Roble", nit: "800111222-3" },
+    ]);
+    expect(opciones).toEqual([
+      { id: "Mizar", title: "Mizar" },
+      { id: "Constructora El Roble", title: "Constructora El Roble" },
+    ]);
+  });
+
+  it("dos sociedades que comparten nombre se desambiguan con el NIT entre paréntesis, en AMBOS id y title", () => {
+    const opciones = buildSocietyOptions([
+      { name: "Mizar", nit: "900123456-7" },
+      { name: "Mizar", nit: "800111222-3" },
+    ]);
+    expect(opciones).toEqual([
+      { id: "Mizar (900123456-7)", title: "Mizar (900123456-7)" },
+      { id: "Mizar (800111222-3)", title: "Mizar (800111222-3)" },
+    ]);
+  });
+
+  it("un nombre repetido sin NIT en alguna fila no se puede desambiguar: queda el nombre plano", () => {
+    // Caso residual: sin NIT no hay con qué distinguirlas. No debería ocurrir en la práctica (la
+    // restricción UNIQUE de sociedades.nombre ya lo impide), pero no debe reventar.
+    const opciones = buildSocietyOptions([
+      { name: "Mizar", nit: null },
+      { name: "Mizar", nit: "800111222-3" },
+    ]);
+    expect(opciones[0]).toEqual({ id: "Mizar", title: "Mizar" });
+    expect(opciones[1]).toEqual({ id: "Mizar (800111222-3)", title: "Mizar (800111222-3)" });
+  });
+
+  it("recorta al mismo tope de 30 caracteres que ya aplicaba a title (límite de Meta) — también en id", () => {
+    const nombreLargo = "Constructora e Inversiones Mizar S.A.S. Zona Franca";
+    const [opcion] = buildSocietyOptions([{ name: nombreLargo, nit: null }]);
+    expect(opcion.id).toBe(opcion.title);
+    expect(opcion.id.length).toBeLessThanOrEqual(30);
+    expect(opcion.id.endsWith("…")).toBe(true);
   });
 });
 

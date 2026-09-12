@@ -48,6 +48,39 @@ export interface FlowCatalogSource {
 }
 
 /**
+ * Bloqueante reportado por Juliana: la pantalla RESUMEN del Flow (v3, PUBLICADO en Meta como
+ * `875992355468043`) pinta `${data.empresa}` — el VALOR crudo de la opción elegida en el Dropdown,
+ * no su `title` visible (ver integrations/whatsapp-flow/README.md, "Un `${data.x}` dentro de una
+ * cadena normal se muestra LITERAL" y "Cómo se llenan los dropdowns dinámicos"). Con `id = uuid` eso
+ * mostraba el uuid de la sociedad en vez de su nombre. Como el Flow YA ESTÁ PUBLICADO, su JSON no se
+ * puede tocar — Meta no permite editar un Flow publicado, y la alternativa de mapear id→nombre
+ * dentro del propio Flow exigiría un `If` por sociedad en el RESUMEN, inviable con un catálogo
+ * dinámico (cuántas sociedades hay y cuáles son cambia sin republicar nada). La única salida sin
+ * republicar es que el VALOR ya sea el nombre: `id` deja de ser `sociedades.id` y pasa a ser el
+ * nombre de la sociedad (ver `buildSocietyOptions`); `title` es el mismo nombre, para que la opción
+ * y el resumen digan lo mismo. `lib/infrastructure/nfm-reply-adapter.ts` (`extractTopLevelFields`
+ * + `createPostgresSocietyResolver`) resuelve ese nombre de vuelta al uuid real al recibir la
+ * respuesta, aceptando también el uuid crudo por si un Flow ya en curso lo trae así.
+ */
+export function buildSocietyOptions(rows: { name: string; nit: string | null }[]): FlowOption[] {
+  // `sociedades.nombre` tiene una restricción UNIQUE en la BD (migración 202608240001), así que hoy
+  // dos sociedades ACTIVAS nunca pueden compartir nombre — pero se desambigua con el NIT de todos
+  // modos: es lo que pide el ticket, y evita que el emisor dependa en silencio de una restricción
+  // que vive en otra capa y podría relajarse el día de mañana.
+  const nameCounts = new Map<string, number>();
+  for (const row of rows) nameCounts.set(row.name, (nameCounts.get(row.name) ?? 0) + 1);
+  return rows.map((row) => {
+    const ambiguous = (nameCounts.get(row.name) ?? 0) > 1 && Boolean(row.nit);
+    const label = ambiguous ? `${row.name} (${row.nit})` : row.name;
+    // Mismo recorte de 30 caracteres que ya aplicaba a `title` (tope de Meta para Dropdown, ver
+    // `MAX_OPTION_TITLE_LENGTH`): ahora se aplica también a `id`, porque `id` y `title` son
+    // deliberadamente el MISMO valor — es lo que hace que el resumen muestre el nombre.
+    const value = truncateTitle(label);
+    return { id: value, title: value };
+  });
+}
+
+/**
  * Lee sociedades activas y catálogo de items activos, ya listos como `{id, title}` para
  * `flow_action_payload.data`. Mismo patrón que los demás adaptadores de infraestructura:
  * `sharedPostgres()` (una sola conexión compartida en el proceso) y el mismo filtro de estado que
@@ -57,9 +90,11 @@ export function createPostgresFlowCatalogSource(databaseUrl = runtimeEnv().DATAB
   const sql = sharedPostgres(databaseUrl);
   return {
     async listActiveSocieties(limit) {
-      const rows = await sql<{ id: string; name: string }[]>`
-        select id, nombre as name from sociedades where activa = true order by nombre limit ${limit}`;
-      return rows.map((row) => ({ id: row.id, title: truncateTitle(row.name) }));
+      // `nit` viaja solo para desambiguar (ver `buildSocietyOptions`); `id` (el uuid) ya NO se
+      // expone en la opción del Dropdown — ver comentario de `buildSocietyOptions` arriba.
+      const rows = await sql<{ name: string; nit: string | null }[]>`
+        select nombre as name, nit from sociedades where activa = true order by nombre limit ${limit}`;
+      return buildSocietyOptions(rows);
     },
     // Orden: uso más reciente primero cuando hay señal (última vez que el item se pidió en una
     // requisición real, `requisicion_items.created_at`); alfabético para lo nunca usado — y como

@@ -264,6 +264,32 @@ en 30 caracteres el máximo de `title`; nombres más largos se recortan con
 elipsis solo para el dropdown (el nombre completo se sigue usando en cualquier
 otra pantalla).
 
+### El resumen mostraba el uuid de la empresa, no su nombre (Juliana, 2026-09-11)
+
+La pantalla RESUMEN de este Flow (v3, **PUBLICADO** en Meta como
+`875992355468043`) pinta `${data.empresa}` — el VALOR de la opción elegida en
+el Dropdown de sociedades, no su `title` visible (ver "Un `${data.x}` dentro
+de una cadena normal se muestra LITERAL", arriba). Mientras `id` fue el uuid
+de `sociedades.id`, el resumen mostraba el uuid en vez de "Mizar".
+
+Como el Flow ya está **publicado**, su JSON no se puede tocar (Meta no deja
+editar un Flow publicado), y mapear id→nombre dentro del propio Flow exigiría
+encadenar un `If` por sociedad en el RESUMEN — inviable con un catálogo
+dinámico, cuyas filas cambian sin republicar nada. La solución, sin tocar el
+Flow: que el VALOR ya sea el nombre. `buildSocietyOptions` (`flow-sender.ts`)
+arma las opciones del dropdown de sociedades con `id = title = nombre`
+(recortado al mismo tope de 30 caracteres de `title`); si dos sociedades
+ACTIVAS compartieran nombre (hoy imposible, `sociedades.nombre` tiene una
+restricción `UNIQUE`), se desambiguan como `"Nombre (NIT)"` en ambos campos.
+
+`nfm-reply-adapter.ts` acepta las dos formas de `societyId` en la respuesta:
+un uuid crudo (Flows ya en curso, emitidos antes de este cambio) o el nombre
+de la sociedad, que `createPostgresSocietyResolver` resuelve de vuelta al
+uuid real contra el catálogo de sociedades activas (por nombre exacto, y
+también por su forma desambiguada `"Nombre (NIT)"`). Un nombre que no resuelve
+rechaza el evento como `invalid_fields`, igual que un uuid mal formado antes
+de este cambio — nunca se crea una requisición con una empresa a medias.
+
 ### Contrato de `flow_token` (para quien construya el adaptador del webhook)
 
 `flow_token` liga el envío al teléfono destino y a una marca de tiempo, para
@@ -332,7 +358,7 @@ campos vigentes tras la reunión 2026-08-31):
 | Campo del Flow (`response_json`) | Campo de `KapsoFlowSubmission` | Nota |
 | --- | --- | --- |
 | `type` | `type` | Coincide tal cual (`"compra"\|"pago"`). |
-| `societyId` | `societyId` | UUID de la empresa elegida en el dropdown dinámico — el solicitante elige empresa, no obra (la asigna el revisor). Obligatorio en `KapsoFlowSubmission` y exigido por `ProcurementService.create` para el canal whatsapp. `workId` se conserva como campo OPCIONAL de compatibilidad (ver comentario en `extractTopLevelFields`, `nfm-reply-adapter.ts`); el Flow vigente ya no lo manda. |
+| `societyId` | `societyId` | Empresa elegida en el dropdown dinámico — el solicitante elige empresa, no obra (la asigna el revisor). Llega como el NOMBRE de la sociedad (o uuid, en Flows enviados antes de este cambio — ver subsección "El resumen mostraba el uuid" más abajo); `adaptNfmReply` lo resuelve al uuid real antes de construir `KapsoFlowSubmission`. Obligatorio y exigido por `ProcurementService.create` para el canal whatsapp. `workId` se conserva como campo OPCIONAL de compatibilidad (ver comentario en `extractTopLevelFields`, `nfm-reply-adapter.ts`); el Flow vigente ya no lo manda. |
 | `requiredDate` | `requiredDate` | **Opcional** (reunión 2026-08-31): si viene, ya llega `YYYY-MM-DD` (DatePicker ≥5.0) y se valida el formato; si no viene, se omite en vez de rechazar el evento. |
 | `requesterName` | `requesterName` | Coincide tal cual. |
 | `phone` | `phone` | **Decisión pendiente**: el Flow deja editar el teléfono aunque lo precarga con el remitente real de WhatsApp. Recomendado: para el campo de identidad usar el remitente verificado del mensaje (`context.from`/`from` en el webhook de mensajes de Meta) y tratar `phone` del Flow solo como dato de contacto alternativo, no como identidad. |

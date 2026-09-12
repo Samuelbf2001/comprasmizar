@@ -208,13 +208,20 @@ function compactItems(fields: Record<string, unknown>): { ok: true; items: Compa
 // (lib/services/kapso-contracts.ts) y `ProcurementService.create` (lib/services/procurement-service.ts)
 // ya lo modelan/exigen como opcional para el canal whatsapp — un envío real del Flow, sin `workId`
 // y con `societyId`, ya no es rechazado con `FORBIDDEN` (bloqueante cerrado).
-interface TopLevelFields { type: "compra" | "pago"; societyId: string; workId?: string; requiredDate?: string; observations?: string; }
+//
+// `societyId` llega aquí CRUDO (`societyIdRaw`), sin validar su forma todavía: desde que
+// `buildSocietyOptions` (flow-sender.ts) puso el NOMBRE de la sociedad como valor del Dropdown (ver
+// comentario ahí — el Flow publicado no se puede republicar y el RESUMEN pinta el valor crudo), este
+// campo puede traer un uuid (envíos viejos o Flows ya en curso) O un nombre. Resolverlo a un uuid
+// real necesita I/O (consultar el catálogo de sociedades), así que esta función sigue siendo pura y
+// solo pasa el valor crudo hacia adelante; `adaptNfmReply` es quien lo resuelve.
+interface TopLevelFields { type: "compra" | "pago"; societyIdRaw: string; workId?: string; requiredDate?: string; observations?: string; }
 
 function extractTopLevelFields(fields: Record<string, unknown>): { ok: true; value: TopLevelFields } | { ok: false; reason: "invalid_fields" } {
   const type = asString(fields.type);
   if (type !== "compra" && type !== "pago") return { ok: false, reason: "invalid_fields" };
-  const societyId = asString(fields.societyId);
-  if (!UUID_RE.test(societyId)) return { ok: false, reason: "invalid_fields" };
+  const societyIdRaw = asString(fields.societyId);
+  if (societyIdRaw === "") return { ok: false, reason: "invalid_fields" };
   // requiredDate opcional en los tres canales (reunión 2026-08-31): la validación de FORMATO solo
   // se aplica si viene un valor — un vacío ya no invalida el evento completo.
   const requiredDateRaw = asString(fields.requiredDate);
@@ -225,7 +232,25 @@ function extractTopLevelFields(fields: Record<string, unknown>): { ok: true; val
   const workIdRaw = asString(fields.workId);
   const workId = UUID_RE.test(workIdRaw) ? workIdRaw : undefined;
   const observations = asString(fields.observations);
-  return { ok: true, value: { type, societyId, workId, requiredDate: requiredDateRaw || undefined, observations: observations || undefined } };
+  return { ok: true, value: { type, societyIdRaw, workId, requiredDate: requiredDateRaw || undefined, observations: observations || undefined } };
+}
+
+/**
+ * Resuelve `societyIdRaw` (uuid crudo o nombre de sociedad, ver comentario de `TopLevelFields`) al
+ * uuid real. El camino uuid es puro y no toca la BD — es el caso de siempre y el más frecuente
+ * mientras convivan Flows en curso emitidos antes de este cambio. El camino nombre delega en
+ * `config.resolveSocietyId` (inyectable, mismo patrón que `resolveRequester`/`resolveAttachmentUrl`)
+ * y nunca lanza: un fallo de la consulta o la ausencia del resolver (pruebas puras sin BD) se tratan
+ * igual que "no resuelto" — fail-closed, `invalid_fields`, como ya ocurría con un uuid mal formado.
+ */
+async function resolveSocietyIdField(raw: string, resolveSocietyId?: (nameOrLabel: string) => Promise<string | null>): Promise<string | null> {
+  if (UUID_RE.test(raw)) return raw;
+  if (!resolveSocietyId) return null;
+  try {
+    return await resolveSocietyId(raw);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -262,6 +287,18 @@ export interface AdaptNfmReplyConfig {
    * debe lanzar.
    */
   resolveRequester: (phone: string) => Promise<{ name: string } | null>;
+  /**
+   * Resuelve el NOMBRE de una sociedad (o su forma desambiguada "Nombre (NIT)", ver
+   * `buildSocietyOptions` en flow-sender.ts) al uuid real de `sociedades.id`. Solo se invoca cuando
+   * `societyId` NO llega como uuid — el emisor puso el nombre como valor del Dropdown porque el
+   * Flow PUBLICADO en Meta (v3, `875992355468043`) no se puede republicar: su RESUMEN pinta el
+   * valor crudo del Dropdown (`${data.empresa}`) y no hay forma de que el propio Flow mapee
+   * id→nombre sin encadenar un `If` por sociedad, inviable con un catálogo dinámico. Opcional, como
+   * `resolveAttachmentUrl`: ausente en pruebas puras donde el `societyId` del fixture ya es un uuid
+   * (el camino viejo). Nunca debe lanzar — ver `resolveSocietyIdField`, que ya lo envuelve en
+   * try/catch. La implementación real es `createPostgresSocietyResolver`, más abajo.
+   */
+  resolveSocietyId?: (nameOrLabel: string) => Promise<string | null>;
 }
 
 export type AdaptNfmReplyResult = { ok: true; event: KapsoWebhookEvent } | { ok: false; reason: NfmReplyRejectionReason; wamid?: string; phone?: string };
@@ -293,6 +330,12 @@ export async function adaptNfmReply(payload: RawKapsoWebhookPayload, config: Ada
 
   const topLevel = extractTopLevelFields(fields);
   if (!topLevel.ok) return { ok: false, reason: topLevel.reason, wamid, phone: verifiedPhone };
+
+  // Ver comentario de `resolveSocietyIdField`: uuid crudo (camino viejo) o nombre de sociedad
+  // (camino nuevo, ver flow-sender.ts). Si no resuelve → invalid_fields, igual que un uuid mal
+  // formado antes de este cambio.
+  const societyId = await resolveSocietyIdField(topLevel.value.societyIdRaw, config.resolveSocietyId);
+  if (!societyId) return { ok: false, reason: "invalid_fields", wamid, phone: verifiedPhone };
 
   // Identidad por lista blanca GLOBAL: el número de WhatsApp debe estar autorizado en la
   // plataforma (ya no por obra — reunión 2026-08-31). Sin esto cualquiera que consiga la línea
@@ -338,7 +381,7 @@ export async function adaptNfmReply(payload: RawKapsoWebhookPayload, config: Ada
   const submission = {
     eventId: wamid, phone, workId: topLevel.value.workId, requiredDate: topLevel.value.requiredDate,
     type: topLevel.value.type, requesterName: requester.name, observations: topLevel.value.observations,
-    items, societyId: topLevel.value.societyId,
+    items, societyId,
   };
   const event: KapsoWebhookEvent = { eventId: wamid, type: "flow_submission", receivedAt: now.toISOString(), submission };
   return { ok: true, event };
@@ -394,6 +437,40 @@ export async function resolveKapsoMediaDownloadUrl(mediaId: string): Promise<str
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Resolución de sociedad: nombre del Dropdown (o "Nombre (NIT)" desambiguado) -> uuid real
+// ---------------------------------------------------------------------------------------------
+//
+// Contraparte receptora de `buildSocietyOptions` (flow-sender.ts). Mismo patrón que
+// `createPostgresApproverResolver` (approval-reply-adapter.ts): una función inyectable, no un
+// objeto con métodos, porque `resolveSocietyId` es la única operación que necesita este adaptador.
+
+/**
+ * Coincide por nombre exacto O por "nombre (nit)" — el sufijo que `buildSocietyOptions` agrega SOLO
+ * cuando dos sociedades ACTIVAS comparten nombre. Hoy eso es imposible por la restricción `UNIQUE`
+ * de `sociedades.nombre` (migración 202608240001), pero se soportan ambas formas de todos modos,
+ * para no depender en silencio de una restricción que vive en otra capa. Si hay más de una
+ * coincidencia (no debería, dado el `UNIQUE`) o ninguna, devuelve `null` — fail-closed, igual que
+ * `createPostgresApproverResolver`. Mismo filtro `activa = true` que ya usa `listActiveSocieties`
+ * (flow-sender.ts): no se resuelve el nombre de una sociedad desactivada después de enviado el Flow.
+ */
+export function createPostgresSocietyResolver(databaseUrl = runtimeEnv().DATABASE_URL): (nameOrLabel: string) => Promise<string | null> {
+  const sql = sharedPostgres(databaseUrl);
+  return async (nameOrLabel: string) => {
+    const label = nameOrLabel.trim();
+    if (!label) return null;
+    const rows = await sql<{ id: string }[]>`
+      select id from sociedades
+      where activa = true
+        -- El id del Dropdown es el nombre RECORTADO a 30 caracteres (tope de Meta, ver buildSocietyOptions):
+        -- un nombre más largo nunca coincidiría exacto, así que se compara también por su prefijo de 30.
+        and (nombre = ${label} or (nombre || ' (' || coalesce(nit, '') || ')') = ${label}
+             or left(nombre, 30) = ${label} or left(nombre || ' (' || coalesce(nit, '') || ')', 30) = ${label})
+      limit 2`;
+    return rows.length === 1 ? rows[0].id : null;
+  };
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import { createPostgresDependencies } from "../../../lib/infrastructure/postgres
 import { ProcurementService, type KapsoWebhookEvent } from "../../../lib/services";
 import { verifyKapsoSignature } from "../../../lib/security/crypto";
 import { isKapsoConfigured, kapsoEnv } from "../../../lib/security/env";
-import { adaptNfmReply, createPostgresNfmReplyRejectionRecorder, isNfmReplyWebhookPayload, resolveKapsoMediaDownloadUrl } from "../../../lib/infrastructure/nfm-reply-adapter";
+import { adaptNfmReply, createPostgresNfmReplyRejectionRecorder, createPostgresSocietyResolver, isNfmReplyWebhookPayload, resolveKapsoMediaDownloadUrl } from "../../../lib/infrastructure/nfm-reply-adapter";
 import { adaptApprovalReply, createPostgresApproverResolver, isApprovalNfmReply } from "../../../lib/infrastructure/approval-reply-adapter";
 import { applyApprovalDecision } from "../../../lib/infrastructure/approval-processor";
 import { resolveAuthorizedRequesterName } from "../../../lib/infrastructure/public-access";
@@ -119,7 +119,17 @@ export async function POST(request: Request) {
   }
 
   if (isNfmReplyWebhookPayload(payload)) {
-    const adapted = await adaptNfmReply(payload, { secret: kapsoEnv().KAPSO_WEBHOOK_SECRET, resolveAttachmentUrl: resolveKapsoMediaDownloadUrl, resolveRequester: resolveAuthorizedRequesterName });
+    const adapted = await adaptNfmReply(payload, {
+      secret: kapsoEnv().KAPSO_WEBHOOK_SECRET,
+      resolveAttachmentUrl: resolveKapsoMediaDownloadUrl,
+      resolveRequester: resolveAuthorizedRequesterName,
+      // Envuelto en una arrow function (no `createPostgresSocietyResolver()` directo) para que
+      // `sharedPostgres()` solo se llame si `societyId` de verdad necesita resolverse por nombre —
+      // el camino uuid (el de siempre) no toca esto. Mismo motivo por el que `resolveApprover`
+      // arriba SÍ se construye directo: esa rama solo corre para el Flow de aprobación, nunca para
+      // este.
+      resolveSocietyId: (nameOrLabel) => createPostgresSocietyResolver()(nameOrLabel),
+    });
     if (!adapted.ok) {
       try {
         await createPostgresNfmReplyRejectionRecorder().record({ wamid: adapted.wamid, phone: adapted.phone, reason: adapted.reason, rawPayload: payload });

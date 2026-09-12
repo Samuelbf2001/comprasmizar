@@ -255,11 +255,57 @@ describe("nfm-reply-adapter — traducción pura (sin HTTP, sin Postgres)", () =
       expect(result).toMatchObject({ ok: false, reason: "no_items" });
     });
 
-    it("rechaza (invalid_fields) un societyId que no es un UUID", async () => {
-      // societyId es el campo real y obligatorio ahora (reunión 2026-08-31: empresa, no obra).
+    it("rechaza (invalid_fields) un societyId que no es un UUID y no hay resolveSocietyId inyectado", async () => {
+      // societyId es el campo real y obligatorio ahora (reunión 2026-08-31: empresa, no obra). Sin
+      // resolveSocietyId (pruebas puras / Flows que aún no mandan nombre), un valor no-uuid no tiene
+      // forma de resolverse: mismo resultado que antes de este cambio.
       const badSocietyId = withResponseFields(fixture, { societyId: "no-es-un-uuid" });
       const result = await adaptNfmReply(badSocietyId, { secret, resolveRequester: okRequester, now: FIXTURE_TOKEN_ISSUED_AT });
       expect(result).toMatchObject({ ok: false, reason: "invalid_fields" });
+    });
+
+    // Bloqueante reportado por Juliana: el RESUMEN del Flow pinta el VALOR del Dropdown de empresa,
+    // así que `flow-sender.ts` (`buildSocietyOptions`) pasó a usar el NOMBRE de la sociedad como
+    // `id` en vez del uuid. Este adaptador debe aceptar los dos: uuid (Flows en curso, emitidos
+    // antes del cambio) y nombre (Flows nuevos), resolviendo el nombre contra el catálogo.
+    describe("societyId como nombre de sociedad (bloqueante Juliana: el resumen mostraba el uuid)", () => {
+      it("un societyId que YA es un uuid nunca llama a resolveSocietyId (camino viejo, sin tocar la BD)", async () => {
+        let called = false;
+        const resolveSocietyId = async () => { called = true; return null; };
+        const result = await adaptNfmReply(fixture, { secret, resolveRequester: okRequester, resolveSocietyId, now: FIXTURE_TOKEN_ISSUED_AT });
+        expect(result.ok).toBe(true);
+        expect(called).toBe(false);
+        if (result.ok) expect((result.event.submission as { societyId?: string })?.societyId).toBe("22222222-2222-4222-8222-222222222222");
+      });
+
+      it("un societyId que es el NOMBRE de la sociedad se resuelve al uuid vía resolveSocietyId", async () => {
+        const conNombre = withResponseFields(fixture, { societyId: "Mizar" });
+        const resolveSocietyId = async (nameOrLabel: string) => (nameOrLabel === "Mizar" ? "22222222-2222-4222-8222-222222222222" : null);
+        const result = await adaptNfmReply(conNombre, { secret, resolveRequester: okRequester, resolveSocietyId, now: FIXTURE_TOKEN_ISSUED_AT });
+        expect(result.ok).toBe(true);
+        if (result.ok) expect((result.event.submission as { societyId?: string })?.societyId).toBe("22222222-2222-4222-8222-222222222222");
+      });
+
+      it("un nombre de sociedad desambiguado con NIT ('Nombre (NIT)') también se resuelve", async () => {
+        const conNombreDesambiguado = withResponseFields(fixture, { societyId: "Mizar (900123456-7)" });
+        const resolveSocietyId = async (nameOrLabel: string) => (nameOrLabel === "Mizar (900123456-7)" ? "22222222-2222-4222-8222-222222222222" : null);
+        const result = await adaptNfmReply(conNombreDesambiguado, { secret, resolveRequester: okRequester, resolveSocietyId, now: FIXTURE_TOKEN_ISSUED_AT });
+        expect(result.ok).toBe(true);
+        if (result.ok) expect((result.event.submission as { societyId?: string })?.societyId).toBe("22222222-2222-4222-8222-222222222222");
+      });
+
+      it("un nombre de sociedad desconocido (resolveSocietyId no lo resuelve) rechaza como invalid_fields", async () => {
+        const nombreDesconocido = withResponseFields(fixture, { societyId: "Sociedad Que No Existe" });
+        const result = await adaptNfmReply(nombreDesconocido, { secret, resolveRequester: okRequester, resolveSocietyId: async () => null, now: FIXTURE_TOKEN_ISSUED_AT });
+        expect(result).toMatchObject({ ok: false, reason: "invalid_fields" });
+      });
+
+      it("si resolveSocietyId lanza, se trata como no resuelto (fail-closed), nunca como 500", async () => {
+        const conNombre = withResponseFields(fixture, { societyId: "Mizar" });
+        const resolveSocietyId = async () => { throw new Error("BD caída"); };
+        const result = await adaptNfmReply(conNombre, { secret, resolveRequester: okRequester, resolveSocietyId, now: FIXTURE_TOKEN_ISSUED_AT });
+        expect(result).toMatchObject({ ok: false, reason: "invalid_fields" });
+      });
     });
 
     it("un workId con formato inválido se descarta en silencio, no invalida el evento (campo de compatibilidad, ya no exigido por el Flow)", async () => {
