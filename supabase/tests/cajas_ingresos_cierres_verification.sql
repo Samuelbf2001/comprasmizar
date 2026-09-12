@@ -28,8 +28,8 @@ begin
   if v_count <> 2 then raise exception 'faltan los enums tipo_caja/estado_cierre'; end if;
 
   select count(*) into v_count from information_schema.columns
-   where table_schema = 'public' and table_name = 'caja_menor' and column_name in ('caja_id', 'medio_pago', 'iva', 'cierre_id');
-  if v_count <> 4 then raise exception 'a caja_menor le faltan columnas nuevas (caja_id/medio_pago/iva/cierre_id)'; end if;
+   where table_schema = 'public' and table_name = 'caja_menor' and column_name in ('caja_id', 'medio_pago', 'iva', 'cierre_id', 'centro_costo_id');
+  if v_count <> 5 then raise exception 'a caja_menor le faltan columnas nuevas (caja_id/medio_pago/iva/cierre_id/centro_costo_id)'; end if;
 
   select count(*) into v_count from information_schema.columns
    where table_schema = 'public' and table_name = 'gastos' and column_name in ('caja_id', 'concepto', 'medio_pago', 'registrado_por', 'cierre_id');
@@ -105,6 +105,20 @@ begin
   exception when sqlstate '23514' then null;
   end;
   update public.cajas set activo = true where id = v_caja;
+
+  -- Override de centro de costo (`caja_menor.centro_costo_id`, mismo patrón que
+  -- `requisiciones.costCenterId`): un valor explícito gana sobre el de la obra.
+  declare v_centro_override uuid; v_gasto_override uuid; v_centro_gasto uuid;
+  begin
+    insert into public.centros_costo (nombre) values ('Centro Override Test') returning id into v_centro_override;
+    insert into public.caja_menor (obra_id, fecha, concepto, valor, medio_pago, caja_id, centro_costo_id, registrado_por)
+      values (v_obra, current_date, 'Gasto con centro propio', 5000, 'efectivo', v_caja, v_centro_override, '10000000-0000-4000-8000-000000000002')
+      returning gasto_id into v_gasto_override;
+    select centro_costo_id into v_centro_gasto from public.gastos where id = v_gasto_override;
+    if v_centro_gasto is distinct from v_centro_override then
+      raise exception 'Un centro_costo_id explícito en caja_menor debe ganarle al de la obra (esperado %, obtenido %)', v_centro_override, v_centro_gasto;
+    end if;
+  end;
 end $$;
 
 -- ---------------------------------------------------------------------------

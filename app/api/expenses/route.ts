@@ -16,6 +16,9 @@ const referenceIdSchema = z.string().uuid();
 // `?status=` en esta ruta se ignora en vez de fallar (parseListQuery sin `statusValues`).
 // Centros de costo (2026-09-12): `?costCenterId=` filtra por `gastos.centro_costo_id` (ver
 // listVisibleExpenses en postgres-repositories.ts) — mismo patrón aditivo que `workId`.
+// Cajas (2026-09-12): `?cajaId=` filtra por `gastos.caja_id` (columna copiada por
+// sincronizar_gasto_caja_menor, NULL en origen 'requisicion') — mismo patrón aditivo, nombre de
+// parámetro en español ("caja") porque es como lo llama la pestaña "Gastos y caja".
 export function GET(request: Request) {
   return authenticatedJson((actor) => {
     const url = new URL(request.url);
@@ -26,6 +29,12 @@ export function GET(request: Request) {
       return new ProcurementService(createPostgresDependencies()).listExpensesByReference(parsed.data, { actor });
     }
     const { query, paginated } = parseListQuery(url);
+    const rawCashBoxId = url.searchParams.get("cajaId");
+    if (rawCashBoxId !== null) {
+      const parsed = referenceIdSchema.safeParse(rawCashBoxId);
+      if (!parsed.success) throw new DomainError("INVALID_INPUT", "cajaId debe ser un uuid válido");
+      query.cashBoxId = parsed.data;
+    }
     const service = new ProcurementService(createPostgresDependencies());
     if (!paginated && !hasListFilters(query)) return service.listExpenses({ actor });
     return service.listExpensesPage(query, { actor }).then((page) => (paginated ? page : page.rows));

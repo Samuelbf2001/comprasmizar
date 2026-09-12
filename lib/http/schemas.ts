@@ -121,7 +121,24 @@ export const orderPaymentSchema = z.object({
   method: z.enum(["efectivo", "transferencia", "cheque", "tarjeta", "otro"]),
   externalReference: z.string().trim().min(1).max(240).optional(),
 }).strict();
-export const pettyCashSchema = z.object({ workId: z.string().uuid(), date: z.string().date(), concept: z.string().trim().min(1).max(500), tagId: z.string().uuid(), amount: z.number().int().positive() }).strict();
+// Cajas (2026-09-12, migración 202609120003): registerPettyCash es también el camino del "gasto
+// directo" de la pestaña Gastos y caja — cashBoxId/paymentMethod pasan a obligatorios (todo movimiento
+// vive bajo una caja con un medio de pago); costCenterId es el mismo patrón "hereda-o-elige" que
+// `ReviewInput.costCenterId` (ausente = hereda el de la obra); `iva` es opcional (ausente = 0, el
+// caso de la caja menor clásica que nunca lo llevaba).
+export const pettyCashSchema = z.object({ workId: z.string().uuid(), date: z.string().date(), concept: z.string().trim().min(1).max(500), tagId: z.string().uuid(), amount: z.number().int().positive(), cashBoxId: z.string().uuid(), paymentMethod: z.enum(["efectivo", "transferencia", "cheque", "tarjeta", "otro"]), costCenterId: z.string().uuid().optional(), iva: z.number().int().nonnegative().optional() }).strict();
+// Ingresos (2026-09-12): tabla APARTE de gastos, nunca negativa — `amount` exige `.positive()`, no
+// `.nonnegative()` (mismo criterio que el check `valor > 0` de la migración).
+export const incomeSchema = z.object({
+  cashBoxId: z.string().uuid(), costCenterId: z.string().uuid(), workId: z.string().uuid().optional(),
+  date: z.string().date(), concept: z.string().trim().min(1).max(500), amount: z.number().int().positive(),
+  paymentMethod: z.enum(["efectivo", "transferencia", "cheque", "tarjeta", "otro"]),
+  thirdParty: z.string().trim().min(1).max(240).optional(),
+}).strict();
+// Cierres mensuales: `period` es "AAAA-MM" (no la fecha `AAAA-MM-DD` de gastos/pagos) — es el mes
+// completo que se cierra, no un día concreto. `action` decide cerrar vs. reabrir (reopenCashPeriod es
+// exclusivo de admin_sixteam, ver CashService).
+export const cashCloseSchema = z.object({ cashBoxId: z.string().uuid(), period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "El periodo debe tener el formato AAAA-MM"), action: z.enum(["close", "reopen"]) }).strict();
 
 // Edición de cabecera de requisición (ficha editable). Solo campos que no alteran la identidad ni
 // el gasto: fecha requerida y observaciones (`destination` sale: quedó obsoleto). Al menos un campo debe venir.

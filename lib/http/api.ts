@@ -102,6 +102,10 @@ export function parseListQuery(url: URL, statusValues?: readonly string[]): { qu
   if (rawWorkId !== null) { if (!z.string().uuid().safeParse(rawWorkId).success) throw new DomainError("INVALID_INPUT", "workId debe ser un uuid válido"); query.workId = rawWorkId; }
   const rawCostCenterId = params.get("costCenterId");
   if (rawCostCenterId !== null) { if (!z.string().uuid().safeParse(rawCostCenterId).success) throw new DomainError("INVALID_INPUT", "costCenterId debe ser un uuid válido"); query.costCenterId = rawCostCenterId; }
+  // Cajas (2026-09-12): `?cashBoxId=` genérico para caja menor/ingresos; `/api/expenses` usa además
+  // `?cajaId=` (ver app/api/expenses/route.ts) — mismo filtro, nombre de parámetro pedido aparte.
+  const rawCashBoxId = params.get("cashBoxId");
+  if (rawCashBoxId !== null) { if (!z.string().uuid().safeParse(rawCashBoxId).success) throw new DomainError("INVALID_INPUT", "cashBoxId debe ser un uuid válido"); query.cashBoxId = rawCashBoxId; }
   for (const field of ["from", "to"] as const) {
     const raw = params.get(field);
     if (raw !== null) { if (!isoDatePattern.test(raw) || Number.isNaN(Date.parse(raw))) throw new DomainError("INVALID_INPUT", `${field} debe ser una fecha YYYY-MM-DD`); query[field] = raw; }
@@ -119,7 +123,7 @@ export function parseListQuery(url: URL, statusValues?: readonly string[]): { qu
 /** `true` si `query` trae algún filtro (status/workId/from/to) — decide si el modo "array sin paginar"
  *  debe reutilizar el camino filtrado (con el límite por defecto de `pageLimit`, ver
  *  lib/services/list-query.ts) o el camino sin `query` de siempre, más barato. */
-export function hasListFilters(query: ListQuery): boolean { return query.status !== undefined || query.workId !== undefined || query.costCenterId !== undefined || query.from !== undefined || query.to !== undefined; }
+export function hasListFilters(query: ListQuery): boolean { return query.status !== undefined || query.workId !== undefined || query.costCenterId !== undefined || query.cashBoxId !== undefined || query.from !== undefined || query.to !== undefined; }
 
 export function apiError(error: unknown, serverTiming?: string): Response {
   const headers = serverTiming ? { ...noStore, "Server-Timing": serverTiming } : noStore;

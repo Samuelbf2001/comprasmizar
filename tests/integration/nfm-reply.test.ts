@@ -30,6 +30,8 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
     expenses: { get: unused, save: unused, markPaid: unused, deleteByReference: unused, saveShares: unused, list: unused, listVisibleTo: unused, listByReference: unused, dashboardAggregates: unused, listRecentlyUpdated: unused },
     orderPayments: { save: unused, listByOrder: unused },
     pettyCash: { save: unused, list: unused },
+    incomes: { save: unused, list: unused },
+    cashCloses: { get: unused, listByCashBox: unused, sumMovements: unused, previousClosingBalance: unused, upsert: unused, tagMovements: unused, setStatus: unused, listMovementsByCostCenter: unused },
     audit, consecutives,
     features: { isEnabled: unused },
     items,

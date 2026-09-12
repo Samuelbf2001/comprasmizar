@@ -11,6 +11,16 @@ export type ItemStatus = "pendiente" | "aprobado" | "declinado";
 export type OrderAdminStatus = "pendiente" | "contabilizada" | "pagada";
 /** Reunión agosto 2026: "saber cuánto se ha pagado de cada orden" — medio con el que se hizo un pago parcial. */
 export type PaymentMethod = "efectivo" | "transferencia" | "cheque" | "tarjeta" | "otro";
+/**
+ * Reunión con el cliente (Ernesto, 11-sep-2026): «TODOS los gastos (cajas, bancos, personales) quedan
+ * en el sistema por centro de costo». `cajas` (migración 202609120003) generaliza la caja menor de obra
+ * a cualquier "dónde vive la plata": la caja menor original de una obra, la caja administrativa que
+ * cierra Daniel a inicio de mes, una cuenta de banco o una caja personal.
+ */
+export type CashBoxType = "caja_menor" | "administrativa" | "banco" | "personal";
+/** Reunión 2026-09-12: un cierre mensual es, por caja, "abierto" (movimientos editables) o "cerrado"
+ *  (el trigger `validar_periodo_caja_abierto` rechaza altas/ediciones de ese mes para esa caja). */
+export type CashCloseStatus = "abierto" | "cerrado";
 export type Money = number;
 
 export interface Actor { id: string; roles: readonly Role[]; }
@@ -134,9 +144,48 @@ export interface OrderPayment { id: string; orderId: string; date: string; amoun
  * derivada en lectura — si la requisición de origen cambia de centro después, el gasto ya generado no
  * debe moverse solo (decisión del dueño, 2026-09-12, ver Requisition.costCenterId más arriba).
  */
-export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; }
+/**
+ * `cashBoxId`/`paymentMethod`/`registeredBy` (migración 202609120003): copia de la fila de
+ * `caja_menor` que generó el gasto, NULL en origen `requisicion` (una orden no tiene un único medio de
+ * pago: se paga con `pagos_orden`, cada uno con el suyo). `concept` idem: copia de
+ * `caja_menor.concepto`, para que la pantalla "Gastos y caja" muestre una descripción sin ir a buscar
+ * la fila de caja menor aparte. `closeId`: a qué cierre mensual quedó atado, si el movimiento de caja
+ * que lo originó ya se cerró.
+ */
+export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; cashBoxId?: string; concept?: string; paymentMethod?: PaymentMethod; registeredBy?: string; closeId?: string; }
 export interface ExpenseShare { expenseId: string; workId: string; amount: Money; }
-export interface PettyCash { id: string; workId: string; date: string; concept: string; tagId: string; amount: Money; registeredBy: string; attachmentUrl?: string; }
+/**
+ * `cashBoxId`/`paymentMethod`/`iva` (migración 202609120003): la caja menor ya no es exclusiva de la
+ * caja de obra clásica — generaliza a cualquier caja del catálogo `cajas` (`ProcurementService.
+ * registerPettyCash` es también el camino del "gasto directo" de la pestaña Gastos y caja). `iva`:
+ * hasta esa migración el gasto generado forzaba IVA=0; ahora un gasto directo de caja SÍ puede
+ * llevarlo. `closeId`: igual que `Expense.closeId`, a qué cierre mensual quedó atado.
+ */
+export interface PettyCash { id: string; workId: string; date: string; concept: string; tagId: string; amount: Money; registeredBy: string; attachmentUrl?: string; cashBoxId?: string; paymentMethod?: PaymentMethod; iva?: Money; closeId?: string; costCenterId?: string; }
+/**
+ * Catálogo de cajas (migración 202609120003): dónde vive la plata. `costCenterId`: centro DEFAULT de
+ * esta caja (mismo patrón que `CatalogWork.costCenterId`), únicamente informativo — ningún movimiento
+ * lo hereda todavía (el centro efectivo de un movimiento de caja menor sigue viniendo de su obra).
+ * `societyId` ausente = caja compartida entre empresas.
+ */
+export interface CashBox { id: string; name: string; type: CashBoxType; societyId?: string; costCenterId?: string; active: boolean; }
+/**
+ * Un ingreso de caja/banco/personal (migración 202609120003). Tabla APARTE de `Expense` a propósito:
+ * nunca un gasto en negativo. `workId` es OPCIONAL (a diferencia de `PettyCash.workId`): un ingreso
+ * puede no venir de ninguna obra concreta (p. ej. un anticipo de cliente todavía sin asignar).
+ */
+export interface Income { id: string; cashBoxId: string; costCenterId: string; workId?: string; date: string; concept: string; amount: Money; paymentMethod: PaymentMethod; thirdParty?: string; registeredBy: string; closeId?: string; period?: string; }
+/**
+ * Un cierre mensual de una caja (migración 202609120003, tabla `cierres_caja`). `CashService.
+ * closeCashPeriod` es la única vía de escritura: calcula los totales, etiqueta los movimientos del
+ * periodo con `id` MIENTRAS el cierre sigue "abierto" y solo al final marca `status: "cerrado"`.
+ * Reabrir (`reopenCashPeriod`) es exclusivo de admin_sixteam.
+ */
+export interface CashClose { id: string; cashBoxId: string; period: string; status: CashCloseStatus; openingBalance: Money; totalIncome: Money; totalExpense: Money; closingBalance: Money; closedBy?: string; closedAt?: string; }
+/** Una fila de la vista `movimientos_centro_costo` (migración 202609120003): el cruce ingresos(+)/
+ *  gastos(-) por centro de costo que pide el reporte. `origin`: "ingreso", "gasto_requisicion" o
+ *  "gasto_caja_menor". `amount` ya viene con el signo aplicado (negativo para gastos). */
+export interface CostCenterMovement { costCenterId: string; period: string; origin: string; amount: Money; }
 /** RF-1102: un elemento de la cola de "qué espera algo de mí" en el dashboard conectado. */
 export interface DashboardQueueItem { kind: "requisicion" | "orden"; id: string; consecutive: string; workId?: string; status: string; action: string; }
 /** RF-1102: un evento de la lista de actividad reciente del dashboard conectado. */

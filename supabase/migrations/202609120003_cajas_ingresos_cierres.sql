@@ -17,7 +17,9 @@
 --      movimiento — todo movimiento HISTÓRICO se backfillea a una caja "Caja menor" nueva, para que
 --      "todo gasto de caja" siga viviendo en la misma tabla que ya sincroniza su gasto), `medio_pago`
 --      (reutiliza el enum de 202609120002), `iva` (hasta hoy el trigger forzaba 0: un gasto directo de
---      caja SÍ puede llevar IVA) y `cierre_id` (a qué cierre mensual quedó atado, si alguno).
+--      caja SÍ puede llevar IVA), `centro_costo_id` (override opcional del centro de costo EFECTIVO del
+--      movimiento — NULL hereda el de la obra, igual que `resolveCostCenter` ya hace para
+--      requisiciones) y `cierre_id` (a qué cierre mensual quedó atado, si alguno).
 --   3) `ingresos`: tabla NUEVA y APARTE — nunca un gasto en negativo. Mismas columnas de contexto que
 --      `caja_menor`/`gastos` (caja, centro de costo, obra opcional, medio de pago, quién registra) más
 --      `tercero` (de quién viene el ingreso) y el mismo `periodo` generado que ya usa `gastos`.
@@ -101,6 +103,14 @@ alter table public.caja_menor add column if not exists medio_pago public.medio_p
 -- backfill necesario. Mismo molde `numeric(16,2)` con `= trunc(...)` que el resto de columnas de dinero.
 alter table public.caja_menor add column if not exists iva numeric(16,2) not null default 0 check (iva >= 0 and iva = trunc(iva));
 
+-- `centro_costo_id` (2026-09-12): el formulario de "gasto directo" de la pestaña Gastos y caja pide
+-- "centro de costo (predeterminado el de la obra si se elige obra) — editable", el MISMO patrón de
+-- herencia-más-override que `requisiciones.costCenterId` (202609120001, ver `resolveCostCenter` en
+-- lib/domain/rules.ts). NULL = "sin override, hereda el de la obra" (comportamiento IDÉNTICO al de
+-- antes de esta columna); un valor explícito gana sobre el de la obra — ver el `coalesce` en
+-- `sincronizar_gasto_caja_menor` más abajo.
+alter table public.caja_menor add column if not exists centro_costo_id uuid references public.centros_costo(id) on delete restrict;
+
 -- ---------------------------------------------------------------------------
 -- 4) `gastos` gana caja_id, concepto, medio_pago, registrado_por, cierre_id — todas NULLABLE: un gasto
 --    de origen 'requisicion' no tiene ni caja ni medio de pago ni registrador propio (nace de una
@@ -182,6 +192,7 @@ alter table public.gastos add column if not exists cierre_id uuid references pub
 create index if not exists cajas_activas_busqueda_idx on public.cajas(nombre) where activo;
 create index if not exists caja_menor_caja_fecha_idx on public.caja_menor(caja_id, fecha);
 create index if not exists caja_menor_cierre_idx on public.caja_menor(cierre_id) where cierre_id is not null;
+create index if not exists caja_menor_centro_costo_idx on public.caja_menor(centro_costo_id) where centro_costo_id is not null;
 create index if not exists gastos_caja_idx on public.gastos(caja_id) where caja_id is not null;
 create index if not exists gastos_cierre_idx on public.gastos(cierre_id) where cierre_id is not null;
 create index if not exists ingresos_caja_fecha_idx on public.ingresos(caja_id, fecha);
@@ -193,9 +204,11 @@ create index if not exists cierres_caja_caja_periodo_idx on public.cierres_caja(
 -- 7) `sincronizar_gasto_caja_menor`: reescritura completa (no merge) de la versión VIGENTE, que es la
 --    de 202609120001_centros_costo.sql (no la original de 202608240001, ver el aviso grande de arriba
 --    de ese archivo). Suma la propagación de caja_id/medio_pago/iva (antes forzado a 0) al lado de
---    centro_costo_id, que sigue derivándose de la obra exactamente igual que hasta hoy — y de paso
---    concepto/registrado_por, que la pantalla "Gastos y caja" necesita para mostrar un gasto de caja
---    sin ir a buscar la fila de caja_menor aparte.
+--    centro_costo_id — que ahora admite el OVERRIDE de `caja_menor.centro_costo_id` (punto 3): si viene
+--    informado gana sobre el de la obra, igual que `resolveCostCenter` ya hace para requisiciones; si
+--    no, se sigue derivando de la obra exactamente igual que hasta hoy — y de paso concepto/
+--    registrado_por, que la pantalla "Gastos y caja" necesita para mostrar un gasto de caja sin ir a
+--    buscar la fila de caja_menor aparte.
 --
 --    ORDEN DELIBERADO: esta reescritura va ANTES del backfill de más abajo (punto 7b), no después.
 --    `caja_menor_gasto` (la única disparadora de esta función) es "before insert OR UPDATE" sin lista
@@ -209,7 +222,7 @@ create index if not exists cierres_caja_caja_periodo_idx on public.cierres_caja(
 create or replace function public.sincronizar_gasto_caja_menor()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare v_gasto uuid; v_centro_costo_id uuid; begin
-  select centro_costo_id into v_centro_costo_id from public.obras where id = new.obra_id;
+  select coalesce(new.centro_costo_id, o.centro_costo_id) into v_centro_costo_id from public.obras o where o.id = new.obra_id;
   if tg_op = 'INSERT' then
     insert into public.gastos(
       obra_id, origen, referencia_id, etiqueta_id, proveedor_id, fecha_orden, fecha, valor_base, iva,
@@ -259,7 +272,7 @@ update public.caja_menor set medio_pago = 'efectivo' where medio_pago is null;
 -- ---------------------------------------------------------------------------
 create or replace function public.validar_catalogos_activos_caja_menor()
 returns trigger language plpgsql security definer set search_path = public as $$
-declare v_obra_activa boolean; v_etiqueta_activa boolean; v_proveedor_activo boolean; v_usuario_activo boolean; v_caja_activa boolean; begin
+declare v_obra_activa boolean; v_etiqueta_activa boolean; v_proveedor_activo boolean; v_usuario_activo boolean; v_caja_activa boolean; v_centro_activo boolean; begin
   select o.estado = 'activa' and s.activa into v_obra_activa
     from public.obras o join public.sociedades s on s.id = o.sociedad_id where o.id = new.obra_id;
   if coalesce(v_obra_activa, false) = false then
@@ -288,10 +301,18 @@ declare v_obra_activa boolean; v_etiqueta_activa boolean; v_proveedor_activo boo
       raise exception 'La caja del movimiento debe estar activa' using errcode = '23514';
     end if;
   end if;
+  -- centro_costo_id (2026-09-12): override opcional, ver el comentario junto a la columna en el
+  -- punto 3 — NULL = "hereda el de la obra", sin nada que validar aquí (la obra ya se validó arriba).
+  if new.centro_costo_id is not null then
+    select activo into v_centro_activo from public.centros_costo where id = new.centro_costo_id;
+    if coalesce(v_centro_activo, false) = false then
+      raise exception 'El centro de costo del movimiento debe estar activo' using errcode = '23514';
+    end if;
+  end if;
   return new;
 end; $$;
 drop trigger if exists caja_menor_catalogos_activos on public.caja_menor;
-create trigger caja_menor_catalogos_activos before insert or update of obra_id, etiqueta_id, proveedor_id, registrado_por, caja_id
+create trigger caja_menor_catalogos_activos before insert or update of obra_id, etiqueta_id, proveedor_id, registrado_por, caja_id, centro_costo_id
   on public.caja_menor for each row execute function public.validar_catalogos_activos_caja_menor();
 
 -- ---------------------------------------------------------------------------

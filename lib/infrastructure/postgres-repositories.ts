@@ -1,6 +1,6 @@
 import postgres, { type Sql } from "postgres";
-import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
-import type { AuditRepository, CatalogCostCenter, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ReportCatalogSource, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
+import { DomainError, normalizeItemName, type Actor, type AuditEvent, type CashClose, type CashCloseStatus, type CostCenterMovement, type DashboardAmountByKey, type Expense, type ExpenseShare, type Income, type ItemLine, type Order, type OrderAdminStatus, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
+import type { AuditRepository, CatalogCashBox, CatalogCostCenter, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ReportCatalogSource, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
 import { generalLinkToken, verifyPublicLinkToken } from "../security/public-link";
 import { safeEqual } from "../security/crypto";
@@ -104,7 +104,29 @@ function order(row: DbRow): Order {
 // orden que originó el gasto no se ha pagado — `asIsoDate` ya devuelve `undefined` para NULL, así que
 // NO se fuerza `as string`: un gasto sin pagar debe poder representarse en memoria sin fecha de pago.
 // `fecha_orden` (nace con el registro, NOT NULL en la BD) sí es obligatoria.
-function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7), costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined }; }
+// caja_id/concepto/medio_pago/registrado_por/cierre_id (2026-09-12, 202609120003): copiados por
+// sincronizar_gasto_caja_menor solo en origen 'caja_menor' — NULL en origen 'requisicion'.
+function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7), costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined, cashBoxId: row.caja_id ? String(row.caja_id) : undefined, concept: row.concepto ? String(row.concepto) : undefined, paymentMethod: row.medio_pago ? (row.medio_pago as Expense["paymentMethod"]) : undefined, registeredBy: row.registrado_por ? String(row.registrado_por) : undefined, closeId: row.cierre_id ? String(row.cierre_id) : undefined }; }
+/** Ingresos (2026-09-12, migración 202609120003): tabla APARTE de gastos, nunca negativa. */
+function income(row: DbRow): Income {
+  return {
+    id: String(row.id), cashBoxId: String(row.caja_id), costCenterId: String(row.centro_costo_id),
+    workId: row.obra_id ? String(row.obra_id) : undefined, date: asIsoDate(row.fecha) as string,
+    concept: String(row.concepto), amount: asNumber(row.valor), paymentMethod: row.medio_pago as Income["paymentMethod"],
+    thirdParty: row.tercero ? String(row.tercero) : undefined, registeredBy: String(row.registrado_por),
+    closeId: row.cierre_id ? String(row.cierre_id) : undefined, period: asIsoDate(row.periodo)?.slice(0, 7),
+  };
+}
+/** Cierres mensuales de caja (202609120003). `period` viaja como "YYYY-MM" (mismo formato que
+ *  `Expense.period`), no como el `date` (día 1 del mes) que guarda la columna `periodo`. */
+function cashClose(row: DbRow): CashClose {
+  return {
+    id: String(row.id), cashBoxId: String(row.caja_id), period: (asIsoDate(row.periodo) as string).slice(0, 7),
+    status: row.estado as CashClose["status"], openingBalance: asNumber(row.saldo_inicial), totalIncome: asNumber(row.total_ingresos),
+    totalExpense: asNumber(row.total_gastos), closingBalance: asNumber(row.saldo_final),
+    closedBy: row.cerrado_por ? String(row.cerrado_por) : undefined, closedAt: row.cerrado_at ? toIsoInstant(row.cerrado_at) : undefined,
+  };
+}
 /** Reunión agosto 2026: un pago parcial de orden. `fecha` es `date` en Postgres (asIsoDate, mismo
  *  criterio que `orderDate`/`date` de Expense arriba); `valor` viaja como string desde `numeric(16,2)`
  *  (el driver `postgres` no lo convierte solo), de ahí `asNumber`. */
@@ -124,6 +146,8 @@ function catalogRecord(kind: CatalogKind, row: DbRow): CatalogRecord {
   // ver 202609120001) — es el DEFAULT de la obra, no el catálogo de centros en sí (ese es "costCenters").
   if (kind === "works") return { id: String(row.id), name: String(row.nombre), societyId: String(row.sociedad_id), active: row.estado === "activa", costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined };
   if (kind === "costCenters") return { id: String(row.id), name: String(row.nombre), code: row.codigo ? String(row.codigo) : undefined, societyId: row.sociedad_id ? String(row.sociedad_id) : undefined, active: row.activo === true };
+  // Cajas (2026-09-12): catálogo de "dónde vive la plata" (migración 202609120003).
+  if (kind === "cashBoxes") return { id: String(row.id), name: String(row.nombre), type: row.tipo as CatalogCashBox["type"], societyId: row.sociedad_id ? String(row.sociedad_id) : undefined, costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined, active: row.activo === true };
   if (kind === "tags") return { id: String(row.id), name: String(row.nombre), approverId: row.aprobador_id ? String(row.aprobador_id) : undefined, active: row.activa === true };
   if (kind === "items") return { id: String(row.id), name: String(row.nombre), specification: row.especificacion ? String(row.especificacion) : undefined, unit: String(row.unidad_defecto), category: row.categoria ? String(row.categoria) : undefined, active: row.estado === "activo" };
   if (kind === "societies") return { id: String(row.id), name: String(row.nombre), nit: row.nit ? String(row.nit) : undefined, active: row.activa === true };
@@ -427,11 +451,14 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     // Centros de costo (2026-09-12): filtro aditivo, mismo patrón que workFilter — `costCenterId`
     // compara contra la INSTANTÁNEA copiada en el gasto (gastos.centro_costo_id), no contra la obra.
     const costCenterFilter = query.costCenterId ? this.sql`and g.centro_costo_id = ${query.costCenterId}` : this.sql``;
+    // Cajas (2026-09-12): filtro aditivo, mismo patrón que costCenterFilter — solo tiene valor en
+    // gastos de origen 'caja_menor' (gastos.caja_id es NULL en origen 'requisicion').
+    const cashBoxFilter = query.cashBoxId ? this.sql`and g.caja_id = ${query.cashBoxId}` : this.sql``;
     const fromFilter = query.from ? this.sql`and g.fecha >= ${query.from}::date` : this.sql``;
     const toFilter = query.to ? this.sql`and g.fecha < (${query.to}::date + 1)` : this.sql``;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const cursorFilter = cursor ? this.sql`and (g.fecha_orden, g.id) < (${cursor.at}::date, ${cursor.id}::uuid)` : this.sql``;
-    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} ${workFilter} ${costCenterFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by g.fecha_orden desc, g.id desc limit ${limit + 1}`;
+    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} ${workFilter} ${costCenterFilter} ${cashBoxFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by g.fecha_orden desc, g.id desc limit ${limit + 1}`;
     const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
     const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha_orden) as string, String(last.id)) : null;
     return { rows: pageRows.map(expense), nextCursor };
@@ -481,24 +508,103 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} order by coalesce(g.fecha, g.fecha_orden) desc, g.id desc limit ${limit}`;
     return rows.map(expense);
   }
-  async savePettyCash(value: PettyCash): Promise<Expense> { const inserted = await this.sql<DbRow[]>`insert into caja_menor (id, obra_id, fecha, concepto, etiqueta_id, valor, registrado_por) values (${value.id}, ${value.workId}, ${value.date}, ${value.concept}, ${value.tagId}, ${value.amount}, ${value.registeredBy}) returning gasto_id`; const expenseRows = await this.sql<DbRow[]>`select * from gastos where id=${String(inserted[0]?.gasto_id ?? "")}`; if (!expenseRows[0]) throw new Error("PETTY_CASH_EXPENSE_MISSING"); return expense(expenseRows[0]); }
+  // caja_id/medio_pago/iva (2026-09-12, 202609120003): registerPettyCash es también el camino del
+  // "gasto directo" de la pestaña Gastos y caja — ya no está atado a la caja menor clásica de obra.
+  async savePettyCash(value: PettyCash): Promise<Expense> { const inserted = await this.sql<DbRow[]>`insert into caja_menor (id, obra_id, fecha, concepto, etiqueta_id, valor, iva, medio_pago, caja_id, centro_costo_id, registrado_por) values (${value.id}, ${value.workId}, ${value.date}, ${value.concept}, ${value.tagId}, ${value.amount}, ${value.iva ?? 0}, ${value.paymentMethod ?? null}, ${value.cashBoxId ?? null}, ${value.costCenterId ?? null}, ${value.registeredBy}) returning gasto_id`; const expenseRows = await this.sql<DbRow[]>`select * from gastos where id=${String(inserted[0]?.gasto_id ?? "")}`; if (!expenseRows[0]) throw new Error("PETTY_CASH_EXPENSE_MISSING"); return expense(expenseRows[0]); }
   // H3: `query` opcional y aditivo, mismo contrato que los demás. Caja menor no tiene visibilidad por
   // actor (ver PettyCashRepository en contracts.ts), así que solo filtra/pagina, sin fragmento de
   // visibilidad. `fecha` es NOT NULL aquí (se paga en el acto, reunión 2026-09): a diferencia de
   // gastos, filtrar/paginar por la misma columna `fecha` no tiene el problema de NULLs del cursor.
   async listPettyCash(query?: ListQuery): Promise<PettyCash[] | Page<PettyCash>> {
-    const mapRow = (row: DbRow) => ({ id: String(row.id), workId: String(row.obra_id), date: asIsoDate(row.fecha) as string, concept: String(row.concepto), tagId: String(row.etiqueta_id), amount: asNumber(row.valor), registeredBy: String(row.registrado_por) });
+    const mapRow = (row: DbRow) => ({ id: String(row.id), workId: String(row.obra_id), date: asIsoDate(row.fecha) as string, concept: String(row.concepto), tagId: String(row.etiqueta_id), amount: asNumber(row.valor), registeredBy: String(row.registrado_por), cashBoxId: row.caja_id ? String(row.caja_id) : undefined, paymentMethod: row.medio_pago ? (row.medio_pago as PettyCash["paymentMethod"]) : undefined, iva: row.iva !== undefined ? asNumber(row.iva) : undefined, closeId: row.cierre_id ? String(row.cierre_id) : undefined, costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined });
     if (!query) { const rows = await this.sql<DbRow[]>`select * from caja_menor`; return rows.map(mapRow); }
     const limit = pageLimit(query.limit);
     const workFilter = query.workId ? this.sql`and c.obra_id = ${query.workId}` : this.sql``;
+    const cashBoxFilter = query.cashBoxId ? this.sql`and c.caja_id = ${query.cashBoxId}` : this.sql``;
     const fromFilter = query.from ? this.sql`and c.fecha >= ${query.from}::date` : this.sql``;
     const toFilter = query.to ? this.sql`and c.fecha < (${query.to}::date + 1)` : this.sql``;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const cursorFilter = cursor ? this.sql`and (c.fecha, c.id) < (${cursor.at}::date, ${cursor.id}::uuid)` : this.sql``;
-    const rows = await this.sql<DbRow[]>`select c.* from caja_menor c where true ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by c.fecha desc, c.id desc limit ${limit + 1}`;
+    const rows = await this.sql<DbRow[]>`select c.* from caja_menor c where true ${workFilter} ${cashBoxFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by c.fecha desc, c.id desc limit ${limit + 1}`;
     const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
     const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha) as string, String(last.id)) : null;
     return { rows: pageRows.map(mapRow), nextCursor };
+  }
+  // ---------------------------------------------------------------------------------------------
+  // Ingresos y cierres de caja (2026-09-12, migración 202609120003).
+  // ---------------------------------------------------------------------------------------------
+  async saveIncome(value: Omit<Income, "id">): Promise<Income> {
+    const rows = await this.sql<DbRow[]>`insert into ingresos (caja_id, centro_costo_id, obra_id, fecha, concepto, valor, medio_pago, tercero, registrado_por) values (${value.cashBoxId}, ${value.costCenterId}, ${value.workId ?? null}, ${value.date}, ${value.concept}, ${value.amount}, ${value.paymentMethod}, ${value.thirdParty ?? null}, ${value.registeredBy}) returning *`;
+    return income(rows[0]);
+  }
+  async listIncomes(query?: ListQuery): Promise<Income[] | Page<Income>> {
+    if (!query) { const rows = await this.sql<DbRow[]>`select * from ingresos`; return rows.map(income); }
+    const limit = pageLimit(query.limit);
+    const workFilter = query.workId ? this.sql`and i.obra_id = ${query.workId}` : this.sql``;
+    const costCenterFilter = query.costCenterId ? this.sql`and i.centro_costo_id = ${query.costCenterId}` : this.sql``;
+    const cashBoxFilter = query.cashBoxId ? this.sql`and i.caja_id = ${query.cashBoxId}` : this.sql``;
+    const fromFilter = query.from ? this.sql`and i.fecha >= ${query.from}::date` : this.sql``;
+    const toFilter = query.to ? this.sql`and i.fecha < (${query.to}::date + 1)` : this.sql``;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
+    const cursorFilter = cursor ? this.sql`and (i.fecha, i.id) < (${cursor.at}::date, ${cursor.id}::uuid)` : this.sql``;
+    const rows = await this.sql<DbRow[]>`select i.* from ingresos i where true ${workFilter} ${costCenterFilter} ${cashBoxFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by i.fecha desc, i.id desc limit ${limit + 1}`;
+    const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
+    const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha) as string, String(last.id)) : null;
+    return { rows: pageRows.map(income), nextCursor };
+  }
+  async getCashClose(cashBoxId: string, period: string): Promise<CashClose | null> {
+    const rows = await this.sql<DbRow[]>`select * from cierres_caja where caja_id=${cashBoxId} and periodo=${`${period}-01`}::date`;
+    return rows[0] ? cashClose(rows[0]) : null;
+  }
+  async listCashClosesByCashBox(cashBoxId: string): Promise<CashClose[]> {
+    return (await this.sql<DbRow[]>`select * from cierres_caja where caja_id=${cashBoxId} order by periodo desc`).map(cashClose);
+  }
+  // Suma de movimientos de la caja en el mes: caja_menor (gastos) e ingresos por separado — el
+  // servicio (CashService.closeCashPeriod) es quien combina esto con el saldo anterior.
+  async sumCashMovements(cashBoxId: string, period: string): Promise<{ income: number; expense: number }> {
+    const periodDate = `${period}-01`;
+    const [incomeRows] = await Promise.all([
+      this.sql<{ total: string }[]>`select coalesce(sum(valor), 0) as total from ingresos where caja_id=${cashBoxId} and periodo=${periodDate}::date`,
+    ]);
+    const expenseRows = await this.sql<{ total: string }[]>`select coalesce(sum(valor + iva), 0) as total from caja_menor where caja_id=${cashBoxId} and date_trunc('month', fecha::timestamp)::date=${periodDate}::date`;
+    return { income: asNumber(incomeRows[0]?.total ?? 0), expense: asNumber(expenseRows[0]?.total ?? 0) };
+  }
+  // Saldo final del cierre INMEDIATO ANTERIOR de esta caja (0 si es el primer mes que se cierra).
+  async previousCashCloseBalance(cashBoxId: string, period: string): Promise<number> {
+    const rows = await this.sql<{ saldo_final: string }[]>`select saldo_final from cierres_caja where caja_id=${cashBoxId} and periodo < ${`${period}-01`}::date order by periodo desc limit 1`;
+    return asNumber(rows[0]?.saldo_final ?? 0);
+  }
+  async upsertCashClose(close: Omit<CashClose, "id">): Promise<CashClose> {
+    const rows = await this.sql<DbRow[]>`
+      insert into cierres_caja (caja_id, periodo, estado, saldo_inicial, total_ingresos, total_gastos, saldo_final, cerrado_por, cerrado_at)
+      values (${close.cashBoxId}, ${`${close.period}-01`}::date, ${close.status}, ${close.openingBalance}, ${close.totalIncome}, ${close.totalExpense}, ${close.closingBalance}, ${close.closedBy ?? null}, ${close.closedAt ?? null})
+      on conflict (caja_id, periodo) do update set
+        estado = excluded.estado, saldo_inicial = excluded.saldo_inicial, total_ingresos = excluded.total_ingresos,
+        total_gastos = excluded.total_gastos, saldo_final = excluded.saldo_final, cerrado_por = excluded.cerrado_por,
+        cerrado_at = excluded.cerrado_at, updated_at = now()
+      returning *`;
+    return cashClose(rows[0]);
+  }
+  // Etiqueta con `closeId` los movimientos (caja_menor e ingresos) de esa caja/periodo — se llama
+  // MIENTRAS el cierre sigue 'abierto' (ver el comentario grande de cierres_caja en la migración): el
+  // trigger validar_periodo_caja_abierto rechazaría esta misma escritura si ya estuviera 'cerrado'.
+  async tagCashMovements(cashBoxId: string, period: string, closeId: string): Promise<void> {
+    const periodDate = `${period}-01`;
+    await this.sql`update caja_menor set cierre_id=${closeId} where caja_id=${cashBoxId} and date_trunc('month', fecha::timestamp)::date=${periodDate}::date`;
+    await this.sql`update ingresos set cierre_id=${closeId} where caja_id=${cashBoxId} and periodo=${periodDate}::date`;
+  }
+  async setCashCloseStatus(id: string, status: CashCloseStatus, actorId?: string): Promise<CashClose> {
+    const rows = status === "cerrado"
+      ? await this.sql<DbRow[]>`update cierres_caja set estado=${status}, cerrado_por=${actorId ?? null}, cerrado_at=now(), updated_at=now() where id=${id} returning *`
+      : await this.sql<DbRow[]>`update cierres_caja set estado=${status}, updated_at=now() where id=${id} returning *`;
+    if (!rows[0]) throw new Error("CASH_CLOSE_NOT_FOUND");
+    return cashClose(rows[0]);
+  }
+  // Vista movimientos_centro_costo (migración 202609120003): el cruce ingresos(+)/gastos(-) por
+  // centro de costo de un mes — reusa la vista en vez de rearmar el union all aquí.
+  async listMovementsByCostCenter(period: string): Promise<CostCenterMovement[]> {
+    const rows = await this.sql<DbRow[]>`select centro_costo_id, periodo, origen, valor from public.movimientos_centro_costo where periodo=${`${period}-01`}::date`;
+    return rows.map((row) => ({ costCenterId: String(row.centro_costo_id), period: (asIsoDate(row.periodo) as string).slice(0, 7), origin: String(row.origen), amount: asNumber(row.valor) }));
   }
   // `auditoria.entidad_id` es de tipo `uuid` y `AuditEvent.entityId` es `string`: nada impide pasarle
   // una etiqueta. Cuando pasa, Postgres lanza 22P02 — pero lo hace DESPUÉS de que la escritura que se
@@ -519,6 +625,7 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     let rows: DbRow[];
     if (kind === "works") { const work = value as Extract<CatalogRecord, { societyId: string }>; rows = await this.sql<DbRow[]>`insert into obras (nombre, sociedad_id, estado, centro_costo_id) values (${work.name}, ${work.societyId}, ${work.active ? "activa" : "cerrada"}, ${work.costCenterId ?? null}) returning *`; }
     else if (kind === "costCenters") { const costCenter = value as CatalogCostCenter; rows = await this.sql<DbRow[]>`insert into centros_costo (nombre, codigo, sociedad_id, activo) values (${costCenter.name}, ${costCenter.code ?? null}, ${costCenter.societyId ?? null}, ${costCenter.active}) returning *`; }
+    else if (kind === "cashBoxes") { const cashBox = value as CatalogCashBox; rows = await this.sql<DbRow[]>`insert into cajas (nombre, tipo, sociedad_id, centro_costo_id, activo) values (${cashBox.name}, ${cashBox.type}, ${cashBox.societyId ?? null}, ${cashBox.costCenterId ?? null}, ${cashBox.active}) returning *`; }
     else if (kind === "tags") { const tag = value as CatalogTag; rows = await this.sql<DbRow[]>`insert into etiquetas (nombre, aprobador_id, activa) values (${tag.name}, ${tag.approverId ?? null}, ${tag.active}) returning *`; }
     else if (kind === "items") { const itemValue = value as Extract<CatalogRecord, { unit: string }>; rows = await this.sql<DbRow[]>`insert into items (nombre, nombre_normalizado, especificacion, unidad_defecto, categoria, estado) values (${itemValue.name}, ${normalizeItemName(itemValue.name)}, ${itemValue.specification ?? null}, ${itemValue.unit}, ${itemValue.category ?? null}, ${itemValue.active ? "activo" : "inactivo"}) returning *`; }
     else if (kind === "societies") { const society = value as CatalogSociety; rows = await this.sql<DbRow[]>`insert into sociedades (nombre, nit, activa) values (${society.name}, ${society.nit ?? null}, ${society.active}) returning *`; }
@@ -550,7 +657,7 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   }
   async get(kind: CatalogKind, id: string): Promise<CatalogRecord | null> {
     if (kind === "users") { const rows = await this.sql<DbRow[]>`select u.*, coalesce(array_agg(ur.rol) filter (where ur.rol is not null), '{}') as roles from usuarios u left join usuario_roles ur on ur.usuario_id = u.id where u.id = ${id} group by u.id`; return rows[0] ? catalogRecord(kind, rows[0]) : null; }
-    const table = kind === "works" ? "obras" : kind === "tags" ? "etiquetas" : kind === "items" ? "items" : kind === "societies" ? "sociedades" : kind === "requesters" ? "solicitantes_autorizados" : kind === "costCenters" ? "centros_costo" : "proveedores";
+    const table = kind === "works" ? "obras" : kind === "tags" ? "etiquetas" : kind === "items" ? "items" : kind === "societies" ? "sociedades" : kind === "requesters" ? "solicitantes_autorizados" : kind === "costCenters" ? "centros_costo" : kind === "cashBoxes" ? "cajas" : "proveedores";
     const rows = await this.sql.unsafe<DbRow[]>(`select * from ${table} where id = $1`, [id]);
     return rows[0] ? catalogRecord(kind, rows[0]) : null;
   }
@@ -567,6 +674,9 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     } else if (kind === "costCenters") {
       const costCenter = value as Partial<CatalogCostCenter>, hasSociety = Object.hasOwn(costCenter, "societyId"), hasCode = Object.hasOwn(costCenter, "code");
       rows = await this.sql<DbRow[]>`update centros_costo set nombre=coalesce(${costCenter.name ?? null}, nombre), codigo=case when ${hasCode} then ${costCenter.code ?? null} else codigo end, sociedad_id=case when ${hasSociety} then ${costCenter.societyId ?? null} else sociedad_id end, activo=coalesce(${costCenter.active ?? null}, activo) where id=${id} returning *`;
+    } else if (kind === "cashBoxes") {
+      const cashBox = value as Partial<CatalogCashBox>, hasSociety = Object.hasOwn(cashBox, "societyId"), hasCostCenter = Object.hasOwn(cashBox, "costCenterId");
+      rows = await this.sql<DbRow[]>`update cajas set nombre=coalesce(${cashBox.name ?? null}, nombre), tipo=coalesce(${cashBox.type ?? null}, tipo), sociedad_id=case when ${hasSociety} then ${cashBox.societyId ?? null} else sociedad_id end, centro_costo_id=case when ${hasCostCenter} then ${cashBox.costCenterId ?? null} else centro_costo_id end, activo=coalesce(${cashBox.active ?? null}, activo) where id=${id} returning *`;
     } else if (kind === "tags") {
       const tag = value as Partial<CatalogTag>, hasApprover = Object.hasOwn(tag, "approverId");
       rows = await this.sql<DbRow[]>`update etiquetas set nombre=coalesce(${tag.name ?? null}, nombre), aprobador_id=case when ${hasApprover} then ${tag.approverId ?? null} else aprobador_id end, activa=coalesce(${tag.active ?? null}, activa) where id=${id} returning *`;
@@ -643,6 +753,13 @@ function transactionRepositories(ports: PostgresPorts): TransactionRepositories 
     expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), deleteByReference: ports.deleteExpenseByReference.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports), dashboardAggregates: ports.dashboardAggregates.bind(ports), listRecentlyUpdated: ports.listExpensesRecentlyUpdated.bind(ports) },
     orderPayments: { save: ports.saveOrderPayment.bind(ports), listByOrder: ports.listOrderPayments.bind(ports) },
     pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) },
+    incomes: { save: ports.saveIncome.bind(ports), list: ports.listIncomes.bind(ports) },
+    cashCloses: {
+      get: ports.getCashClose.bind(ports), listByCashBox: ports.listCashClosesByCashBox.bind(ports),
+      sumMovements: ports.sumCashMovements.bind(ports), previousClosingBalance: ports.previousCashCloseBalance.bind(ports),
+      upsert: ports.upsertCashClose.bind(ports), tagMovements: ports.tagCashMovements.bind(ports),
+      setStatus: ports.setCashCloseStatus.bind(ports), listMovementsByCostCenter: ports.listMovementsByCostCenter.bind(ports),
+    },
     audit: ports, consecutives: ports, features: ports, items: ports, catalogs: ports, notifications: ports,
   };
 }
