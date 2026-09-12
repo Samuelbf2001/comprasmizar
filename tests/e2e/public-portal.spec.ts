@@ -1,16 +1,24 @@
 import { expect, test, type Page } from "@playwright/test";
 
-// Portal público UNIFICADO (2026-09-11). Antes había dos formularios con dos URLs y dos specs
-// (`public-portal.spec.ts` para escritorio y `public-portal-mobile.spec.ts` para móvil). Ahora es
-// una sola pantalla responsive sobre la base móvil, así que también es un solo spec: el recorrido se
-// corre en los DOS proyectos de Playwright —desktop y mobile— que es justamente lo que la
-// unificación tenía que demostrar. Lo único acotado al proyecto móvil es la ergonomía táctil.
+// Portal público GUIADO (11-sep-2026). Ernesto pidió que se pareciera al Flow de WhatsApp que ya le
+// gusta al cliente (`integrations/whatsapp-flow/requisicion-captura.flow.json`): pantallas cortas,
+// una cosa a la vez, un artículo por pantalla con "Agregar otro artículo" / "Ir al resumen", y un
+// RESUMEN antes de enviar. No es una copia del Flow pantalla por pantalla —aquí "Tus datos" tiene su
+// propio momento, distinto del Flow—, pero la idea es la misma: nunca más de una decisión por
+// pantalla.
+//
+// El recorrido, de principio a fin: "¿Qué vas a solicitar?" (tipo + empresa) → "Tus datos" (nombre +
+// teléfono opcional) → un artículo por pantalla → "¿Para cuándo?" (fecha + observaciones) →
+// "Resumen" (todo lo capturado, empresa por NOMBRE, artículos numerados) → "Enviar solicitud".
+//
+// El recorrido se corre en los DOS proyectos de Playwright —desktop y mobile—, que es justamente lo
+// que la unificación anterior tenía que demostrar y este cambio no toca: sigue siendo una sola
+// pantalla responsive. Lo único acotado al proyecto móvil es la ergonomía táctil.
 //
 // El servidor se levanta con NEXT_PUBLIC_DEMO_MODE=true (playwright.config.ts), así que lo que
 // recorre el navegador es la pantalla de demostración. Va a la par del formulario real a propósito
-// —comparten estado, validación y el bloque de ítems—, y por eso estos recorridos sí prueban los
-// cuatro cambios que Ernesto pidió el 11-sep-2026: empresa en vez de obra, teléfono opcional, varios
-// ítems y unidad de texto libre.
+// —comparten el mismo `AsistenteFormulario`, estado y validación—, y por eso estos recorridos
+// prueban el mismo asistente guiado que existe en el portal real.
 
 /**
  * Abre el portal y teclea INMEDIATAMENTE, sin esperar a nada.
@@ -33,22 +41,34 @@ async function pasarCompuerta(page: Page) {
   await page.getByRole("button", { name: "Continuar" }).click();
 }
 
-/**
- * Paso 1: EMPRESA y nombre. El teléfono se deja vacío a propósito — es opcional desde 2026-09-11, y
- * el recorrido normal tiene que pasar sin él.
- */
+/** Pantalla "¿Qué vas a solicitar?": tipo (ya trae "Compra de material" por defecto) y empresa. */
+async function pasarTipoYEmpresa(page: Page, { empresa = "Ictinos" }: { empresa?: string } = {}) {
+  await page.locator('select[name="company"]').selectOption({ label: empresa });
+  await page.getByRole("button", { name: "Continuar", exact: true }).click();
+}
+
+/** Pantalla "Tus datos": nombre y teléfono opcional. El teléfono se deja vacío a propósito — es
+ *  opcional desde 2026-09-11, y el recorrido normal tiene que pasar sin él. */
 async function pasarDatos(page: Page, nombre: string, { telefono = "" }: { telefono?: string } = {}) {
-  await page.locator('select[name="company"]').selectOption({ label: "Ictinos" });
   if (telefono) await page.getByLabel("Tu teléfono").fill(telefono);
   await page.getByLabel("Tu nombre").fill(nombre);
   await page.getByRole("button", { name: "Continuar a material" }).click();
 }
 
-/** Llena el ítem `indice` del paso 2. Los campos llevan el índice desde que se puede pedir varios. */
+/** Llena el artículo `indice`, que ocupa su propia pantalla. */
 async function llenarItem(page: Page, indice: number, descripcion: string, cantidad: string, unidad: string) {
   await page.locator(`[name="description-${indice}"]`).fill(descripcion);
   await page.locator(`[name="quantity-${indice}"]`).fill(cantidad);
   await page.locator(`[name="unit-${indice}"]`).fill(unidad);
+}
+
+/** Del artículo en pantalla hasta el resumen, con un solo artículo. El botón dice "Ir al resumen"
+ *  pero la pantalla que sigue es "¿Para cuándo?" — la última pregunta antes del resumen de verdad. */
+async function irAlResumen(page: Page) {
+  await page.getByRole("button", { name: "Ir al resumen" }).click();
+  await expect(page.getByRole("heading", { name: "¿Para cuándo?" })).toBeVisible();
+  await page.getByRole("button", { name: "Ver resumen" }).click();
+  await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
 }
 
 test.describe("portal público de requisiciones", () => {
@@ -63,21 +83,30 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.getByLabel("Teléfono autorizado")).toHaveCount(0);
 
     await pasarCompuerta(page);
-    await expect(page.getByRole("heading", { name: "¿Para quién y cuándo?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "¿Qué vas a solicitar?" })).toBeVisible();
   });
 
-  test("mantiene el recorrido de dos pasos y deja claro que el éxito es demostrativo", async ({ page }) => {
+  test("recorre las cinco pantallas del asistente y deja claro que el éxito es demostrativo", async ({ page }) => {
     await abrirPortalHidratado(page);
     await pasarCompuerta(page);
 
-    await expect(page.getByRole("heading", { name: "¿Para quién y cuándo?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "¿Qué vas a solicitar?" })).toBeVisible();
     await expect(page.getByRole("list", { name: "Avance de la requisición" })).toBeVisible();
+    await pasarTipoYEmpresa(page);
 
+    await expect(page.getByRole("heading", { name: "Tus datos" })).toBeVisible();
     await pasarDatos(page, "Usuario QA");
-    await expect(page.getByRole("heading", { name: "Describe lo que necesitas." })).toBeVisible();
 
+    await expect(page.getByRole("heading", { name: "Artículo 1" })).toBeVisible();
     await llenarItem(page, 0, "Cemento gris uso general", "20", "bulto");
-    await page.getByRole("button", { name: "Enviar requisición" }).click();
+    await irAlResumen(page);
+
+    // El resumen muestra la empresa por NOMBRE y el artículo numerado con cantidad y unidad.
+    await expect(page.getByText("Ictinos")).toBeVisible();
+    await expect(page.getByText("1. Cemento gris uso general")).toBeVisible();
+    await expect(page.getByText("20 bulto")).toBeVisible();
+
+    await page.getByRole("button", { name: "Enviar solicitud" }).click();
     await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
     await expect(page.getByText("REQ-DEMO-0148")).toBeVisible();
     await expect(page.getByText("Modo demostración")).toBeVisible();
@@ -95,8 +124,7 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.locator('select[name="company"]')).toBeVisible();
     await expect(page.getByText("La obra la asigna quien revisa tu solicitud.")).toBeVisible();
 
-    await page.getByLabel("Tu nombre").fill("Usuario QA");
-    await page.getByRole("button", { name: "Continuar a material" }).click();
+    await page.getByRole("button", { name: "Continuar", exact: true }).click();
     await expect(page.locator("#portal-company-error")).toContainText("Selecciona la empresa.");
   });
 
@@ -106,9 +134,9 @@ test.describe("portal público de requisiciones", () => {
     // aviso se encolaría contra alguien que no existe y nadie se enteraría de que no llegó.
     await abrirPortalHidratado(page);
     await pasarCompuerta(page);
+    await pasarTipoYEmpresa(page);
 
     await expect(page.getByLabel("Tu teléfono")).toBeVisible();
-    await page.locator('select[name="company"]').selectOption({ label: "Ictinos" });
     await page.getByLabel("Tu nombre").fill("Usuario QA");
     await page.getByLabel("Tu teléfono").fill("300");
     await page.getByRole("button", { name: "Continuar a material" }).click();
@@ -117,35 +145,53 @@ test.describe("portal público de requisiciones", () => {
     // Vaciarlo del todo sí deja seguir: eso es lo que significa opcional.
     await page.getByLabel("Tu teléfono").fill("");
     await page.getByRole("button", { name: "Continuar a material" }).click();
-    await expect(page.getByRole("heading", { name: "Describe lo que necesitas." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Artículo 1" })).toBeVisible();
   });
 
-  test("se pueden pedir varios ítems en una sola requisición, y quitar los que sobren", async ({ page }) => {
+  test("se pueden pedir varios artículos, volver atrás sin perderlos y quitar uno desde el resumen", async ({ page }) => {
     // Ernesto: «solo dejas agregar un ítem por form, debe permitir ir agregando más». Quien
     // necesitaba cemento, arena y varilla radicaba tres requisiciones, y el revisor recibía tres
     // pedidos que en la obra eran uno.
     await abrirPortalHidratado(page);
     await pasarCompuerta(page);
+    await pasarTipoYEmpresa(page);
     await pasarDatos(page, "Usuario QA");
 
-    // Con un solo ítem no hay nada que quitar: sin ítems no habría requisición.
-    await expect(page.getByRole("button", { name: "Quitar" })).toHaveCount(0);
-
     await llenarItem(page, 0, "Cemento gris", "20", "bulto");
-    await page.getByRole("button", { name: "Agregar otro ítem" }).click();
+    await page.getByRole("button", { name: "Agregar otro artículo" }).click();
+    await expect(page.getByRole("heading", { name: "Artículo 2" })).toBeVisible();
     await llenarItem(page, 1, "Arena de río", "3", "m³");
-    await page.getByRole("button", { name: "Agregar otro ítem" }).click();
+    await page.getByRole("button", { name: "Agregar otro artículo" }).click();
+    await expect(page.getByRole("heading", { name: "Artículo 3" })).toBeVisible();
     await llenarItem(page, 2, "Varilla 1/2", "40", "und");
-    await expect(page.locator("fieldset legend", { hasText: "Ítem" })).toHaveCount(3);
+
+    // "Atrás" vuelve al artículo anterior, con lo ya escrito intacto — no se pierde por navegar.
+    await page.getByRole("button", { name: "Atrás" }).click();
+    await expect(page.getByRole("heading", { name: "Artículo 2" })).toBeVisible();
+    await expect(page.locator('[name="description-1"]')).toHaveValue("Arena de río");
+
+    await irAlResumen(page);
+    await expect(page.getByText("1. Cemento gris")).toBeVisible();
+    await expect(page.getByText("2. Arena de río")).toBeVisible();
+    await expect(page.getByText("3. Varilla 1/2")).toBeVisible();
 
     await page.getByRole("button", { name: "Quitar" }).nth(1).click();
-    await expect(page.locator("fieldset legend", { hasText: "Ítem" })).toHaveCount(2);
-    // El que ocupa el hueco es el TERCERO, con su contenido intacto: los campos son controlados y el
-    // valor lo pone el estado, no el DOM que dejó el que se fue.
-    await expect(page.locator('[name="description-1"]')).toHaveValue("Varilla 1/2");
+    await expect(page.getByText("Arena de río")).toHaveCount(0);
+    // El que ocupa el número 2 ahora es Varilla, con su contenido intacto.
+    await expect(page.getByText("2. Varilla 1/2")).toBeVisible();
 
-    await page.getByRole("button", { name: "Enviar requisición" }).click();
+    await page.getByRole("button", { name: "Enviar solicitud" }).click();
     await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
+  });
+
+  test("con un solo artículo el resumen no ofrece quitarlo", async ({ page }) => {
+    await abrirPortalHidratado(page);
+    await pasarCompuerta(page);
+    await pasarTipoYEmpresa(page);
+    await pasarDatos(page, "Usuario QA");
+    await llenarItem(page, 0, "Cemento gris", "20", "bulto");
+    await irAlResumen(page);
+    await expect(page.getByRole("button", { name: "Quitar" })).toHaveCount(0);
   });
 
   test("la unidad se escribe libre, con sugerencias que no restringen", async ({ page }) => {
@@ -153,6 +199,7 @@ test.describe("portal público de requisiciones", () => {
     // escribir "cuñete" a quien lo necesite; un `select` habría dejado ese pedido sin unidad.
     await abrirPortalHidratado(page);
     await pasarCompuerta(page);
+    await pasarTipoYEmpresa(page);
     await pasarDatos(page, "Usuario QA");
 
     const unidad = page.locator('[name="unit-0"]');
@@ -161,7 +208,8 @@ test.describe("portal público de requisiciones", () => {
     await llenarItem(page, 0, "Sellante de poliuretano", "2", "cuñete");
     await expect(unidad).toHaveValue("cuñete");
 
-    await page.getByRole("button", { name: "Enviar requisición" }).click();
+    await irAlResumen(page);
+    await page.getByRole("button", { name: "Enviar solicitud" }).click();
     await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
   });
 
@@ -174,13 +222,18 @@ test.describe("portal público de requisiciones", () => {
     expect(overflow).toBeLessThanOrEqual(1);
   });
 
-  test("con tres ítems tampoco desborda: es donde el paso 2 se hace largo", async ({ page }) => {
+  test("con tres artículos, el resumen y el asistente tampoco desbordan", async ({ page }) => {
+    // Es donde el indicador de avance de cinco fases y las tarjetas del resumen se hacen largas.
     await abrirPortalHidratado(page);
     await pasarCompuerta(page);
+    await pasarTipoYEmpresa(page);
     await pasarDatos(page, "Usuario QA");
     await llenarItem(page, 0, "Cemento gris", "20", "bulto");
-    await page.getByRole("button", { name: "Agregar otro ítem" }).click();
-    await page.getByRole("button", { name: "Agregar otro ítem" }).click();
+    await page.getByRole("button", { name: "Agregar otro artículo" }).click();
+    await llenarItem(page, 1, "Arena de río", "3", "m³");
+    await page.getByRole("button", { name: "Agregar otro artículo" }).click();
+    await llenarItem(page, 2, "Varilla 1/2", "40", "und");
+    await irAlResumen(page);
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
@@ -210,22 +263,25 @@ test.describe("portal público de requisiciones", () => {
     expect(focusStyle).not.toBe("none");
 
     await pasarCompuerta(page);
-    for (const locator of [page.getByLabel("Empresa"), page.getByLabel("Fecha requerida"), page.getByLabel("Tu teléfono"), page.getByLabel("Tu nombre"), page.getByRole("button", { name: "Continuar a material" })]) {
+    for (const locator of [page.getByLabel("Empresa"), page.getByRole("button", { name: "Continuar", exact: true })]) {
       await expectTouchTarget(locator);
     }
+    await pasarTipoYEmpresa(page);
 
+    for (const locator of [page.getByLabel("Tu teléfono"), page.getByLabel("Tu nombre"), page.getByRole("button", { name: "Continuar a material" })]) {
+      await expectTouchTarget(locator);
+    }
     await pasarDatos(page, "Usuario QA móvil");
-    // "Agregar otro ítem" entra en la lista: es un control nuevo y de los que más se pulsan en el
-    // móvil, que es donde se radica de verdad.
-    for (const locator of [page.locator('[name="description-0"]'), page.locator('[name="quantity-0"]'), page.locator('[name="unit-0"]'), page.getByRole("button", { name: "Agregar detalles" }), page.getByRole("button", { name: "Agregar otro ítem" }), page.getByRole("button", { name: "Enviar requisición" })]) {
+
+    // "Agregar otro artículo" entra en la lista: es un control nuevo y de los que más se pulsan en
+    // el móvil, que es donde se radica de verdad.
+    for (const locator of [page.locator('[name="description-0"]'), page.locator('[name="quantity-0"]'), page.locator('[name="unit-0"]'), page.getByRole("button", { name: "Agregar detalles" }), page.getByRole("button", { name: "Agregar otro artículo" }), page.getByRole("button", { name: "Ir al resumen" })]) {
       await expectTouchTarget(locator);
     }
 
-    // Y con dos ítems, el botón de quitar también tiene que ser pulsable con el pulgar.
-    await page.getByRole("button", { name: "Agregar otro ítem" }).click();
-    const quitar = await page.getByRole("button", { name: "Quitar" }).first().boundingBox();
-    expect(quitar).not.toBeNull();
-    expect(quitar!.height).toBeGreaterThanOrEqual(32);
+    // Y con dos artículos, el botón de "Atrás" también tiene que ser pulsable con el pulgar.
+    await page.getByRole("button", { name: "Agregar otro artículo" }).click();
+    await expectTouchTarget(page.getByRole("button", { name: "Atrás" }));
   });
 
   test("recargar con el enlace abierto NO rompe el acceso", async ({ page }) => {
