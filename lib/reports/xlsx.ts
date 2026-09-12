@@ -31,43 +31,48 @@ const namesJoined = (map: ReadonlyMap<string, string>, ids: readonly string[]): 
 
 /**
  * RF-1301 (Reportes, reunión 2026-09-11): Excel del reporte de requisiciones — filtros por obra, periodo,
- * aprobador y etiqueta (lib/services/report-service.ts). Hoja 1 = una fila por requisición con las
- * columnas que pidió el cliente; hoja 2 = sus ítems. `grouped` (compilado mensual, RF-1301 punto 3):
- * cuando el filtro trae un mes, las filas se agrupan por obra/centro de costo con un subtotal por obra —
- * Daniel: "el compilado debe ir por obra/centro de costo". Sin `grouped`, filas planas + un total general
- * (un export ad-hoc sin mes no tiene un "periodo" que compilar).
+ * aprobador, etiqueta y centro de costo (lib/services/report-service.ts). Hoja 1 = una fila por
+ * requisición con las columnas que pidió el cliente; hoja 2 = sus ítems. `grouped` (compilado mensual,
+ * RF-1301 punto 3): cuando el filtro trae un mes, las filas se agrupan por CENTRO DE COSTO (con la obra
+ * como columna propia dentro de cada fila) con un subtotal por centro — Daniel: "el compilado debe ir
+ * por obra/centro de costo", y desde que el centro de costo es una entidad propia (2026-09-12, ver
+ * `resolveCostCenter` en lib/domain/rules.ts) es el eje correcto para agrupar: varias obras pueden
+ * compartir un mismo centro. Sin `grouped`, filas planas + un total general (un export ad-hoc sin mes no
+ * tiene un "periodo" que compilar).
  */
 export async function buildRequisitionReportXlsx(rows: readonly ReportRow[], names: ReportCatalogNames, options: { grouped?: boolean } = {}) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Plataforma Mizar";
   const summary = workbook.addWorksheet("Reporte");
-  const headers = ["Consecutivo", "Fecha", "Empresa", "Obra", "Etiqueta", "Aprobador(es)", "Estado", "Proveedor(es)", "Base COP", "IVA COP", "Total COP"];
+  const headers = ["Consecutivo", "Fecha", "Empresa", "Obra", "Centro de costo", "Etiqueta", "Aprobador(es)", "Estado", "Proveedor(es)", "Base COP", "IVA COP", "Total COP"];
   summary.addRow(headers);
   summary.getRow(1).font = { bold: true };
   const writeRow = (row: ReportRow) =>
     summary.addRow([
       row.consecutive, row.date ? row.date.slice(0, 10) : "", nameOf(names.societies, row.societyId), nameOf(names.works, row.workId),
-      nameOf(names.tags, row.tagId), namesJoined(names.users, row.approverIds), row.status, namesJoined(names.suppliers, row.supplierIds),
-      row.base, row.iva, row.total,
+      nameOf(names.costCenters, row.costCenterId), nameOf(names.tags, row.tagId), namesJoined(names.users, row.approverIds), row.status,
+      namesJoined(names.suppliers, row.supplierIds), row.base, row.iva, row.total,
     ]);
   const grandTotal = { base: 0, iva: 0, total: 0 };
   for (const row of rows) { grandTotal.base += row.base; grandTotal.iva += row.iva; grandTotal.total += row.total; }
   if (options.grouped) {
-    // Agrupado por obra (centro de costo ≈ obra, ver ReportFilters en report-service.ts), obras sin
-    // nombre resuelto van al final ("—" ordena después de cualquier nombre real en es-CO).
-    const byWork = new Map<string, ReportRow[]>();
-    for (const row of rows) { const key = row.workId ?? ""; (byWork.get(key) ?? byWork.set(key, []).get(key)!).push(row); }
-    const groups = [...byWork.entries()].sort((a, b) => nameOf(names.works, a[0]).localeCompare(nameOf(names.works, b[0]), "es"));
-    for (const [workId, groupRows] of groups) {
+    // Agrupado por CENTRO DE COSTO (2026-09-12: ya es una entidad propia, no "centro ≈ obra" como
+    // antes de esa fecha) — la obra queda como columna propia dentro de cada fila (arriba), así que su
+    // desglose sigue siendo legible sin necesitar un subnivel aparte. Sin nombre resuelto va al final
+    // ("—" ordena después de cualquier nombre real en es-CO).
+    const byCostCenter = new Map<string, ReportRow[]>();
+    for (const row of rows) { const key = row.costCenterId ?? ""; (byCostCenter.get(key) ?? byCostCenter.set(key, []).get(key)!).push(row); }
+    const groups = [...byCostCenter.entries()].sort((a, b) => nameOf(names.costCenters, a[0]).localeCompare(nameOf(names.costCenters, b[0]), "es"));
+    for (const [costCenterId, groupRows] of groups) {
       for (const row of groupRows) writeRow(row);
       const subtotal = groupRows.reduce((sum, row) => ({ base: sum.base + row.base, iva: sum.iva + row.iva, total: sum.total + row.total }), { base: 0, iva: 0, total: 0 });
-      const subtotalRow = summary.addRow(["", "", "", `Subtotal ${nameOf(names.works, workId)}`, "", "", "", "", subtotal.base, subtotal.iva, subtotal.total]);
+      const subtotalRow = summary.addRow(["", "", "", "", `Subtotal ${nameOf(names.costCenters, costCenterId)}`, "", "", "", "", subtotal.base, subtotal.iva, subtotal.total]);
       subtotalRow.font = { bold: true };
     }
   } else {
     for (const row of rows) writeRow(row);
   }
-  const totalRow = summary.addRow(["", "", "", "", "", "", "", "TOTAL GENERAL", grandTotal.base, grandTotal.iva, grandTotal.total]);
+  const totalRow = summary.addRow(["", "", "", "", "", "", "", "", "TOTAL GENERAL", grandTotal.base, grandTotal.iva, grandTotal.total]);
   totalRow.font = { bold: true };
   summary.columns.forEach((column) => { column.width = 20; });
 

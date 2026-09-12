@@ -315,6 +315,10 @@ function amountByKey(rows: Iterable<readonly [string, Money]>): DashboardAmountB
 export function groupExpenseByWork(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.filter((expense) => expense.date !== undefined).map((expense) => [expense.workId, expense.total] as const)); }
 /** RF-706/RF-1103: gasto agrupado por etiqueta; clave "" representa gastos sin etiqueta asignada. Solo gastos pagados (con `date`); ver nota GRAVE 3 arriba. */
 export function groupExpenseByTag(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.filter((expense) => expense.date !== undefined).map((expense) => [expense.tagId ?? "", expense.total] as const)); }
+/** Centros de costo (UI, reunión 2026-09-12): gasto agrupado por centro de costo, mismo criterio que
+ *  `groupExpenseByWork`/`groupExpenseByTag` (solo gastos pagados, con `date`; ver nota GRAVE 3 arriba).
+ *  Clave "" representa gastos sin centro de costo asignado. */
+export function groupExpenseByCostCenter(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.filter((expense) => expense.date !== undefined).map((expense) => [expense.costCenterId ?? "", expense.total] as const)); }
 /**
  * RF-706/RF-1103: tendencia de gasto por periodo (YYYY-MM), cronológica, limitada a los últimos
  * `monthsBack`. Excluye los gastos sin `period` (orden generada, aún sin pagar): no inventa un bucket

@@ -39,7 +39,11 @@ export type NamedOption = { id: string; name: string };
 // Reunión 2026-08-31: `works` trae `societyId` desde /api/catalogs (sociedad_id as "societyId") para que
 // la revisión pueda filtrar obras por la empresa de la requisición.
 export type CatalogData = {
-  works: Array<NamedOption & { societyId?: string }>;
+  // Centros de costo (UI, 2026-09-12): `costCenterId` es el DEFAULT de esta obra (columna
+  // `obras.centro_costo_id`, ver `CatalogWork` en lib/services/contracts.ts) — la revisión lo usa para
+  // precargar el selector "Centro de costo" al elegir obra (ver detail.tsx). Opcional: una obra puede
+  // no tener centro configurado.
+  works: Array<NamedOption & { societyId?: string; costCenterId?: string }>;
   // Reunión 2026-09: approverId por etiqueta es SOLO la sugerencia por defecto (prerellena el select de
   // aprobador al elegir etiqueta en la revisión); el aprobador real de la requisición ya no se deriva de
   // aquí — lo elige el revisor (ver `approvers`, abajo).
@@ -54,6 +58,9 @@ export type CatalogData = {
   // solicitante interno y el actor de cada línea del historial, que solo traen el UUID — ver
   // resolveUserName más abajo. Nunca trae correo ni teléfono.
   users?: NamedOption[];
+  // Centros de costo (UI, 2026-09-12): catálogo de centros activos (GET /api/catalogs), para el
+  // selector de la revisión, la columna de reportes/órdenes y el filtro de reportes.
+  costCenters?: NamedOption[];
 };
 // HUECO 2: nunca se debe llegar a mostrar el UUID crudo; si el id no aparece en `catalogs.users`
 // (usuario borrado del bootstrap, dato ausente, etc.) se conserva el fallback genérico ya existente.
@@ -98,6 +105,10 @@ export type RequisitionRow = {
   observations?: string;
   tagId?: string;
   approverId?: string;
+  // Centros de costo (UI, 2026-09-12): centro de costo EFECTIVO de la requisición (ver
+  // `Requisition.costCenterId`/`resolveCostCenter` en lib/domain/rules.ts) — semántica de tres estados
+  // igual que approverId: ausente = hereda el de la obra, "" = desasignar, un id = fijado.
+  costCenterId?: string;
   paymentTerms?: string;
   status: string;
   returnReason?: string;
@@ -143,6 +154,10 @@ export type OrderRow = {
   // lib/domain/model.ts). Ausente en los mismos caminos donde requisitionConsecutive/lines también
   // lo están; orders.tsx lo trata como 0 al mostrar la columna "Pagado / Total".
   paidAmount?: number;
+  // Centros de costo (UI, 2026-09-12): centro de costo EFECTIVO de la requisición dueña, resuelto por
+  // el servidor en el MISMO join que ya trae requisitionConsecutive/workId (ver Order.costCenterId en
+  // lib/domain/model.ts). Ausente en los mismos caminos donde esos dos también lo están.
+  costCenterId?: string;
 };
 // Reunión agosto 2026: un pago parcial de una orden — mismo shape que OrderPayment en
 // lib/domain/model.ts, tal como lo sirve GET /api/orders/:id/payments.
@@ -255,6 +270,9 @@ export type ReportRow = {
   societyId?: string;
   workId?: string;
   tagId?: string;
+  // Centros de costo (UI, 2026-09-12): centro de costo EFECTIVO de la requisición — ver ReportRow en
+  // lib/services/report-service.ts.
+  costCenterId?: string;
   approverIds: string[];
   status: string;
   supplierIds: string[];
@@ -296,6 +314,8 @@ export type DashboardMetricsPayload = {
   expenseByWork?: DashboardAmountByKey[];
   expenseByTag?: DashboardAmountByKey[];
   expenseByPeriod?: DashboardAmountByKey[];
+  // Centros de costo (UI, 2026-09-12): ver DashboardMetrics.expenseByCostCenter en lib/domain/model.ts.
+  expenseByCostCenter?: DashboardAmountByKey[];
 };
 export type DashboardBundle = { metrics: DashboardMetricsPayload; catalogs: CatalogData };
 
@@ -494,34 +514,56 @@ export function groupExpensesByWorkAndTag(
     .sort((a, b) => a.workName.localeCompare(b.workName, "es"));
 }
 
-// RF-1301 (Reportes, "compilado mensual"): subtotal por obra/centro de costo — Daniel: "el compilado
-// debe ir por obra/centro de costo". Mismo criterio que `groupExpensesByWorkAndTag` (id sin nombre en
-// catálogos -> "—", nunca el UUID crudo en pantalla), pero sobre `ReportRow` en vez de `ExpenseRow`.
-export type ReportWorkGroup = { workId: string; workName: string; subtotal: number; rows: ReportRow[] };
-export function groupReportRowsByWork(
+// RF-1301 (Reportes, "compilado mensual") + centros de costo (UI, 2026-09-12): Daniel pidió "el
+// compilado debe ir por obra/centro de costo", y desde que el centro de costo es una entidad propia
+// (ya no "centro ≈ obra") es el eje correcto para agrupar — varias obras pueden compartir un mismo
+// centro. `works` es el desglose por obra DENTRO de cada centro (subnivel), mismo criterio de nombre
+// que `groupExpensesByWorkAndTag` (id sin nombre en catálogos -> "—", nunca el UUID crudo en pantalla).
+export type ReportWorkBreakdown = { workId: string; workName: string; subtotal: number; rows: ReportRow[] };
+export type ReportCostCenterGroup = { costCenterId: string; costCenterName: string; subtotal: number; works: ReportWorkBreakdown[]; rows: ReportRow[] };
+export function groupReportRowsByCostCenter(
   rows: ReportRow[],
   catalogs: CatalogData,
-): ReportWorkGroup[] {
+): ReportCostCenterGroup[] {
+  const costCenterName = (id: string) =>
+    (catalogs.costCenters ?? []).find((costCenter) => costCenter.id === id)?.name ?? "—";
   const workName = (id: string) =>
     catalogs.works.find((work) => work.id === id)?.name ?? "—";
   const order: string[] = [];
-  const byWork = new Map<string, ReportRow[]>();
+  const byCostCenter = new Map<string, ReportRow[]>();
   for (const row of rows) {
-    const key = row.workId ?? "";
-    if (!byWork.has(key)) { byWork.set(key, []); order.push(key); }
-    byWork.get(key)!.push(row);
+    const key = row.costCenterId ?? "";
+    if (!byCostCenter.has(key)) { byCostCenter.set(key, []); order.push(key); }
+    byCostCenter.get(key)!.push(row);
   }
+  const groupByWork = (groupRows: ReportRow[]): ReportWorkBreakdown[] => {
+    const workOrder: string[] = [];
+    const byWork = new Map<string, ReportRow[]>();
+    for (const row of groupRows) {
+      const key = row.workId ?? "";
+      if (!byWork.has(key)) { byWork.set(key, []); workOrder.push(key); }
+      byWork.get(key)!.push(row);
+    }
+    return workOrder
+      .map((workId) => {
+        const workRows = byWork.get(workId) as ReportRow[];
+        return { workId, workName: workId ? workName(workId) : "Sin obra", subtotal: workRows.reduce((sum, row) => sum + row.total, 0), rows: workRows };
+      })
+      .sort((a, b) => a.workName.localeCompare(b.workName, "es"));
+  };
   return order
-    .map((workId) => {
-      const groupRows = byWork.get(workId) as ReportRow[];
+    .map((costCenterId) => {
+      const groupRows = byCostCenter.get(costCenterId) as ReportRow[];
       return {
-        workId,
-        workName: workId ? workName(workId) : "Sin obra",
+        costCenterId,
+        costCenterName: costCenterId ? costCenterName(costCenterId) : "Sin centro de costo",
         subtotal: groupRows.reduce((sum, row) => sum + row.total, 0),
+        works: groupByWork(groupRows),
         rows: groupRows,
       };
     })
-    .sort((a, b) => a.workName.localeCompare(b.workName, "es"));
+    // "Sin centro de costo" siempre al final, sin importar dónde caiga alfabéticamente su nombre.
+    .sort((a, b) => (!a.costCenterId ? 1 : !b.costCenterId ? -1 : a.costCenterName.localeCompare(b.costCenterName, "es")));
 }
 
 // DD/MM/AAAA, el formato que usa Mizar. El sufijo T00:00:00 fuerza interpretacion

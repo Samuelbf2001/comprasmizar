@@ -60,13 +60,17 @@ export interface OrderRepository {
  * sola fila de `gastos` a memoria. `listRecentlyUpdated` ordena por `coalesce(fecha, fecha_orden)
  * desc` (mismo fallback que `buildRecentActivity`: un compromiso sin pagar usa su fecha de nacimiento),
  * para las 8 más recientes de la actividad reciente.
+ *
+ * Centros de costo (UI, reunión 2026-09-12): `expenseByCostCenter` suma `groupExpenseByCostCenter`
+ * (lib/domain/rules.ts) al mismo agregado, mismo criterio "gasto = pagado" y misma visibilidad por
+ * actor que sus hermanos — clave "" representa gastos sin centro de costo asignado.
  */
 export interface ExpenseRepository {
   get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string): Promise<number>;
   deleteByReference(origin: Expense["origin"], referenceId: string): Promise<void>; saveShares(shares: ExpenseShare[]): Promise<void>; list(): Promise<Expense[]>;
   listVisibleTo(actor: Actor, query?: ListQuery): Promise<Expense[] | Page<Expense>>;
   listByReference(referenceId: string): Promise<Expense[]>;
-  dashboardAggregates(actor: Actor, period: string): Promise<{ periodExpense: number; inProcessValue: number; expenseByWork: DashboardAmountByKey[]; expenseByTag: DashboardAmountByKey[]; expenseByPeriod: DashboardAmountByKey[] }>;
+  dashboardAggregates(actor: Actor, period: string): Promise<{ periodExpense: number; inProcessValue: number; expenseByWork: DashboardAmountByKey[]; expenseByTag: DashboardAmountByKey[]; expenseByPeriod: DashboardAmountByKey[]; expenseByCostCenter: DashboardAmountByKey[] }>;
   listRecentlyUpdated(actor: Actor, limit: number): Promise<Expense[]>;
 }
 /**

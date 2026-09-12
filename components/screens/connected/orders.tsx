@@ -88,6 +88,9 @@ export function ConnectedOrders({
   // borrado o desincronizado); "Por definir" sigue siendo el caso honesto de "aún sin proveedor".
   const supplierName = (id?: string) => (id ? (catalogs.suppliers.find((s) => s.id === id)?.name ?? "—") : "Por definir");
   const workName = (id?: string) => (id ? (catalogs.works.find((w) => w.id === id)?.name ?? "—") : "—");
+  // Centros de costo (2026-09-12): centro EFECTIVO de la requisición dueña de la orden (ver
+  // Order.costCenterId en lib/domain/model.ts) — "—" cuando no hay uno asignado, nunca el UUID crudo.
+  const costCenterName = (id?: string) => (id ? ((catalogs.costCenters ?? []).find((c) => c.id === id)?.name ?? "—") : "—");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [workFilter, setWorkFilter] = useState(""),
     [statusFilter, setStatusFilter] = useState(""),
@@ -403,6 +406,7 @@ export function ConnectedOrders({
                   <th>Orden</th>
                   <th>Tipo</th>
                   <th>Obra</th>
+                  <th>Centro de costo</th>
                   <th>Requisición</th>
                   {/* Revisión (corrección tras QA): fecha REQUERIDA de la requisición de origen
                       (row.requiredDate, ya resuelta por el servidor) — etiqueta original restaurada. */}
@@ -451,8 +455,15 @@ export function ConnectedOrders({
                       <td>
                         <b>{row.consecutive}</b>
                       </td>
-                      <td>{row.type}</td>
+                      <td>
+                        {/* Pendiente que dejó otro agente: "OC"/"OP" crudo no se leía como
+                            Compra/Pago — mismo lenguaje visual de chip que el resto de la tabla. */}
+                        <Tone tone={row.type === "OP" ? "blue" : "muted"}>
+                          {row.type === "OP" ? "Pago" : "Compra"}
+                        </Tone>
+                      </td>
                       <td>{workName(row.workId)}</td>
+                      <td>{costCenterName(row.costCenterId)}</td>
                       <td>{row.requisitionConsecutive ?? "—"}</td>
                       <td>{row.requiredDate ? formatIsoDate(row.requiredDate) : "—"}</td>
                       <td>{supplierName(row.supplierId)}</td>
@@ -550,6 +561,7 @@ export function ConnectedOrders({
                   {/* H2/H3: obra directo de la orden (ya viaja en `OrderRow`) — no depende de que
                       termine de cargar la requisición vinculada. */}
                   <div><span>Obra</span><b>{workName(order.workId)}</b></div>
+                  <div><span>Centro de costo</span><b>{costCenterName(order.costCenterId)}</b></div>
                   <div><span>Proveedor</span><b>{supplierName(order.supplierId)}</b></div>
                   {/* Revisión (corrección tras QA): `order.requiredDate` viaja directo en la orden
                       (mismo join que resuelve requisitionConsecutive/workId) — ya no depende de cargar

@@ -74,6 +74,22 @@ describe("ReportService.listReport — RF-1301", () => {
     expect((await promise).map((row) => row.id)).toEqual(["req-etiqueta-a"]);
   });
 
+  // Centros de costo (UI, 2026-09-12): mismo contrato que workId/tagId/approverId — el filtro se le pasa
+  // tal cual a listVisibleTo (el fake de este archivo no filtra por costCenterId, pero verifica que
+  // ReportService.listReport lo propague sin transformarlo).
+  it("propaga costCenterId al filtro de listVisibleTo", async () => {
+    const { promise, calls } = listReport([requisition()], { costCenterId: "cc-1" });
+    await promise;
+    expect(calls[0]?.query).toMatchObject({ costCenterId: "cc-1" });
+  });
+
+  it("toReportRow expone el costCenterId EFECTIVO de la requisición", async () => {
+    const rows = [requisition({ costCenterId: "cc-1" }), requisition({ id: "req-sin-centro" })];
+    const report = await listReport(rows, {}).promise;
+    expect(report.find((row) => row.id === "req-1")?.costCenterId).toBe("cc-1");
+    expect(report.find((row) => row.id === "req-sin-centro")?.costCenterId).toBeUndefined();
+  });
+
   it("mantiene obra y periodo (mes completo)", async () => {
     const rows = [
       requisition({ id: "req-agosto", workId: "obra-1", createdAt: "2026-08-15T00:00:00.000Z" }),

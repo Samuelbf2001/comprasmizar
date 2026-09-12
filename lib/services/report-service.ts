@@ -4,15 +4,17 @@ import type { Page } from "./list-query";
 
 /**
  * RF-1301 (Reportes, reunión 2026-09-11): filtros del reporte de requisiciones. `workId`/`period` ya
- * existían en la pantalla (obra y periodo); `approverId`/`tagId` son los que pidió el cliente. El diseño
- * queda abierto para sumar "centro de costo" más adelante (hoy centro de costo ≈ obra, ver reunión): el
- * día que exista esa entidad, basta con agregar `costCenterId` aquí y su fragmento en el repositorio —
- * `workId` no necesita cambiar de nombre ni de significado.
+ * existían en la pantalla (obra y periodo); `approverId`/`tagId` son los que pidió el cliente.
+ * `costCenterId` (UI, 2026-09-12, ya con la entidad propia — ver `resolveCostCenter` en
+ * lib/domain/rules.ts) filtra por el centro de costo EFECTIVO de la requisición
+ * (`requisiciones.centro_costo_id`), independiente de `workId`: una requisición puede compartir centro
+ * con otras obras.
  */
 export interface ReportFilters {
   workId?: string;
   tagId?: string;
   approverId?: string;
+  costCenterId?: string;
   /** "YYYY-MM": se resuelve a un rango de fecha que cubre el mes completo (RF-1301, "compilado mensual"),
    *  sobre la misma columna (`requisiciones.created_at`) que ya usa el filtro de periodo de /revision. */
   period?: string;
@@ -49,6 +51,9 @@ export interface ReportRow {
   societyId?: string;
   workId?: string;
   tagId?: string;
+  /** Centro de costo EFECTIVO de la requisición (UI, 2026-09-12) — ver `Requisition.costCenterId`/
+   *  `resolveCostCenter` en lib/domain/rules.ts. */
+  costCenterId?: string;
   approverIds: string[];
   status: string;
   supplierIds: string[];
@@ -100,6 +105,7 @@ function toReportRow(requisition: Requisition): ReportRow {
   return {
     id: requisition.id, consecutive: requisition.consecutive, date: requisition.createdAt,
     societyId: requisition.societyId, workId: requisition.workId, tagId: requisition.tagId,
+    costCenterId: requisition.costCenterId,
     approverIds: approverIdsFor(requisition), status: requisition.status, supplierIds: supplierIdsFor(requisition),
     base: amounts.base, iva: amounts.iva, total: amounts.total, items,
   };
@@ -113,7 +119,7 @@ function toReportRow(requisition: Requisition): ReportRow {
  * `buildRequisitionReportXlsx` sin Postgres real; la implementación de producción vive en
  * lib/infrastructure/postgres-repositories.ts (`postgresReportCatalogSource`).
  */
-export interface ReportCatalogNames { works: ReadonlyMap<string, string>; tags: ReadonlyMap<string, string>; societies: ReadonlyMap<string, string>; users: ReadonlyMap<string, string>; suppliers: ReadonlyMap<string, string>; }
+export interface ReportCatalogNames { works: ReadonlyMap<string, string>; tags: ReadonlyMap<string, string>; societies: ReadonlyMap<string, string>; users: ReadonlyMap<string, string>; suppliers: ReadonlyMap<string, string>; costCenters: ReadonlyMap<string, string>; }
 export interface ReportCatalogSource { load(): Promise<ReportCatalogNames>; }
 
 export class ReportService {
@@ -135,7 +141,7 @@ export class ReportService {
     let cursor: string | undefined;
     for (let page = 0; page < REPORT_MAX_PAGES; page++) {
       const result = await this.deps.requisitions.listVisibleTo(actor, {
-        workId: filters.workId, tagId: filters.tagId, approverId: filters.approverId,
+        workId: filters.workId, tagId: filters.tagId, approverId: filters.approverId, costCenterId: filters.costCenterId,
         status: filters.status ? [...filters.status] : undefined,
         from: range?.from, to: range?.to, limit: REPORT_PAGE_LIMIT, cursor,
       });

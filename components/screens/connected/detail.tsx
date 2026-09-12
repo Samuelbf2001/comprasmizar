@@ -215,6 +215,11 @@ export function ConnectedRequisitionDetail({
     // Reunión 2026-08-31: la obra la asigna el revisor (filtrada por la empresa de la
     // requisición) y la forma de pago se captura aquí también.
     [workId, setWorkId] = useState(requisition.workId ?? ""),
+    // Centros de costo (reunión 2026-09-12, dueño del producto): "en la requisición sale
+    // PREDETERMINADO el centro asociado a la obra y se puede cambiar" — se precarga al elegir obra
+    // (ver el onChange de "Obra", abajo) SOLO si el revisor aún no había elegido uno, el mismo
+    // criterio de "sugerencia, no imposición" que ya usa etiqueta -> aprobador.
+    [costCenterId, setCostCenterId] = useState(requisition.costCenterId ?? ""),
     [paymentTerms, setPaymentTerms] = useState(requisition.paymentTerms ?? "ANTICIPADO"),
     // Cabecera: fecha requerida/observaciones ya NO tienen toggle "Editar cabecera" — son campos
     // inline que se autoguardan (ver `headerAutosave`, abajo). El motivo del cambio es el mismo de
@@ -369,6 +374,9 @@ export function ConnectedRequisitionDetail({
     tagId,
     ...(approverId ? { approverId } : {}),
     ...(workId ? { workId } : {}),
+    // Centros de costo: igual que workId/approverId arriba, "" omite la clave (el servidor hereda el
+    // de la obra vía resolveCostCenter, lib/domain/rules.ts) en vez de mandar un vacío explícito.
+    ...(costCenterId ? { costCenterId } : {}),
     ...(paymentTerms.trim() ? { paymentTerms: paymentTerms.trim() } : {}),
     items: lines.map(({ id, itemId, description, quantity, unit, possibleSupplier, productLink, finalSupplierId, unitBase, status, declineReason, ivaRate, discountRate, approverId }) => ({
       id,
@@ -564,7 +572,7 @@ export function ConnectedRequisitionDetail({
     // Deliberado: NO se listan `reviewAutosave`/`reviewBody` (objetos/funciones nuevas cada
     // render) — solo los valores de formulario cuyo cambio debe programar un guardado.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tagId, approverId, workId, paymentTerms, JSON.stringify(lines)]);
+  }, [tagId, approverId, workId, costCenterId, paymentTerms, JSON.stringify(lines)]);
 
   const decisionsGuard = decisionsGuardMessage();
   const decisionsAutosave = useAutosave({
@@ -829,7 +837,9 @@ export function ConnectedRequisitionDetail({
         <section className="panel">
           <div className="panel-head">
             <div>
-              <h2>Ítems y cotización</h2>
+              {/* Pendiente que dejó otro agente: en una requisición tipo "pago" no hay ítems de
+                  catálogo, hay UN concepto de pago — "Ítems" ahí confundía al revisor. */}
+              <h2>{requisition.type === "pago" ? "Concepto" : "Ítems"} y cotización</h2>
               <p className="panel-sub">
                 Obra{" "}
                 {requisition.workId
@@ -901,8 +911,8 @@ export function ConnectedRequisitionDetail({
                 </select>
               </label>
               <label className="field">
-                {/* Reunión 2026-08-31: la obra (centro de costo) la asigna el revisor, filtrada
-                    por la empresa de la requisición; obligatoria para enviar a aprobación.
+                {/* Reunión 2026-08-31: la obra la asigna el revisor, filtrada por la empresa de la
+                    requisición; obligatoria para enviar a aprobación.
                     GRAVE 3: si la empresa no tiene obras, `workOptions` queda vacío y antes el
                     <select> se veía con una sola opción fantasma ("Selecciona una obra") sin
                     explicar por qué el flujo estaba atascado — un callejón sin salida absoluto. */}
@@ -915,8 +925,17 @@ export function ConnectedRequisitionDetail({
                   aria-invalid={missingField === "work"}
                   aria-describedby={workOptions.length === 0 ? "work-empty-reason" : undefined}
                   onChange={(event) => {
-                    setWorkId(event.target.value);
+                    const nextWorkId = event.target.value;
+                    setWorkId(nextWorkId);
                     if (missingField === "work") setMissingField(null);
+                    // Reunión 2026-09-12 (dueño del producto): "sale PREDETERMINADO el centro
+                    // asociado a la obra" — precarga SOLO si el revisor aún no había elegido uno
+                    // (mismo criterio que etiqueta -> aprobador, arriba: nunca pisa una elección
+                    // ya hecha), y solo cuando la obra elegida sí tiene un centro por defecto.
+                    if (!costCenterId) {
+                      const suggested = catalogs.works.find((work) => work.id === nextWorkId)?.costCenterId;
+                      if (suggested) setCostCenterId(suggested);
+                    }
                   }}
                 >
                   <option value="">
@@ -934,6 +953,24 @@ export function ConnectedRequisitionDetail({
                     al menos una antes de poder enviar la requisición a aprobación.
                   </small>
                 )}
+              </label>
+              <label className="field">
+                {/* Reunión 2026-09-12: centro de costo EDITABLE — la precarga de arriba (al elegir
+                    obra) es solo una sugerencia por defecto, nunca una imposición. */}
+                <span>Centro de costo</span>
+                <select
+                  value={costCenterId}
+                  onChange={(event) => setCostCenterId(event.target.value)}
+                >
+                  <option value="">
+                    {(catalogs.costCenters ?? []).length === 0 ? "Sin centros de costo registrados" : "Selecciona un centro de costo"}
+                  </option>
+                  {(catalogs.costCenters ?? []).map((costCenter) => (
+                    <option key={costCenter.id} value={costCenter.id}>
+                      {costCenter.name}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="field">
                 <span>Forma de pago</span>
@@ -1425,6 +1462,16 @@ export function ConnectedRequisitionDetail({
                 <dt>Aprobador</dt>
                 <dd data-testid="requisition-approver">
                   {resolveUserName(catalogs, requisition.approverId, "Sin aprobador asignado")}
+                </dd>
+              </div>
+              <div>
+                {/* Reunión 2026-09-12: cabecera de solo lectura — el <select> editable vive arriba,
+                    junto a Obra, solo mientras la requisición admite cambios (headerEditable). */}
+                <dt>Centro de costo</dt>
+                <dd data-testid="requisition-cost-center">
+                  {requisition.costCenterId
+                    ? (catalogs.costCenters ?? []).find((costCenter) => costCenter.id === requisition.costCenterId)?.name ?? "—"
+                    : "Sin centro asignado"}
                 </dd>
               </div>
               <div>

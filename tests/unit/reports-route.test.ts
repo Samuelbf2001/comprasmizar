@@ -61,6 +61,17 @@ describe("GET /api/reports — RF-1301", () => {
     });
   });
 
+  // Centros de costo (UI, 2026-09-12): mismo contrato que obra/etiqueta/aprobador de arriba.
+  it("traduce costCenterId a los filtros del servicio", async () => {
+    await GET(requestFor("?costCenterId=00000000-0000-4000-8000-000000000004"));
+    expect(mocks.queries[0]).toMatchObject({ costCenterId: "00000000-0000-4000-8000-000000000004" });
+  });
+
+  it("un uuid inválido en costCenterId se rechaza con 422", async () => {
+    const response = await GET(requestFor("?costCenterId=no-es-un-uuid"));
+    expect(response.status).toBe(422);
+  });
+
   it("un revisor SÍ puede ver el reporte (report:read) aunque no pueda exportarlo", async () => {
     mocks.actor = { id: "actor-1", roles: ["revisor"] };
     const response = await GET(requestFor());

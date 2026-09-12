@@ -13,8 +13,10 @@ import { DomainError } from "../domain";
 export interface ListQuery {
   status?: string[];
   workId?: string;
-  /** Centros de costo (2026-09-12): filtro adicional, solo aplicable a gastos (columna `centro_costo_id`);
-   *  el resto de entidades lo ignora, igual que `status` no aplica a gastos/caja menor. */
+  /** Centros de costo (2026-09-12): filtro adicional sobre la columna `centro_costo_id` — lo consumen
+   *  `listVisibleExpenses` (gastos) y, desde la UI de reportes (2026-09-12), `listVisibleRequisitions`
+   *  (columna propia `requisiciones.centro_costo_id`, el centro EFECTIVO de la requisición); el resto de
+   *  entidades lo ignora, igual que `status` no aplica a gastos/caja menor. */
   costCenterId?: string;
   from?: string;
   to?: string;
