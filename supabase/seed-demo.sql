@@ -35,6 +35,10 @@ declare
   v_et_mat uuid; v_et_serv uuid; v_et_herr uuid; v_et_transp uuid;
   v_cemento uuid; v_arena uuid; v_varilla uuid; v_ladrillo uuid; v_pintura uuid;
   v_cable uuid; v_guantes uuid; v_flete uuid; v_excav uuid; v_alambre uuid;
+  -- Cajas, ingresos y cierres (2026-09-12): "Caja menor" es la caja por defecto que crea el backfill
+  -- de 202609120003_cajas_ingresos_cierres.sql — se reutiliza aquí en vez de crear una propia, para
+  -- no duplicar el catálogo que ya existe en cualquier entorno recién migrado.
+  v_caja_menor uuid; v_caja_admin uuid; v_centro_admin uuid; v_periodo_cerrado date;
   v_req uuid; v_orden uuid;
 begin
   -- Guardia de idempotencia: si ya hay movimiento demo, no se duplica.
@@ -59,6 +63,18 @@ begin
   select id into v_excav    from public.items where nombre_normalizado = 'servicio de excavacion';
   select id into v_alambre    from public.items where nombre_normalizado = 'alambre de amarre';
 
+  select id into v_caja_menor from public.cajas where nombre = 'Caja menor';
+  -- "Caja Administrativa" es demo propia (no la crea ninguna migración): idempotente por nombre único,
+  -- igual que el resto de este archivo se apoya en `on conflict`/reselección en vez de asumir un id fijo.
+  insert into public.cajas (nombre, tipo) values ('Caja Administrativa', 'administrativa') on conflict (nombre) do nothing;
+  select id into v_caja_admin from public.cajas where nombre = 'Caja Administrativa';
+  -- Centro de costo compartido para el ingreso de demo de la caja administrativa: en un entorno recién
+  -- migrado `centros_costo` está VACÍO (el backfill de 202609120001 corre ANTES de que existan las
+  -- obras de este seed, así que no tiene nada que backfillear) — sin este insert, el ingreso de abajo
+  -- violaría `ingresos.centro_costo_id` NOT NULL.
+  insert into public.centros_costo (nombre) values ('Administración') on conflict (nombre) do nothing;
+  select id into v_centro_admin from public.centros_costo where nombre = 'Administración';
+
   -- Guardia de integridad con el seed. Estos ítems y etiquetas los siembra supabase/seed.sql; si
   -- alguien lo reordena o renombra uno, la variable queda en NULL y el INSERT de más abajo revienta
   -- con "requisicion_items_item_check", un error que no dice cuál fue la causa. Comprobarlo aquí
@@ -70,6 +86,9 @@ begin
   if v_cemento is null or v_arena is null or v_varilla is null or v_ladrillo is null or v_pintura is null
      or v_cable is null or v_guantes is null or v_flete is null or v_excav is null or v_alambre is null then
     raise exception 'seed-demo: algún ítem esperado no existe en supabase/seed.sql; revisa los nombres normalizados';
+  end if;
+  if v_caja_menor is null then
+    raise exception 'seed-demo: falta la caja "Caja menor" (backfill de 202609120003_cajas_ingresos_cierres.sql)';
   end if;
 
   -- Lista blanca del Flow de WhatsApp (RF-902): sin esto el canal rechaza toda requisición.
@@ -211,12 +230,27 @@ begin
   values (v_obra1, 'requisicion', v_orden, v_et_mat, v_prov1, current_date - 39, current_date - 35, 6000000, 1140000);
 
   -- ── 11. Caja menor. El trigger sincronizar_gasto_caja_menor crea el gasto solo ──────────────
-  insert into public.caja_menor (obra_id, fecha, concepto, etiqueta_id, proveedor_id, valor, registrado_por) values
-    (v_obra1, current_date - 2, 'Transporte de herramienta menor', v_et_transp, null, 85000, v_contab),
-    (v_obra1, current_date - 6, 'Refrigerios cuadrilla fundida', v_et_serv, null, 140000, v_contab),
-    (v_obra2, current_date - 3, 'Compra urgente de puntillas', v_et_mat, v_prov2, 62000, v_contab),
-    (v_obra3, current_date - 9, 'Alquiler de andamio por un día', v_et_serv, v_prov3, 220000, v_contab),
-    (v_obra2, current_date - 33, 'Combustible planta eléctrica', v_et_serv, null, 310000, v_contab);
+  -- caja_id/medio_pago (2026-09-12, 202609120003_cajas_ingresos_cierres.sql): todo movimiento de
+  -- caja_menor vive ahora bajo una caja del catálogo nuevo; los cinco de aquí van a "Caja menor" con
+  -- un medio de pago variado, para que la pestaña "Gastos y caja" no enseñe una sola columna repetida.
+  insert into public.caja_menor (obra_id, fecha, concepto, etiqueta_id, proveedor_id, valor, medio_pago, caja_id, registrado_por) values
+    (v_obra1, current_date - 2, 'Transporte de herramienta menor', v_et_transp, null, 85000, 'efectivo', v_caja_menor, v_contab),
+    (v_obra1, current_date - 6, 'Refrigerios cuadrilla fundida', v_et_serv, null, 140000, 'efectivo', v_caja_menor, v_contab),
+    (v_obra2, current_date - 3, 'Compra urgente de puntillas', v_et_mat, v_prov2, 62000, 'tarjeta', v_caja_menor, v_contab),
+    (v_obra3, current_date - 9, 'Alquiler de andamio por un día', v_et_serv, v_prov3, 220000, 'transferencia', v_caja_menor, v_contab),
+    (v_obra2, current_date - 33, 'Combustible planta eléctrica', v_et_serv, null, 310000, 'efectivo', v_caja_menor, v_contab);
+
+  -- ── 11b. Ingresos y cierre mensual (2026-09-12): un ingreso reciente sin cerrar (para la pestaña
+  -- "Ingresos") y un mes YA cerrado en la caja administrativa (para que "Cierre mensual" tenga algo
+  -- que mostrar sin que Daniel tenga que cerrar uno primero para ver la pantalla funcionando).
+  insert into public.ingresos (caja_id, centro_costo_id, obra_id, fecha, concepto, valor, medio_pago, tercero, registrado_por) values
+    (v_caja_admin, v_centro_admin, v_obra1, current_date - 4, 'Anticipo del cliente', 4500000, 'transferencia', 'Constructora Mizar', v_contab);
+
+  v_periodo_cerrado := date_trunc('month', current_date - interval '1 month')::date;
+  if not exists (select 1 from public.cierres_caja where caja_id = v_caja_admin and periodo = v_periodo_cerrado) then
+    insert into public.cierres_caja (caja_id, periodo, estado, saldo_inicial, total_ingresos, total_gastos, saldo_final, cerrado_por, cerrado_at)
+      values (v_caja_admin, v_periodo_cerrado, 'cerrado', 0, 4500000, 0, 4500000, v_contab, now() - interval '20 days');
+  end if;
 
   -- ── 12. Enlace orden ↔ ítems (public.orden_items) ─────────────────────────────────────────
   --
