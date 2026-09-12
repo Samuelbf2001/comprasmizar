@@ -464,7 +464,10 @@ export function createPostgresSocietyResolver(databaseUrl = runtimeEnv().DATABAS
     const rows = await sql<{ id: string }[]>`
       select id from sociedades
       where activa = true
-        and (nombre = ${label} or (nombre || ' (' || coalesce(nit, '') || ')') = ${label})
+        -- El id del Dropdown es el nombre RECORTADO a 30 caracteres (tope de Meta, ver buildSocietyOptions):
+        -- un nombre más largo nunca coincidiría exacto, así que se compara también por su prefijo de 30.
+        and (nombre = ${label} or (nombre || ' (' || coalesce(nit, '') || ')') = ${label}
+             or left(nombre, 30) = ${label} or left(nombre || ' (' || coalesce(nit, '') || ')', 30) = ${label})
       limit 2`;
     return rows.length === 1 ? rows[0].id : null;
   };

@@ -25,7 +25,9 @@ describe("createPostgresSocietyResolver — contraparte receptora de buildSociet
     nextResult = [{ id: "uuid-1" }];
     const resolve = createPostgresSocietyResolver("postgres://test");
     await resolve("Mizar (900123456-7)");
-    expect(calls[0]).toEqual(["Mizar (900123456-7)", "Mizar (900123456-7)"]);
+    // Cuatro veces: nombre exacto, "nombre (nit)", y los dos recortados a 30 (el id del Dropdown se
+    // recorta a 30 caracteres, ver buildSocietyOptions; sin el prefijo, un nombre largo nunca resolvería).
+    expect(calls[0]).toEqual(["Mizar (900123456-7)", "Mizar (900123456-7)", "Mizar (900123456-7)", "Mizar (900123456-7)"]);
   });
 
   it("devuelve null cuando ninguna sociedad activa calza (nombre desconocido)", async () => {
