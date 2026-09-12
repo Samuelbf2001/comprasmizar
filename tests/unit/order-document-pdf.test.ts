@@ -130,3 +130,61 @@ describe("buildOrderPdf — documento real de la orden (Fase 6, reunión 2026-08
     expect(text.split("Constructora Mizar S.A.S.").length).toBeGreaterThan(2);
   });
 });
+
+// feat/solicitud-de-pago (ítem 4 del encargo): variante de OrderDocument para una OP — título
+// "ORDEN DE PAGO", sin columnas cantidad/unidad, con concepto/valor, y datos bancarios del
+// beneficiario (proveedores.datos_bancarios, que hasta ahora nunca salían de la ficha del
+// proveedor).
+describe("buildOrderPdf — variante de orden de pago (feat/solicitud-de-pago)", () => {
+  const paymentItem = (overrides: Partial<OrderDocumentItem> = {}): OrderDocumentItem => ({
+    description: "Pago acta 3 - Contratista ABC", unit: "servicio", quantity: 1, unitPrice: 500_000, discountRate: 0, ivaRate: 0.19, base: 500_000, iva: 95_000, total: 595_000, ...overrides,
+  });
+  function paymentOrder(overrides: Partial<OrderDocument> = {}): OrderDocument {
+    const items = overrides.items ?? [paymentItem()];
+    const subtotal = items.reduce((sum, item) => sum + item.base, 0), ivaTotal = items.reduce((sum, item) => sum + item.iva, 0);
+    return baseOrder({
+      consecutive: "OP-2026-0001", type: "OP",
+      supplier: { name: "Contratista ABC S.A.S.", nit: "900111222-3", bankDetails: { bankName: "Bancolombia", accountType: "ahorros", accountNumber: "123-456789-00", accountHolder: "Contratista ABC S.A.S.", accountHolderNit: "900111222-3" } },
+      items, subtotal, ivaTotal, total: subtotal + ivaTotal,
+      ...overrides,
+    });
+  }
+
+  it("imprime 'ORDEN DE PAGO' en el título, no 'ORDEN DE COMPRA'", async () => {
+    const text = extractPdfText(await buildOrderPdf(paymentOrder()));
+    expect(text).toContain("ORDEN DE PAGO");
+    expect(text).not.toContain("ORDEN DE COMPRA");
+  });
+
+  it("no imprime columnas de cantidad/unidad (CANT/UND/Precio Unitario): solo CONCEPTO y Vr Total", async () => {
+    const text = extractPdfText(await buildOrderPdf(paymentOrder()));
+    expect(text).toContain("CONCEPTO");
+    expect(text).not.toContain("CANT");
+    expect(text).not.toContain("UND");
+    expect(text).not.toContain("Precio Unitario");
+    expect(text).toContain("Pago acta 3 - Contratista ABC");
+    // Espacio DURO (U+00A0) entre "$" y el monto — mismo comentario que la prueba de dos ítems más
+    // arriba: `\s` sí lo reconoce, un espacio normal tecleado en el literal no coincidiría por bytes.
+    expect(text).toMatch(/\$\s*500\.000/);
+  });
+
+  it("imprime los datos bancarios del beneficiario cuando la ficha del proveedor los tiene", async () => {
+    const text = extractPdfText(await buildOrderPdf(paymentOrder()));
+    expect(text).toContain("DATOS BANCARIOS");
+    expect(text).toContain("Bancolombia");
+    expect(text).toContain("123-456789-00");
+    expect(text).toContain("Contratista ABC S.A.S.");
+  });
+
+  it("sin datos bancarios cargados en el proveedor, no imprime la sección (nunca un campo vacío)", async () => {
+    const text = extractPdfText(await buildOrderPdf(paymentOrder({ supplier: { name: "Contratista sin banco" } })));
+    expect(text).not.toContain("DATOS BANCARIOS");
+  });
+
+  it("una orden de compra (OC) sigue sin datos bancarios ni la etiqueta CONCEPTO, aunque el proveedor los tenga cargados", async () => {
+    const text = extractPdfText(await buildOrderPdf(baseOrder({ supplier: { name: "Ferretería El Roble S.A.S.", bankDetails: { bankName: "Bancolombia" } } })));
+    expect(text).not.toContain("DATOS BANCARIOS");
+    expect(text).not.toContain("CONCEPTO");
+    expect(text).toContain("DESCRIPCION");
+  });
+});

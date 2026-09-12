@@ -13,12 +13,23 @@ import { AttachmentPicker, IMAGE_MIME_TYPES } from "../attachment-upload";
 import {
   emptyCatalogs,
   localTodayISO,
+  money,
   uploadOperationalAttachment,
   type AttachmentProgress,
   type CatalogData,
+  type NamedOption,
   type RequisitionRow,
 } from "./shared";
 import { mutate } from "./data";
+
+// Fracciones de IVA aceptadas en el resto de la plataforma (ver el mismo select en
+// components/screens/connected/detail.tsx, revisión de línea) — se repite aquí para no importar
+// ese archivo (que otro agente está rediseñando, ver AGENTS del encargo).
+const IVA_RATES = [
+  { value: "0", label: "0 %" },
+  { value: "0.05", label: "5 %" },
+  { value: "0.19", label: "19 %" },
+] as const;
 
 type DraftLine = {
   key: string;
@@ -62,6 +73,57 @@ export function ConnectedNewRequisition({
     [uploadProgress, setUploadProgress] = useState<AttachmentProgress | null>(null),
     [success, setSuccess] = useState(""),
     [createdId, setCreatedId] = useState("");
+  // Solicitud de pago (modelo: una sola línea de concepto — item_id NULL, descripcion_libre =
+  // concepto, cantidad 1, unidad "servicio", valor_base/iva capturados aquí mismo porque, a
+  // diferencia de una compra, un pago no tiene un paso de revisión previo que los complete).
+  const [paymentSupplierId, setPaymentSupplierId] = useState(""),
+    [paymentConcept, setPaymentConcept] = useState(""),
+    [paymentBase, setPaymentBase] = useState(""),
+    [paymentIvaRate, setPaymentIvaRate] = useState("0.19"),
+    [supplierOptions, setSupplierOptions] = useState<NamedOption[]>(catalogs.suppliers ?? []),
+    [creatingSupplier, setCreatingSupplier] = useState(false),
+    [newSupplierName, setNewSupplierName] = useState(""),
+    [newSupplierNit, setNewSupplierNit] = useState(""),
+    [supplierBusy, setSupplierBusy] = useState(false),
+    [supplierError, setSupplierError] = useState("");
+  const paymentBaseValue = Math.round(Number(paymentBase) || 0),
+    paymentIvaValue = Math.round(paymentBaseValue * Number(paymentIvaRate));
+  // RF-603 (mismo patrón que el atajo de proveedor en la revisión, components/screens/connected/detail.tsx):
+  // un beneficiario nuevo se puede dar de alta con solo la razón social, sin bloquear la captura por
+  // no tener el NIT a mano todavía.
+  const createSupplier = async () => {
+    const name = newSupplierName.trim();
+    if (!name) {
+      setSupplierError("Escribe la razón social del proveedor.");
+      return;
+    }
+    setSupplierBusy(true);
+    setSupplierError("");
+    try {
+      const created = (await mutate("/api/suppliers", "POST", {
+        name,
+        ...(newSupplierNit.trim() ? { nit: newSupplierNit.trim() } : {}),
+      })) as { id?: string; name?: string };
+      if (!created.id || !created.name) {
+        throw new Error("El servicio no devolvió el proveedor creado.");
+      }
+      setSupplierOptions((current) =>
+        current.some((supplier) => supplier.id === created.id)
+          ? current
+          : [...current, { id: created.id as string, name: created.name as string }],
+      );
+      setPaymentSupplierId(created.id);
+      setCreatingSupplier(false);
+      setNewSupplierName("");
+      setNewSupplierNit("");
+    } catch (error) {
+      setSupplierError(
+        error instanceof Error ? error.message : "No fue posible crear el proveedor.",
+      );
+    } finally {
+      setSupplierBusy(false);
+    }
+  };
   const updateLine = (key: string, patch: Partial<DraftLine>) =>
     setLines((current) =>
       current.map((line) => (line.key === key ? { ...line, ...patch } : line)),
@@ -81,11 +143,22 @@ export function ConnectedNewRequisition({
         (line.productLink.trim() &&
           !/^https:\/\//i.test(line.productLink.trim())),
     );
-    if (!societyId || invalidLine) {
+    // Solicitud de pago: beneficiario, concepto y valor > 0 se exigen aquí mismo (no hay revisión
+    // previa que los complete) — mismo criterio que ProcurementService.create() en el dominio.
+    const paymentInvalid =
+      type === "pago" &&
+      (!paymentSupplierId || !paymentConcept.trim() || paymentBaseValue <= 0);
+    if (!societyId || (type === "compra" ? invalidLine : paymentInvalid)) {
       setFeedback(
         !societyId
           ? "Selecciona la empresa."
-          : "Completa cada ítem con descripción o catálogo, cantidad, unidad y un link HTTPS válido.",
+          : type === "compra"
+            ? "Completa cada ítem con descripción o catálogo, cantidad, unidad y un link HTTPS válido."
+            : !paymentSupplierId
+              ? "Selecciona el beneficiario del pago."
+              : !paymentConcept.trim()
+                ? "Describe el concepto del pago."
+                : "El valor del pago debe ser mayor a cero.",
       );
       return;
     }
@@ -99,19 +172,31 @@ export function ConnectedNewRequisition({
         societyId,
         ...(requiredDate ? { requiredDate } : {}),
         ...(observations.trim() ? { observations: observations.trim() } : {}),
-        items: lines.map((line) => ({
-          ...(line.itemId
-            ? { itemId: line.itemId }
-            : { description: line.description.trim() }),
-          quantity: Number(line.quantity),
-          unit: line.unit.trim(),
-          ...(line.possibleSupplier.trim()
-            ? { possibleSupplier: line.possibleSupplier.trim() }
-            : {}),
-          ...(line.productLink.trim()
-            ? { productLink: line.productLink.trim() }
-            : {}),
-        })),
+        items:
+          type === "pago"
+            ? [
+                {
+                  description: paymentConcept.trim(),
+                  quantity: 1,
+                  unit: "servicio",
+                  finalSupplierId: paymentSupplierId,
+                  unitBase: paymentBaseValue,
+                  ivaRate: Number(paymentIvaRate),
+                },
+              ]
+            : lines.map((line) => ({
+                ...(line.itemId
+                  ? { itemId: line.itemId }
+                  : { description: line.description.trim() }),
+                quantity: Number(line.quantity),
+                unit: line.unit.trim(),
+                ...(line.possibleSupplier.trim()
+                  ? { possibleSupplier: line.possibleSupplier.trim() }
+                  : {}),
+                ...(line.productLink.trim()
+                  ? { productLink: line.productLink.trim() }
+                  : {}),
+              })),
       })) as RequisitionRow;
       createdEntityId = created.id;
       setCreatedId(created.id);
@@ -202,18 +287,31 @@ export function ConnectedNewRequisition({
       <form className="panel connected-form" onSubmit={submit} noValidate>
         <div className="form-section">
           <div className="field-grid">
-            <label className="field">
+            <div className="field">
               <span>Tipo</span>
-              <select
-                value={type}
-                onChange={(event) =>
-                  setType(event.target.value as "compra" | "pago")
-                }
-              >
-                <option value="compra">Compra</option>
-                <option value="pago">Pago</option>
-              </select>
-            </label>
+              {/* Conmutador (no <select>): compra y pago capturan formularios distintos por
+                  debajo — verlo como dos pestañas, no como una opción más, evita que alguien
+                  cambie de tipo a mitad de captura sin darse cuenta de que pierde lo que llevaba
+                  en el otro modo. */}
+              <div role="group" aria-label="Tipo de requisición">
+                <button
+                  type="button"
+                  className={`view-switch${type === "compra" ? " is-active" : ""}`}
+                  aria-pressed={type === "compra"}
+                  onClick={() => setType("compra")}
+                >
+                  Compra de materiales
+                </button>
+                <button
+                  type="button"
+                  className={`view-switch${type === "pago" ? " is-active" : ""}`}
+                  aria-pressed={type === "pago"}
+                  onClick={() => setType("pago")}
+                >
+                  Solicitud de pago
+                </button>
+              </div>
+            </div>
             <label className="field">
               <span>Empresa</span>
               {/* GRAVE 3: sin empresas registradas el <select> antes se veía con una sola
@@ -275,6 +373,7 @@ export function ConnectedNewRequisition({
             />
           </div>
         </div>
+        {type === "compra" && (
         <div className="form-section">
           <div className="panel-head connected-head">
             <div>
@@ -430,6 +529,121 @@ export function ConnectedNewRequisition({
             ))}
           </div>
         </div>
+        )}
+        {type === "pago" && (
+        <div className="form-section">
+          <div className="panel-head connected-head">
+            <div>
+              <h2>Solicitud de pago</h2>
+              <p className="panel-sub">
+                Un solo concepto por solicitud: beneficiario, qué se paga y por cuánto.
+              </p>
+            </div>
+          </div>
+          <fieldset className="connected-line">
+            <legend>Pago</legend>
+            <label className="field">
+              <span>Beneficiario</span>
+              <select
+                required
+                value={paymentSupplierId}
+                aria-invalid={Boolean(feedback && !paymentSupplierId)}
+                aria-describedby="requisition-form-error"
+                onChange={(event) => setPaymentSupplierId(event.target.value)}
+              >
+                <option value="">Selecciona un proveedor</option>
+                {supplierOptions.map((supplier) => (
+                  <option key={supplier.id} value={supplier.id}>
+                    {supplier.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="button button-secondary quick-supplier-trigger"
+              type="button"
+              onClick={() => setCreatingSupplier((current) => !current)}
+            >
+              <Plus aria-hidden="true" size={14} />{" "}
+              {creatingSupplier ? "Cancelar nuevo proveedor" : "Nuevo proveedor"}
+            </button>
+            {creatingSupplier && (
+              <div className="field-grid" role="group" aria-label="Crear proveedor">
+                <label className="field">
+                  <span>Razón social</span>
+                  <input
+                    maxLength={160}
+                    value={newSupplierName}
+                    onChange={(event) => setNewSupplierName(event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>NIT (opcional)</span>
+                  <input
+                    maxLength={32}
+                    value={newSupplierNit}
+                    onChange={(event) => setNewSupplierNit(event.target.value)}
+                  />
+                </label>
+                {supplierError && (
+                  <p className="field-error" role="alert">
+                    {supplierError}
+                  </p>
+                )}
+                <button
+                  className="button button-dark"
+                  type="button"
+                  disabled={supplierBusy}
+                  onClick={() => void createSupplier()}
+                >
+                  {supplierBusy ? "Creando…" : "Crear proveedor"}
+                </button>
+              </div>
+            )}
+            <label className="field field-wide">
+              <span>Concepto</span>
+              <input
+                required
+                maxLength={500}
+                placeholder="Ej. Pago acta 3 — Contratista ABC"
+                value={paymentConcept}
+                aria-invalid={Boolean(feedback && !paymentConcept.trim())}
+                aria-describedby="requisition-form-error"
+                onChange={(event) => setPaymentConcept(event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Valor base</span>
+              <input
+                required
+                type="number"
+                min="0"
+                step="1"
+                value={paymentBase}
+                aria-invalid={Boolean(feedback && paymentBaseValue <= 0)}
+                aria-describedby="requisition-form-error"
+                onChange={(event) => setPaymentBase(event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>IVA</span>
+              <select
+                value={paymentIvaRate}
+                onChange={(event) => setPaymentIvaRate(event.target.value)}
+              >
+                {IVA_RATES.map((rate) => (
+                  <option key={rate.value} value={rate.value}>
+                    {rate.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="muted-copy">
+              Total: {money.format(paymentBaseValue + paymentIvaValue)}
+            </p>
+          </fieldset>
+        </div>
+        )}
         <div className="form-footer">
           {feedback ? (
             <p className="field-error" role="alert" id="requisition-form-error">
@@ -457,7 +671,11 @@ export function ConnectedNewRequisition({
               un Administrador Mizar que registre al menos una empresa.
             </p>
           ) : (
-            <span>Los valores cotizados se completan durante la revisión.</span>
+            <span>
+              {type === "compra"
+                ? "Los valores cotizados se completan durante la revisión."
+                : "El valor y el beneficiario quedan listos desde esta captura."}
+            </span>
           )}
           {createdId && (
             <button

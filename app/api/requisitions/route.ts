@@ -18,4 +18,9 @@ export function GET(request: Request) {
     return service.listRequisitionsPage(query, { actor }).then((page) => (paginated ? page : page.rows));
   });
 }
-export function POST(request: Request) { return authenticatedJson(async (actor) => { assertSameOrigin(request); const input = await parseJson(request, createRequisitionSchema); return new ProcurementService(createPostgresDependencies()).create({ ...input, channel: "web", items: input.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })) }, { actor }); }, 201); }
+// Solicitud de pago (feat/solicitud-de-pago): `unitBase`/`ivaRate`/`finalSupplierId` viajan tal
+// cual cuando el cliente los manda (captura de una solicitud de pago, ver
+// components/screens/connected/new-requisition.tsx); una compra sigue sin mandarlos y cae en los
+// mismos 0/ausente de siempre — el dominio (ProcurementService.create) es quien exige los tres para
+// `type === "pago"`.
+export function POST(request: Request) { return authenticatedJson(async (actor) => { assertSameOrigin(request); const input = await parseJson(request, createRequisitionSchema); return new ProcurementService(createPostgresDependencies()).create({ ...input, channel: "web", items: input.items.map((item) => ({ ...item, id: randomUUID(), unitBase: item.unitBase ?? 0, unitIva: 0 })) }, { actor }); }, 201); }

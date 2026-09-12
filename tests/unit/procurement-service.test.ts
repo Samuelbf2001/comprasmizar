@@ -98,7 +98,26 @@ async function reviewed(service: ProcurementService) { const r = await service.c
 
 describe("ProcurementService", () => {
   it("persists enviada first and enters review through an audited explicit transition", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester); expect(r.status).toBe("enviada"); expect(deps.audits.map((a) => a.event)).toEqual(["creada"]); await service.startReview(r.id, reviewer); expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); expect(deps.audits.at(-1)?.data).toMatchObject({ from: "enviada", to: "en_revision" }); });
-  it("uses a verifier for public access, materializes proposals and normalizes the external phone", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const created = await service.create({ type: "pago", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro", phone: "+57 300 123 4567" }, items: [{ ...items[0], itemId: undefined, description: "Tubería especial" }] }, {}); expect(created).toMatchObject({ status: "enviada", externalRequester: { phone: "+573001234567" }, items: [{ itemId: expect.stringMatching(/^catalog-/) }] }); expect(deps.audits.map((entry) => entry.event)).toContain("propuesto"); });
+  // NOTA (feat/solicitud-de-pago): este caso pasó de type:"pago" a type:"compra" — lo que prueba es
+  // la materialización de propuestas de CATÁLOGO en general (y el verificador de acceso público),
+  // no nada específico de pago. Con la corrección del ítem 1 del encargo, "pago" ya NO materializa
+  // catálogo (ver la prueba siguiente); usar aquí "pago" habría probado exactamente el defecto que
+  // se corrigió, en vez del camino feliz de una compra.
+  it("uses a verifier for public access, materializes proposals and normalizes the external phone", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const created = await service.create({ type: "compra", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro", phone: "+57 300 123 4567" }, items: [{ ...items[0], itemId: undefined, description: "Tubería especial" }] }, {}); expect(created).toMatchObject({ status: "enviada", externalRequester: { phone: "+573001234567" }, items: [{ itemId: expect.stringMatching(/^catalog-/) }] }); expect(deps.audits.map((entry) => entry.event)).toContain("propuesto"); });
+  // BLOQUEANTE (feat/solicitud-de-pago, ítem 1 del encargo): antes de este arreglo,
+  // materializeProposals() creaba un ítem de CATÁLOGO a partir de cualquier descripción libre sin
+  // itemId, sin mirar el tipo de requisición — con type:"pago" eso contaminaría el maestro de ítems
+  // con conceptos de una sola vez ("Pago acta 3 contratista X"). Ahora item_id queda NULL (permitido
+  // por requisicion_items_item_check, migración 202608240001_core_compras.sql) y no se propone nada.
+  it("una solicitud de pago con concepto libre NO materializa un ítem de catálogo (item_id queda NULL)", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const created = await service.create({ type: "pago", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], itemId: undefined, description: "Pago acta 3 - Contratista ABC" }] }, requester);
+    expect(created.items).toHaveLength(1);
+    expect(created.items[0].itemId).toBeUndefined();
+    expect(created.items[0].description).toBe("Pago acta 3 - Contratista ABC");
+    expect(deps.audits.map((entry) => entry.event)).not.toContain("propuesto");
+    expect(deps.proposedItems.size).toBe(0);
+  });
 
   // EL TELÉFONO DEJÓ DE SER OBLIGATORIO EN EL PORTAL (Ernesto, 11-sep-2026: «el teléfono no lo hagas
   // obligatorio»). Antes esta prueba fijaba lo contrario, y no era un capricho cambiarlo: exigirlo
@@ -371,7 +390,11 @@ describe("ProcurementService", () => {
   it("rejects incomplete review and blocks approval from MCP", async () => {
     const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
     await expect(service.approve(r.id, { ...approver, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    const zeroQuote = new ProcurementService(fakeDeps()), zero = await zeroQuote.create({ type: "pago", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, requester);
+    // NOTA (feat/solicitud-de-pago): "compra", no "pago" — este caso prueba REVIEW_INCOMPLETE
+    // genérico (ítem vigente en cero al enviar a aprobación), no nada específico de pago. Con la
+    // regla nueva (ítem 2 del encargo), un pago en cero se rechaza antes, en create(), así que
+    // "pago" aquí habría probado ese rechazo en vez de este.
+    const zeroQuote = new ProcurementService(fakeDeps()), zero = await zeroQuote.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, requester);
     await zeroQuote.startReview(zero.id, reviewer);
     await zeroQuote.review(zero.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, reviewer);
     await expect(zeroQuote.sendForApproval(zero.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
@@ -436,6 +459,38 @@ describe("ProcurementService", () => {
     const orders = await service.generateOrders(r.id, reviewer);
     expect(orders).toHaveLength(1); expect(orders[0]).toMatchObject({ type: "OP", supplierId: "p1", adminStatus: "pendiente" }); expect(orders[0].consecutive).toMatch(/^OP-2026-\d{4}$/);
     expect(deps.expensesData).toHaveLength(1); expect(deps.expensesData[0].total).toBe(238);
+  });
+  // Ítem 2 del encargo (feat/solicitud-de-pago): beneficiario y valor > 0 se exigen DESDE la
+  // creación, con DomainError legible — a diferencia de una compra, un pago no tiene un paso de
+  // revisión previo que los complete.
+  describe("solicitud de pago: beneficiario y valor > 0 exigidos desde create() y en review()", () => {
+    it("create() rechaza más de una línea, sin beneficiario, o con valor en cero", async () => {
+      const service = new ProcurementService(fakeDeps());
+      await expect(service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [items[0], items[1]] }, requester)).rejects.toMatchObject({ code: "PAYMENT_SINGLE_LINE" });
+      await expect(service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [{ ...items[0], finalSupplierId: undefined }] }, requester)).rejects.toMatchObject({ code: "PAYMENT_BENEFICIARY_REQUIRED" });
+      await expect(service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, requester)).rejects.toMatchObject({ code: "PAYMENT_VALUE_REQUIRED" });
+    });
+    it("create() rechaza un beneficiario que no exista o esté inactivo en el catálogo", async () => {
+      const service = new ProcurementService(fakeDeps());
+      await expect(service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [{ ...items[0], finalSupplierId: "p-inactivo" }] }, requester)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [{ ...items[0], finalSupplierId: "no-existe" }] }, requester)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    });
+    it("una solicitud de pago válida SÍ se crea (camino feliz de la validación)", async () => {
+      const service = new ProcurementService(fakeDeps());
+      const created = await service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [items[0]] }, requester);
+      expect(created.status).toBe("enviada");
+      expect(created.items).toHaveLength(1);
+    });
+    it("review() vuelve a exigir lo mismo si el revisor edita la línea de un pago", async () => {
+      const service = new ProcurementService(fakeDeps());
+      const r = await service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [items[0]] }, requester);
+      await service.startReview(r.id, reviewer);
+      await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], finalSupplierId: undefined }] }, reviewer)).rejects.toMatchObject({ code: "PAYMENT_BENEFICIARY_REQUIRED" });
+      await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], unitBase: 0, unitIva: 0, unitTotal: 0 }] }, reviewer)).rejects.toMatchObject({ code: "PAYMENT_VALUE_REQUIRED" });
+      await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [items[0], items[1]] }, reviewer)).rejects.toMatchObject({ code: "PAYMENT_SINGLE_LINE" });
+      // Camino feliz: un review válido sigue aceptándose.
+      await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [items[0]] }, reviewer)).resolves.toMatchObject({ status: "en_revision" });
+    });
   });
   // Hallazgo de revisión (reunión 2026-08-31, atajo #1): paymentTerms ya no se reconstruye leyendo el
   // historial de auditoría (append-only, no es fuente de verdad de negocio); debe sobrevivir en

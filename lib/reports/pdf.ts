@@ -35,17 +35,26 @@ export async function buildOrderPdf(order: OrderDocument): Promise<Uint8Array> {
   let justPaged = false;
   const newPage = () => { page = pdf.addPage(PAGE); y = 792; header(); justPaged = true; };
   const ensureSpace = (needed: number) => { if (y - needed < BOTTOM) newPage(); };
+  // Orden de pago (feat/solicitud-de-pago): una OP no tiene cantidad ni unidad que mostrar (el
+  // modelo es SIEMPRE una sola línea de concepto, cantidad 1 "servicio") — la tabla se reduce a
+  // CONCEPTO/Vr Total en vez de repetir columnas vacías o engañosamente "1 servicio".
+  const isPayment = order.type === "OP";
   const tableHeader = () => {
-    text("DESCRIPCION", COLS.desc, 9, true); text("UND", COLS.und, 9, true); text("CANT", COLS.cant, 9, true);
-    text("Precio Unitario", COLS.precio, 9, true); text("Desc", COLS.discount, 9, true); text("Vr Total", COLS.total, 9, true);
+    if (isPayment) {
+      text("CONCEPTO", COLS.desc, 9, true); text("Vr Total", COLS.total, 9, true);
+    } else {
+      text("DESCRIPCION", COLS.desc, 9, true); text("UND", COLS.und, 9, true); text("CANT", COLS.cant, 9, true);
+      text("Precio Unitario", COLS.precio, 9, true); text("Desc", COLS.discount, 9, true); text("Vr Total", COLS.total, 9, true);
+    }
     advance(9);
   };
 
   header();
 
   // Bloque proveedor — razón social, NIT, contacto, dirección, correo, teléfono/celular. "Por
-  // definir" en vez de un literal falso cuando la orden aún no tiene proveedor asignado.
-  text("PROVEEDOR", MARGIN, 10, true); advance(10);
+  // definir" en vez de un literal falso cuando la orden aún no tiene proveedor asignado. En una OP
+  // el proveedor ES el beneficiario del pago.
+  text(isPayment ? "BENEFICIARIO" : "PROVEEDOR", MARGIN, 10, true); advance(10);
   if (order.supplier) {
     text(order.supplier.name, MARGIN, 9); advance(9);
     if (order.supplier.nit) { text(`NIT: ${order.supplier.nit}`, MARGIN, 9); advance(9); }
@@ -58,13 +67,31 @@ export async function buildOrderPdf(order: OrderDocument): Promise<Uint8Array> {
   }
   advance(6);
 
+  // Datos bancarios del beneficiario (feat/solicitud-de-pago): solo en una OP y solo lo que la
+  // ficha del proveedor tenga cargado — nunca un campo vacío ni un literal inventado.
+  if (isPayment && order.supplier?.bankDetails && Object.values(order.supplier.bankDetails).some(Boolean)) {
+    const bank = order.supplier.bankDetails;
+    ensureSpace(9 * 2);
+    text("DATOS BANCARIOS", MARGIN, 10, true); advance(10);
+    if (bank.bankName) { text(`Banco: ${bank.bankName}`, MARGIN, 9); advance(9); }
+    if (bank.accountType) { text(`Tipo de cuenta: ${bank.accountType}`, MARGIN, 9); advance(9); }
+    if (bank.accountNumber) { text(`Número de cuenta: ${bank.accountNumber}`, MARGIN, 9); advance(9); }
+    if (bank.accountHolder) { text(`Titular: ${bank.accountHolder}`, MARGIN, 9); advance(9); }
+    if (bank.accountHolderNit) { text(`NIT del titular: ${bank.accountHolderNit}`, MARGIN, 9); advance(9); }
+    advance(6);
+  }
+
   ensureSpace(9 * 2); tableHeader(); justPaged = false;
   for (const item of order.items) {
     ensureSpace(9 * 2);
     if (justPaged) { tableHeader(); justPaged = false; } // recién saltó de página: reimprime encabezado de columnas
     const description = item.description.length > 40 ? `${item.description.slice(0, 39)}…` : item.description;
-    text(description, COLS.desc, 9); text(item.unit, COLS.und, 9); text(String(item.quantity), COLS.cant, 9);
-    text(cop.format(item.unitPrice), COLS.precio, 9); text(pct(item.discountRate), COLS.discount, 9); text(cop.format(item.base), COLS.total, 9);
+    if (isPayment) {
+      text(description, COLS.desc, 9); text(cop.format(item.base), COLS.total, 9);
+    } else {
+      text(description, COLS.desc, 9); text(item.unit, COLS.und, 9); text(String(item.quantity), COLS.cant, 9);
+      text(cop.format(item.unitPrice), COLS.precio, 9); text(pct(item.discountRate), COLS.discount, 9); text(cop.format(item.base), COLS.total, 9);
+    }
     advance(9);
   }
 

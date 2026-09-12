@@ -66,7 +66,16 @@ function RequisitionQueueRows({
                 <td>
                   <div className="request-id">
                     <button className="request-link" type="button" onClick={() => go(`/requisiciones/${row.id}`)}>
-                      <b>{row.consecutive}</b>
+                      <b>
+                        {row.consecutive}{" "}
+                        {/* RF pendiente (feat/solicitud-de-pago): distingue de un vistazo una solicitud
+                            de pago de una compra en la bandeja — sin esto las dos se ven idénticas hasta
+                            abrir el detalle. Chip solo aquí: detail.tsx/orders.tsx quedan fuera del
+                            encargo (otro agente los está rediseñando). */}
+                        <Tone tone={row.type === "pago" ? "warning" : "muted"} outline>
+                          {row.type === "pago" ? "Pago" : "Compra"}
+                        </Tone>
+                      </b>
                       <small>{mainItemLabel}{extraItems}</small>
                     </button>
                   </div>

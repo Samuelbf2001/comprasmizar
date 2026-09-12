@@ -59,7 +59,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       date: (order.generatedAt ?? "").slice(0, 10),
       company: { name: society?.name ?? "Sociedad no asignada", nit: society?.nit ?? undefined },
       work: work?.name ?? "Sin obra asignada",
-      supplier: supplier ? { name: supplier.name, nit: supplier.nit ?? undefined, contact: supplier.contact.name, address: supplier.contact.address, email: supplier.contact.email, phone: supplier.contact.phone } : undefined,
+      // Datos bancarios (feat/solicitud-de-pago): solo se resuelven para una OP — una orden de
+      // compra nunca los necesitó y pdf.ts tampoco los imprime fuera de una OP; no tiene sentido
+      // sacarlos de la ficha del proveedor para un documento que no los va a mostrar.
+      supplier: supplier ? { name: supplier.name, nit: supplier.nit ?? undefined, contact: supplier.contact.name, address: supplier.contact.address, email: supplier.contact.email, phone: supplier.contact.phone, ...(order.type === "OP" ? { bankDetails: supplier.bankDetails } : {}) } : undefined,
       items, subtotal, ivaTotal, total: subtotal + ivaTotal,
       paymentTerms: order.paymentTerms,
       elaboratedBy: elaborator?.name, approvedBy: approver?.name,

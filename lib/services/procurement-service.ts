@@ -1,4 +1,4 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderStatus, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
@@ -45,7 +45,16 @@ export class ProcurementService {
   private async audit(entity: string, entityId: string, event: string, actor: Actor, data?: Record<string, unknown>, origin: "web" | "mcp" | "kapso" = "web", repository: AuditRepository = this.deps.audit): Promise<void> { const actorId = actor.id === "kapso" || actor.id === "public" ? undefined : actor.id; await repository.append({ entity, entityId, event, actorId, at: this.now(), data, origin }); }
   private async transition(requisition: Requisition, to: Requisition["status"], actor: Actor, event: string, comment?: string, origin: "web" | "mcp" | "kapso" = "web", auditRepository?: AuditRepository): Promise<void> { const from = requisition.status; assertTransition(from, to, comment); requisition.status = to; await this.audit("requisicion", requisition.id, event, actor, { from, to, ...(comment ? { comment } : {}) }, origin, auditRepository); }
   private async notifyRequester(requisition: Requisition, template: string, tx: TransactionRepositories): Promise<void> { const channel = requisition.channel === "web" ? "interno" : "whatsapp"; if (requisition.requesterId) await tx.notifications.enqueue({ userId: requisition.requesterId, channel, template, payload: { requisitionId: requisition.id, consecutive: requisition.consecutive } }); else if (requisition.externalRequester?.phone) await tx.notifications.enqueue({ phone: requisition.externalRequester.phone, channel: "whatsapp", template, payload: { requisitionId: requisition.id, consecutive: requisition.consecutive } }); }
-  private async materializeProposals(lines: readonly ItemLine[], actor: Actor, origin: "web" | "mcp" | "kapso", tx: TransactionRepositories): Promise<ItemLine[]> { const result: ItemLine[] = []; for (const line of lines) { if (!line.itemId && !line.description?.trim()) throw new DomainError("INVALID_INPUT", "Cada línea requiere un ítem o una propuesta"); if (line.itemId) { result.push({ ...line }); continue; } const description = line.description!.trim(); if (!normalizeItemName(description)) throw new DomainError("INVALID_INPUT", "La propuesta debe contener letras o números"); const proposal = await tx.items.propose(description, line.unit, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(actor.id) ? actor.id : undefined); if (proposal.created) await this.audit("item", proposal.id, "propuesto", actor, { source: origin }, origin, tx.audit); result.push({ ...line, itemId: proposal.id, description }); } return result; }
+  /**
+   * BLOQUEANTE (feat/solicitud-de-pago): antes materializaba un ítem de CATÁLOGO a partir de
+   * cualquier descripción libre sin itemId, sin importar el tipo de requisición — con `type:
+   * "pago"` eso contaminaría el maestro de ítems con conceptos de una sola vez ("Pago acta 3
+   * contratista X"). Para `type === "pago"` la propuesta se SALTA: item_id queda NULL (permitido
+   * por `requisicion_items_item_check`, migración 202608240001_core_compras.sql) y
+   * descripcion_libre lleva el concepto tal cual. Una línea que YA trae itemId (cualquier tipo)
+   * sigue sin tocar tx.items.propose — nunca lo necesitó.
+   */
+  private async materializeProposals(lines: readonly ItemLine[], actor: Actor, origin: "web" | "mcp" | "kapso", tx: TransactionRepositories, type: RequisitionType = "compra"): Promise<ItemLine[]> { const result: ItemLine[] = []; for (const line of lines) { if (!line.itemId && !line.description?.trim()) throw new DomainError("INVALID_INPUT", "Cada línea requiere un ítem o una propuesta"); if (line.itemId) { result.push({ ...line }); continue; } const description = line.description!.trim(); if (!normalizeItemName(description)) throw new DomainError("INVALID_INPUT", "La propuesta debe contener letras o números"); if (type === "pago") { result.push({ ...line, description }); continue; } const proposal = await tx.items.propose(description, line.unit, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(actor.id) ? actor.id : undefined); if (proposal.created) await this.audit("item", proposal.id, "propuesto", actor, { source: origin }, origin, tx.audit); result.push({ ...line, itemId: proposal.id, description }); } return result; }
 
   async create(input: CreateRequisitionInput, context: RequestContext): Promise<Requisition> {
     const origin = this.origin(context);
@@ -64,6 +73,10 @@ export class ProcurementService {
     // web y whatsapp.
     if (input.channel !== "publico" && !input.societyId) throw new DomainError("INVALID_INPUT", "Empresa obligatoria");
     if (!input.items.length) throw new DomainError("INVALID_INPUT", "Los ítems son obligatorios"); sumLines(input.items);
+    // Solicitud de pago (feat/solicitud-de-pago): beneficiario y valor > 0 se exigen DESDE la
+    // creación — a diferencia de una compra, un pago no tiene un paso de revisión previo que los
+    // complete (review() vuelve a exigir esto mismo, ver más abajo).
+    if (input.type === "pago") assertPaymentRequestShape(input.items);
     const externalPhone = input.externalRequester?.phone?.replace(/[\s()\-]/g, "");
     // El NOMBRE es obligatorio en los dos canales externos: sin él la requisición no tiene autor.
     //
@@ -88,7 +101,18 @@ export class ProcurementService {
     // adaptador Postgres escribe NULL y el trigger `requisiciones_0_derivar_sociedad` la deriva de obra_id
     // antes del insert. El objeto en memoria devuelto aquí para el canal público queda sin sociedad hasta
     // la próxima lectura real desde Postgres, pero eso ya lo dice el tipo (`societyId?: string`).
-    return this.transaction(undefined, async (tx) => { const requisition: Requisition = { id: this.deps.ids.next(), consecutive: await tx.consecutives.take("REQ", year), type: input.type, societyId: input.societyId, workId: input.workId, requesterId, externalRequester: input.externalRequester ? { ...input.externalRequester, phone: externalPhone } : undefined, channel: input.channel, requiredDate: input.requiredDate, observations: input.observations, kapsoEventId: input.channel === "whatsapp" ? input.kapsoEventId : undefined, items: await this.materializeProposals(input.items, actor, origin, tx), status: "enviada" }; await tx.requisitions.save(requisition); await this.audit("requisicion", requisition.id, "creada", actor, { channel: input.channel }, origin, tx.audit); if (isExternalChannel) await this.notifyRequester(requisition, "requisicion_recibida", tx); return requisition; });
+    return this.transaction(undefined, async (tx) => {
+      // El beneficiario debe existir y estar activo en el catálogo — mismo criterio que
+      // assignSuppliers()/generateOrders() para el proveedor final de una compra. Sin este chequeo,
+      // un finalSupplierId inválido moría en el insert con la FK cruda (proveedor_final_id
+      // references proveedores) en vez de un error de dominio legible.
+      if (input.type === "pago") {
+        const supplier = await tx.catalogs.get("suppliers", input.items[0].finalSupplierId as string) as CatalogSupplier | null;
+        if (!supplier || !supplier.active) throw new DomainError("INVALID_INPUT", "El beneficiario debe ser un proveedor activo del catálogo");
+      }
+      const requisition: Requisition = { id: this.deps.ids.next(), consecutive: await tx.consecutives.take("REQ", year), type: input.type, societyId: input.societyId, workId: input.workId, requesterId, externalRequester: input.externalRequester ? { ...input.externalRequester, phone: externalPhone } : undefined, channel: input.channel, requiredDate: input.requiredDate, observations: input.observations, kapsoEventId: input.channel === "whatsapp" ? input.kapsoEventId : undefined, items: await this.materializeProposals(input.items, actor, origin, tx, input.type), status: "enviada" };
+      await tx.requisitions.save(requisition); await this.audit("requisicion", requisition.id, "creada", actor, { channel: input.channel }, origin, tx.audit); if (isExternalChannel) await this.notifyRequester(requisition, "requisicion_recibida", tx); return requisition;
+    });
   }
   async startReview(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); await this.transition(requisition, "en_revision", actor, "entrada_revision", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition); return requisition; }); }
   async proposeItem(requisitionId: string, description: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:create", this.authOrigin(context)); if (!description.trim()) throw new DomainError("INVALID_INPUT", "Descripción obligatoria"); return this.transaction(`requisition:${requisitionId}`, async (tx) => { const requisition = await tx.requisitions.get(requisitionId); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const reviewer = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam"); if (!reviewer && requisition.requesterId !== actor.id) throw new DomainError("FORBIDDEN", "No puede modificar una requisición ajena"); const editable = reviewer ? ["en_revision", "devuelta"] : ["enviada"]; if (!editable.includes(requisition.status)) throw new DomainError("INVALID_STATE", "La requisición no admite nuevos ítems en este estado"); const [line] = await this.materializeProposals([{ id: this.deps.ids.next(), description: description.trim(), quantity: 1, unit: "unidad", unitBase: 0, unitIva: 0 }], actor, this.origin(context), tx); requisition.items.push(line); await tx.requisitions.save(requisition); await this.audit("requisicion", requisition.id, "item_propuesto", actor, { itemId: line.itemId }, this.origin(context), tx.audit); return requisition; }); }
@@ -113,6 +137,14 @@ export class ProcurementService {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       if (requisition.status === "devuelta") await this.transition(requisition, "en_revision", actor, "retomada_revision", undefined, this.origin(context), tx.audit);
       if (requisition.status !== "en_revision") throw new DomainError("INVALID_STATE", "La requisición no está en revisión");
+      // Solicitud de pago (feat/solicitud-de-pago): mismo listón que create() — beneficiario y
+      // valor > 0 siguen siendo obligatorios si el revisor edita la línea aquí. El tipo es
+      // inmutable desde la creación, así que se valida contra `requisition.type`, no `input`.
+      if (requisition.type === "pago") {
+        assertPaymentRequestShape(input.items);
+        const supplier = await tx.catalogs.get("suppliers", input.items[0].finalSupplierId as string) as CatalogSupplier | null;
+        if (!supplier || !supplier.active) throw new DomainError("INVALID_INPUT", "El beneficiario debe ser un proveedor activo del catálogo");
+      }
       // La obra la asigna el revisor (reunión 2026-08-31) y debe pertenecer a la sociedad de la requisición:
       // sin este chequeo, un revisor podría colgar el gasto de una requisición bajo la obra de otra empresa.
       // requisition.societyId ausente en memoria solo puede pasar para el canal público (el único que la
@@ -138,7 +170,7 @@ export class ProcurementService {
       if (input.approverId !== undefined) requisition.approverId = input.approverId || undefined;
       if (input.paymentTerms !== undefined) requisition.paymentTerms = input.paymentTerms.trim() || undefined;
       const storedById = new Map(requisition.items.map((line) => [line.id, line]));
-      requisition.items = (await this.materializeProposals(input.items, actor, this.origin(context), tx)).map((line) => {
+      requisition.items = (await this.materializeProposals(input.items, actor, this.origin(context), tx, requisition.type)).map((line) => {
         const stored = storedById.get(line.id);
         // Defensa IVA legacy: si la línea entrante no trae ivaRate y la almacenada sí tenía IVA > 0, se
         // conserva la tasa/monto tal cual (incluida una `stored.ivaRate` que quede en `undefined`) — si
