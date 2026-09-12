@@ -2,6 +2,15 @@
 
 // Fase 2 (rendimiento, docs/plan-rendimiento.md, hallazgo H4): ConnectedRequisitionDetail,
 // partido de components/screens/connected.tsx. Misma lógica, mismos nombres.
+//
+// Rediseño "una acción por estado y rol" (dueño del producto, reunión 2026-09, inspirado en
+// PatternFly overflow menu / GitLab Pajamas autosave / NN/g progressive disclosure / Precoro):
+// antes esta pantalla enseñaba media docena de botones a la vez (Guardar revisión, Enviar a
+// aprobación, Editar cabecera, Subir cotización, Crear proveedor, Declinar…) y el dueño del
+// producto lo resumió así: "demasiados botones para avanzar en el flujo". Ahora cada estado/rol
+// tiene UNA acción primaria (barra pegajosa al pie del panel de ítems), las secundarias viven en
+// un menú «Más ⋯», el formulario se autoguarda y el motivo de una acción irreversible se escribe
+// DENTRO de su diálogo de confirmación en vez de en una `<textarea>` siempre visible.
 import {
   Fragment,
   useEffect,
@@ -10,10 +19,11 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { Check, Pencil, X } from "lucide-react";
+import { Check, RotateCw, X } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
-import { SectionTitle, Tone, useConfirmDialog } from "../screen-primitives";
+import { ActionMenu, SectionTitle, Tone, useConfirmDialog } from "../screen-primitives";
 import { AttachmentPicker } from "../attachment-upload";
+import { friendlyErrorText } from "../../../lib/http/friendly-error";
 import {
   emptyCatalogs,
   estadoLabel,
@@ -29,6 +39,152 @@ import {
   type RequisitionItem,
 } from "./shared";
 import { mutate } from "./data";
+
+/**
+ * Autoguardado (contrato del servidor intacto: sigue siendo el mismo `mutate`/PATCH/acción de
+ * siempre, solo cambia QUIÉN lo dispara). Vive junto a `run` porque resuelve el mismo problema
+ * desde el otro lado: `run` guarda-y-actúa cuando el usuario pulsa un botón; `useAutosave` guarda
+ * solo, sin que nadie tenga que pulsar nada, mientras la persona sigue escribiendo.
+ *
+ * Reglas (dueño del producto): un disparo por `blur` de cualquier campo Y uno por 1.500 ms de
+ * inactividad; un solo vuelo a la vez con coalescencia (si llega un cambio mientras hay uno en
+ * curso, se reintenta con el estado más reciente al terminar, nunca se pierde); nunca reenvía si
+ * el JSON es idéntico al último guardado con éxito. Usa `mutate` (no `run`): `run` marca `busy` y
+ * tapa la pantalla con el candado de guardado; el autoguardado tiene que ser invisible mientras
+ * los datos son válidos.
+ */
+type AutosaveStatus = "idle" | "saving" | "saved" | "blocked" | "error";
+
+function useAutosave({
+  enabled,
+  blockedReason,
+  buildBody,
+  send,
+}: {
+  enabled: boolean;
+  blockedReason: string | null;
+  buildBody: () => Record<string, unknown> | null;
+  send: (body: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const [status, setStatus] = useState<AutosaveStatus>("idle");
+  const [savedAt, setSavedAt] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const lastSavedRef = useRef<string | null>(null);
+  const inFlightRef = useRef(false);
+  const pendingRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // `latestRef`/`attemptRef` se actualizan desde un efecto (nunca durante el render: React 19
+  // prohíbe mutar un ref mientras se renderiza) — `attemptRef.current` se define UNA sola vez y
+  // lee `latestRef.current` en el momento en que de verdad se ejecuta (un blur o un timeout,
+  // siempre después de que el efecto ya corrió), así que igual siempre ve los valores últimos.
+  const latestRef = useRef({ enabled, blockedReason, buildBody, send });
+  useEffect(() => {
+    latestRef.current = { enabled, blockedReason, buildBody, send };
+  });
+
+  const attemptRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    attemptRef.current = () => {
+      const current = latestRef.current;
+      if (!current.enabled) return;
+      if (current.blockedReason) {
+        setStatus("blocked");
+        return;
+      }
+      const body = current.buildBody();
+      if (!body) return;
+      const json = JSON.stringify(body);
+      if (json === lastSavedRef.current) return;
+      if (inFlightRef.current) {
+        pendingRef.current = true;
+        return;
+      }
+      inFlightRef.current = true;
+      setStatus("saving");
+      void current
+        .send(body)
+        .then(() => {
+          lastSavedRef.current = json;
+          dirtyRef.current = false;
+          setStatus("saved");
+          setSavedAt(new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }));
+        })
+        .catch((error: unknown) => {
+          setStatus("error");
+          setErrorMessage(friendlyErrorText(error, "No se pudo guardar."));
+        })
+        .finally(() => {
+          inFlightRef.current = false;
+          if (pendingRef.current) {
+            pendingRef.current = false;
+            attemptRef.current();
+          }
+        });
+    };
+  }, []);
+
+  const scheduleDebounced = () => {
+    dirtyRef.current = true;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => attemptRef.current(), 1500);
+  };
+  const onBlurCapture = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    attemptRef.current();
+  };
+  const retry = () => attemptRef.current();
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+  // Solo con cambios SIN CONFIRMAR (guardado en curso o pendiente de reintento): un guardado ya
+  // exitoso no debe seguir bloqueando el cierre de la pestaña.
+  useEffect(() => {
+    const handler = (event: BeforeUnloadEvent) => {
+      if (dirtyRef.current) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
+
+  // "blocked" se deriva directamente de `blockedReason` en vez de sincronizarse vía otro efecto
+  // (que dispararía un re-render en cascada): así se ve de inmediato, en el mismo render en que
+  // el campo que faltaba se completa o se rompe, sin esperar al próximo intento de guardado.
+  const effectiveStatus: AutosaveStatus = blockedReason ? "blocked" : status;
+  return { status: effectiveStatus, savedAt, errorMessage, scheduleDebounced, onBlurCapture, retry };
+}
+
+type Autosave = ReturnType<typeof useAutosave>;
+
+/** Indicador `aria-live="polite"` de la barra pegajosa: «Guardando…» / «Guardado 10:42» /
+ *  «Sin guardar: <motivo>» + «Reintentar». Nunca un toast rojo por estar tecleando: los estados
+ *  "blocked"/"error" se leen como aviso, no como fallo del usuario. */
+function AutosaveIndicator({ autosave, blockedReason }: { autosave: Autosave; blockedReason: string | null }) {
+  return (
+    <span className="autosave-indicator" role="status" aria-live="polite">
+      {autosave.status === "saving" && "Guardando…"}
+      {autosave.status === "saved" && `Guardado ${autosave.savedAt}`}
+      {autosave.status === "blocked" && `Sin guardar: ${blockedReason ?? ""}`}
+      {autosave.status === "error" && (
+        <>
+          Sin guardar: {autosave.errorMessage}{" "}
+          <button type="button" className="text-link" onClick={autosave.retry}>
+            Reintentar
+          </button>
+        </>
+      )}
+    </span>
+  );
+}
+
+type MissingField = "tag" | "work" | "approver" | "price" | null;
 
 export function ConnectedRequisitionDetail({
   data,
@@ -60,15 +216,14 @@ export function ConnectedRequisitionDetail({
     // requisición) y la forma de pago se captura aquí también.
     [workId, setWorkId] = useState(requisition.workId ?? ""),
     [paymentTerms, setPaymentTerms] = useState(requisition.paymentTerms ?? "ANTICIPADO"),
-    [editingHeader, setEditingHeader] = useState(false),
+    // Cabecera: fecha requerida/observaciones ya NO tienen toggle "Editar cabecera" — son campos
+    // inline que se autoguardan (ver `headerAutosave`, abajo). El motivo del cambio es el mismo de
+    // toda esta reescritura: un botón menos que pulsar para que algo se guarde.
     [headerForm, setHeaderForm] = useState({ requiredDate: requisition.requiredDate ?? "", observations: requisition.observations ?? "" }),
-    [headerBusy, setHeaderBusy] = useState(false),
-    [headerFeedback, setHeaderFeedback] = useState(""),
     [lines, setLines] = useState<RequisitionItem[]>(requisition?.items ?? []),
     [supplierOptions, setSupplierOptions] = useState<NamedOption[]>(
       catalogs.suppliers,
     ),
-    [comment, setComment] = useState(""),
     [busy, setBusy] = useState(false),
     [feedback, setFeedback] = useState(""),
     // Confirmación visible de que la acción ocurrió. Sin ella, la única señal era que el chip de
@@ -82,20 +237,64 @@ export function ConnectedRequisitionDetail({
     [quickSupplierNit, setQuickSupplierNit] = useState(""),
     [quickSupplierError, setQuickSupplierError] = useState(""),
     [quickSupplierBusy, setQuickSupplierBusy] = useState(false),
-    // Cotización del comprador: adjunto propio, distinto del soporte del solicitante.
+    // Cotización del comprador: adjunto propio, distinto del soporte del solicitante. Ya no hay
+    // botón "Subir cotización": se sube en cuanto se elige el archivo en `AttachmentPicker`.
     [quoteFile, setQuoteFile] = useState<File | null>(null),
     [quoteBusy, setQuoteBusy] = useState(false),
     [quoteFeedback, setQuoteFeedback] = useState(""),
     // Bloqueante de atasco (reunión 2026-08-31): selección local de proveedor por ítem, para el bloque
     // "Generar órdenes" — vive aparte de `lines` (el borrador editable de la revisión) porque este
     // bloque solo existe cuando la requisición ya está `aprobada` y `lines` deja de ser relevante.
-    [assignSupplierChoice, setAssignSupplierChoice] = useState<Record<string, string>>({});
+    [assignSupplierChoice, setAssignSupplierChoice] = useState<Record<string, string>>({}),
+    // En `en_aprobacion`, el revisor ya no tiene el bloque de reasignación siempre visible: vive
+    // detrás de «Más ⋯» → «Reasignar aprobador», en un diálogo propio con el `<select>` dentro.
+    [reassignOpen, setReassignOpen] = useState(false),
+    // Qué campo falta al pulsar la primaria sin completar el formulario (obra/etiqueta/aprobador/
+    // valor > 0): se enfoca y se marca ESE campo en vez de solo deshabilitar el botón.
+    [missingField, setMissingField] = useState<MissingField>(null);
   const quickSupplierNameRef = useRef<HTMLInputElement | null>(null),
     quickSupplierDialogRef = useRef<HTMLFormElement | null>(null),
-    quickSupplierTriggerRef = useRef<HTMLButtonElement | null>(null),
+    // Amplía a HTMLElement (no solo botón): el disparador ahora también puede ser el <select> de
+    // proveedor de una fila ("+ Crear proveedor…" como última opción, ver la tabla más abajo).
+    quickSupplierTriggerRef = useRef<HTMLElement | null>(null),
     quickSupplierWasOpen = useRef(false),
-    quickSupplierSubmitting = useRef(false);
+    quickSupplierSubmitting = useRef(false),
+    reassignTriggerRef = useRef<HTMLElement | null>(null),
+    tagSelectRef = useRef<HTMLSelectElement | null>(null),
+    workSelectRef = useRef<HTMLSelectElement | null>(null),
+    approverSelectRef = useRef<HTMLSelectElement | null>(null),
+    priceInputRefs = useRef<Record<string, HTMLInputElement | null>>({}),
+    // Cuenta si el PRIMER autoguardado de una `enviada` ya mandó `start_review`: los siguientes
+    // (y el propio botón "Enviar a aprobación" si el usuario lo pulsa antes de que el debounce
+    // dispare) ya no deben repetirlo — repetir una transición a un estado en el que ya se está
+    // es `INVALID_TRANSITION` en el servidor.
+    startReviewDone = useRef(requisition.status !== "enviada");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  const isReviewer = role === "Revisor" || role === "Administrador Sixteam",
+    isApprover = role === "Aprobador" || role === "Administrador Sixteam";
+  /**
+   * Las líneas que decide QUIEN ESTÁ MIRANDO. La herencia es la misma del dominio (itemApproverId):
+   * sin aprobador propio, manda el de la cabecera.
+   *
+   * El administrador Sixteam ve y decide todas — es el mismo portillo de M-5 que ya tiene el servicio,
+   * y sin él no podría desatascar nada.
+   *
+   * SIN `viewerId` (payload viejo servido a una página nueva, o al revés, durante un despliegue) se
+   * cae al comportamiento de siempre SOLO si nadie ha repartido ítems: entonces todas las líneas son
+   * del aprobador de cabecera y mandarlas todas es exactamente lo que se hacía antes. Con reparto y
+   * sin saber quién mira, no se adivina: se manda lo que se pueda justificar y nada más.
+   */
+  const hayReparto = lines.some((line) => line.approverId);
+  const misLineas =
+    role === "Administrador Sixteam" || (!hayReparto && !data.viewerId)
+      ? lines
+      : lines.filter((line) => (line.approverId ?? requisition.approverId) === data.viewerId);
+  /** Ítems de esta requisición que decide otra persona: lo que explica por qué no se ven todos. */
+  const lineasDeOtros = lines.length - misLineas.length;
+  // RF: cabecera editable. Solo el revisor/admin y solo mientras la requisición aún admite cambios.
+  const headerEditable = isReviewer && ["enviada", "en_revision", "devuelta"].includes(requisition.status);
+  // Reunión 2026-08-31: obras de la empresa de la requisición (la obra la asigna el revisor).
+  const workOptions = catalogs.works.filter((work) => work.societyId === requisition.societyId);
   /**
    * Ejecuta una o VARIAS acciones EN ORDEN sobre la requisición, y no suelta el estado ocupado
    * hasta que la pantalla tiene los datos nuevos.
@@ -116,8 +315,18 @@ export function ConnectedRequisitionDetail({
    * Y se espera a `refresh()`. Antes se llamaba sin `await` y `busy` se soltaba en el `finally`, así
    * que el botón se rehabilitaba con el estado anterior todavía en pantalla: "no cambia de estado ni
    * dice ok, ya aprobaste".
+   *
+   * `options.pendingOthersAsSuccess`: solo la primaria del aprobador la usa. `approve()` responde
+   * `APPROVAL_PENDING_OTHERS` cuando `decide_items` (la primera llamada de la secuencia) SÍ se
+   * guardó y lo único que falta son los ítems de otro aprobador — eso no es un fallo del usuario que
+   * acaba de decidir los suyos, es el flujo normal de un reparto por ítem. Antes eso salía como un
+   * error rojo aunque las decisiones ya estuvieran guardadas.
    */
-  const run = async (bodies: Record<string, unknown> | Array<Record<string, unknown>>, successMessage?: string) => {
+  const run = async (
+    bodies: Record<string, unknown> | Array<Record<string, unknown>>,
+    successMessage?: string,
+    options?: { pendingOthersAsSuccess?: boolean },
+  ) => {
     const secuencia = Array.isArray(bodies) ? bodies : [bodies];
     setBusy(true);
     setFeedback("");
@@ -135,16 +344,24 @@ export function ConnectedRequisitionDetail({
       await refresh();
       if (successMessage) setSuccess(successMessage);
     } catch (error) {
-      setFeedback(
-        error instanceof Error ? error.message : "Acción no completada.",
-      );
+      const message = error instanceof Error ? error.message : "Acción no completada.";
+      const pendientes = options?.pendingOthersAsSuccess ? /Faltan (\d+) aprobador/.exec(message) : null;
+      if (pendientes) {
+        await refresh();
+        const n = pendientes[1];
+        setSuccess(
+          `Tus ${misLineas.length} ítem${misLineas.length === 1 ? "" : "s"} quedaron decididos; falta${n === "1" ? "" : "n"} ${n} aprobador${n === "1" ? "" : "es"}.`,
+        );
+      } else {
+        setFeedback(message);
+      }
     } finally {
       setBusy(false);
     }
   };
   /**
-   * La revisión TAL COMO ESTÁ EN PANTALLA. Extraído para que "Guardar revisión" y "Enviar a
-   * aprobación" manden exactamente lo mismo: si se construyera dos veces, volverían a poder
+   * La revisión TAL COMO ESTÁ EN PANTALLA. Extraído para que la primaria "Enviar a aprobación" y el
+   * autoguardado manden exactamente lo mismo: si se construyera dos veces, volverían a poder
    * divergir, que es de donde venía el REVIEW_INCOMPLETE con el formulario lleno.
    */
   const reviewBody = () => ({
@@ -203,6 +420,9 @@ export function ConnectedRequisitionDetail({
   // Reunión 2026-09: el IVA del 19 % se repetía a mano en cada ítem, y ese tecleo repetido
   // era la mayor parte del coste de revisar. Las acciones masivas solo tocan las líneas
   // vigentes: aplicar un proveedor o una tasa a una línea ya declinada no significa nada.
+  // Reunión 2026-09 (rediseño de acciones): antes vivían en una barra fija ("Aplicar a todos")
+  // encima de la tabla; ahora cuelgan de un botón "⋯ a todos" en la cabecera de su propia columna
+  // (mapeo/proximidad: el control vive junto a lo que afecta).
   const applyToAllLines = (patch: Partial<RequisitionItem>) =>
     setLines((current) =>
       current.map((line) => (line.status === "declinado" ? line : { ...line, ...patch })),
@@ -229,9 +449,9 @@ export function ConnectedRequisitionDetail({
     );
   };
   // Cotización del comprador: sube directo (la requisición ya existe) y refresca para que
-  // aparezca en "Cotizaciones del comprador", separada de los adjuntos del solicitante.
-  const uploadQuote = async () => {
-    if (!quoteFile) return;
+  // aparezca en "Cotizaciones del comprador", separada de los adjuntos del solicitante. Ya no
+  // hay botón "Subir cotización": se dispara en cuanto `AttachmentPicker` entrega el archivo.
+  const uploadQuote = async (file: File) => {
     setQuoteBusy(true);
     setQuoteFeedback("");
     try {
@@ -239,7 +459,7 @@ export function ConnectedRequisitionDetail({
         entity: "requisicion",
         entityId: requisition.id,
         type: "cotizacion",
-        file: quoteFile,
+        file,
       });
       setQuoteFile(null);
       refresh();
@@ -292,6 +512,98 @@ export function ConnectedRequisitionDetail({
       first.focus();
     }
   };
+  // Guardas del autoguardado (cliente, nunca un toast rojo por estar tecleando): sin etiqueta no
+  // hay nada que guardar todavía (review() la exige); una línea vigente con cantidad ≤ 0, precio
+  // < 0 o descuento > 1 (100 %) es un valor a medio teclear, no uno a persistir. Una línea
+  // declinada sin motivo NO bloquea (review() no lo exige; solo lo exige `decide_items`, más abajo).
+  const reviewGuardMessage = (): string | null => {
+    if (!tagId) return "Elige la etiqueta para empezar a guardar.";
+    const invalida = lines.some(
+      (line) =>
+        line.status !== "declinado" &&
+        (Number(line.quantity) <= 0 || Number(line.unitBase ?? 0) < 0 || (line.discountRate ?? 0) > 1),
+    );
+    if (invalida) return "Corrige la cantidad, el precio o el descuento antes de guardar.";
+    return null;
+  };
+  // Para el aprobador: `decide_items` SÍ exige motivo en cada declinado (COMMENT_REQUIRED) y una
+  // cantidad > 0; mientras falte, no se autoguarda (ni ese ítem ni los demás: `decisionsBody()` es
+  // una sola llamada atómica en el servidor, así que no hay forma de "guardar las demás" sin
+  // reconstruir el body a mano — se prefiere no mandar nada antes que mandar una decisión a medias).
+  const decisionsGuardMessage = (): string | null => {
+    const invalida = misLineas.some((line) =>
+      line.status === "declinado" ? !(line.declineReason ?? "").trim() : Number(line.quantity) <= 0,
+    );
+    if (invalida) return "Corrige la cantidad o el motivo de declinación antes de guardar.";
+    return null;
+  };
+  const actionsUrl = `/api/requisitions/${requisition.id}/actions`;
+  const reviewGuard = reviewGuardMessage();
+  const reviewAutosave = useAutosave({
+    enabled: isReviewer && ["enviada", "en_revision", "devuelta"].includes(requisition.status),
+    blockedReason: reviewGuard,
+    buildBody: () => reviewBody(),
+    // Estado `enviada`: el PRIMER autoguardado manda `[start_review, review]` — review() exige
+    // `en_revision`, y por eso hace falta la transición antes. Los siguientes (y cualquier
+    // guardado tras esta misma sesión) ya solo mandan `review`.
+    send: async (body) => {
+      if (requisition.status === "enviada" && !startReviewDone.current) {
+        await mutate(actionsUrl, "POST", { action: "start_review" });
+        startReviewDone.current = true;
+      }
+      return mutate(actionsUrl, "POST", body);
+    },
+  });
+  const reviewAutosaveMounted = useRef(false);
+  useEffect(() => {
+    if (!reviewAutosaveMounted.current) {
+      reviewAutosaveMounted.current = true;
+      return;
+    }
+    reviewAutosave.scheduleDebounced();
+    // Deliberado: NO se listan `reviewAutosave`/`reviewBody` (objetos/funciones nuevas cada
+    // render) — solo los valores de formulario cuyo cambio debe programar un guardado.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tagId, approverId, workId, paymentTerms, JSON.stringify(lines)]);
+
+  const decisionsGuard = decisionsGuardMessage();
+  const decisionsAutosave = useAutosave({
+    enabled: isApprover && requisition.status === "en_aprobacion",
+    blockedReason: decisionsGuard,
+    buildBody: () => decisionsBody(),
+    send: (body) => mutate(actionsUrl, "POST", body),
+  });
+  const decisionsAutosaveMounted = useRef(false);
+  useEffect(() => {
+    if (!decisionsAutosaveMounted.current) {
+      decisionsAutosaveMounted.current = true;
+      return;
+    }
+    decisionsAutosave.scheduleDebounced();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(lines)]);
+
+  // Cabecera: fecha requerida/observaciones, autoguardadas vía PATCH /api/requisitions/:id — sin
+  // guarda propia (a diferencia de la revisión, un PATCH de cabecera nunca deja datos a medias).
+  const headerAutosave = useAutosave({
+    enabled: headerEditable,
+    blockedReason: null,
+    buildBody: () => ({
+      requiredDate: headerForm.requiredDate || undefined,
+      observations: headerForm.observations.trim() || null,
+    }),
+    send: (body) => mutate(`/api/requisitions/${requisition.id}`, "PATCH", body),
+  });
+  const headerAutosaveMounted = useRef(false);
+  useEffect(() => {
+    if (!headerAutosaveMounted.current) {
+      headerAutosaveMounted.current = true;
+      return;
+    }
+    headerAutosave.scheduleDebounced();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headerForm.requiredDate, headerForm.observations]);
+
   if (!requisition?.id)
     return (
       <div className="panel state-panel" role="alert">
@@ -300,7 +612,7 @@ export function ConnectedRequisitionDetail({
     );
   const openQuickSupplier = (
     itemId: string,
-    trigger: HTMLButtonElement,
+    trigger: HTMLElement,
   ) => {
     quickSupplierTriggerRef.current = trigger;
     setSupplierStatus("");
@@ -351,45 +663,6 @@ export function ConnectedRequisitionDetail({
       setQuickSupplierBusy(false);
     }
   };
-  const isReviewer = role === "Revisor" || role === "Administrador Sixteam",
-    isApprover = role === "Aprobador" || role === "Administrador Sixteam";
-  /**
-   * Las líneas que decide QUIEN ESTÁ MIRANDO. La herencia es la misma del dominio (itemApproverId):
-   * sin aprobador propio, manda el de la cabecera.
-   *
-   * El administrador Sixteam ve y decide todas — es el mismo portillo de M-5 que ya tiene el servicio,
-   * y sin él no podría desatascar nada.
-   *
-   * SIN `viewerId` (payload viejo servido a una página nueva, o al revés, durante un despliegue) se
-   * cae al comportamiento de siempre SOLO si nadie ha repartido ítems: entonces todas las líneas son
-   * del aprobador de cabecera y mandarlas todas es exactamente lo que se hacía antes. Con reparto y
-   * sin saber quién mira, no se adivina: se manda lo que se pueda justificar y nada más.
-   */
-  const hayReparto = lines.some((line) => line.approverId);
-  const misLineas =
-    role === "Administrador Sixteam" || (!hayReparto && !data.viewerId)
-      ? lines
-      : lines.filter((line) => (line.approverId ?? requisition.approverId) === data.viewerId);
-  /** Ítems de esta requisición que decide otra persona: lo que explica por qué no se ven todos. */
-  const lineasDeOtros = lines.length - misLineas.length;
-  // RF: cabecera editable. Solo el revisor/admin y solo mientras la requisición aún admite cambios.
-  const headerEditable = isReviewer && ["enviada", "en_revision", "devuelta"].includes(requisition.status);
-  const saveHeader = async () => {
-    setHeaderBusy(true);
-    setHeaderFeedback("");
-    try {
-      await mutate(`/api/requisitions/${requisition.id}`, "PATCH", {
-        requiredDate: headerForm.requiredDate || undefined,
-        observations: headerForm.observations.trim() || null,
-      });
-      setEditingHeader(false);
-      refresh();
-    } catch (error) {
-      setHeaderFeedback(error instanceof Error ? error.message : "No fue posible guardar la cabecera.");
-    } finally {
-      setHeaderBusy(false);
-    }
-  };
   const supplierGroups = [
     ...new Set(
       lines
@@ -397,8 +670,6 @@ export function ConnectedRequisitionDetail({
         .filter((value): value is string => Boolean(value)),
     ),
   ];
-  // Reunión 2026-08-31: obras de la empresa de la requisición (la obra la asigna el revisor).
-  const workOptions = catalogs.works.filter((work) => work.societyId === requisition.societyId);
   // Insumos del bloque "Generar órdenes": ítems aprobados (todo lo que no esté declinado) de la
   // requisición ya guardada en el servidor (no de `lines`, que es el borrador editable local),
   // agrupados por proveedor final; los que faltan quedan aparte para anticipar SUPPLIER_REQUIRED.
@@ -419,6 +690,116 @@ export function ConnectedRequisitionDetail({
   const quickSupplierItem = quickSupplierItemId
     ? lines.find((line) => line.id === quickSupplierItemId)
     : undefined;
+
+  const MISSING_FIELD_MESSAGES: Record<Exclude<MissingField, null>, string> = {
+    tag: "Falta elegir la etiqueta.",
+    work:
+      workOptions.length === 0
+        ? "Falta asignar la obra. Esta empresa no tiene obras registradas: pídele a un administrador que la cree."
+        : "Falta asignar la obra.",
+    approver: "Falta elegir el aprobador.",
+    price: "Cada ítem vigente necesita un valor cotizado mayor a cero.",
+  };
+  /** Al pulsar la primaria con algo faltante, se enfoca y marca el primer campo faltante en vez de
+   *  solo deshabilitar el botón — el mensaje de al lado ya explicaba QUÉ faltaba; esto además lleva
+   *  el foco A donde falta. */
+  const validateReviewComplete = (): MissingField => {
+    if (!tagId) return "tag";
+    if (!workId) return "work";
+    if (!approverId) return "approver";
+    if (lines.some((line) => line.status !== "declinado" && estimateLineTotal(line) <= 0)) return "price";
+    return null;
+  };
+  const handleSendForApproval = () => {
+    if (busy) return;
+    const missing = validateReviewComplete();
+    setMissingField(missing);
+    if (missing === "tag") { tagSelectRef.current?.focus(); return; }
+    if (missing === "work") { workSelectRef.current?.focus(); return; }
+    if (missing === "approver") { approverSelectRef.current?.focus(); return; }
+    if (missing === "price") {
+      const invalidLine = lines.find((line) => line.status !== "declinado" && estimateLineTotal(line) <= 0);
+      if (invalidLine) priceInputRefs.current[invalidLine.id]?.focus();
+      return;
+    }
+    // Estado `enviada`: si el usuario pulsa la primaria ANTES de que el debounce del autoguardado
+    // dispare, la secuencia completa (`start_review` + `review` + `send_for_approval`) va en un
+    // solo `run()` — ver el comentario de `run`, arriba, sobre por qué no puede saltarse el orden.
+    const actions =
+      requisition.status === "enviada" && !startReviewDone.current
+        ? [{ action: "start_review" }, reviewBody(), { action: "send_for_approval" }]
+        : [reviewBody(), { action: "send_for_approval" }];
+    startReviewDone.current = true;
+    void run(actions, "Requisición enviada a aprobación.");
+  };
+  const handleDeclineWhole = async () => {
+    const result = await confirm({
+      title: "Declinar toda la requisición",
+      description: `La requisición ${requisition.consecutive} quedará declinada de forma definitiva y no se podrá reactivar.`,
+      confirmLabel: "Declinar toda la requisición",
+      danger: true,
+      reason: { label: "Motivo para declinar", required: true, rows: 3 },
+    });
+    if (!result.ok) return;
+    void run({ action: "decline", reason: result.reason ?? "" }, "Requisición declinada.");
+  };
+  const otherPending = lineasDeOtros > 0;
+  const handleApprovePrimary = async () => {
+    const declinados = misLineas.filter((line) => line.status === "declinado").length;
+    const aprobados = misLineas.length - declinados;
+    const result = await confirm({
+      title: otherPending ? "Aprobar tus ítems" : "Aprobar requisición",
+      description: `Se guardarán las decisiones de esta pantalla (${aprobados} ${aprobados === 1 ? "ítem aprobado" : "ítems aprobados"}, ${declinados} ${declinados === 1 ? "declinado" : "declinados"})${
+        otherPending
+          ? ". Faltan ítems que decide otro aprobador: la requisición sigue en aprobación hasta que todos terminen."
+          : ` y la requisición ${requisition.consecutive} quedará aprobada de forma definitiva, sin poder regresar a revisión. Genera las órdenes después, desde el bloque "Generar órdenes".`
+      }`,
+      confirmLabel: otherPending ? "Aprobar mis ítems" : "Aprobar requisición",
+    });
+    if (!result.ok) return;
+    void run(
+      [decisionsBody(), { action: "approve" }],
+      otherPending ? undefined : "Requisición aprobada.",
+      { pendingOthersAsSuccess: true },
+    );
+  };
+  const handleReturn = async () => {
+    const result = await confirm({
+      title: "Devolver a revisión",
+      description: `La requisición ${requisition.consecutive} volverá a revisión para que el revisor la corrija.`,
+      confirmLabel: "Devolver a revisión",
+      reason: { label: "Comentario de devolución", required: true, rows: 3 },
+    });
+    if (!result.ok) return;
+    void run({ action: "return", comment: result.reason ?? "" }, "Requisición devuelta a revisión.");
+  };
+  const closeReassign = () => {
+    setReassignOpen(false);
+    queueMicrotask(() => reassignTriggerRef.current?.focus());
+  };
+  const handleGenerateOrders = async () => {
+    if (busy) return;
+    const stillMissing = missingSupplierItems.filter((item) => !assignSupplierChoice[item.id]);
+    if (stillMissing.length > 0) {
+      document.getElementById(`assign-supplier-${stillMissing[0].id}`)?.focus();
+      return;
+    }
+    if (orderSupplierGroups.length === 0) return;
+    const result = await confirm({
+      title: "Generar órdenes",
+      description: `Se generará${orderSupplierGroups.length === 1 ? "" : "n"} ${orderSupplierGroups.length} orden(es), una por proveedor. Esta acción no se puede deshacer.`,
+      confirmLabel: "Generar órdenes",
+    });
+    if (!result.ok) return;
+    const assignments = missingSupplierItems
+      .filter((item) => assignSupplierChoice[item.id])
+      .map((item) => ({ itemId: item.id, supplierId: assignSupplierChoice[item.id] }));
+    const actions = assignments.length
+      ? [{ action: "assign_suppliers", assignments }, { action: "generate_orders" }]
+      : [{ action: "generate_orders" }];
+    void run(actions, "Órdenes generadas.");
+  };
+  const reviewLineTotals = summarizeLines(lines);
   return (
     <>
       <SectionTitle
@@ -427,8 +808,10 @@ export function ConnectedRequisitionDetail({
         description={`${requisition.type} · ${requisition.channel} · ${requisition.requiredDate || "sin fecha"}`}
         action={
           <div className="title-actions">
-            <button className="button button-secondary" type="button" onClick={refresh}>
-              Actualizar
+            {/* Cabecera de pantalla: "Actualizar" ya no es un botón de texto (competía con la
+                primaria por atención) — queda un icono ⟳ pequeño, mismo nombre accesible. */}
+            <button className="icon-button" type="button" aria-label="Actualizar" onClick={refresh}>
+              <RotateCw aria-hidden="true" size={16} />
             </button>
             <button
               className="button button-secondary"
@@ -461,18 +844,26 @@ export function ConnectedRequisitionDetail({
             </Tone>
           </div>
           {isReviewer &&
-          ["en_revision", "devuelta"].includes(requisition.status) ? (
-            <div className="connected-review">
+          ["enviada", "en_revision", "devuelta"].includes(requisition.status) ? (
+            <div className="connected-review" onBlur={reviewAutosave.onBlurCapture}>
+              {requisition.status === "enviada" && (
+                <p className="muted-copy" role="status">
+                  Al editar, la requisición pasa a revisión.
+                </p>
+              )}
               <label className="field">
                 {/* Reunión 2026-09: la etiqueta ya solo clasifica el gasto (alimenta el reporte por
                     etiqueta) — quién aprueba se elige aparte, abajo. */}
                 <span>Etiqueta</span>
                 <select
+                  ref={tagSelectRef}
                   required
+                  aria-invalid={missingField === "tag"}
                   value={tagId}
                   onChange={(event) => {
                     const nextTagId = event.target.value;
                     setTagId(nextTagId);
+                    if (missingField === "tag") setMissingField(null);
                     // Sugerencia por defecto: solo prerellena si el revisor aún no eligió aprobador —
                     // nunca pisa una elección ya hecha, y el select de abajo sigue siendo editable.
                     if (!approverId) {
@@ -492,10 +883,14 @@ export function ConnectedRequisitionDetail({
               <label className="field">
                 <span>Aprobador</span>
                 <select
+                  ref={approverSelectRef}
                   required
                   value={approverId}
-                  aria-invalid={Boolean(feedback && !approverId)}
-                  onChange={(event) => setApproverId(event.target.value)}
+                  aria-invalid={missingField === "approver"}
+                  onChange={(event) => {
+                    setApproverId(event.target.value);
+                    if (missingField === "approver") setMissingField(null);
+                  }}
                 >
                   <option value="">Selecciona un aprobador</option>
                   {(catalogs.approvers ?? []).map((user) => (
@@ -513,12 +908,16 @@ export function ConnectedRequisitionDetail({
                     explicar por qué el flujo estaba atascado — un callejón sin salida absoluto. */}
                 <span>Obra</span>
                 <select
+                  ref={workSelectRef}
                   required
                   value={workId}
                   disabled={workOptions.length === 0}
-                  aria-invalid={Boolean(feedback && !workId)}
+                  aria-invalid={missingField === "work"}
                   aria-describedby={workOptions.length === 0 ? "work-empty-reason" : undefined}
-                  onChange={(event) => setWorkId(event.target.value)}
+                  onChange={(event) => {
+                    setWorkId(event.target.value);
+                    if (missingField === "work") setMissingField(null);
+                  }}
                 >
                   <option value="">
                     {workOptions.length === 0 ? "Sin obras registradas" : "Selecciona una obra"}
@@ -549,75 +948,9 @@ export function ConnectedRequisitionDetail({
                   dejaban celdas huecas. Con 5 ítems eran 43 elementos y ~1.750px de scroll, y
                   el tabulado pasaba por un botón entre el precio de un ítem y el del siguiente.
                   Daniel comparaba eso contra escribir un WhatsApp, así que la densidad no era
-                  cosmética: decidía la adopción. Ahora es una fila por ítem, con las acciones
-                  masivas arriba (el 19 % se teclaba cinco veces) y el proveedor nuevo se crea
-                  una sola vez en la barra en vez de un botón por línea. */}
-              <div className="review-bulk" role="group" aria-label="Aplicar a todos los ítems vigentes">
-                <span className="review-bulk-title">Aplicar a todos:</span>
-                <label className="review-bulk-field">
-                  <span>IVA</span>
-                  <select
-                    aria-label="Aplicar un IVA a todos los ítems vigentes"
-                    value=""
-                    onChange={(event) => {
-                      if (event.target.value === "") return;
-                      applyToAllLines({ ivaRate: Number(event.target.value) });
-                      event.target.value = "";
-                    }}
-                  >
-                    <option value="">Elegir…</option>
-                    <option value="0">0 % a todos</option>
-                    <option value="0.05">5 % a todos</option>
-                    <option value="0.19">19 % a todos</option>
-                  </select>
-                </label>
-                <label className="review-bulk-field">
-                  <span>Proveedor</span>
-                  <select
-                    aria-label="Aplicar un proveedor a todos los ítems vigentes"
-                    value=""
-                    onChange={(event) => {
-                      if (event.target.value === "") return;
-                      applyToAllLines({ finalSupplierId: event.target.value });
-                      event.target.value = "";
-                    }}
-                  >
-                    <option value="">Elegir…</option>
-                    {supplierOptions.map((supplier) => (
-                      <option key={supplier.id} value={supplier.id}>
-                        {supplier.name} a todos
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="review-bulk-field">
-                  <span>Aprobador</span>
-                  <select
-                    aria-label="Aplicar un aprobador a todos los ítems vigentes"
-                    value=""
-                    onChange={(event) => {
-                      if (event.target.value === "") return;
-                      aplicarAprobadorATodos(event.target.value);
-                      event.target.value = "";
-                    }}
-                  >
-                    <option value="">Elegir…</option>
-                    {(catalogs.approvers ?? []).map((user) => (
-                      <option key={user.id} value={user.id}>
-                        {user.name} a todos
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  className="button button-secondary quick-supplier-trigger"
-                  type="button"
-                  disabled={busy || lines.length === 0}
-                  onClick={(event) => openQuickSupplier(lines[0]?.id ?? "", event.currentTarget)}
-                >
-                  + Crear proveedor
-                </button>
-              </div>
+                  cosmética: decidía la adopción. Ahora es una fila por ítem; las acciones masivas
+                  (el 19 % se teclaba cinco veces) cuelgan de un «⋯ a todos» en la cabecera de su
+                  propia columna en vez de una barra fija aparte. */}
               <div className="review-table-scroll">
                 <table className="review-table">
                   <thead>
@@ -626,10 +959,43 @@ export function ConnectedRequisitionDetail({
                       <th scope="col" className="align-right">Cant.</th>
                       <th scope="col">Und.</th>
                       <th scope="col" className="align-right">Precio unit.</th>
-                      <th scope="col">IVA %</th>
+                      <th scope="col">
+                        <span className="th-with-menu">
+                          <span>IVA %</span>
+                          <ActionMenu
+                            label="⋯ a todos"
+                            items={[0, 0.05, 0.19].map((rate) => ({
+                              label: `${Math.round(rate * 100)} % a todos`,
+                              onSelect: () => applyToAllLines({ ivaRate: rate }),
+                            }))}
+                          />
+                        </span>
+                      </th>
                       <th scope="col" className="align-right">Desc %</th>
-                      <th scope="col">Proveedor</th>
-                      <th scope="col">Aprobador</th>
+                      <th scope="col">
+                        <span className="th-with-menu">
+                          <span>Proveedor</span>
+                          <ActionMenu
+                            label="⋯ a todos"
+                            items={supplierOptions.map((supplier) => ({
+                              label: `${supplier.name} a todos`,
+                              onSelect: () => applyToAllLines({ finalSupplierId: supplier.id }),
+                            }))}
+                          />
+                        </span>
+                      </th>
+                      <th scope="col">
+                        <span className="th-with-menu">
+                          <span>Aprobador</span>
+                          <ActionMenu
+                            label="⋯ a todos"
+                            items={(catalogs.approvers ?? []).map((user) => ({
+                              label: `${user.name} a todos`,
+                              onSelect: () => aplicarAprobadorATodos(user.id),
+                            }))}
+                          />
+                        </span>
+                      </th>
                       <th scope="col" className="align-right">Total</th>
                       <th scope="col"><span className="sr-only">Acciones</span></th>
                     </tr>
@@ -641,6 +1007,7 @@ export function ConnectedRequisitionDetail({
                         catalogs.items.find((item) => item.id === line.itemId)?.name ||
                         "Ítem";
                       const declinado = line.status === "declinado";
+                      const priceMissing = missingField === "price" && !declinado && estimateLineTotal(line) <= 0;
                       return (
                         <Fragment key={line.id}>
                           <tr className={declinado ? "review-row-declined" : undefined}>
@@ -671,14 +1038,19 @@ export function ConnectedRequisitionDetail({
                             </td>
                             <td>
                               <input
+                                ref={(el) => { priceInputRefs.current[line.id] = el; }}
                                 className="cell-input align-right"
                                 type="number"
                                 min="0"
                                 step="1"
                                 disabled={declinado}
                                 aria-label={`Precio unitario de ${nombre}`}
+                                aria-invalid={priceMissing}
                                 value={line.unitBase ?? 0}
-                                onChange={(event) => updateLine(line.id, { unitBase: Number(event.target.value) })}
+                                onChange={(event) => {
+                                  updateLine(line.id, { unitBase: Number(event.target.value) });
+                                  if (missingField === "price") setMissingField(null);
+                                }}
                               />
                             </td>
                             <td>
@@ -714,7 +1086,19 @@ export function ConnectedRequisitionDetail({
                                 disabled={declinado}
                                 aria-label={`Proveedor de ${nombre}`}
                                 value={line.finalSupplierId ?? ""}
-                                onChange={(event) => updateLine(line.id, { finalSupplierId: event.target.value || undefined })}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  // "+ Crear proveedor…" es la última opción de ESTA fila (antes era
+                                  // un botón único en la barra masiva que siempre usaba `lines[0].id`
+                                  // — el proveedor nuevo terminaba asignado al primer ítem sin
+                                  // importar en cuál fila se hubiera pulsado. Ahora vive en el select
+                                  // de cada fila y abre el modal con el `line.id` de ESA fila.
+                                  if (value === "__nuevo__") {
+                                    openQuickSupplier(line.id, event.currentTarget);
+                                    return;
+                                  }
+                                  updateLine(line.id, { finalSupplierId: value || undefined });
+                                }}
                               >
                                 <option value="">Por definir</option>
                                 {supplierOptions.map((supplier) => (
@@ -722,6 +1106,7 @@ export function ConnectedRequisitionDetail({
                                     {supplier.name}
                                   </option>
                                 ))}
+                                <option value="__nuevo__">+ Crear proveedor…</option>
                               </select>
                             </td>
                             {/* Ernesto, 11-sep-2026: «se puede designar un aprobador para todo o
@@ -786,71 +1171,47 @@ export function ConnectedRequisitionDetail({
                   </tbody>
                 </table>
               </div>
-              {/* MENOR (QA 2026-08-31): "Nelson y Juliana deciden sin ver la cifra total" —
-                  no existía en ninguna parte. Barra de Subtotal · IVA · Total al pie del
-                  bloque de ítems, visible en revisión y en aprobación. */}
-              <div className="connected-line-summary" data-testid="line-summary">
-                {(() => {
-                  const totals = summarizeLines(lines);
-                  return (
-                    <>
-                      <span>Subtotal <b className="money">{money.format(totals.base)}</b></span>
-                      <span>IVA <b className="money">{money.format(totals.iva)}</b></span>
-                      <span className="connected-line-summary-total">Total <b className="money">{money.format(totals.total)}</b></span>
-                    </>
-                  );
-                })()}
-              </div>
               {supplierStatus && (
                 <p className="field-success" role="status">
                   {supplierStatus}
                 </p>
               )}
+              {missingField && (
+                <p className="field-error" role="alert">
+                  {MISSING_FIELD_MESSAGES[missingField]}
+                </p>
+              )}
+              {/* Barra pegajosa al pie del panel de ítems: totales, indicador de autoguardado,
+                  «Más ⋯» (Declinar toda la requisición) y la primaria "Enviar a aprobación". Ya
+                  no hay "Guardar revisión" — el autoguardado hace ese trabajo. */}
               <div className="connected-actions">
-                <button
-                  className="button button-secondary"
-                  disabled={
-                    busy ||
-                    !tagId ||
-                    lines.some((line) => line.status === "declinado" && !line.declineReason?.trim())
-                  }
-                  type="button"
-                  onClick={() => void run(reviewBody(), "Revisión guardada.")}
-                >
-                  Guardar revisión
-                </button>
+                <div className="connected-actions-totals" data-testid="line-summary">
+                  <span>Subtotal <b className="money">{money.format(reviewLineTotals.base)}</b></span>
+                  <span>IVA <b className="money">{money.format(reviewLineTotals.iva)}</b></span>
+                  <span className="connected-line-summary-total">Total <b className="money">{money.format(reviewLineTotals.total)}</b></span>
+                </div>
+                <AutosaveIndicator autosave={reviewAutosave} blockedReason={reviewGuard} />
+                <ActionMenu
+                  items={[
+                    { label: "Declinar toda la requisición", tone: "danger", onSelect: () => void handleDeclineWhole() },
+                  ]}
+                />
                 <button
                   className="button button-dark"
-                  // El proveedor ya NO bloquea el envío a aprobación (aprobar y designar proveedor
-                  // son roles distintos); sí lo bloquean etiqueta, obra y aprobador, que el backend exige.
-                  disabled={busy || requisition.status === "devuelta" || !tagId || !workId || !approverId}
+                  disabled={busy}
                   type="button"
                   // GUARDA Y ENVÍA, en ese orden. Antes solo enviaba, y el servidor evaluaba el
-                  // estado guardado: con el precio recién tecleado y sin pulsar "Guardar revisión",
-                  // respondía "valor cotizado mayor a cero es obligatorio" con el formulario lleno
-                  // delante. El botón estaba habilitado porque etiqueta, obra y aprobador sí se leen
-                  // del formulario; el precio no. Si el guardado falla, `run` corta y no envía.
-                  onClick={() => void run([reviewBody(), { action: "send_for_approval" }], "Requisición enviada a aprobación.")}
+                  // estado guardado: con el precio recién tecleado y sin haber pasado por un
+                  // guardado, respondía "valor cotizado mayor a cero es obligatorio" con el
+                  // formulario lleno delante. Si el guardado falla, `run` corta y no envía.
+                  onClick={handleSendForApproval}
                 >
                   Enviar a aprobación
                 </button>
-                {/* GRAVE 3: regla única del repo — todo `disabled` lleva texto adyacente con la
-                    razón y el siguiente paso, no solo un `title`. */}
-                {!busy && requisition.status !== "devuelta" && (!tagId || !workId || !approverId) && (
-                  <p className="field-error" role="alert">
-                    {!workId && workOptions.length === 0
-                      ? "Falta asignar la obra. Esta empresa no tiene obras registradas: pídele a un administrador que la cree."
-                      : !workId
-                        ? "Falta asignar la obra."
-                        : !tagId
-                          ? "Falta elegir la etiqueta."
-                          : "Falta elegir el aprobador."}
-                  </p>
-                )}
               </div>
             </div>
           ) : isApprover && requisition.status === "en_aprobacion" ? (
-            <div className="connected-review" data-testid="approval-decisions">
+            <div className="connected-review" data-testid="approval-decisions" onBlur={decisionsAutosave.onBlurCapture}>
               {/* SOLO SUS ÍTEMS. Con aprobadores por ítem, enseñarle los demás sería invitarle a
                   decidir lo que el servicio le va a rechazar — y de paso enseñarle cifras que no le
                   tocan. Cuando hay ítems de otros se dice cuántos: si no, el aprobador cuenta tres
@@ -920,72 +1281,113 @@ export function ConnectedRequisitionDetail({
                   <strong>{money.format(estimateLineTotal(line))}</strong>
                 </fieldset>
               ))}
-              {/* MENOR: misma barra de totales que en revisión — el aprobador tampoco veía
-                  la cifra total antes de decidir. */}
-              <div className="connected-line-summary" data-testid="line-summary">
-                {(() => {
-                  const totals = summarizeLines(lines);
-                  return (
-                    <>
-                      <span>Subtotal <b className="money">{money.format(totals.base)}</b></span>
-                      <span>IVA <b className="money">{money.format(totals.iva)}</b></span>
-                      <span className="connected-line-summary-total">Total <b className="money">{money.format(totals.total)}</b></span>
-                    </>
-                  );
-                })()}
-              </div>
+              {missingField && (
+                <p className="field-error" role="alert">
+                  {MISSING_FIELD_MESSAGES[missingField]}
+                </p>
+              )}
+              {/* Barra pegajosa: totales, indicador de autoguardado (reemplaza "Guardar
+                  decisiones"), «Más ⋯» (Devolver a revisión) y la primaria de aprobar. */}
               <div className="connected-actions">
+                <div className="connected-actions-totals" data-testid="line-summary">
+                  <span>Subtotal <b className="money">{money.format(reviewLineTotals.base)}</b></span>
+                  <span>IVA <b className="money">{money.format(reviewLineTotals.iva)}</b></span>
+                  <span className="connected-line-summary-total">Total <b className="money">{money.format(reviewLineTotals.total)}</b></span>
+                </div>
+                <AutosaveIndicator autosave={decisionsAutosave} blockedReason={decisionsGuard} />
+                <ActionMenu items={[{ label: "Devolver a revisión", onSelect: () => void handleReturn() }]} />
                 <button
-                  className="button button-secondary"
+                  className="button button-dark"
                   disabled={busy || lines.some((line) => line.status === "declinado" && !line.declineReason?.trim())}
                   type="button"
-                  onClick={() => void run(decisionsBody(), "Decisiones guardadas.")}
+                  onClick={() => void handleApprovePrimary()}
                 >
-                  Guardar decisiones
+                  <Check aria-hidden="true" size={16} />{" "}
+                  {otherPending ? `Aprobar mis ítems (${misLineas.length})` : "Aprobar requisición"}
                 </button>
               </div>
             </div>
           ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Ítem</th>
-                    <th>Cantidad</th>
-                    <th>Unidad</th>
-                    <th>Base unit.</th>
-                    <th>IVA %</th>
-                    <th>Estado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {requisition.items.map((item) => (
-                    <tr key={item.id}>
-                      <td>
-                        {item.description ||
-                          catalogs.items.find(
-                            (option) => option.id === item.itemId,
-                          )?.name ||
-                          "Ítem de catálogo"}
-                      </td>
-                      <td>{item.quantity}</td>
-                      <td>{item.unit}</td>
-                      <td>{money.format(item.unitBase ?? 0)}</td>
-                      <td>{item.ivaRate !== undefined ? `${Math.round(item.ivaRate * 100)} %` : money.format(item.unitIva ?? 0)}</td>
-                      <td>
-                        {item.status === "declinado" ? (
-                          <Tone tone="danger" dot>
-                            Declinado{item.declineReason ? ` · ${item.declineReason}` : ""}
-                          </Tone>
-                        ) : (
-                          <Tone tone="muted" dot>Vigente</Tone>
-                        )}
-                      </td>
+            <>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Ítem</th>
+                      <th>Cantidad</th>
+                      <th>Unidad</th>
+                      <th>Base unit.</th>
+                      <th>IVA %</th>
+                      <th>Estado</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {requisition.items.map((item) => (
+                      <tr key={item.id}>
+                        <td>
+                          {item.description ||
+                            catalogs.items.find(
+                              (option) => option.id === item.itemId,
+                            )?.name ||
+                            "Ítem de catálogo"}
+                        </td>
+                        <td>{item.quantity}</td>
+                        <td>{item.unit}</td>
+                        <td>{money.format(item.unitBase ?? 0)}</td>
+                        <td>{item.ivaRate !== undefined ? `${Math.round(item.ivaRate * 100)} %` : money.format(item.unitIva ?? 0)}</td>
+                        <td>
+                          {item.status === "declinado" ? (
+                            <Tone tone="danger" dot>
+                              Declinado{item.declineReason ? ` · ${item.declineReason}` : ""}
+                            </Tone>
+                          ) : (
+                            <Tone tone="muted" dot>Vigente</Tone>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* en_aprobacion · revisor: sin primaria (la decide el aprobador); solo queda
+                  "Reasignar aprobador" detrás de «Más ⋯» — el bloque lateral fijo de siempre
+                  desaparece de la vista. */}
+              {isReviewer && requisition.status === "en_aprobacion" && (
+                <div className="connected-actions connected-actions-menu-only">
+                  <ActionMenu
+                    items={[
+                      {
+                        label: "Reasignar aprobador",
+                        onSelect: () => {
+                          reassignTriggerRef.current = document.activeElement as HTMLElement | null;
+                          setReassignOpen(true);
+                        },
+                      },
+                    ]}
+                  />
+                </div>
+              )}
+              {/* aprobada sin órdenes · revisor: la primaria "Generar órdenes (K)" vive aquí,
+                  al pie del panel de ítems, igual que las demás. "Asignar proveedores" ya no es
+                  un botón aparte: la primaria hace `assign_suppliers` + `generate_orders` en una
+                  sola secuencia, y si falta algún proveedor enfoca el primer select faltante en
+                  vez de intentarlo. */}
+              {isReviewer && requisition.status === "aprobada" && orders.length === 0 && (
+                <div className="connected-actions">
+                  <span />
+                  <span />
+                  <span />
+                  <button
+                    className="button button-dark"
+                    type="button"
+                    disabled={busy || (orderSupplierGroups.length === 0 && missingSupplierItems.length === 0)}
+                    onClick={() => void handleGenerateOrders()}
+                  >
+                    Generar órdenes ({orderSupplierGroups.length})
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </section>
         <aside className="connected-side">
@@ -998,7 +1400,7 @@ export function ConnectedRequisitionDetail({
               </div>
               <div>
                 {/* RF-404: requesterId/externalRequester ya viajaban en el payload de
-                    /api/requisitions/:id; solo faltaba mostrarlos en el detalle. */}
+                    /api/requisitions/:id/detail; solo faltaba mostrarlos en el detalle. */}
                 <dt>Solicitante</dt>
                 <dd data-testid="requisition-requester">
                   {requisition.externalRequester
@@ -1031,55 +1433,27 @@ export function ConnectedRequisitionDetail({
                 <dd>{requisition.observations || "—"}</dd>
               </div>
             </dl>
-            {/* BLOQUEANTE (QA reasignación, reunión 2026-09): si el aprobador asignado deja de ser
-                elegible (baja, cambio de rol) mientras la requisición está en_aprobacion, antes no había
-                salida por la aplicación — approve()/returnForCorrection() exigen ser el aprobador exacto
-                y ese usuario ya no puede entrar. Reutiliza `approverId`/`setApproverId` (mismo estado que
-                el <select> de la revisión, arriba): no colisionan porque nunca se muestran a la vez. */}
-            {isReviewer && requisition.status === "en_aprobacion" && (
-              <div className="connected-review" data-testid="reassign-approver">
-                <label className="field">
-                  <span>Reasignar aprobador</span>
-                  <select value={approverId} onChange={(event) => setApproverId(event.target.value)}>
-                    <option value="">Selecciona un aprobador</option>
-                    {(catalogs.approvers ?? []).map((user) => (
-                      <option key={user.id} value={user.id}>
-                        {user.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="muted-copy">Si el aprobador asignado no puede atenderla, reasígnala aquí.</p>
-                <button
-                  className="button button-secondary"
-                  disabled={busy || !approverId || approverId === requisition.approverId}
-                  type="button"
-                  onClick={() => void run({ action: "reassign_approver", approverId }, "Aprobador reasignado.")}
-                >
-                  Reasignar aprobador
-                </button>
-              </div>
-            )}
-            {headerEditable && !editingHeader && (
-              <button className="button button-secondary" type="button" onClick={() => { setHeaderForm({ requiredDate: requisition.requiredDate ?? "", observations: requisition.observations ?? "" }); setEditingHeader(true); }}>
-                <Pencil aria-hidden="true" size={14} /> Editar cabecera
-              </button>
-            )}
-            {headerEditable && editingHeader && (
-              <div className="connected-header-edit">
+            {/* Cabecera editable: ya no hay toggle "Editar cabecera"/Cancelar/Guardar cambios —
+                los campos son inline y se autoguardan solos (PATCH /api/requisitions/:id). */}
+            {headerEditable && (
+              <div className="connected-header-edit" onBlur={headerAutosave.onBlurCapture}>
                 <label className="field">
                   <span>Fecha requerida</span>
-                  <input type="date" value={headerForm.requiredDate} onChange={(event) => setHeaderForm({ ...headerForm, requiredDate: event.target.value })} />
+                  <input
+                    type="date"
+                    value={headerForm.requiredDate}
+                    onChange={(event) => setHeaderForm({ ...headerForm, requiredDate: event.target.value })}
+                  />
                 </label>
                 <label className="field">
                   <span>Observaciones</span>
-                  <textarea maxLength={1024} value={headerForm.observations} onChange={(event) => setHeaderForm({ ...headerForm, observations: event.target.value })} />
+                  <textarea
+                    maxLength={1024}
+                    value={headerForm.observations}
+                    onChange={(event) => setHeaderForm({ ...headerForm, observations: event.target.value })}
+                  />
                 </label>
-                {headerFeedback && <p className="field-error" role="alert">{headerFeedback}</p>}
-                <div className="form-footer">
-                  <button className="button button-secondary" type="button" onClick={() => setEditingHeader(false)} disabled={headerBusy}>Cancelar</button>
-                  <button className="button button-dark" type="button" onClick={() => void saveHeader()} disabled={headerBusy}>{headerBusy ? "Guardando…" : "Guardar cambios"}</button>
-                </div>
+                <AutosaveIndicator autosave={headerAutosave} blockedReason={null} />
               </div>
             )}
             {requisition.returnReason && (
@@ -1091,100 +1465,6 @@ export function ConnectedRequisitionDetail({
               <p data-testid="decline-reason">
                 <b>Motivo de declinación:</b> {requisition.declineReason}
               </p>
-            )}
-            {isReviewer && requisition.status === "enviada" && (
-              <button
-                className="button button-dark"
-                disabled={busy}
-                type="button"
-                onClick={() => void run({ action: "start_review" }, "Revisión iniciada.")}
-              >
-                Iniciar revisión
-              </button>
-            )}
-            {isReviewer &&
-              ["en_revision", "devuelta"].includes(requisition.status) && (
-                <>
-                  <label className="field">
-                    <span>Motivo para declinar</span>
-                    <textarea
-                      value={comment}
-                      onChange={(event) => setComment(event.target.value)}
-                    />
-                  </label>
-                  {/* GRAVE 4: este "Declinar" mata la requisición ENTERA (distinto del "Declinar"
-                      por ítem, arriba, que solo afecta esa línea) — mismo verbo, alcances
-                      radicalmente distintos. Se renombra para que no se confundan. */}
-                  <button
-                    className="button button-danger"
-                    disabled={busy || !comment.trim()}
-                    type="button"
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: "Declinar toda la requisición",
-                        description: `La requisición ${requisition.consecutive} quedará declinada de forma definitiva y no se podrá reactivar.`,
-                        confirmLabel: "Declinar toda la requisición",
-                        danger: true,
-                      });
-                      if (!ok) return;
-                      void run({ action: "decline", reason: comment }, "Requisición declinada.");
-                    }}
-                  >
-                    <X aria-hidden="true" size={16} /> Declinar toda la requisición
-                  </button>
-                </>
-              )}
-            {isApprover && requisition.status === "en_aprobacion" && (
-              <>
-                {/* Reunión 2026-08-31: aprobar y generar la orden son pasos distintos ahora — este
-                    botón solo transiciona el estado. La división por proveedor ya es siempre el
-                    comportamiento normal (el checkbox "Completo" desaparece). */}
-                {/* GUARDA LAS DECISIONES Y APRUEBA, en ese orden. Antes solo aprobaba, y las
-                    decisiones que hubiera en pantalla —una equis, un motivo escrito— no se habían
-                    persistido: `approvedLines` trata "pendiente" como vigente (lib/domain/rules.ts),
-                    así que la requisición quedaba aprobada CON el ítem que el aprobador acababa de
-                    declinar. Pasó de verdad, en la REQ-2026-0002.
-
-                    El nombre cambia de "Aprobar" a "Completar aprobación" a propósito: describe lo
-                    que hace de verdad —cerrar la decisión completa— y no invita a pensar que primero
-                    hay que guardar por otro lado. "Guardar decisiones" sigue existiendo para quien
-                    quiera dejarlas a medias y volver luego. */}
-                <button
-                  className="button button-dark"
-                  disabled={busy || lines.some((line) => line.status === "declinado" && !line.declineReason?.trim())}
-                  type="button"
-                  onClick={async () => {
-                    const declinados = lines.filter((line) => line.status === "declinado").length;
-                    const aprobados = lines.length - declinados;
-                    const ok = await confirm({
-                      title: "Completar la aprobación",
-                      // El resumen es la última oportunidad de ver que una decisión no es la que se
-                      // creía: "2 aprobados, 0 declinados" delata al que pensó que había declinado uno.
-                      description: `Se guardarán las decisiones de esta pantalla (${aprobados} ${aprobados === 1 ? "ítem aprobado" : "ítems aprobados"}, ${declinados} ${declinados === 1 ? "declinado" : "declinados"}) y la requisición ${requisition.consecutive} quedará aprobada de forma definitiva, sin poder regresar a revisión. Genera las órdenes después, desde el bloque "Generar órdenes".`,
-                      confirmLabel: "Completar aprobación",
-                    });
-                    if (!ok) return;
-                    void run([decisionsBody(), { action: "approve" }], "Requisición aprobada.");
-                  }}
-                >
-                  <Check aria-hidden="true" size={16} /> Completar aprobación
-                </button>
-                <label className="field">
-                  <span>Comentario de devolución</span>
-                  <textarea
-                    value={comment}
-                    onChange={(event) => setComment(event.target.value)}
-                  />
-                </label>
-                <button
-                  className="button button-secondary"
-                  disabled={busy || !comment.trim()}
-                  type="button"
-                  onClick={() => void run({ action: "return", comment }, "Requisición devuelta a revisión.")}
-                >
-                  <X aria-hidden="true" size={16} /> Devolver a revisión
-                </button>
-              </>
             )}
             {feedback && (
               <p className="field-error" role="alert">
@@ -1201,9 +1481,10 @@ export function ConnectedRequisitionDetail({
               </p>
             )}
           </section>
-          {/* Reunión 2026-08-31: "Generar órdenes" es su propio paso, con botón propio — el
-              cliente dijo literalmente que no la veía. Reutiliza el resumen de asignación por
-              proveedor como preview; muestra qué grupos saldrán y qué falta antes de intentarlo. */}
+          {/* Reunión 2026-08-31: "Generar órdenes" es su propio paso — el cliente dijo literalmente
+              que no la veía. Reutiliza el resumen de asignación por proveedor como preview; muestra
+              qué grupos saldrán y qué falta antes de intentarlo. El botón que dispara la acción
+              vive en la barra pegajosa del panel de ítems (arriba), no aquí. */}
           {isReviewer && requisition.status === "aprobada" && orders.length === 0 ? (
             <section className="panel connected-summary" data-testid="generate-orders-panel">
               <h3>Generar órdenes</h3>
@@ -1217,12 +1498,13 @@ export function ConnectedRequisitionDetail({
               {missingSupplierItems.length > 0 && (
                 <div className="missing-supplier-assign" data-testid="missing-supplier-warning">
                   <p className="field-error" role="alert">
-                    {missingSupplierItems.length} ítem{missingSupplierItems.length === 1 ? "" : "s"} aprobado{missingSupplierItems.length === 1 ? "" : "s"} sin proveedor asignado: elige uno abajo para poder generar la orden.
+                    {missingSupplierItems.length} ítem{missingSupplierItems.length === 1 ? "" : "s"} aprobado{missingSupplierItems.length === 1 ? "" : "s"} sin proveedor asignado: elígelo abajo y pulsa &ldquo;Generar órdenes&rdquo;.
                   </p>
                   {missingSupplierItems.map((item) => (
                     <label className="field" key={item.id}>
                       <span>{item.description || item.itemId || "Ítem sin descripción"}</span>
                       <select
+                        id={`assign-supplier-${item.id}`}
                         value={assignSupplierChoice[item.id] ?? ""}
                         onChange={(event) =>
                           setAssignSupplierChoice((current) => ({ ...current, [item.id]: event.target.value }))
@@ -1237,19 +1519,6 @@ export function ConnectedRequisitionDetail({
                       </select>
                     </label>
                   ))}
-                  <button
-                    className="button button-secondary"
-                    type="button"
-                    disabled={busy || !missingSupplierItems.some((item) => assignSupplierChoice[item.id])}
-                    onClick={() => {
-                      const assignments = missingSupplierItems
-                        .filter((item) => assignSupplierChoice[item.id])
-                        .map((item) => ({ itemId: item.id, supplierId: assignSupplierChoice[item.id] }));
-                      void run({ action: "assign_suppliers", assignments });
-                    }}
-                  >
-                    Asignar proveedor{missingSupplierItems.length === 1 ? "" : "es"}
-                  </button>
                 </div>
               )}
               {/* GRAVE 3: todo `disabled` lleva texto adyacente con la razón y el siguiente
@@ -1262,30 +1531,6 @@ export function ConnectedRequisitionDetail({
                   ítems o ninguno tiene proveedor todavía. No hay nada que generar.
                 </p>
               )}
-              <button
-                className="button button-dark"
-                type="button"
-                disabled={busy || missingSupplierItems.length > 0 || orderSupplierGroups.length === 0}
-                aria-disabled={missingSupplierItems.length > 0 || orderSupplierGroups.length === 0}
-                title={
-                  missingSupplierItems.length > 0
-                    ? "Asigna proveedor a cada ítem aprobado antes de generar órdenes."
-                    : orderSupplierGroups.length === 0
-                      ? "No hay ítems aprobados con proveedor asignado."
-                      : undefined
-                }
-                onClick={async () => {
-                  const ok = await confirm({
-                    title: "Generar órdenes",
-                    description: `Se generará${orderSupplierGroups.length === 1 ? "" : "n"} ${orderSupplierGroups.length} orden(es), una por proveedor. Esta acción no se puede deshacer.`,
-                    confirmLabel: "Generar órdenes",
-                  });
-                  if (!ok) return;
-                  void run({ action: "generate_orders" }, "Órdenes generadas.");
-                }}
-              >
-                Generar órdenes
-              </button>
             </section>
           ) : (
             supplierGroups.length > 0 && (
@@ -1391,21 +1636,18 @@ export function ConnectedRequisitionDetail({
                   label="Adjuntar cotización"
                   help="PDF, JPG, PNG o WebP · máximo 10 MB"
                   file={quoteFile}
-                  onFile={setQuoteFile}
+                  onFile={(file) => {
+                    setQuoteFile(file);
+                    // Ya no hay botón "Subir cotización": se sube en cuanto se elige el archivo.
+                    if (file) void uploadQuote(file);
+                  }}
                   onError={setQuoteFeedback}
                   disabled={quoteBusy}
                 />
+                {quoteBusy && <p className="muted-copy" role="status">Cargando cotización…</p>}
                 {quoteFeedback && (
                   <p className="field-error" role="alert">{quoteFeedback}</p>
                 )}
-                <button
-                  className="button button-secondary"
-                  type="button"
-                  disabled={!quoteFile || quoteBusy}
-                  onClick={() => void uploadQuote()}
-                >
-                  {quoteBusy ? "Cargando…" : "Subir cotización"}
-                </button>
               </div>
             )}
           </section>
@@ -1516,8 +1758,67 @@ export function ConnectedRequisitionDetail({
           </form>
         </div>
       )}
+      {/* en_aprobacion · revisor: "Reasignar aprobador" detrás de «Más ⋯» — mismo patrón de
+          diálogo que la alta rápida de proveedor, con el <select> dentro. Reutiliza
+          `approverId`/`setApproverId` (mismo estado que el <select> de la revisión): no
+          colisionan porque nunca se muestran a la vez. */}
+      {isReviewer && requisition.status === "en_aprobacion" && reassignOpen && (
+        <div
+          className="quick-supplier-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeReassign();
+          }}
+        >
+          <div
+            className="panel quick-supplier-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reassign-title"
+            data-testid="reassign-approver"
+          >
+            <div className="panel-head">
+              <div>
+                <h2 id="reassign-title">Reasignar aprobador</h2>
+              </div>
+              <button className="icon-button" type="button" aria-label="Cerrar" onClick={closeReassign}>
+                <X aria-hidden="true" size={16} />
+              </button>
+            </div>
+            <div className="quick-supplier-body">
+              <p className="muted-copy">Si el aprobador asignado no puede atenderla, reasígnala aquí.</p>
+              <label className="field">
+                <span>Reasignar aprobador</span>
+                <select value={approverId} onChange={(event) => setApproverId(event.target.value)}>
+                  <option value="">Selecciona un aprobador</option>
+                  {(catalogs.approvers ?? []).map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="form-footer">
+              <button className="button button-secondary" type="button" onClick={closeReassign}>
+                Cancelar
+              </button>
+              <button
+                className="button button-dark"
+                type="button"
+                disabled={busy || !approverId || approverId === requisition.approverId}
+                onClick={() => {
+                  void run({ action: "reassign_approver", approverId }, "Aprobador reasignado.");
+                  closeReassign();
+                }}
+              >
+                Reasignar aprobador
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmDialog}
     </>
   );
 }
-

@@ -146,6 +146,26 @@ describe("ProcurementService", () => {
     expect(draft.tagId).toBe("tag"); expect(draft.approverId).toBeUndefined();
     await expect(service.sendForApproval(r.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
   });
+  // Punto 4 del rediseño "una acción por estado/rol" (reunión 2026-09): la pantalla ahora autoguarda
+  // la revisión cada blur/1.500ms, así que `review()` se llama muchas más veces por sesión de lo que
+  // se llamaba con el botón "Guardar revisión" de siempre. Sin esta guarda, cada disparo del
+  // autoguardado —incluidos los que no cambiaron nada porque el usuario solo hizo clic en un campo y
+  // salió— habría auditado "revisada" y llenado el historial de trazabilidad de entradas vacías.
+  it("review() no audita 'revisada' cuando el payload no cambia nada material respecto a lo ya guardado", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    const input = { tagId: "tag", approverId: "nelson", workId: "work", items };
+    await service.review(r.id, input, reviewer);
+    const auditsAfterFirstSave = deps.audits.filter((entry) => entry.event === "revisada").length;
+    expect(auditsAfterFirstSave).toBe(1);
+    // Mismo payload, otra vez (el autoguardado disparó sin que nada cambiara en pantalla).
+    await service.review(r.id, input, reviewer);
+    expect(deps.audits.filter((entry) => entry.event === "revisada").length).toBe(auditsAfterFirstSave);
+    // Un cambio real (precio distinto) SÍ debe seguir auditándose.
+    await service.review(r.id, { ...input, items: [{ ...items[0], unitBase: 150, unitIva: undefined, unitTotal: undefined }, items[1]] }, reviewer);
+    expect(deps.audits.filter((entry) => entry.event === "revisada").length).toBe(auditsAfterFirstSave + 1);
+  });
   // El aprobador lo elige el revisor, no la etiqueta: dos requisiciones con la MISMA etiqueta pueden
   // terminar con aprobadores distintos, y solo el asignado a cada una puede decidirla.
   it("el aprobador asignado en review() (no cualquier otro con rol aprobador) es quien puede aprobar la requisición", async () => {
