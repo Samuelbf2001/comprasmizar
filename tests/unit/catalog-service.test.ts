@@ -154,4 +154,42 @@ describe("CatalogService", () => {
       expect(dump).not.toContain("3001112233");
     });
   });
+
+  // Centros de costo (2026-09-12, decisión del dueño): catálogo nuevo, mismo criterio genérico de
+  // autoservicio que "works"/"tags" (canManageCatalog no lo trata como caso especial, a diferencia de
+  // societies/users/items/suppliers).
+  describe("centros de costo", () => {
+    it("sigue el mismo criterio de autoservicio que obras/etiquetas: bloqueado sin el feature, permitido con él", async () => {
+      expect(canManageCatalog(sixteam, "costCenters", false)).toBe(true);
+      expect(canManageCatalog(mizarAdmin, "costCenters", false)).toBe(false);
+      expect(canManageCatalog(mizarAdmin, "costCenters", true)).toBe(true);
+      expect(canManageCatalog(reviewer, "costCenters", true)).toBe(false);
+      const disabledFeature = deps({ feature: false });
+      await expect(disabledFeature.service.create("costCenters", { name: "Administración", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FEATURE_DISABLED" });
+      const enabledFeature = deps({ feature: true });
+      await expect(enabledFeature.service.create("costCenters", { name: "Administración", active: true }, mizarAdmin)).resolves.toMatchObject({ name: "Administración", active: true });
+    });
+    it("crea un centro compartido (sin societyId) y uno atado a una sociedad, y edita código/empresa/estado", async () => {
+      const fixture = deps();
+      const compartido = await fixture.service.create("costCenters", { name: "Administración", active: true }, sixteam);
+      expect(compartido).not.toHaveProperty("societyId");
+      const propio = await fixture.service.create("costCenters", { name: "Obra Norte", code: "CC-01", societyId: "soc-1", active: true }, sixteam);
+      expect(propio).toMatchObject({ name: "Obra Norte", code: "CC-01", societyId: "soc-1", active: true });
+      const patched = await fixture.service.patch("costCenters", propio.id, { code: "CC-02", active: false }, sixteam);
+      expect(patched).toMatchObject({ code: "CC-02", active: false, societyId: "soc-1" });
+      // Desasignar la sociedad (pasa a compartido) y el código: igual que approverId/nit en otros catálogos.
+      const compartidoAhora = await fixture.service.patch("costCenters", propio.id, { societyId: null, code: null }, sixteam);
+      expect(compartidoAhora).toMatchObject({ societyId: null, code: null });
+    });
+    it("traduce el choque de nombre/código a un conflicto claro, y audita SIN perder el código (no es PII)", async () => {
+      const race = deps({ uniqueViolation: true });
+      await expect(race.service.create("costCenters", { name: "Duplicado", active: true }, sixteam)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringMatching(/centro de costo/i) });
+      const fixture = deps(), created = await fixture.service.create("costCenters", { name: "Administración", code: "CC-99", societyId: "soc-1", active: true }, sixteam);
+      // La auditoría debe reconocer la forma de CatalogCostCenter (código propio) y NO confundirla con
+      // la de una obra (que también tiene societyId pero no code) — ver el orden del chequeo en
+      // safeSnapshot (lib/services/catalog-service.ts).
+      expect(fixture.audits.at(-1)).toMatchObject({ event: "creada", data: { after: { name: "Administración", code: "CC-99", societyId: "soc-1", active: true } } });
+      void created;
+    });
+  });
 });

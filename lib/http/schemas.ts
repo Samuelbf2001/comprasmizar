@@ -78,7 +78,12 @@ export const requisitionActionSchema = z.discriminatedUnion("action", [
   // revisor pueda DESASIGNAR el aprobador ya elegido, no solo cambiarlo — ver ReviewInput en
   // procurement-service.ts. Un `""` del cliente también debe poder desasignar: se acepta con el mismo
   // significado que `null` en vez de rechazarlo con un error de formato UUID.
-  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), workId: z.string().uuid().optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
+  // costCenterId (2026-09-12, decisión del dueño): MISMA forma que approverId — uuid, "" o null admiten
+  // desasignar explícitamente; ausente = no tocar (y, junto a un workId nuevo, hereda el de la obra —
+  // ver resolveCostCenter en lib/domain/rules.ts). Repetir aquí el olvido de approverId (ver el
+  // comentario de reviewedItemSchema, arriba) tumbaría TODA la revisión en cuanto la pantalla mande este
+  // campo — por eso se cruza con una prueba (tests/unit/http-api.test.ts).
+  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), workId: z.string().uuid().optional(), costCenterId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
   z.object({ action: z.literal("send_for_approval") }).strict(),
   // "approve" pierde multiSupplier: aprobar ya no genera órdenes (eso es generate_orders, un paso propio).
   z.object({ action: z.literal("approve") }).strict(),

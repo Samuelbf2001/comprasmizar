@@ -1,5 +1,5 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
-import type { AuditRepository, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
+import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, resolveCostCenter, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import type { AuditRepository, CatalogCostCenter, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
 // H3 (docs/plan-rendimiento.md, Fase 3): los repositorios de listas devuelven `T[]` sin `query` o
@@ -27,7 +27,13 @@ export interface CreateRequisitionInput { type: RequisitionType; societyId?: str
  * `if (input.approverId)` trataba `""` igual que `undefined` (conservaba el anterior en silencio) y
  * sendForApproval() seguía notificando al aprobador viejo aunque el revisor hubiera intentado limpiarlo.
  */
-export interface ReviewInput { tagId: string; approverId?: string | null; workId?: string; paymentTerms?: string; items: ItemLine[]; }
+/**
+ * `costCenterId` sigue la MISMA semántica de tres estados que `approverId` (ver el comentario de arriba):
+ * `undefined` = no tocar (y, si además llega `workId` nuevo sin centro previo, se HEREDA el de la obra —
+ * ver `resolveCostCenter` en lib/domain/rules.ts); `null`/`""` = desasignar explícitamente; un string no
+ * vacío = asignar ese centro (validado en `review()` contra el mismo catálogo que `isEligibleApprover`).
+ */
+export interface ReviewInput { tagId: string; approverId?: string | null; workId?: string; costCenterId?: string | null; paymentTerms?: string; items: ItemLine[]; }
 export interface PettyCashInput { workId: string; date: string; concept: string; tagId: string; amount: number; attachmentUrl?: string; }
 /** Reunión agosto 2026: entrada de `registerOrderPayment` — `date`/`amount`/`method` obligatorios, igual que `OrderPayment` en lib/domain/model.ts. */
 export interface OrderPaymentInput { date: string; amount: number; method: PaymentMethod; externalReference?: string; }
@@ -148,6 +154,7 @@ export class ProcurementService {
         tagId: requisition.tagId,
         approverId: requisition.approverId,
         workId: requisition.workId,
+        costCenterId: requisition.costCenterId,
         paymentTerms: requisition.paymentTerms,
         items: requisition.items,
       });
@@ -167,11 +174,37 @@ export class ProcurementService {
       // omite en create()); contra Postgres real el trigger `requisiciones_0_derivar_sociedad` ya la habrá
       // poblado al releer la fila, así que aquí NO se inventa una comparación permisiva: sin sociedad
       // conocida no hay forma de validar que la obra le pertenezca, y se exige explícitamente.
+      let assignedWork: CatalogWork | null = null;
       if (input.workId) {
         if (!requisition.societyId) throw new DomainError("INVALID_INPUT", "La requisición no tiene sociedad conocida para validar la obra");
         const work = await tx.catalogs.get("works", input.workId) as CatalogWork | null;
         if (!work || !work.active || work.societyId !== requisition.societyId) throw new DomainError("INVALID_INPUT", "La obra debe existir, estar activa y pertenecer a la sociedad de la requisición");
         requisition.workId = input.workId;
+        assignedWork = work;
+      }
+      // DECISIÓN DEL DUEÑO (Ernesto, 2026-09-12): si el revisor NO manda un centro explícito en ESTA
+      // llamada (input.costCenterId === undefined) Y la requisición todavía no tiene uno propio, se
+      // hereda el default de la obra EFECTIVA — la recién asignada arriba, o la que ya traía la
+      // requisición desde create() — UNA SOLA definición (resolveCostCenter, lib/domain/rules.ts), no
+      // repetida a mano aquí. Reutiliza `assignedWork` si esta misma llamada ya la trajo (sin una
+      // segunda consulta); si la obra viene de antes, se busca aquí. Si la requisición YA tenía un
+      // centro (elegido en una revisión anterior), esto no se lo pisa en silencio: seguir cambiando
+      // obra no debe deshacer una elección explícita del revisor.
+      if (input.costCenterId === undefined && !requisition.costCenterId && requisition.workId) {
+        const work = assignedWork ?? (await tx.catalogs.get("works", requisition.workId) as CatalogWork | null);
+        requisition.costCenterId = resolveCostCenter(requisition, work);
+      }
+      // M-6: mismo criterio de tres estados que approverId — `undefined` no toca; `null`/`""` desasigna;
+      // un string no vacío se valida (existe, activo, y su sociedad —si tiene una fija— coincide con la
+      // de la requisición o el centro es compartido) contra el mismo puerto que isEligibleApprover.
+      if (input.costCenterId !== undefined) {
+        const costCenterId = input.costCenterId || undefined;
+        if (costCenterId) {
+          if (!requisition.societyId) throw new DomainError("INVALID_INPUT", "La requisición no tiene sociedad conocida para validar el centro de costo");
+          const costCenter = await tx.catalogs.get("costCenters", costCenterId) as CatalogCostCenter | null;
+          if (!costCenter || !costCenter.active || (costCenter.societyId && costCenter.societyId !== requisition.societyId)) throw new DomainError("INVALID_INPUT", "El centro de costo debe existir, estar activo y ser compartido o de la sociedad de la requisición");
+        }
+        requisition.costCenterId = costCenterId;
       }
       // M-7 (QA reasignación, decisión consciente PENDIENTE de confirmar con el cliente): nada aquí
       // impide que un usuario con roles revisor+aprobador a la vez se asigne a sí mismo como approverId
@@ -211,7 +244,7 @@ export class ProcurementService {
         items: requisition.items,
       });
       if (afterReview !== beforeReview) {
-        await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId: requisition.approverId, workId: input.workId, paymentTerms: input.paymentTerms }, this.origin(context), tx.audit);
+        await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId: requisition.approverId, workId: input.workId, costCenterId: requisition.costCenterId, paymentTerms: input.paymentTerms }, this.origin(context), tx.audit);
       }
       return requisition;
     });
@@ -257,7 +290,12 @@ export class ProcurementService {
   // "sendForApproval" ya NO exige proveedor final por ítem (decisión de la reunión: aprobar y designar
   // proveedor son roles distintos). Sí exige obra: gastos.obra_id es NOT NULL y sin obra generateOrders
   // reventaría al registrar el gasto. Las líneas declinadas no cuentan como "vigentes" (approvedLines).
-  async sendForApproval(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0); if (!requisition.workId || !requisition.tagId || !requisition.approverId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra, etiqueta y valor cotizado mayor a cero son obligatorios en cada ítem vigente"); await this.transition(requisition, "en_aprobacion", actor, "enviada_aprobacion", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition);
+  async sendForApproval(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0);
+    // Centros de costo (2026-09-12, decisión del dueño): exigido junto a obra/etiqueta/aprobador — sin
+    // él, generateOrders() no tendría de dónde copiar el centro del gasto (ver la nota "ojo" en su
+    // propio cuerpo, más abajo). El caso común nunca lo dispara: review() ya lo hereda de la obra en
+    // cuanto se asigna una; solo falta aquí si el revisor lo desasignó explícitamente sin volver a elegir uno.
+    if (!requisition.workId || !requisition.tagId || !requisition.approverId || !requisition.costCenterId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra, etiqueta, centro de costo, aprobador y valor cotizado mayor a cero son obligatorios en cada ítem vigente"); await this.transition(requisition, "en_aprobacion", actor, "enviada_aprobacion", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition);
     // UN AVISO POR APROBADOR, no uno por requisición. Con aprobadores por ítem hay varias personas a
     // las que les toca algo, y cada una tiene que recibir SU mensaje con SUS ítems. El `approverId`
     // viaja en el payload porque es lo que luego deja al emisor elegir el contexto correcto: el
@@ -387,6 +425,16 @@ export class ProcurementService {
       if (requisition.status !== "aprobada") throw new DomainError("INVALID_STATE", "La requisición debe estar aprobada para generar órdenes");
       const existing = await transactional.orders.listByRequisition(id); if (existing.length > 0) return existing;
       if (!requisition.workId) throw new DomainError("INVALID_STATE", "La requisición no tiene obra asignada");
+      // Centros de costo (2026-09-12, decisión del dueño): sendForApproval() ya lo exige, así que en el
+      // camino normal requisition.costCenterId siempre está poblado aquí — este fallback (la obra) y el
+      // guardián de abajo son defensa en profundidad para una requisición que llegó a "aprobada" ANTES
+      // de que existiera esta exigencia (dato legado), no una vía alterna para saltársela.
+      const work = requisition.costCenterId ? null : (await transactional.catalogs.get("works", requisition.workId) as CatalogWork | null);
+      const costCenterId = resolveCostCenter(requisition, work);
+      // ojo: `saveExpense` hace `on conflict do nothing` — esta es la ÚNICA oportunidad de fijar
+      // centro_costo_id en el gasto; si aquí falta, ningún UPDATE posterior lo va a arreglar. Por eso se
+      // falla ALTO Y CLARO en vez de dejar nacer un gasto sin centro en silencio.
+      if (!costCenterId) throw new DomainError("COST_CENTER_REQUIRED", "No fue posible determinar el centro de costo del gasto: la requisición y su obra no tienen uno asignado");
       const lines = approvedLines(requisition.items); assertHasApprovedLine(lines);
       const groups = groupOrderItems(lines, requisition.type), orderType = orderTypeFor(requisition.type), year = this.now().getFullYear(), orders: Order[] = [];
       const paymentTerms = requisition.paymentTerms;
@@ -408,7 +456,7 @@ export class ProcurementService {
         await transactional.orders.save(order); orders.push(order);
         await this.audit("orden", order.id, "generada", actor, { requisitionId: id, supplierId }, this.origin(context), transactional.audit);
         const base = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).base, 0), iva = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).iva, 0);
-        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, orderDate, base, iva, total: sumLines(groupLines) };
+        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, orderDate, base, iva, total: sumLines(groupLines), costCenterId };
         await transactional.expenses.save(expense);
         await this.audit("gasto", expense.id, "registrado", actor, { orderId: order.id, supplierId }, this.origin(context), transactional.audit);
       }

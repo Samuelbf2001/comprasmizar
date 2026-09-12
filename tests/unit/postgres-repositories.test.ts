@@ -220,6 +220,31 @@ describe("PostgresPorts.saveRequisition — upsert por línea, sin DELETE incond
     await ports.saveRequisition(baseRequisition({ approverId: "aprobador-2" }));
     expect(store.get("req-1")?.aprobador_id).toBe("aprobador-2");
   });
+
+  // Centros de costo (2026-09-12): MISMO bug de clase que aprobador_id/fecha_requerida/obra_id/forma_pago
+  // arriba — "ya van cuatro veces". review() escribe requisition.costCenterId en memoria; si esta
+  // columna no estuviera en el `on conflict do update set`, el cambio se auditaría pero nunca sobreviviría
+  // a un segundo guardado.
+  it("centro_costo_id está en el on conflict do update de requisiciones y sobrevive a un segundo guardado", async () => {
+    const store = new Map<string, { centro_costo_id: string | null }>();
+    const sql = fakeSql((call) => {
+      if (/^insert into requisiciones/i.test(call.text)) {
+        // Índice 13: un puesto después de aprobador_id (12, ver el test de arriba).
+        const id = call.values[0] as string, costCenterId = call.values[13] as string | null;
+        const existing = store.get(id);
+        if (!existing) store.set(id, { centro_costo_id: costCenterId });
+        else if (/centro_costo_id\s*=\s*excluded\.centro_costo_id/.test(call.text)) store.set(id, { centro_costo_id: costCenterId });
+        return [];
+      }
+      return [];
+    });
+    const ports = new PostgresPorts(sql);
+    await ports.saveRequisition(baseRequisition({ costCenterId: "centro-1" }));
+    const insertRequisicion = sql.calls.find((call) => /^insert into requisiciones/i.test(call.text));
+    expect(insertRequisicion!.text).toMatch(/centro_costo_id\s*=\s*excluded\.centro_costo_id/);
+    await ports.saveRequisition(baseRequisition({ costCenterId: "centro-2" }));
+    expect(store.get("req-1")?.centro_costo_id).toBe("centro-2");
+  });
 });
 
 describe("PostgresPorts.getRequisition / listVisibleRequisitions — aprobador_id ya no se resuelve por join con etiquetas", () => {
@@ -573,6 +598,21 @@ describe("PostgresPorts.listVisibleExpenses con query — filtros y paginación 
     expect(select.text).toMatch(/order by g\.fecha_orden desc, g\.id desc/);
   });
 
+  // Centros de costo (2026-09-12): filtro aditivo, mismo patrón que workId — solo aparece en el SELECT
+  // cuando la query lo trae, y compara contra la columna del GASTO (instantánea), no contra la obra.
+  it("aplica el filtro de centro de costo (g.centro_costo_id) cuando la query lo trae, y lo omite cuando no", async () => {
+    const sql = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { costCenterId: "centro-1" });
+    const select = sql.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
+    expect(select.text).toMatch(/g\.centro_costo_id = \?/);
+    expect(select.values).toContain("centro-1");
+
+    const sinFiltro = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sinFiltro).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    const selectSinFiltro = sinFiltro.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
+    expect(selectSinFiltro.text).not.toMatch(/centro_costo_id/);
+  });
+
   // `periodo` es `date` (columna generada) y postgres.js la entrega como Date: `String(Date)` da
   // "Tue Sep 01 2026 ..." y el antiguo `.slice(0, 7)` producía "Tue Sep", que nunca coincidía con
   // el "YYYY-MM" que comparan el filtro por periodo de la pantalla de gastos y calculateDashboard.
@@ -583,6 +623,24 @@ describe("PostgresPorts.listVisibleExpenses con query — filtros y paginación 
     expect(paid.period).toBe("2026-09");
     expect(paid.date).toBe("2026-09-05");
     expect(unpaid.period).toBeUndefined();
+  });
+});
+
+// Centros de costo (2026-09-12): `saveExpense` inserta con `on conflict do nothing` — a diferencia de
+// aprobador_id/centro_costo_id de requisiciones (arriba, que sobreviven a un REGUARDADO), aquí la única
+// oportunidad de fijar el centro es el propio INSERT: no hay UPDATE posterior que lo arregle si falta.
+describe("PostgresPorts.saveExpense — centro_costo_id viaja en el INSERT (única oportunidad, on conflict do nothing)", () => {
+  it("incluye centro_costo_id en el INSERT cuando el gasto lo trae, y NULL cuando no", async () => {
+    const sql = fakeSql(() => []);
+    const ports = new PostgresPorts(sql);
+    await ports.saveExpense({ id: "gasto-1", workId: "work-1", origin: "requisicion", referenceId: "orden-1", orderDate: "2026-09-12", base: 1000, iva: 190, total: 1190, costCenterId: "centro-1" });
+    const insert = sql.calls.find((call) => /^insert into gastos/i.test(call.text))!;
+    expect(insert.text).toMatch(/centro_costo_id/);
+    expect(insert.values).toContain("centro-1");
+
+    await ports.saveExpense({ id: "gasto-2", workId: "work-1", origin: "requisicion", referenceId: "orden-2", orderDate: "2026-09-12", base: 1000, iva: 190, total: 1190 });
+    const segundoInsert = sql.calls.filter((call) => /^insert into gastos/i.test(call.text))[1]!;
+    expect(segundoInsert.values).toContain(null);
   });
 });
 

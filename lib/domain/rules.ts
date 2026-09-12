@@ -134,6 +134,18 @@ export function sumApprovedLines(lines: readonly ItemLine[]): Money { return sum
 export function itemApproverId(line: ItemLine, headApproverId?: string): string | undefined {
   return line.approverId ?? headApproverId;
 }
+/**
+ * DECISIÓN DEL DUEÑO (Ernesto, 2026-09-12): «obra y centro de costo están correlacionados, pero varias
+ * obras pueden ir a un centro de costo; en la requisición debe salir predeterminado el centro asociado
+ * a esa obra y poder cambiarse». Es LA función de esa herencia — el de la requisición si lo tiene, y si
+ * no el de la obra — y por eso vive aquí y no repetida en el servicio: dos copias de esta regla es como
+ * se consigue que un gasto nazca con un centro distinto del que la ficha de revisión mostraba como
+ * "heredado". Tipado estructural a propósito (no `CatalogWork` de lib/services/contracts.ts): el
+ * dominio no depende de la capa de servicios, igual que `itemApproverId` no depende de nada externo.
+ */
+export function resolveCostCenter(requisition: { costCenterId?: string }, work?: { costCenterId?: string } | null): string | undefined {
+  return requisition.costCenterId ?? work?.costCenterId ?? undefined;
+}
 /** Ítems que ESTE actor tiene pendientes de decidir. Vacío no significa "no le toca": puede haberlos ya decidido. */
 export function pendingItemsFor(actorId: string, lines: readonly ItemLine[], headApproverId?: string): ItemLine[] {
   return lines.filter((line) => (line.status ?? "pendiente") === "pendiente" && itemApproverId(line, headApproverId) === actorId);

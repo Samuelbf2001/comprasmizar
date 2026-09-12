@@ -79,6 +79,9 @@ const HARNESSES = [
   // Pagos parciales de orden (2026-09-12): el trigger que impide que la suma de pagos supere el
   // total del gasto de la orden, y la RLS de lectura/escritura — ninguno de los dos vive en TypeScript.
   path.join(ROOT, "supabase", "tests", "pagos_orden_verification.sql"),
+  // Centros de costo (2026-09-12, decisión del dueño): catálogo nuevo + herencia obra->requisición y
+  // copia (no derivación) en gasto.
+  path.join(ROOT, "supabase", "tests", "centros_costo_verification.sql"),
 ];
 
 function migrationFiles(): string[] {
