@@ -15,7 +15,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectedScreen, clearRouteCache } from "../../components/screens/connected";
 import { initialLoadState, invalidateCatalogs } from "../../components/screens/connected/data";
 
@@ -23,6 +23,36 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+/**
+ * PRECARGA DE dashboard-charts.tsx (recharts). Sin esto, "RF-1105: cache en memoria por
+ * ruta" fallaba de forma intermitente SOLO con la suite completa en paralelo (aislado
+ * pasaba siempre en <1 s) — el mismo patrón ya diagnosticado y arreglado en
+ * connected-dashboard.test.tsx (ver su git log): un `import()` dinámico pesado colándose
+ * DENTRO de la ventana del aserto.
+ *
+ * El dashboard entra por `next/dynamic` (screen.tsx) y, ya montado, dashboard.tsx importa
+ * a su vez `dashboard-charts` — el único módulo del árbol que trae recharts (~150 KB con
+ * sus dependencias). Medido aquí mismo con `console.time` bajo `npx vitest run
+ * --reporter=verbose`: `dashboard`, `requisitions` y `orders` transforman en <1 ms (ya
+ * están en caché del worker por los describes anteriores de este archivo), pero
+ * `dashboard-charts` tardó 1148 ms en frío. La prueba de la ruta cacheada visita "/" dos
+ * veces: la primera dispara ese import (recharts empieza a descargarse en cuanto el
+ * dashboard pinta sus KPIs); la segunda hace asertos SÍNCRONOS (sin `waitFor`) porque su
+ * propósito es demostrar que la ruta ya visitada no vuelve a pasar por el esqueleto — pero
+ * si la suite completa compite por CPU y esa carga tarda de más, puede seguir sin
+ * resolver cuando toca esa segunda visita y el test entero se va por encima de su tope.
+ *
+ * Precargar aquí, una vez por archivo, saca ese coste de cualquier ventana de aserto:
+ * cuando corren los tests, `next/dynamic` ya resuelve contra el módulo cacheado y lo que
+ * se mide vuelve a ser el render, no el transform de recharts. El camino dinámico real
+ * (dashboard.tsx -> dashboard-charts.tsx) se sigue ejercitando igual; no se mockea nada.
+ * Subir los timeouts habría escondido el síntoma sin tocar la causa, y de paso habría
+ * hecho que un fallo real tardara mucho más en dar la cara.
+ */
+beforeAll(async () => {
+  await import("../../components/screens/connected/dashboard-charts");
+}, 30_000);
 
 // El cache de rutas es un singleton de módulo (a propósito: debe sobrevivir a la
 // navegación real de la SPA). Entre pruebas hay que vaciarlo para que una no herede
