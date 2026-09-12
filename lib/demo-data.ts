@@ -27,7 +27,7 @@ export const navigation = [
   { label: 'Gastos y caja menor', href: '/gastos', icon: 'Receipt', hidden: true },
   { label: 'Catálogos', href: '/catalogos', icon: 'Database' },
   { label: 'Proveedores', href: '/proveedores', icon: 'Truck' },
-  { label: 'Mensajes Kapso', href: '/mensajes', icon: 'MessageSquare' },
+  { label: 'Mensajes de WhatsApp', href: '/mensajes', icon: 'MessageSquare' },
   { label: 'Reportes', href: '/reportes', icon: 'BarChart3' },
 ];
 

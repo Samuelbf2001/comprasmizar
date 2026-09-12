@@ -566,6 +566,12 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .kapso-connection-pending h2{margin-top:var(--space-2)}
 .kapso-connection-pending p{max-width:520px}
 .kapso-domain{font-family:var(--font-mono)}
+/* Ayuda plegada: una línea cerrada por defecto, sin ruido sobre el iframe (pedido de Ernesto). */
+.mensajes-ayuda{margin-top:var(--space-2);font-size:var(--text-3xs);color:var(--muted)}
+.mensajes-ayuda summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:var(--space-1);color:var(--navy-light);font-weight:600}
+.mensajes-ayuda summary::-webkit-details-marker{display:none}
+.mensajes-ayuda[open] summary{margin-bottom:var(--space-2)}
+.mensajes-ayuda p{margin:0;max-width:560px}
 
 /* =========================================================================
    Mensajes
