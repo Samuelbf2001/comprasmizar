@@ -42,8 +42,12 @@
 .intro h1{margin:var(--space-2) 0 0;font:800 clamp(1.8rem,7vw,2.35rem)/1.06 var(--font-display);letter-spacing:-.035em}
 .intro p{margin:var(--space-2) 0 0;color:var(--muted);font-size:var(--text-sm);line-height:1.5}
 .changeButton{display:inline-flex;align-items:center;justify-content:center;flex:none;border:0;background:transparent;color:var(--navy);padding:0 var(--space-2);font-size:var(--text-xs);text-decoration:underline;text-underline-offset:3px}
-.progress{display:grid;grid-template-columns:1fr 1fr;gap:3px;margin:var(--space-5) 0 var(--space-4);padding:4px;border-radius:15px;background:#e8e7e2}
-.progressStep{min-height:48px;display:flex;align-items:center;gap:var(--space-2);padding:0 var(--space-2);border-radius:11px;color:#69717b;font-size:var(--text-3xs);font-weight:800}
+/* Cinco columnas, una por fase del asistente (2026-09-11): tipo+empresa, tus datos, material, cuándo
+   y resumen. `item` cubre varias pantallas —una por artículo— pero cuenta como una sola columna aquí,
+   porque su número de pantallas no es fijo (ver `ETAPAS` en public-request.tsx). */
+.progress{display:grid;grid-template-columns:repeat(5,1fr);gap:3px;margin:var(--space-5) 0 var(--space-4);padding:4px;border-radius:15px;background:#e8e7e2}
+.progressStep{min-height:48px;min-width:0;display:flex;align-items:center;justify-content:center;gap:6px;padding:0 4px;border-radius:11px;color:#69717b;font-size:var(--text-3xs);font-weight:800}
+.progressStep span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .progressStep strong{width:24px;height:24px;display:grid;place-items:center;flex:none;border-radius:50%;background:#d3d6d1;color:#53606b;font-size:var(--text-3xs)}
 .progressCurrent{background:var(--paper);color:var(--navy);box-shadow:0 1px 3px rgba(18,32,48,.12)}
 .progressCurrent strong{background:var(--navy);color:#fff}
@@ -76,6 +80,20 @@
 .lineRemove{min-height:32px;margin:-6px 0;border:0;background:transparent;color:var(--rojo-dark);font:800 var(--text-3xs)/1 var(--font-body);text-decoration:underline;text-underline-offset:3px}
 .addLine{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);width:100%;min-height:52px;border:1px dashed #aeb9b1;border-radius:13px;background:#fff;color:var(--navy);font:800 var(--text-sm)/1 var(--font-body)}
 .addLine:active{transform:scale(.98)}
+/* Pantalla de artículo (2026-09-11): "Atrás", "Agregar otro artículo" e "Ir al resumen" apilados en
+   vez de en fila — con tres botones y un solo artículo en pantalla, una fila los habría dejado
+   angostos justo donde el pulgar necesita más margen. */
+.itemActions{display:grid;gap:var(--space-3)}
+/* Resumen (2026-09-11): los datos capturados como pares etiqueta/valor, y los artículos como una
+   lista aparte porque llevan su propia acción ("Quitar"). */
+.summaryMeta{display:grid;gap:var(--space-3);margin:0;padding:var(--space-4);border:1px solid #d8dcd7;border-radius:16px;background:#fcfcfa}
+.summaryRow{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);font-size:var(--text-xs)}
+.summaryRow dt{margin:0;color:var(--muted);font-weight:700}
+.summaryRow dd{margin:0;text-align:right;font-weight:800;color:#2c333b}
+.summaryList{display:grid;gap:var(--space-3);margin:0;padding:0;list-style:none}
+.summaryLine{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);padding:var(--space-3) var(--space-4);border:1px solid #d8dcd7;border-radius:14px;background:#fff}
+.summaryLine b{display:block;font-size:var(--text-xs);color:#2c333b;font-weight:800}
+.summaryLine span{display:block;margin-top:2px}
 .uploadLabel{position:relative;display:flex;align-items:flex-start;gap:var(--space-3);min-height:72px;padding:var(--space-3);border:1px dashed #aeb9b1;border-radius:14px;background:#fff;color:var(--muted);cursor:pointer}
 .uploadLabel input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .uploadLabel svg{flex:none;color:#316645}
@@ -91,7 +109,10 @@
 .successDemo b{display:block;margin-bottom:2px;font-size:var(--text-3xs);letter-spacing:.07em;text-transform:uppercase}
 .trackingCode{display:inline-block;margin-top:var(--space-4);padding:var(--space-2) var(--space-3);border-radius:10px;background:#e8edf0;color:var(--navy);font:800 var(--text-sm) var(--font-mono);letter-spacing:.04em}
 .closedGate{max-width:580px}
-@media(max-width:430px){.header{min-height:66px;padding:0 var(--space-3)}.brandMark{width:32px;height:32px;border-radius:10px}.brandName{font-size:var(--text-xs)}.main,.footer{width:calc(100% - 28px)}.main{padding-top:var(--space-5)}.stepHeader,.stepBody,.accessCard{padding:var(--space-4)}.choiceGrid,.twoColumns{grid-template-columns:1fr}.progressStep{padding:0 var(--space-2)}.progressStep span{font-size:10px}.actionRow{grid-template-columns:1fr}.secondaryButton{width:100%}.footer{font-size:10px}}
+/* Con cinco columnas (antes eran dos) no cabe el texto de las cuatro fases que no están activas en
+   una pantalla de 390px: se deja solo el número/check, y la etiqueta de texto se reserva a la fase
+   actual, que es la única que hace falta leer para saber dónde se está. */
+@media(max-width:430px){.header{min-height:66px;padding:0 var(--space-3)}.brandMark{width:32px;height:32px;border-radius:10px}.brandName{font-size:var(--text-xs)}.main,.footer{width:calc(100% - 28px)}.main{padding-top:var(--space-5)}.stepHeader,.stepBody,.accessCard{padding:var(--space-4)}.choiceGrid,.twoColumns{grid-template-columns:1fr}.progressStep{padding:0 2px}.progressStep span{display:none}.progressCurrent span{display:inline;font-size:10px}.actionRow{grid-template-columns:1fr}.secondaryButton{width:100%}.footer{font-size:10px}}
 
 /* Una sola pantalla para todos los dispositivos (2026-09-11). El layout ya era fluido —columna
    centrada con tope de 600px—, que es exactamente lo que debe ser un formulario en escritorio: no

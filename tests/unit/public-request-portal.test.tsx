@@ -1,22 +1,28 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicRequestRedirect, PublicRequestScreen } from "../../components/screens/public-request";
 
-// Portal público UNIFICADO (2026-09-11). Hasta ahora había dos formularios —escritorio y móvil— con
-// dos árboles de componentes y dos URLs; sobrevive uno solo, responsive, sobre la base móvil (mejor
-// validación por campo y CSS aislado). Este archivo cubre sobre la pantalla que queda TODO lo que
-// antes se repartía entre las dos: la compuerta, el selector del enlace general, el envío con
-// `x-public-link-token`, las respuestas 202/503 y la fecha opcional.
+// Portal público GUIADO (11-sep-2026). Hasta ahora eran dos pasos («¿Para quién y cuándo?» con todo
+// mezclado, y un paso 2 con la lista completa de ítems); Ernesto pidió que se pareciera al Flow de
+// WhatsApp que ya le gusta al cliente (`integrations/whatsapp-flow/requisicion-captura.flow.json`):
+// pantallas cortas, una cosa a la vez, un artículo por pantalla con "Agregar otro artículo" / "Ir al
+// resumen", y un RESUMEN antes de enviar. No es una copia del Flow pantalla por pantalla —aquí "tus
+// datos" tiene su propio momento—, pero la idea es la misma.
 //
-// Lo de la fecha viene de la reunión: el esquema HTTP (lib/http/schemas.ts, `z.string().date()
-// .optional()`) ya la aceptaba opcional en los tres canales, pero el portal la marcaba `required` y,
-// peor, mandaba '' cuando quedaba vacía. Una fecha VÁLIDA no es lo mismo que AUSENTE, y como el
-// endpoint público responde 202 neutro incluso cuando el esquema rechaza, el fallo nunca se veía.
+// El recorrido nuevo, de principio a fin:
+//   1. "¿Qué vas a solicitar?" — tipo de solicitud y empresa (si el enlace no la trae fija).
+//   2. "Tus datos" — nombre y teléfono opcional.
+//   3. Un artículo por pantalla — descripción, cantidad, unidad, proveedor/enlace opcionales.
+//   4. "¿Para cuándo?" — fecha opcional y observaciones.
+//   5. "Resumen" — todo lo capturado, con la empresa por NOMBRE y los artículos numerados, y el
+//      botón final "Enviar solicitud".
 //
-// Y desde el 11-sep-2026 cubre además los cuatro cambios que Ernesto pidió probando el portal:
-// EMPRESA en vez de obra, teléfono OPCIONAL, VARIOS ítems por requisición y unidad de texto libre.
+// Este archivo cubre sobre la pantalla que queda TODO lo que antes se repartía entre las dos
+// versiones (escritorio y móvil): la compuerta, el selector del enlace general, el envío con
+// `x-public-link-token`, las respuestas 202/503, la fecha opcional y ahora el recorrido guiado
+// completo, incluyendo volver atrás y quitar un artículo desde el resumen.
 const workId = "11111111-1111-4111-8111-111111111111";
 const societyId = "22222222-2222-4222-8222-222222222222";
 const token = "a".repeat(64);
@@ -61,10 +67,23 @@ async function pasarCompuerta() {
   await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
   fireEvent.change(campo("access-code"), { target: { value: "clave-1234" } });
   fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
-  await screen.findByText(/¿Para quién y cuándo\?/i);
+  await screen.findByText(/¿Qué vas a solicitar\?/i);
 }
 
-/** Llena el ítem `indice` del paso 2. Las claves llevan el índice desde que hay varios. */
+/** Pantalla 1: tipo (ya trae "Compra de material" por defecto) y empresa cuando hace falta elegirla. */
+function pasarTipoYEmpresa({ company }: { company?: string } = {}) {
+  if (company) fireEvent.change(document.querySelector('select[name="company"]') as HTMLSelectElement, { target: { value: company } });
+  fireEvent.click(screen.getByRole("button", { name: /^Continuar$/i }));
+}
+
+/** Pantalla 2: nombre y teléfono opcional. */
+function pasarDatos({ nombre = "Ana Solicitante", telefono = "" }: { nombre?: string; telefono?: string } = {}) {
+  fireEvent.change(campo("requestor"), { target: { value: nombre } });
+  if (telefono) fireEvent.change(campo("phone"), { target: { value: telefono } });
+  fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
+}
+
+/** Llena el artículo `indice`, que ocupa su propia pantalla. */
 function llenarItem(indice: number, { descripcion, cantidad, unidad }: { descripcion: string; cantidad: string; unidad: string }) {
   fireEvent.change(campo(`description-${indice}`), { target: { value: descripcion } });
   fireEvent.change(campo(`quantity-${indice}`), { target: { value: cantidad } });
@@ -72,21 +91,26 @@ function llenarItem(indice: number, { descripcion, cantidad, unidad }: { descrip
 }
 
 /**
- * Completa los dos pasos y envía. `conFecha` false limpia la fecha, que viene precargada con hoy;
- * `telefono` vacío deja el campo sin tocar, que es el caso nuevo (ya no es obligatorio).
+ * Recorre las cinco pantallas con UN artículo y llega al resumen. `conFecha` false limpia la fecha,
+ * que viene precargada con hoy; `telefono` vacío deja el campo sin tocar (ya no es obligatorio).
  */
-async function rellenarYEnviar({ conFecha = false, telefono = "3001234567" }: { conFecha?: boolean; telefono?: string } = {}) {
-  if (!conFecha) fireEvent.change(campo("date"), { target: { value: "" } });
-  fireEvent.change(campo("requestor"), { target: { value: "Ana Solicitante" } });
-  // El teléfono se pide AQUÍ desde 2026-09-11, no en la compuerta.
-  if (telefono) fireEvent.change(campo("phone"), { target: { value: telefono } });
-  fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
-  await screen.findByText(/Describe lo que necesitas\./i);
+async function llegarAlResumen({ conFecha = false, telefono = "3001234567" }: { conFecha?: boolean; telefono?: string } = {}) {
+  pasarDatos({ telefono });
+  await screen.findByText(/^Artículo 1$/i);
   llenarItem(0, { descripcion: "Cemento gris", cantidad: "5", unidad: "bulto" });
-  fireEvent.click(screen.getByRole("button", { name: /Enviar requisición/i }));
+  fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+  await screen.findByText(/¿Para cuándo\?/i);
+  if (!conFecha) fireEvent.change(campo("date"), { target: { value: "" } });
+  fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+  await screen.findByRole("heading", { name: /^Resumen$/i });
 }
 
-describe("portal público unificado — enlace por obra", () => {
+async function rellenarYEnviar(opciones: { conFecha?: boolean; telefono?: string } = {}) {
+  await llegarAlResumen(opciones);
+  fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
+}
+
+describe("portal público guiado — enlace por obra", () => {
   beforeEach(() => {
     setHash({ obra: workId, token });
     stubFetch();
@@ -96,7 +120,7 @@ describe("portal público unificado — enlace por obra", () => {
   it("la compuerta pide SOLO la contraseña, no el teléfono", async () => {
     // Ernesto había pedido «para ingresar, solo una contraseña», y la compuerta pedía además el
     // teléfono. No era un segundo control —cualquier número servía—, solo un obstáculo de más antes
-    // de ver el formulario. El teléfono se pide después, en el paso 1, donde se entiende para qué es.
+    // de ver el formulario. El teléfono se pide después, en "Tus datos", donde se entiende para qué.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
     expect(campo("access-code")).toBeInTheDocument();
@@ -104,14 +128,10 @@ describe("portal público unificado — enlace por obra", () => {
 
     // Sin contraseña no se pasa: la compuerta es de cliente, pero el servidor revalida al enviar.
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
-    expect(screen.queryByText(/¿Para quién y cuándo\?/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/¿Qué vas a solicitar\?/i)).not.toBeInTheDocument();
   });
 
   it("una contraseña INCORRECTA se dice en la puerta, no después de llenar el formulario", async () => {
-    // El fallo que Ernesto vio en producción el 11-sep-2026. La compuerta solo comprobaba, en el
-    // navegador, que la contraseña tuviera cuatro caracteres: con una equivocada entrabas, llenabas
-    // los dos pasos, pulsabas enviar y leías «La estamos validando» — el 202 del endpoint de
-    // radicación es neutro a propósito. Ni requisición, ni aviso, ni forma de saberlo.
     stubFetch({ [ACCESO]: { status: 200, body: { ok: false } } });
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
@@ -119,13 +139,11 @@ describe("portal público unificado — enlace por obra", () => {
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
 
     expect(await screen.findByText(/Contraseña incorrecta/i)).toBeInTheDocument();
-    expect(screen.queryByText(/¿Para quién y cuándo\?/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/¿Qué vas a solicitar\?/i)).not.toBeInTheDocument();
     expect(llamadasA(RADICACION)).toHaveLength(0);
   });
 
   it("si no se puede preguntar, lo dice y tampoco pasa", async () => {
-    // Sin red no se sabe si la contraseña vale. Dejar pasar «por si acaso» devolvería el fallo
-    // silencioso; decir "incorrecta" mandaría a buscar otra contraseña a quien tiene la buena.
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("sin red")));
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
@@ -133,7 +151,7 @@ describe("portal público unificado — enlace por obra", () => {
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
 
     expect(await screen.findByText(/No pudimos comprobar la contraseña/i)).toBeInTheDocument();
-    expect(screen.queryByText(/¿Para quién y cuándo\?/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/¿Qué vas a solicitar\?/i)).not.toBeInTheDocument();
   });
 
   it("con el portal apagado dice que no está disponible, no que la contraseña esté mal", async () => {
@@ -147,13 +165,15 @@ describe("portal público unificado — enlace por obra", () => {
     expect(screen.queryByText(/Contraseña incorrecta/i)).not.toBeInTheDocument();
   });
 
-  it("la contraseña que abrió la compuerta es la que viaja en el envío", async () => {
-    // La comprobación de la puerta es una cortesía para quien se equivoca, no una autorización: el
-    // endpoint de radicación vuelve a verificarla contra la base. Por eso tiene que viajar.
+  it("recorre las cinco pantallas y la contraseña que abrió la compuerta es la que viaja en el envío", async () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     expect(JSON.parse(String(llamadasA(ACCESO)[0][1]?.body)).code).toBe("clave-1234");
+
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
     await rellenarYEnviar();
+
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
     expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body)).code).toBe("clave-1234");
   });
@@ -167,12 +187,10 @@ describe("portal público unificado — enlace por obra", () => {
   });
 
   it("el teléfono es OPCIONAL: sin él se radica igual y no viaja en el envío", async () => {
-    // Ernesto, 11-sep-2026: «el teléfono no lo hagas obligatorio». Quien no lo da se queda sin acuse
-    // por WhatsApp, que es el precio y se dice en el formulario; lo que no puede es quedarse sin
-    // radicar. Y el campo NO puede viajar vacío: `phone: ''` lo rechaza el esquema (min 7) y, con el
-    // 202 neutro, ese rechazo se vería igual que un envío correcto.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
     const etiqueta = screen.getByText(/Tu teléfono/i);
     expect(etiqueta.closest("label")).not.toHaveTextContent("*");
 
@@ -182,28 +200,28 @@ describe("portal público unificado — enlace por obra", () => {
   });
 
   it("pero un teléfono A MEDIAS sí se rechaza, en vez de mandarse roto", async () => {
-    // Opcional no es "cualquier cosa": un número incompleto es peor que ninguno, porque el aviso se
-    // encola contra un destinatario que no existe y nadie se entera de que no llegó.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
     fireEvent.change(campo("requestor"), { target: { value: "Ana Solicitante" } });
     fireEvent.change(campo("phone"), { target: { value: "300" } });
     fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
     expect(await screen.findByText(/teléfono está incompleto/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Describe lo que necesitas\./i)).not.toBeInTheDocument();
-  });
-
-  it("el teléfono escrito en el paso 1 viaja en el envío", async () => {
-    render(<PublicRequestScreen demoMode={false} publicConfigured />);
-    await pasarCompuerta();
-    await rellenarYEnviar();
-    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
-    expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body)).phone).toBe("3001234567");
+    expect(screen.queryByText(/^Artículo 1$/i)).not.toBeInTheDocument();
   });
 
   it("la fecha no está marcada como obligatoria", async () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
+    pasarDatos();
+    await screen.findByText(/^Artículo 1$/i);
+    llenarItem(0, { descripcion: "Cemento gris", cantidad: "5", unidad: "bulto" });
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+
     const dateLabel = screen.getByText(/Fecha requerida/i);
     expect(dateLabel.closest("label")).not.toHaveTextContent("*");
     expect(campo("date")).not.toBeRequired();
@@ -212,6 +230,8 @@ describe("portal público unificado — enlace por obra", () => {
   it("envía SIN requiredDate cuando la fecha queda vacía, y con el token del enlace en la cabecera", async () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
     await rellenarYEnviar();
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
     const [url, init] = llamadasA(RADICACION)[0];
@@ -225,20 +245,21 @@ describe("portal público unificado — enlace por obra", () => {
   });
 
   it("un 202 lleva a la pantalla de recibido, que NO revela consecutivo", async () => {
-    // El 202 es neutro a propósito (anti-enumeración): decir "recibida" no puede convertirse en
-    // decir "válida", ni entregar un número con el que tantear.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
     await rellenarYEnviar();
     await screen.findByText(/La estamos validando/i);
     expect(document.body.textContent).not.toMatch(/REQ-\d{4}-\d{4}/);
   });
 
   it("un 503 dice que el servicio no está disponible, sin fingir éxito", async () => {
-    // Solo la RADICACIÓN cae: la compuerta tiene que dejar pasar para llegar a probarlo.
     stubFetch({ "/api/public/requisitions": { status: 503, body: { error: "service_unavailable" } } });
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
     await rellenarYEnviar();
     await screen.findByText(/no está disponible/i);
     expect(screen.queryByText(/La estamos validando/i)).not.toBeInTheDocument();
@@ -247,32 +268,44 @@ describe("portal público unificado — enlace por obra", () => {
 
 // Ernesto, 11-sep-2026: «solo dejas agregar un ítem por form, debe permitir ir agregando más». Quien
 // necesitaba cemento, arena y varilla radicaba tres requisiciones, y el revisor recibía tres pedidos
-// que en la obra eran uno.
-describe("portal público — varios ítems en una requisición", () => {
+// que en la obra eran uno. Ahora cada artículo tiene su propia pantalla, y solo se puede quitar uno
+// desde el resumen.
+describe("portal público guiado — varios artículos, uno por pantalla", () => {
   beforeEach(() => {
     setHash({ obra: workId, token });
     stubFetch();
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
-  async function llegarAlPaso2() {
+  async function llegarAlPrimerArticulo() {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
-    fireEvent.change(campo("date"), { target: { value: "" } });
-    fireEvent.change(campo("requestor"), { target: { value: "Ana Solicitante" } });
-    fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
-    await screen.findByText(/Describe lo que necesitas\./i);
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
+    pasarDatos();
+    await screen.findByText(/^Artículo 1$/i);
   }
 
-  it("los tres ítems viajan en un solo envío", async () => {
-    await llegarAlPaso2();
+  it("los tres artículos viajan en un solo envío", async () => {
+    await llegarAlPrimerArticulo();
     llenarItem(0, { descripcion: "Cemento gris", cantidad: "20", unidad: "bulto" });
-    fireEvent.click(screen.getByRole("button", { name: /Agregar otro ítem/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    await screen.findByText(/^Artículo 2$/i);
     llenarItem(1, { descripcion: "Arena de río", cantidad: "3", unidad: "m³" });
-    fireEvent.click(screen.getByRole("button", { name: /Agregar otro ítem/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    await screen.findByText(/^Artículo 3$/i);
     llenarItem(2, { descripcion: "Varilla 1/2", cantidad: "40", unidad: "und" });
-    fireEvent.click(screen.getByRole("button", { name: /Enviar requisición/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+    await screen.findByRole("heading", { name: /^Resumen$/i });
 
+    // El resumen numera los tres, con cantidad y unidad.
+    expect(screen.getByText(/1\. Cemento gris/i)).toBeInTheDocument();
+    expect(screen.getByText(/2\. Arena de río/i)).toBeInTheDocument();
+    expect(screen.getByText(/3\. Varilla 1\/2/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
     const { items } = JSON.parse(String(llamadasA(RADICACION)[0][1]?.body));
     expect(items).toHaveLength(3);
@@ -281,53 +314,89 @@ describe("portal público — varios ítems en una requisición", () => {
     expect(items[1]).toMatchObject({ quantity: 3, unit: "m³" });
   });
 
-  it("el error señala el ítem que falla, no siempre el primero", async () => {
-    // Las claves de error llevan el índice y coinciden con el `name` del campo, que es como el foco
-    // encuentra el que falta. Sin índice, quien se equivocara en el tercero vería el aviso sobre el
-    // primero, que está bien lleno.
-    await llegarAlPaso2();
+  it("no deja avanzar de artículo con la descripción vacía", async () => {
+    await llegarAlPrimerArticulo();
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    expect(await screen.findByText(/Describe lo que necesitas\./i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Artículo 2$/i)).not.toBeInTheDocument();
+  });
+
+  it("«Atrás» en el artículo 2 vuelve al artículo 1 sin perder lo escrito, no a «Tus datos»", async () => {
+    await llegarAlPrimerArticulo();
     llenarItem(0, { descripcion: "Cemento gris", cantidad: "20", unidad: "bulto" });
-    fireEvent.click(screen.getByRole("button", { name: /Agregar otro ítem/i }));
-    fireEvent.change(campo("quantity-1"), { target: { value: "3" } });
-    fireEvent.change(campo("unit-1"), { target: { value: "m³" } });
-    fireEvent.click(screen.getByRole("button", { name: /Enviar requisición/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    await screen.findByText(/^Artículo 2$/i);
 
-    await waitFor(() => expect(campo("description-1")).toHaveAttribute("aria-invalid", "true"));
-    expect(campo("description-0")).not.toHaveAttribute("aria-invalid", "true");
-    expect(llamadasA(RADICACION)).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /Atrás/i }));
+    await screen.findByText(/^Artículo 1$/i);
+    expect(campo("description-0")).toHaveValue("Cemento gris");
   });
 
-  it("quitar un ítem se lleva su error, no lo hereda el que ocupa su lugar", async () => {
-    // Los índices no son identidades: si los errores no se recorren con las líneas, quitar el ítem 1
-    // deja el aviso rojo sobre el 2 —que nadie ha tocado— y el formulario acusa de lo que no es.
-    await llegarAlPaso2();
-    fireEvent.click(screen.getByRole("button", { name: /Agregar otro ítem/i }));
+  it("volver a pulsar «Agregar otro artículo» tras retroceder NO duplica la pantalla", async () => {
+    await llegarAlPrimerArticulo();
+    llenarItem(0, { descripcion: "Cemento gris", cantidad: "20", unidad: "bulto" });
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    await screen.findByText(/^Artículo 2$/i);
     llenarItem(1, { descripcion: "Arena de río", cantidad: "3", unidad: "m³" });
-    fireEvent.click(screen.getByRole("button", { name: /Enviar requisición/i }));
-    await waitFor(() => expect(campo("description-0")).toHaveAttribute("aria-invalid", "true"));
 
-    fireEvent.click(screen.getAllByRole("button", { name: /Quitar/i })[0]);
-    await waitFor(() => expect(campo("description-0")).toHaveValue("Arena de río"));
-    expect(campo("description-0")).not.toHaveAttribute("aria-invalid", "true");
+    fireEvent.click(screen.getByRole("button", { name: /Atrás/i }));
+    await screen.findByText(/^Artículo 1$/i);
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    // Vuelve al artículo 2 QUE YA EXISTÍA, con lo que tenía, no a un tercero en blanco.
+    await screen.findByText(/^Artículo 2$/i);
+    expect(campo("description-1")).toHaveValue("Arena de río");
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+    const listaArticulos = await screen.findByRole("list", { name: /Artículos de la requisición/i });
+    expect(within(listaArticulos).getAllByRole("listitem")).toHaveLength(2);
   });
 
-  it("con un solo ítem no se puede quitar: sin ítems no hay requisición", async () => {
-    // El esquema exige `items.min(1)`; un paso 2 vacío daría 202 neutro sin requisición, que es el
-    // peor final posible porque parece que sí se envió.
-    await llegarAlPaso2();
+  it("con un solo artículo, el resumen no ofrece quitarlo: sin ítems no hay requisición", async () => {
+    await llegarAlPrimerArticulo();
+    llenarItem(0, { descripcion: "Cemento gris", cantidad: "20", unidad: "bulto" });
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+    await screen.findByRole("heading", { name: /^Resumen$/i });
     expect(screen.queryByRole("button", { name: /Quitar/i })).toBeNull();
   });
 
+  it("se puede quitar un artículo desde el resumen, y el envío ya no lo incluye", async () => {
+    await llegarAlPrimerArticulo();
+    llenarItem(0, { descripcion: "Cemento gris", cantidad: "20", unidad: "bulto" });
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    await screen.findByText(/^Artículo 2$/i);
+    llenarItem(1, { descripcion: "Arena de río", cantidad: "3", unidad: "m³" });
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+    await screen.findByRole("heading", { name: /^Resumen$/i });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Quitar/i })[0]);
+    expect(screen.queryByText(/Cemento gris/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/1\. Arena de río/i)).toBeInTheDocument();
+    // Con uno solo, ya no se puede quitar.
+    expect(screen.queryByRole("button", { name: /Quitar/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const { items } = JSON.parse(String(llamadasA(RADICACION)[0][1]?.body));
+    expect(items).toHaveLength(1);
+    expect(items[0].description).toBe("Arena de río");
+  });
+
   it("la unidad se escribe, no se elige de una lista cerrada", async () => {
-    // Ernesto: «las unidades no son un desplegable». El `datalist` sugiere las habituales y deja
-    // escribir "cuñete" a quien lo necesite; un `select` habría dejado ese pedido sin unidad.
-    await llegarAlPaso2();
+    await llegarAlPrimerArticulo();
     expect(campo("unit-0").tagName).toBe("INPUT");
     expect(campo("unit-0")).toHaveAttribute("list", "portal-unidades");
     expect(document.querySelectorAll("#portal-unidades option").length).toBeGreaterThan(0);
 
     llenarItem(0, { descripcion: "Sellante", cantidad: "2", unidad: "cuñete" });
-    fireEvent.click(screen.getByRole("button", { name: /Enviar requisición/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
     expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body)).items[0].unit).toBe("cuñete");
   });
@@ -341,32 +410,23 @@ describe("lo tecleado ANTES de hidratar no se pierde", () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
   it("con los valores escritos directamente en el DOM, la compuerta se abre igual", async () => {
-    // Reproduce el caso real: el navegador pinta el HTML del servidor y acepta escritura de
-    // inmediato, pero React aún no ha hidratado, así que esas pulsaciones NO pasan por ningún
-    // `onChange`. Escribir en `input.value` sin despachar evento es exactamente eso.
-    //
-    // Con la compuerta controlada, el estado seguía vacío y pulsar Continuar respondía "Ingresa la
-    // contraseña del portal y un teléfono válido" con los campos a la vista y llenos — el maestro no
-    // tenía forma de entender qué pasaba. Con la compuerta no controlada, los valores se leen del
-    // formulario al enviar y entra.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
 
     campo("access-code").value = "clave-1234";
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
 
-    expect(await screen.findByText(/¿Para quién y cuándo\?/i)).toBeInTheDocument();
+    expect(await screen.findByText(/¿Qué vas a solicitar\?/i)).toBeInTheDocument();
   });
 
   it("y ese valor llega al envío, no uno vacío", async () => {
-    // No basta con que la compuerta se abra: la contraseña viaja en el cuerpo del POST y el servidor
-    // la valida. Si se hubiera perdido, el portal respondería 202 neutro y la requisición no se
-    // crearía — el fallo más caro de todos, porque no se ve por ninguna parte.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
     campo("access-code").value = "clave-1234";
     fireEvent.click(screen.getByRole("button", { name: /Continuar/i }));
-    await screen.findByText(/¿Para quién y cuándo\?/i);
+    await screen.findByText(/¿Qué vas a solicitar\?/i);
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
 
     await rellenarYEnviar();
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
@@ -376,9 +436,6 @@ describe("lo tecleado ANTES de hidratar no se pierde", () => {
   });
 
   it("al volver con «Cambiar datos» los campos conservan lo ya escrito", async () => {
-    // Efecto colateral de quitar el estado controlado: al desmontarse la compuerta, los campos
-    // volverían en blanco. `defaultValue` lo evita, y obligar a reescribir la contraseña sería un
-    // castigo gratuito.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     fireEvent.click(screen.getByRole("button", { name: /Cambiar datos/i }));
@@ -390,7 +447,7 @@ describe("lo tecleado ANTES de hidratar no se pierde", () => {
 // Reunión 2026-08-31 y recordatorio de Ernesto el 11-sep-2026: «en el formulario público aparece
 // seleccionar obra y ya dijimos era empresa». La obra es el centro de costo y la asigna el revisor,
 // que es quien sabe a qué contrato cargar el gasto; el Flow de WhatsApp ya funcionaba así.
-describe("portal público unificado — ruta general, se elige EMPRESA", () => {
+describe("portal público guiado — ruta general, se elige EMPRESA", () => {
   beforeEach(() => {
     // Sin `obra` en el fragmento: la ruta es general y la empresa se elige en el formulario.
     setHash({ token });
@@ -399,11 +456,6 @@ describe("portal público unificado — ruta general, se elige EMPRESA", () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
 
   it("pide la lista de empresas SIN contraseña, y antes incluso de pasar la compuerta", async () => {
-    // Los nombres de las sociedades están en la marca y en las facturas: no son un secreto que
-    // proteger. Pedir la contraseña aquí no escondería nada y crearía un oráculo (lista llena =
-    // acertaste), que es exactamente lo que tenía el endpoint de obras al que sustituye y por lo que
-    // se borró. Sin contraseña que esperar, la lista se pide al abrir y el selector ya está lleno
-    // cuando se llega al paso 1.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(llamadasA(EMPRESAS)).toHaveLength(1));
     const llamada = llamadasA(EMPRESAS)[0];
@@ -415,8 +467,6 @@ describe("portal público unificado — ruta general, se elige EMPRESA", () => {
   });
 
   it("ya no hay selector de obra en el formulario", async () => {
-    // La obra la asigna el revisor. Dejar el selector viejo haría que el solicitante eligiera el
-    // centro de costo, que es justo lo que la reunión quitó de su lado.
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     await screen.findByRole("option", { name: "Constructora Mizar S.A.S." });
@@ -424,30 +474,33 @@ describe("portal público unificado — ruta general, se elige EMPRESA", () => {
     expect(screen.getByText(/La obra la asigna quien revisa/i)).toBeInTheDocument();
   });
 
-  it("no deja continuar sin elegir empresa, y al elegirla manda societyId (no workId)", async () => {
+  it("no deja continuar sin elegir empresa, y al elegirla manda societyId (no workId); el resumen la muestra por NOMBRE", async () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     await screen.findByRole("option", { name: "Constructora Mizar S.A.S." });
-    fireEvent.change(campo("requestor"), { target: { value: "Ana Solicitante" } });
-    fireEvent.click(screen.getByRole("button", { name: /Continuar a material/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Continuar$/i }));
     expect(await screen.findByText("Selecciona la empresa.")).toBeInTheDocument();
 
     fireEvent.change(document.querySelector('select[name="company"]') as HTMLSelectElement, { target: { value: societyId } });
-    await rellenarYEnviar();
+    fireEvent.click(screen.getByRole("button", { name: /^Continuar$/i }));
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
+    await llegarAlResumen();
+
+    // La empresa se muestra por NOMBRE en el resumen, no por su id.
+    expect(screen.getByText("Constructora Mizar S.A.S.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
-    const envio = llamadasA(RADICACION)[0];
-    const body = JSON.parse(String(envio?.[1]?.body));
+    const body = JSON.parse(String(llamadasA(RADICACION)[0][1]?.body));
     expect(body.societyId).toBe(societyId);
     expect(body).not.toHaveProperty("workId");
   });
 });
 
-describe("portal público unificado — enlace inválido", () => {
+describe("portal público guiado — enlace inválido", () => {
   afterEach(() => { cleanup(); window.location.hash = ""; });
 
   it("SIN fragmento la ruta abre la compuerta: es pública", async () => {
-    // Decisión de Ernesto (2026-09-11): «que el enlace no necesite un token, sea ruta pública».
-    // Entrar a /requisiciones/publica a secas tiene que llevar a la contraseña, no al aviso.
     window.location.hash = "";
     stubFetch();
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
@@ -457,27 +510,17 @@ describe("portal público unificado — enlace inválido", () => {
   });
 
   it("un fragmento MAL FORMADO sí se rechaza, en vez de degradarse a acceso libre", async () => {
-    // La distinción importa: "sin enlace" es entrada normal, pero un enlace roto es un error de quien
-    // lo repartió. Tratarlo como acceso libre escondería ese error.
     setHash({ obra: workId, token: "no-son-64-hex" });
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Este enlace no está habilitado/i)).toBeInTheDocument());
   });
 
   it("el fragmento SE QUEDA en la URL, para que recargar no rompa el enlace", async () => {
-    // Ernesto recargó la página y le salió "Este enlace no está habilitado": el portal borraba el
-    // fragmento con `history.replaceState` nada más leerlo, así que al recargar ya no quedaba token.
-    // Lo mismo pasaba con "atrás" y con guardar en favoritos — justo lo que hace quien se queda a
-    // medias y vuelve luego.
-    //
-    // La precaución estaba mal dirigida: lo que nunca puede ir en la URL es la CONTRASEÑA, y nunca
-    // ha ido. El token ES el enlace que se reparte.
     setHash({ obra: workId, token });
     const { unmount } = render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
     expect(window.location.hash).toContain(token);
 
-    // Segundo montaje = recargar: con el fragmento intacto, vuelve a la compuerta y no al aviso.
     unmount();
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await waitFor(() => expect(screen.getByText(/Pide lo que tu obra necesita/i)).toBeInTheDocument());
@@ -495,8 +538,6 @@ describe("ruta heredada /requisiciones/publica-movil", () => {
   afterEach(() => { cleanup(); window.location.hash = ""; });
 
   it("reenvía al formulario único CONSERVANDO el fragmento", async () => {
-    // Es lo único que impide romper los enlaces móviles ya repartidos: el fragmento no viaja al
-    // servidor, así que un redirect de servidor llegaría sin token y el portal diría "no habilitado".
     const replace = vi.fn();
     const original = window.location;
     Object.defineProperty(window, "location", {
