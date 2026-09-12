@@ -28,22 +28,27 @@ const catalogs: ReportBundle["catalogs"] = {
     { id: "juliana", name: "Juliana Rojas" },
     { id: "nelson", name: "Nelson Ríos" },
   ],
+  // Centros de costo (UI, 2026-09-12).
+  costCenters: [
+    { id: "cc-1", name: "Administrativo" },
+    { id: "cc-2", name: "Obra civil" },
+  ],
 };
 
 const rows: ReportBundle["rows"] = [
   {
     id: "req-1", consecutive: "REQ-2026-0001", date: "2026-08-15T00:00:00.000Z",
-    workId: "work-1", tagId: "tag-1", approverIds: ["juliana"], status: "aprobada",
+    workId: "work-1", tagId: "tag-1", costCenterId: "cc-1", approverIds: ["juliana"], status: "aprobada",
     supplierIds: [], base: 100_000, iva: 19_000, total: 119_000, items: [],
   },
   {
     id: "req-2", consecutive: "REQ-2026-0002", date: "2026-09-05T00:00:00.000Z",
-    workId: "work-2", tagId: "tag-2", approverIds: ["nelson"], status: "en_aprobacion",
+    workId: "work-2", tagId: "tag-2", costCenterId: "cc-2", approverIds: ["nelson"], status: "en_aprobacion",
     supplierIds: [], base: 50_000, iva: 9_500, total: 59_500, items: [],
   },
   {
     id: "req-3", consecutive: "REQ-2026-0003", date: "2026-09-20T00:00:00.000Z",
-    workId: "work-1", tagId: "tag-1", approverIds: ["juliana"], status: "en_aprobacion",
+    workId: "work-1", tagId: "tag-1", costCenterId: "cc-1", approverIds: ["juliana"], status: "en_aprobacion",
     supplierIds: [], base: 30_000, iva: 5_700, total: 35_700, items: [],
   },
 ];
@@ -111,13 +116,29 @@ describe("RF-1301: filtros de Reportes mandan los parámetros correctos (pantall
     expect(screen.queryByRole("link", { name: /descargar excel/i })).toBeNull();
   });
 
-  it("el compilado mensual (con mes elegido) muestra subtotales por obra", () => {
+  // Centros de costo (UI, 2026-09-12): el compilado mensual ahora agrupa por CENTRO DE COSTO (Daniel:
+  // "el compilado debe ir por obra/centro de costo", y desde que el centro es una entidad propia es el
+  // eje correcto — varias obras pueden compartir centro); la obra queda como desglose dentro de cada
+  // centro.
+  it("el compilado mensual (con mes elegido) agrupa por centro de costo, con la obra como desglose", () => {
     render(<ConnectedReports data={{ rows, catalogs }} role="Contabilidad" />);
-    expect(screen.queryByTestId("report-work-subtotals")).toBeNull();
+    expect(screen.queryByTestId("report-costcenter-subtotals")).toBeNull();
     fireEvent.change(screen.getByLabelText("Mes"), { target: { value: "2026-09" } });
-    const subtotals = screen.getByTestId("report-work-subtotals");
+    const subtotals = screen.getByTestId("report-costcenter-subtotals");
     expect(subtotals).toBeInTheDocument();
+    // Solo REQ-2026-0002 (work-2/cc-2) y REQ-2026-0003 (work-1/cc-1) caen en septiembre.
+    expect(subtotals.textContent).toContain("Administrativo");
+    expect(subtotals.textContent).toContain("Obra civil");
     expect(subtotals.textContent).toContain("Altos de La Pradera");
     expect(subtotals.textContent).toContain("Bodega Industrial Norte");
+  });
+
+  it("filtra por centro de costo ocultando filas de otros centros, y el enlace de descarga lleva costCenterId", () => {
+    render(<ConnectedReports data={{ rows, catalogs }} role="Contabilidad" />);
+    fireEvent.change(screen.getByLabelText("Centro de costo"), { target: { value: "cc-1" } });
+    expect(screen.getByText("REQ-2026-0001")).toBeInTheDocument();
+    expect(screen.getByText("REQ-2026-0003")).toBeInTheDocument();
+    expect(screen.queryByText("REQ-2026-0002")).toBeNull();
+    expect(exportHref()).toContain("costCenterId=cc-1");
   });
 });

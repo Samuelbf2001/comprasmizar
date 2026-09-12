@@ -31,6 +31,8 @@ vi.mock("../../lib/infrastructure/postgres-repositories", () => ({
       societies: new Map([["soc-1", "Constructora Mizar S.A.S."]]),
       users: new Map([["juliana", "Juliana Rojas"], ["nelson", "Nelson Ríos"]]),
       suppliers: new Map([["prov-1", "Cementos del Oriente SAS"]]),
+      // Centros de costo (UI, 2026-09-12).
+      costCenters: new Map([["cc-1", "Administrativo"], ["cc-2", "Obra civil"]]),
     }),
   }),
 }));
@@ -42,7 +44,7 @@ const item = (overrides: Partial<Requisition["items"][number]> = {}) => ({
 });
 const requisition = (overrides: Partial<Requisition> = {}): Requisition => ({
   id: "req-1", consecutive: "REQ-2026-0001", type: "compra", channel: "web", status: "aprobada",
-  societyId: "soc-1", workId: "work-1", tagId: "tag-1", approverId: "juliana",
+  societyId: "soc-1", workId: "work-1", tagId: "tag-1", approverId: "juliana", costCenterId: "cc-1",
   items: [item({ finalSupplierId: "prov-1" })], createdAt: "2026-09-10T12:00:00.000Z", ...overrides,
 });
 
@@ -84,29 +86,32 @@ describe("GET /api/reports/export — RF-1301", () => {
     expect(response.headers.get("Content-Disposition")).toBe("attachment; filename=reporte-requisiciones.xlsx");
   });
 
-  it("el libro trae una fila por requisición con los nombres resueltos, y una hoja de ítems", async () => {
+  it("el libro trae una fila por requisición con los nombres resueltos (incluido el centro de costo), y una hoja de ítems", async () => {
     const response = await GET(requestFor("?period=2026-09"));
     const workbook = await loadWorkbookFromResponse(response);
     const summary = workbook.getWorksheet("Reporte")!;
-    expect(summary.getRow(1).values).toEqual(expect.arrayContaining(["Consecutivo", "Empresa", "Aprobador(es)", "Proveedor(es)"]));
+    expect(summary.getRow(1).values).toEqual(expect.arrayContaining(["Consecutivo", "Empresa", "Centro de costo", "Aprobador(es)", "Proveedor(es)"]));
     const dataRow = summary.getRow(2).values as unknown[];
-    expect(dataRow).toEqual(expect.arrayContaining(["REQ-2026-0001", "Constructora Mizar S.A.S.", "Altos de La Pradera", "Materiales", "Juliana Rojas", "aprobada", "Cementos del Oriente SAS"]));
+    expect(dataRow).toEqual(expect.arrayContaining(["REQ-2026-0001", "Constructora Mizar S.A.S.", "Altos de La Pradera", "Administrativo", "Materiales", "Juliana Rojas", "aprobada", "Cementos del Oriente SAS"]));
     const items = workbook.getWorksheet("Ítems")!;
     expect(items.rowCount).toBe(2); // encabezado + 1 ítem
   });
 
-  it("con periodo (compilado mensual), agrupa por obra con un subtotal por obra", async () => {
-    mocks.rows = [requisition({ id: "req-1", workId: "work-1" }), requisition({ id: "req-2", workId: "work-2", consecutive: "REQ-2026-0002" })];
+  // Centros de costo (UI, 2026-09-12): el compilado mensual agrupa por CENTRO DE COSTO (ya no por
+  // obra) — varias obras pueden compartir un mismo centro; la obra sigue viajando como columna propia.
+  it("con periodo (compilado mensual), agrupa por centro de costo con un subtotal por centro", async () => {
+    mocks.rows = [requisition({ id: "req-1", costCenterId: "cc-1" }), requisition({ id: "req-2", costCenterId: "cc-2", consecutive: "REQ-2026-0002" })];
     const response = await GET(requestFor("?period=2026-09"));
     const workbook = await loadWorkbookFromResponse(response);
     const summary = workbook.getWorksheet("Reporte")!;
     const texts = summary.getSheetValues().flat().filter((value): value is string => typeof value === "string");
-    expect(texts.some((value) => value.startsWith("Subtotal "))).toBe(true);
+    expect(texts).toContain("Subtotal Administrativo");
+    expect(texts).toContain("Subtotal Obra civil");
     expect(texts).toContain("TOTAL GENERAL");
   });
 
-  it("sin periodo, NO agrupa por obra (export ad-hoc queda plano)", async () => {
-    mocks.rows = [requisition({ id: "req-1", workId: "work-1" }), requisition({ id: "req-2", workId: "work-2", consecutive: "REQ-2026-0002" })];
+  it("sin periodo, NO agrupa por centro de costo (export ad-hoc queda plano)", async () => {
+    mocks.rows = [requisition({ id: "req-1", costCenterId: "cc-1" }), requisition({ id: "req-2", costCenterId: "cc-2", consecutive: "REQ-2026-0002" })];
     const response = await GET(requestFor());
     const workbook = await loadWorkbookFromResponse(response);
     const summary = workbook.getWorksheet("Reporte")!;

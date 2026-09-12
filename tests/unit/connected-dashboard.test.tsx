@@ -171,6 +171,32 @@ describe("RF-1102: cola de atención y actividad reciente en el dashboard conect
     expect(await screen.findByText("Sin etiqueta")).toBeInTheDocument();
   });
 
+  // Centros de costo (UI, 2026-09-12): serie ejecutiva "Gasto por centro de costo", ADEMÁS de la de
+  // obra (no en su lugar) — mismo patrón de accesibilidad (texto alternativo con los totales exactos).
+  it("renders the expense-by-cost-center chart's accessible text alternative with the exact totals", async () => {
+    render(
+      <ConnectedDashboard
+        data={{
+          metrics: {
+            byStatus: {},
+            expenseByCostCenter: [
+              { key: "cc-1", total: 700_000 },
+              { key: "", total: 100_000 },
+            ],
+          },
+          catalogs: { ...catalogs, costCenters: [{ id: "cc-1", name: "Administrativo" }] },
+        }}
+        go={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByRole("img", { name: /Gasto por centro de costo/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Administrativo")).toBeInTheDocument();
+    expect(screen.getByText("Sin centro de costo")).toBeInTheDocument();
+    expect(screen.getByText(/700\.000/)).toBeInTheDocument();
+  });
+
   it("still renders the four scoped stat cards unchanged", () => {
     render(
       <ConnectedDashboard

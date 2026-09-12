@@ -95,6 +95,9 @@ function order(row: DbRow): Order {
     // `orderSelectColumns()`/`orderFromJoins()` — mismo criterio que requisitionConsecutive/lines de
     // arriba, ver el comentario de `Order.paidAmount` en lib/domain/model.ts.
     paidAmount: row.pagado_total != null ? asNumber(row.pagado_total) : undefined,
+    // Centros de costo (UI, 2026-09-12): mismo criterio de ausencia que requisitionConsecutive/workId
+    // de arriba — undefined (no "—") cuando el SELECT no hizo el join, nunca un "sin centro" falso.
+    costCenterId: row.requisicion_centro_costo_id != null ? String(row.requisicion_centro_costo_id) : undefined,
   };
 }
 // Reunión 2026-09: `fecha` (fecha de pago) y `periodo` (mes de `fecha`) son NULL en la BD mientras la
@@ -229,9 +232,13 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     // p. ej. contabilidad filtrando por "aprobador = Juliana"). "etiqueta" es una columna directa.
     const tagFilter = query.tagId ? this.sql`and r.etiqueta_id = ${query.tagId}` : this.sql``;
     const approverFilter = query.approverId ? this.sql`and public.es_aprobador_de(r.id, ${query.approverId})` : this.sql``;
+    // Centros de costo (UI, 2026-09-12): filtro del reporte de requisiciones por el centro de costo
+    // EFECTIVO de la requisición (columna propia `requisiciones.centro_costo_id`, no la de la obra) —
+    // mismo `ListQuery.costCenterId` que ya usa `listVisibleExpenses`, aditivo igual que `tagFilter`.
+    const costCenterFilter = query.costCenterId ? this.sql`and r.centro_costo_id = ${query.costCenterId}` : this.sql``;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const cursorFilter = cursor ? this.sql`and (r.created_at, r.id) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : this.sql``;
-    const rows = await this.sql<DbRow[]>`select r.* from requisiciones r where true ${visibility} ${statusFilter} ${workFilter} ${tagFilter} ${approverFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by r.created_at desc, r.id desc limit ${limit + 1}`;
+    const rows = await this.sql<DbRow[]>`select r.* from requisiciones r where true ${visibility} ${statusFilter} ${workFilter} ${tagFilter} ${approverFilter} ${costCenterFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by r.created_at desc, r.id desc limit ${limit + 1}`;
     const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows;
     const ids = pageRows.map((row) => String(row.id));
     const itemRows = ids.length ? await this.sql<DbRow[]>`select * from requisicion_items where requisicion_id = any(${ids}::uuid[]) order by created_at` : [];
@@ -301,7 +308,11 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     // lo son porque `r.id` es su PK y ya está en el GROUP BY). `max` es un passthrough seguro: el
     // LATERAL correlaciona solo por `o.id`, así que vale lo mismo en cada una de las filas que el
     // `left join ... ri` de abajo pueda fanning-out para esa misma orden.
-    return this.sql`o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.fecha_requerida as requisicion_fecha_requerida, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids, coalesce(json_agg(json_build_object('id', ri.id, 'item_id', ri.item_id, 'descripcion_libre', ri.descripcion_libre, 'cantidad', ri.cantidad, 'unidad', ri.unidad, 'posible_proveedor_texto', ri.posible_proveedor_texto, 'link_producto', ri.link_producto, 'proveedor_final_id', ri.proveedor_final_id, 'valor_base', ri.valor_base, 'iva', ri.iva, 'estado', ri.estado, 'motivo_declinacion', ri.motivo_declinacion, 'iva_tasa', ri.iva_tasa, 'descuento_tasa', ri.descuento_tasa) order by ri.created_at) filter (where ri.id is not null), '[]') as lines, max(pago.pagado) as pagado_total`;
+    // `requisicion_centro_costo_id` (UI, 2026-09-12): centro de costo EFECTIVO de la requisición dueña
+    // (ver el comentario largo de `Order.costCenterId` en lib/domain/model.ts) — mismo alias por la
+    // misma razón que `requisicion_consecutivo`/`requisicion_obra_id` (evitar pisar una columna propia
+    // de `ordenes`, aunque hoy no exista una `centro_costo_id` en esa tabla: mantiene la convención).
+    return this.sql`o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.fecha_requerida as requisicion_fecha_requerida, r.centro_costo_id as requisicion_centro_costo_id, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids, coalesce(json_agg(json_build_object('id', ri.id, 'item_id', ri.item_id, 'descripcion_libre', ri.descripcion_libre, 'cantidad', ri.cantidad, 'unidad', ri.unidad, 'posible_proveedor_texto', ri.posible_proveedor_texto, 'link_producto', ri.link_producto, 'proveedor_final_id', ri.proveedor_final_id, 'valor_base', ri.valor_base, 'iva', ri.iva, 'estado', ri.estado, 'motivo_declinacion', ri.motivo_declinacion, 'iva_tasa', ri.iva_tasa, 'descuento_tasa', ri.descuento_tasa) order by ri.created_at) filter (where ri.id is not null), '[]') as lines, max(pago.pagado) as pagado_total`;
   }
   // `ri` cuelga del mismo `left join orden_items oi` que ya resolvía `item_ids`: si algún día ambos joins
   // dejan de compartir la misma fila, `lines` y `item_ids` dejarían de corresponder al mismo conjunto de
@@ -441,7 +452,7 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // elevados). `g.periodo = (period || '-01')::date` en vez de `to_char(...) = period`: compara
   // directamente contra la columna (permite usar los índices existentes sobre `periodo`); el `to_char`
   // solo se usa para FORMATEAR la clave de salida de expenseByPeriod, nunca en un WHERE.
-  async dashboardAggregates(actor: Actor, period: string): Promise<{ periodExpense: number; inProcessValue: number; expenseByWork: DashboardAmountByKey[]; expenseByTag: DashboardAmountByKey[]; expenseByPeriod: DashboardAmountByKey[] }> {
+  async dashboardAggregates(actor: Actor, period: string): Promise<{ periodExpense: number; inProcessValue: number; expenseByWork: DashboardAmountByKey[]; expenseByTag: DashboardAmountByKey[]; expenseByPeriod: DashboardAmountByKey[]; expenseByCostCenter: DashboardAmountByKey[] }> {
     const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and public.es_aprobador_de(r.id, ${actor.id})` : this.sql`and r.solicitante_id = ${actor.id}`;
     const periodStart = `${period}-01`;
     const totalsRows = await this.sql<{ period_expense: string; in_process_value: string }[]>`select coalesce(sum(g.valor_total) filter (where g.periodo = ${periodStart}::date), 0) as period_expense, coalesce(sum(g.valor_total) filter (where g.fecha is null), 0) as in_process_value from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility}`;
@@ -450,12 +461,16 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     // order by periodo desc limit 6, invertido en JS: mismo resultado final que groupExpenseByPeriod
     // (que ordena cronológico ascendente y se queda con los últimos `monthsBack`).
     const byPeriodRows = await this.sql<{ key: string; total: string }[]>`select to_char(g.periodo, 'YYYY-MM') as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.periodo is not null ${visibility} group by g.periodo order by g.periodo desc limit 6`;
+    // Centros de costo (UI, 2026-09-12): mismo criterio que byWorkRows/byTagRows arriba (solo gastos
+    // pagados, misma visibilidad por actor) — ver groupExpenseByCostCenter en lib/domain/rules.ts.
+    const byCostCenterRows = await this.sql<{ key: string | null; total: string }[]>`select g.centro_costo_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.centro_costo_id order by total desc`;
     const totals = totalsRows[0];
     return {
       periodExpense: asNumber(totals?.period_expense), inProcessValue: asNumber(totals?.in_process_value),
       expenseByWork: byWorkRows.map((row) => ({ key: String(row.key), total: asNumber(row.total) })),
       expenseByTag: byTagRows.map((row) => ({ key: row.key ? String(row.key) : "", total: asNumber(row.total) })),
       expenseByPeriod: byPeriodRows.map((row) => ({ key: row.key, total: asNumber(row.total) })).reverse(),
+      expenseByCostCenter: byCostCenterRows.map((row) => ({ key: row.key ? String(row.key) : "", total: asNumber(row.total) })),
     };
   }
   // H3: los `limit` gastos visibles más recientes, para buildRecentActivity — mismo fallback que la
@@ -645,14 +660,18 @@ export function postgresReportCatalogSource(databaseUrl = runtimeEnv().DATABASE_
     async load() {
       const sql = sharedPostgres(databaseUrl);
       const toMap = (rows: readonly { id: string; nombre: string }[]) => new Map(rows.map((row) => [String(row.id), String(row.nombre)]));
-      const [works, tags, societies, users, suppliers] = await Promise.all([
+      const [works, tags, societies, users, suppliers, costCenters] = await Promise.all([
         sql<{ id: string; nombre: string }[]>`select id, nombre from obras`,
         sql<{ id: string; nombre: string }[]>`select id, nombre from etiquetas`,
         sql<{ id: string; nombre: string }[]>`select id, nombre from sociedades`,
         sql<{ id: string; nombre: string }[]>`select id, nombre from usuarios`,
         sql<{ id: string; nombre: string }[]>`select id, razon_social as nombre from proveedores`,
+        // Centros de costo (UI, 2026-09-12): mismo criterio que las demás — sin `where activo = true`,
+        // una requisición histórica puede referenciar un centro ya desactivado y el reporte debe poder
+        // mostrar su nombre igual (ver el comentario largo de esta función más arriba).
+        sql<{ id: string; nombre: string }[]>`select id, nombre from centros_costo`,
       ]);
-      return { works: toMap(works), tags: toMap(tags), societies: toMap(societies), users: toMap(users), suppliers: toMap(suppliers) };
+      return { works: toMap(works), tags: toMap(tags), societies: toMap(societies), users: toMap(users), suppliers: toMap(suppliers), costCenters: toMap(costCenters) };
     },
   };
 }

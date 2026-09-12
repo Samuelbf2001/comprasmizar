@@ -105,6 +105,15 @@ export interface Order {
    * "no se preguntó".
    */
   paidAmount?: Money;
+  /**
+   * Centros de costo (UI, reunión 2026-09-12): centro de costo EFECTIVO de la requisición dueña
+   * (`Requisition.costCenterId`), resuelto por el mismo join que ya trae `requisitionConsecutive`/
+   * `workId` (ver `orderSelectColumns()`/`order(row)` en postgres-repositories.ts) — la orden no tiene
+   * centro de costo propio, hereda el de su requisición de origen. Ausente en los mismos caminos donde
+   * `requisitionConsecutive`/`workId` también lo están (fakes en memoria de los tests, lecturas que no
+   * hacen ese join).
+   */
+  costCenterId?: string;
 }
 /**
  * Un pago parcial de una orden. `date`/`amount`/`method` son obligatorios; `externalReference`
@@ -139,6 +148,10 @@ export interface DashboardMetrics {
   /** RF-1102/RF-706/RF-1103: agregados por el servicio después de calculateDashboard(); opcionales para no romper llamadas existentes. */
   attentionQueue?: DashboardQueueItem[]; recentActivity?: DashboardActivityItem[];
   expenseByWork?: DashboardAmountByKey[]; expenseByTag?: DashboardAmountByKey[]; expenseByPeriod?: DashboardAmountByKey[];
+  /** Centros de costo (UI, reunión 2026-09-12): gasto agrupado por centro de costo, mismo criterio y
+   *  mismo carácter opcional que `expenseByWork`/`expenseByTag` — ver `groupExpenseByCostCenter`
+   *  (lib/domain/rules.ts) y `dashboardAggregates` (lib/infrastructure/postgres-repositories.ts). */
+  expenseByCostCenter?: DashboardAmountByKey[];
 }
 
 /** Supplier records are deliberately separate from the generic catalogue shape: bank data must never leak through catalogue/bootstrap responses. */

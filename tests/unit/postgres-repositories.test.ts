@@ -361,6 +361,29 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
     const order = await ports.getOrder("o1");
     expect(order?.paidAmount).toBeUndefined();
   });
+
+  // Centros de costo (UI, 2026-09-12): centro EFECTIVO de la requisición dueña, resuelto en el MISMO
+  // join que ya trae requisicion_consecutivo/requisicion_obra_id — ver el comentario largo de
+  // Order.costCenterId en lib/domain/model.ts.
+  it("orderSelectColumns suma r.centro_costo_id as requisicion_centro_costo_id, y getOrder lo mapea a Order.costCenterId", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada", requisicion_centro_costo_id: "cc-1" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    const order = await ports.getOrder("o1");
+    const select = sql.calls.find((call) => /^select o\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/r\.centro_costo_id as requisicion_centro_costo_id/);
+    expect(order?.costCenterId).toBe("cc-1");
+  });
+
+  it("getOrder deja costCenterId undefined cuando la fila no trae requisicion_centro_costo_id", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    const order = await ports.getOrder("o1");
+    expect(order?.costCenterId).toBeUndefined();
+  });
   it("saveOrderPayment inserta en pagos_orden; los campos opcionales ausentes escriben NULL, no undefined", async () => {
     const sql = fakeSql();
     const ports = new PostgresPorts(sql);
@@ -519,6 +542,17 @@ describe("PostgresPorts.listVisibleRequisitions con query — filtros y paginaci
     await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { workId: "work-1" });
     const select = selectOf(sql)!;
     expect(select.text).not.toMatch(/etiqueta_id|es_aprobador_de/);
+  });
+
+  // Centros de costo (UI, 2026-09-12): filtro del reporte de requisiciones por el centro de costo
+  // EFECTIVO (columna propia de la requisición, no la de la obra) — mismo `ListQuery.costCenterId` que
+  // ya usa `listVisibleExpenses`.
+  it("aplica el filtro de centro de costo en el SELECT principal", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { costCenterId: "cc-1" });
+    const select = selectOf(sql)!;
+    expect(select.text).toMatch(/r\.centro_costo_id = \?/);
+    expect(select.values).toContain("cc-1");
   });
 });
 
@@ -683,6 +717,19 @@ describe("PostgresPorts — agregados del dashboard (H3): byStatus, pendingOrder
     const totals = sql.calls.find((call) => /^select coalesce\(sum/i.test(call.text))!;
     expect(totals.values).toContain("2026-08-01");
     expect(totals.text).toMatch(/g\.periodo = \?::date/);
+  });
+
+  // Centros de costo (UI, 2026-09-12): mismo criterio que byWorkRows/byTagRows — solo gastos pagados,
+  // misma visibilidad por actor — ver groupExpenseByCostCenter en lib/domain/rules.ts.
+  it("dashboardAggregates agrupa gasto por centro de costo (expenseByCostCenter)", async () => {
+    const sql = fakeSql((call) => (/^select g\.centro_costo_id as key/i.test(call.text)
+      ? [{ key: "cc-1", total: "300" }, { key: null, total: "50" }]
+      : []));
+    const aggregates = await new PostgresPorts(sql).dashboardAggregates({ id: "daniel", roles: ["revisor"] }, "2026-08");
+    expect(aggregates.expenseByCostCenter).toEqual([{ key: "cc-1", total: 300 }, { key: "", total: 50 }]);
+    const select = sql.calls.find((call) => /^select g\.centro_costo_id as key/i.test(call.text))!;
+    expect(select.text).toMatch(/where g\.fecha is not null/);
+    expect(select.text).toMatch(/group by g\.centro_costo_id/);
   });
 });
 

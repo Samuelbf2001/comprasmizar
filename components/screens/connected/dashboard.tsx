@@ -72,6 +72,12 @@ export function ConnectedDashboard({
     key
       ? (catalogs.tags.find((tag) => tag.id === key)?.name ?? "—")
       : "Sin etiqueta";
+  // Centros de costo (2026-09-12): mismo criterio que tagName arriba — clave "" representa gastos sin
+  // centro de costo asignado (ver groupExpenseByCostCenter en lib/domain/rules.ts).
+  const costCenterName = (key: string) =>
+    key
+      ? ((catalogs.costCenters ?? []).find((costCenter) => costCenter.id === key)?.name ?? "—")
+      : "Sin centro de costo";
   const queue = metrics.attentionQueue ?? [];
   const activity = metrics.recentActivity ?? [];
   const byWork = (metrics.expenseByWork ?? []).map((row) => ({
@@ -80,6 +86,10 @@ export function ConnectedDashboard({
   }));
   const byTag = (metrics.expenseByTag ?? []).map((row) => ({
     label: tagName(row.key),
+    total: row.total,
+  }));
+  const byCostCenter = (metrics.expenseByCostCenter ?? []).map((row) => ({
+    label: costCenterName(row.key),
     total: row.total,
   }));
   return (
@@ -211,12 +221,18 @@ export function ConnectedDashboard({
           )}
         </section>
       </div>
-      {/* RF-706/RF-1103: gráficos ejecutivos de gasto por obra, por etiqueta y por periodo. */}
+      {/* RF-706/RF-1103: gráficos ejecutivos de gasto por obra, por etiqueta, por centro de costo
+          (2026-09-12) y por periodo. */}
       <div className="chart-grid">
         <DashboardBarChart
           title="Gasto por obra"
           emptyHint="No hay gastos registrados en el periodo visible para tu rol."
           rows={byWork}
+        />
+        <DashboardBarChart
+          title="Gasto por centro de costo"
+          emptyHint="No hay gastos con centro de costo asignado en el periodo visible."
+          rows={byCostCenter}
         />
         <DashboardBarChart
           title="Gasto por etiqueta"

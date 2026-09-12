@@ -7,7 +7,7 @@
 // costo, con "Aprobadas por mí" por defecto para el rol Aprobador (Juliana pidió exactamente eso en la
 // reunión). El diseño de filtros queda abierto a sumar "centro de costo" el día que exista esa entidad —
 // hoy centro de costo ≈ obra (ver ReportFilters en lib/services/report-service.ts).
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { ArrowDownToLine, Inbox, SearchX } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
 import { SectionTitle, Tone } from "../screen-primitives";
@@ -15,7 +15,7 @@ import {
   emptyCatalogs,
   estadoLabel,
   formatIsoDate,
-  groupReportRowsByWork,
+  groupReportRowsByCostCenter,
   money,
   type ReportBundle,
   type ReportRow,
@@ -48,6 +48,9 @@ export function ConnectedReports({
   const [period, setPeriod] = useState("");
   const [approverFilter, setApproverFilter] = useState("");
   const [tagFilter, setTagFilter] = useState("");
+  // Centros de costo (UI, 2026-09-12): filtro adicional, independiente de "Obra" — una requisición
+  // puede compartir centro con otras obras.
+  const [costCenterFilter, setCostCenterFilter] = useState("");
   // RF-1301 punto 3: por defecto, un aprobador entra viendo solo lo que YA aprobó (no lo pendiente ni lo
   // declinado) — puede destildarlo para ver el resto de lo que tiene asignado en el mes.
   const [approvedByMeOnly, setApprovedByMeOnly] = useState(isApprover);
@@ -62,25 +65,28 @@ export function ConnectedReports({
       (!period || row.date?.slice(0, 7) === period) &&
       (!approverFilter || row.approverIds.includes(approverFilter)) &&
       (!tagFilter || row.tagId === tagFilter) &&
+      (!costCenterFilter || row.costCenterId === costCenterFilter) &&
       (!isApprover || !approvedByMeOnly || row.status === "aprobada"),
   );
   const total = filteredRows.reduce((sum, row) => sum + row.total, 0);
   // "Compilado mensual" (RF-1301 punto 3, Daniel: "el compilado debe ir por obra/centro de costo"): el
-  // resumen por obra solo tiene sentido cuando hay un mes elegido — sin periodo, "compilar" no significa
-  // nada todavía.
-  const workGroups = period ? groupReportRowsByWork(filteredRows, catalogs) : [];
+  // resumen por centro de costo (con la obra como subnivel) solo tiene sentido cuando hay un mes
+  // elegido — sin periodo, "compilar" no significa nada todavía.
+  const costCenterGroups = period ? groupReportRowsByCostCenter(filteredRows, catalogs) : [];
 
   const clearFilters = () => {
     setWorkFilter("");
     setPeriod("");
     setApproverFilter("");
     setTagFilter("");
+    setCostCenterFilter("");
   };
 
   const exportParams = new URLSearchParams();
   if (workFilter) exportParams.set("workId", workFilter);
   if (tagFilter) exportParams.set("tagId", tagFilter);
   if (approverFilter) exportParams.set("approverId", approverFilter);
+  if (costCenterFilter) exportParams.set("costCenterId", costCenterFilter);
   if (period) exportParams.set("period", period);
   const exportHref = `/api/reports/export${exportParams.size ? `?${exportParams.toString()}` : ""}`;
 
@@ -131,6 +137,15 @@ export function ConnectedReports({
               ))}
             </select>
           </label>
+          <label className="field">
+            <span>Centro de costo</span>
+            <select value={costCenterFilter} onChange={(event) => setCostCenterFilter(event.target.value)}>
+              <option value="">Todos</option>
+              {(catalogs.costCenters ?? []).map((costCenter) => (
+                <option key={costCenter.id} value={costCenter.id}>{costCenter.name}</option>
+              ))}
+            </select>
+          </label>
           {isApprover && (
             <label className="filter-button">
               <input
@@ -175,6 +190,7 @@ export function ConnectedReports({
                     <th>Consecutivo</th>
                     <th>Fecha</th>
                     <th>Obra</th>
+                    <th>Centro de costo</th>
                     <th>Etiqueta</th>
                     <th>Aprobador(es)</th>
                     <th>Estado</th>
@@ -187,6 +203,7 @@ export function ConnectedReports({
                       <td>{row.consecutive}</td>
                       <td>{row.date ? formatIsoDate(row.date) : "—"}</td>
                       <td>{catalogs.works.find((work) => work.id === row.workId)?.name ?? "—"}</td>
+                      <td>{(catalogs.costCenters ?? []).find((costCenter) => costCenter.id === row.costCenterId)?.name ?? "—"}</td>
                       <td>{catalogs.tags.find((tag) => tag.id === row.tagId)?.name ?? "—"}</td>
                       <td>{namesFor(row.approverIds, catalogs.users ?? [])}</td>
                       <td>
@@ -200,33 +217,46 @@ export function ConnectedReports({
             </div>
           )}
         </section>
-        {workGroups.length > 0 && (
-          <section className="panel connected-summary" data-testid="report-work-subtotals">
+        {costCenterGroups.length > 0 && (
+          <section className="panel connected-summary" data-testid="report-costcenter-subtotals">
             <div className="panel-head">
               <div>
-                <h3>Compilado mensual por obra</h3>
-                <p className="panel-sub">Subtotal de {period} por obra/centro de costo.</p>
+                <h3>Compilado mensual por centro de costo</h3>
+                <p className="panel-sub">Subtotal de {period} por centro de costo, con la obra como desglose.</p>
               </div>
             </div>
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
+                    <th>Centro de costo</th>
                     <th>Obra</th>
                     <th>Requisiciones</th>
                     <th>Subtotal</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {workGroups.map((group) => (
-                    <tr key={group.workId || "sin-obra"}>
-                      <td>{group.workName}</td>
-                      <td>{group.rows.length}</td>
-                      <td>{money.format(group.subtotal)}</td>
-                    </tr>
+                  {costCenterGroups.map((group) => (
+                    <Fragment key={group.costCenterId || "sin-centro"}>
+                      {group.works.map((work, index) => (
+                        <tr key={work.workId || "sin-obra"}>
+                          {index === 0 && (
+                            <td rowSpan={group.works.length}>{group.costCenterName}</td>
+                          )}
+                          <td>{work.workName}</td>
+                          <td>{work.rows.length}</td>
+                          <td>{money.format(work.subtotal)}</td>
+                        </tr>
+                      ))}
+                      <tr className="report-costcenter-subtotal-row">
+                        <td colSpan={2}><b>Subtotal {group.costCenterName}</b></td>
+                        <td><b>{group.rows.length}</b></td>
+                        <td><b>{money.format(group.subtotal)}</b></td>
+                      </tr>
+                    </Fragment>
                   ))}
                   <tr>
-                    <td colSpan={2}><b>Total general</b></td>
+                    <td colSpan={3}><b>Total general</b></td>
                     <td><b>{money.format(total)}</b></td>
                   </tr>
                 </tbody>

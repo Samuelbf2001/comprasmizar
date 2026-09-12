@@ -768,6 +768,8 @@ export class ProcurementService {
     const metrics: DashboardMetrics = {
       byStatus, pendingOrders, periodExpense: expenseAggregates.periodExpense, inProcessValue: expenseAggregates.inProcessValue,
       expenseByWork: expenseAggregates.expenseByWork, expenseByTag: expenseAggregates.expenseByTag, expenseByPeriod: expenseAggregates.expenseByPeriod,
+      // Centros de costo (UI, reunión 2026-09-12): mismo criterio que expenseByWork/expenseByTag de arriba.
+      expenseByCostCenter: expenseAggregates.expenseByCostCenter,
     };
     const attentionStatuses: Requisition["status"][] = ["enviada", "en_revision", "en_aprobacion", "devuelta"];
     const [attentionRequisitions, attentionOrders, recentRequisitions, recentOrders, recentExpenses] = await Promise.all([

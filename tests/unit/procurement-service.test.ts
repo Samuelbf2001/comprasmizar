@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, calculateDashboard, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumApprovedLines, sumLines, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
+import { DomainError, calculateDashboard, groupExpenseByCostCenter, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumApprovedLines, sumLines, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
 import { ProcurementService, type ServiceDependencies } from "../../lib/services";
 
 const ZERO_BY_STATUS: Record<RequisitionStatus, number> = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
@@ -68,6 +68,7 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
         periodExpense: visible.filter((e) => e.period === period).reduce((sum, e) => sum + e.total, 0),
         inProcessValue: visible.filter((e) => e.date === undefined).reduce((sum, e) => sum + e.total, 0),
         expenseByWork: groupExpenseByWork(visible), expenseByTag: groupExpenseByTag(visible), expenseByPeriod: groupExpenseByPeriod(visible),
+        expenseByCostCenter: groupExpenseByCostCenter(visible),
       };
     },
     listRecentlyUpdated: async (actor: { id: string }, limit: number) => { visibleActors.push(`expense:${actor.id}`); return [...visibleExpenses(actor.id)].sort((a, b) => (b.date ?? b.orderDate).localeCompare(a.date ?? a.orderDate)).slice(0, limit); },
@@ -653,6 +654,7 @@ describe("ProcurementService", () => {
     // mezclando comprometido con gasto real.
     expect(dashboard.expenseByWork).toEqual([]);
     expect(dashboard.expenseByTag).toEqual([]);
+    expect(dashboard.expenseByCostCenter).toEqual([]);
     // Reunión 2026-09: las dos órdenes recién generadas aún no se han pagado (sin `date`/`period`) —
     // groupExpenseByPeriod las excluye a propósito, no inventa un bucket "sin periodo".
     expect(dashboard.expenseByPeriod).toEqual([]);
@@ -672,9 +674,10 @@ describe("ProcurementService", () => {
     deps.req.set("r3", baseReq("r3", "aprobada"));
     const order1: Order = { id: "o1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "r3", itemIds: [], status: "generada", adminStatus: "pendiente" };
     deps.ordersData.push(order1);
-    // e1: pagada en agosto (cuenta en periodExpense/expenseByWork/expenseByTag/expenseByPeriod).
-    // e2: sin pagar (cuenta solo en inProcessValue — "gasto" = pagado, ver GRAVE 3 en rules.ts).
-    const paidExpense: Expense = { id: "e1", workId: "work", origin: "requisicion", referenceId: "o1", tagId: "tag-a", orderDate: "2026-08-01", date: "2026-08-05", base: 1000, iva: 190, total: 1190, period: "2026-08" };
+    // e1: pagada en agosto (cuenta en periodExpense/expenseByWork/expenseByTag/expenseByCostCenter/
+    // expenseByPeriod). e2: sin pagar (cuenta solo en inProcessValue — "gasto" = pagado, ver GRAVE 3 en
+    // rules.ts).
+    const paidExpense: Expense = { id: "e1", workId: "work", origin: "requisicion", referenceId: "o1", tagId: "tag-a", costCenterId: "cc-1", orderDate: "2026-08-01", date: "2026-08-05", base: 1000, iva: 190, total: 1190, period: "2026-08" };
     const unpaidExpense: Expense = { id: "e2", workId: "work", origin: "requisicion", referenceId: "o1", tagId: "tag-b", orderDate: "2026-08-02", base: 500, iva: 95, total: 595 };
     deps.expensesData.push(paidExpense, unpaidExpense);
 
@@ -689,6 +692,7 @@ describe("ProcurementService", () => {
     expect(dashboard.expenseByWork).toEqual(groupExpenseByWork(fixtureExpenses));
     expect(dashboard.expenseByTag).toEqual(groupExpenseByTag(fixtureExpenses));
     expect(dashboard.expenseByPeriod).toEqual(groupExpenseByPeriod(fixtureExpenses));
+    expect(dashboard.expenseByCostCenter).toEqual(groupExpenseByCostCenter(fixtureExpenses));
   });
 
   it("edita la cabecera de la requisición solo por revisor y solo mientras es editable", async () => {

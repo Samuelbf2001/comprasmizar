@@ -15,6 +15,9 @@ export const reportFiltersSchema = z
     workId: z.string().uuid("Obra inválida").optional(),
     tagId: z.string().uuid("Etiqueta inválida").optional(),
     approverId: z.string().uuid("Aprobador inválido").optional(),
+    // Centros de costo (UI, 2026-09-12): mismo criterio que workId/tagId/approverId — filtra por el
+    // centro de costo EFECTIVO de la requisición (ver ReportFilters en lib/services/report-service.ts).
+    costCenterId: z.string().uuid("Centro de costo inválido").optional(),
     period: z.string().regex(/^\d{4}-\d{2}$/, "Periodo inválido (use AAAA-MM)").optional(),
   })
   .strict();
