@@ -17,6 +17,10 @@ import type { RequisitionItem } from "../../components/screens/connected/shared"
 //
 // El segundo es el que duele: **el silencio se interpretaba como aprobación**. Lo que estas pruebas
 // fijan es que actuar guarda primero, EN ORDEN, y que si el guardado falla NO se actúa.
+//
+// Rediseño "una acción por estado/rol" (reunión 2026-09): "Guardar revisión"/"Guardar decisiones"
+// desaparecieron — el autoguardado (useAutosave: blur + 1.500ms) hace ese trabajo solo. Las pruebas
+// que antes pulsaban esos botones ahora avanzan timers falsos para disparar el debounce.
 
 const REQ = "req-1";
 const ACCIONES = `/api/requisitions/${REQ}/actions`;
@@ -98,7 +102,7 @@ describe("enviar a aprobación guarda la revisión primero", () => {
   });
 });
 
-describe("completar la aprobación guarda las decisiones primero", () => {
+describe("aprobar la requisición guarda las decisiones primero", () => {
   const conDeclinado = {
     status: "en_aprobacion",
     items: [
@@ -114,7 +118,8 @@ describe("completar la aprobación guarda las decisiones primero", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(respuestaOk());
     pintar("Aprobador", conDeclinado);
 
-    fireEvent.click(screen.getByRole("button", { name: /Completar aprobación/ }));
+    // Sin reparto por ítem, la primaria es "Aprobar requisición" (antes "Completar aprobación").
+    fireEvent.click(screen.getByRole("button", { name: /Aprobar requisición/ }));
     fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
 
     await waitFor(() => expect(accionesEnviadas(fetchMock)).toHaveLength(2));
@@ -130,12 +135,12 @@ describe("completar la aprobación guarda las decisiones primero", () => {
   });
 
   it("el resumen de la confirmación dice cuántos se aprueban y cuántos se declinan", async () => {
-    // Última oportunidad de ver que la decisión no es la que se creía: "2 aprobados, 0 declinados"
-    // delata a quien pensó que había declinado uno.
+    // Última oportunidad de ver que la decisión no es la que se creía: "1 ítem aprobado, 1
+    // declinado" delata a quien pensó que había declinado dos.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(respuestaOk());
     pintar("Aprobador", conDeclinado);
 
-    fireEvent.click(screen.getByRole("button", { name: /Completar aprobación/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Aprobar requisición/ }));
     expect(await screen.findByText(/1 ítem aprobado, 1 declinado/)).toBeInTheDocument();
   });
 
@@ -145,7 +150,7 @@ describe("completar la aprobación guarda las decisiones primero", () => {
     );
     pintar("Aprobador", conDeclinado);
 
-    fireEvent.click(screen.getByRole("button", { name: /Completar aprobación/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Aprobar requisición/ }));
     fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
 
     await waitFor(() => expect(accionesEnviadas(fetchMock)).toHaveLength(1));
@@ -183,12 +188,16 @@ describe("la pantalla no dice 'listo' antes de tener los datos nuevos", () => {
 });
 
 // APROBADOR POR ÍTEM EN LA PANTALLA (Ernesto, 11-sep-2026). Lo que se vigila aquí es que la pantalla y
-// el servicio digan lo mismo: el servicio rechaza decidir ítems ajenos, así que si "Completar
-// aprobación" siguiera mandando todas las líneas, el botón dejaría de funcionar en cuanto alguien
-// repartiera ítems — sin que nadie hubiera tocado esta pantalla.
+// el servicio digan lo mismo: el servicio rechaza decidir ítems ajenos, así que si la primaria
+// siguiera mandando todas las líneas, dejaría de funcionar en cuanto alguien repartiera ítems — sin
+// que nadie hubiera tocado esta pantalla.
 describe("aprobador por ítem en la ficha", () => {
   beforeEach(() => vi.restoreAllMocks());
-  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
 
   const REPARTIDOS: RequisitionItem[] = [
     { id: "item-1", description: "Arena de peña", quantity: 2, unit: "m3", unitBase: 2520 }, // hereda a user-1
@@ -213,14 +222,16 @@ describe("aprobador por ítem en la ficha", () => {
     expect(await screen.findByText(/Arena de peña/)).toBeInTheDocument();
     expect(screen.queryByText(/Cemento gris/)).not.toBeInTheDocument();
     expect(screen.getByText(/Ves 1 de 2 ítems/)).toBeInTheDocument();
+    // Con ítems de otro pendientes, la primaria dice "Aprobar mis ítems (N)", no "Aprobar requisición".
+    expect(screen.getByRole("button", { name: /Aprobar mis ítems \(1\)/ })).toBeInTheDocument();
   });
 
-  it("«Completar aprobación» manda SOLO las decisiones propias", async () => {
+  it("«Aprobar mis ítems» manda SOLO las decisiones propias", async () => {
     const fetchMock = vi.fn(async () => respuestaOk());
     vi.stubGlobal("fetch", fetchMock);
     pintarConVisor("Aprobador", "user-2", REPARTIDOS);
 
-    fireEvent.click(await screen.findByRole("button", { name: /Completar aprobación/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Aprobar mis ítems/i }));
     fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
 
     await waitFor(() => expect(accionesEnviadas(fetchMock).length).toBeGreaterThanOrEqual(1));
@@ -229,7 +240,31 @@ describe("aprobador por ítem en la ficha", () => {
     expect(decisiones.decisions.map((d: { itemId: string }) => d.itemId)).toEqual(["item-2"]);
   });
 
-  it("sin reparto y sin saber quién mira, se comporta como siempre: manda todas", async () => {
+  // BUG corregido (dueño del producto): antes `APPROVAL_PENDING_OTHERS` salía como error rojo
+  // aunque las decisiones ya se hubieran guardado — ahora es un ÉXITO parcial.
+  it("APPROVAL_PENDING_OTHERS se muestra como éxito: las decisiones propias sí se guardaron", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (body?.action === "approve") {
+        return new Response(
+          JSON.stringify({ error: "approval_pending_others", message: "Faltan 1 aprobador(es) por decidir sus ítems" }),
+          { status: 422, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return respuestaOk();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    pintarConVisor("Aprobador", "user-2", REPARTIDOS);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Aprobar mis ítems/i }));
+    fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
+
+    // Éxito, no error rojo: `decide_items` sí se guardó, solo falta el otro aprobador.
+    expect(await screen.findByText(/quedaron decididos/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("sin reparto y sin saber quién mira, se comporta como siempre: manda todas y la primaria dice 'Aprobar requisición'", async () => {
     // Respaldo para el hueco de un despliegue (página nueva con payload viejo). Con todas las líneas
     // heredando, todas son del aprobador de cabecera y mandarlas es exactamente lo de antes.
     const fetchMock = vi.fn(async () => respuestaOk());
@@ -239,16 +274,18 @@ describe("aprobador por ítem en la ficha", () => {
       { id: "item-3", description: "Varilla", quantity: 5, unit: "und", unitBase: 1000 },
     ]);
 
-    fireEvent.click(await screen.findByRole("button", { name: /Completar aprobación/i }));
+    const boton = await screen.findByRole("button", { name: "Aprobar requisición" });
+    fireEvent.click(boton);
     fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
 
     await waitFor(() => expect(accionesEnviadas(fetchMock).length).toBeGreaterThanOrEqual(1));
     expect(accionesEnviadas(fetchMock)[0].decisions.map((d: { itemId: string }) => d.itemId)).toEqual(["item-1", "item-3"]);
   });
 
-  it("el revisor asigna aprobador por ítem y viaja en `review`", async () => {
+  it("el revisor asigna aprobador por ítem y el autoguardado lo manda en `review`", async () => {
     const fetchMock = vi.fn(async () => respuestaOk());
     vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const base = datos({ status: "en_revision" });
     render(
       <ConnectedRequisitionDetail
@@ -259,8 +296,9 @@ describe("aprobador por ítem en la ficha", () => {
       />,
     );
 
-    fireEvent.change(await screen.findByLabelText(/Aprobador de Arena de peña/i), { target: { value: "user-2" } });
-    fireEvent.click(screen.getByRole("button", { name: /Guardar revisión/i }));
+    fireEvent.change(screen.getByLabelText(/Aprobador de Arena de peña/i), { target: { value: "user-2" } });
+    await vi.advanceTimersByTimeAsync(1600);
+    vi.useRealTimers();
 
     await waitFor(() => expect(accionesEnviadas(fetchMock).length).toBeGreaterThanOrEqual(1));
     const [revision] = accionesEnviadas(fetchMock);
@@ -268,12 +306,13 @@ describe("aprobador por ítem en la ficha", () => {
     expect(revision.items[0].approverId).toBe("user-2");
   });
 
-  it("«Aprobador para todos» rellena los vacíos y NO pisa lo ya asignado sin permiso", async () => {
+  it("«Aprobador para todos» (menú de la columna) rellena los vacíos y NO pisa lo ya asignado sin permiso", async () => {
     // Al revés que las otras acciones masivas, y a propósito: un IVA de más se ve en el total y se
     // corrige; pisar un aprobador manda el ítem a otra persona y no se nota hasta que llega el
     // WhatsApp equivocado.
     const fetchMock = vi.fn(async () => respuestaOk());
     vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const confirmar = vi.fn(() => false); // el revisor dice "no" a pisar lo ya asignado
     vi.stubGlobal("confirm", confirmar);
     const base = datos({ status: "en_revision", items: REPARTIDOS });
@@ -286,10 +325,12 @@ describe("aprobador por ítem en la ficha", () => {
       />,
     );
 
-    fireEvent.change(await screen.findByLabelText(/Aplicar un aprobador a todos los ítems vigentes/i), { target: { value: "user-1" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Aplicar un aprobador a todos los ítems vigentes" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Daniel Demo a todos" }));
     expect(confirmar).toHaveBeenCalledTimes(1); // había uno asignado: se pregunta
-    fireEvent.click(screen.getByRole("button", { name: /Guardar revisión/i }));
 
+    await vi.advanceTimersByTimeAsync(1600);
+    vi.useRealTimers();
     await waitFor(() => expect(accionesEnviadas(fetchMock).length).toBeGreaterThanOrEqual(1));
     const [revision] = accionesEnviadas(fetchMock);
     expect(revision.items.find((i: { id: string }) => i.id === "item-1").approverId).toBe("user-1"); // estaba vacío: se rellena

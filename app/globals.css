@@ -942,12 +942,10 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
    viven dentro de la celda y heredan el ancho de su columna, de modo que el
    tabulado recorre la fila y salta a la siguiente sin pasar por botones.
    ========================================================================= */
-.review-bulk{display:flex;flex-wrap:wrap;align-items:flex-end;gap:var(--space-3);
-  padding:var(--space-3);margin-bottom:var(--space-3);
-  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-md)}
-.review-bulk-title{font-size:var(--text-xs);color:var(--muted);padding-bottom:var(--space-2)}
-.review-bulk-field{display:flex;flex-direction:column;gap:var(--space-1);min-width:150px}
-.review-bulk-field>span{font-size:var(--text-2xs);color:var(--muted)}
+/* Reunión 2026-09 (una acción por estado/rol): las acciones masivas ("aplicar a todos") ya no
+   viven en una barra fija encima de la tabla — cuelgan de un botón «⋯ a todos» en la cabecera de
+   su propia columna (mapeo/proximidad: el control vive junto a lo que afecta). */
+.th-with-menu{display:flex;align-items:center;gap:var(--space-2);white-space:nowrap}
 .review-table-scroll{overflow-x:auto}
 .review-table{white-space:nowrap}
 .review-table th[scope="col"]{font-size:var(--text-2xs);color:var(--muted);font-weight:500}
@@ -968,7 +966,34 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
   .cell-action{height:44px}
 }
 .review-line strong{font-size:var(--text-sm);color:var(--navy);padding-bottom:var(--space-2)}
-.connected-actions{display:flex;justify-content:flex-end;gap:var(--space-2)}
+/* Barra pegajosa al pie del panel de ítems (diseño aprobado: PatternFly overflow menu / GitLab
+   Pajamas autosave): totales, indicador de autoguardado, «Más ⋯» y la primaria, en ese orden.
+   `position:sticky` la ancla al fondo del PANEL (no de la ventana) — solo se despega mientras el
+   panel de ítems sigue visible, nunca tapa contenido de otra sección. */
+.connected-actions{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;
+  flex-wrap:wrap;justify-content:flex-end;gap:var(--space-3);min-height:56px;
+  margin:var(--space-4) calc(-1 * var(--space-5)) calc(-1 * var(--space-5));
+  padding:var(--space-3) var(--space-5);background:var(--paper);
+  border-top:1px solid var(--line);box-shadow:0 -4px 12px rgba(6,15,25,.05)}
+.connected-actions-totals{display:flex;flex-wrap:wrap;gap:var(--space-4);margin-right:auto;
+  font-size:var(--text-xs);color:var(--muted)}
+.connected-actions-totals b{margin-left:var(--space-1);color:var(--ink);font-variant-numeric:tabular-nums}
+.connected-actions-menu-only{justify-content:flex-start}
+/* Autoguardado: `aria-live="polite"` para que "Guardando…"/"Guardado 10:42" se anuncie sin
+   interrumpir — nunca es un error, así que nunca se lee como una alerta. */
+.autosave-indicator{font-size:var(--text-2xs);color:var(--muted);white-space:nowrap}
+/* Menú «Más ⋯» (secundarias detrás de un botón, PatternFly overflow menu): disparador + lista
+   flotante con `role="menu"`, alineada a su borde derecho para no salirse de la barra. */
+.action-menu{position:relative}
+.action-menu-trigger{height:36px;padding:0 var(--space-3);gap:var(--space-1)}
+.action-menu-list{position:absolute;right:0;bottom:calc(100% + var(--space-2));z-index:20;
+  min-width:220px;display:grid;padding:var(--space-1);background:var(--paper);
+  border:1px solid var(--line);border-radius:var(--radius-md);box-shadow:var(--shadow-lg)}
+.action-menu-item{text-align:left;padding:var(--space-2) var(--space-3);border-radius:var(--radius-sm);
+  font-size:var(--text-xs);color:var(--ink);transition:background var(--duration-fast) var(--ease)}
+.action-menu-item:hover:not(:disabled),.action-menu-item:focus-visible{background:var(--surface-strong)}
+.action-menu-item:disabled{opacity:.55;cursor:not-allowed}
+.action-menu-item-danger{color:var(--red)}
 .check-line{display:flex;align-items:flex-start;gap:var(--space-2);font-size:var(--text-xs);line-height:1.4}
 .connected-feedback{padding:var(--space-3) var(--space-4)}
 .button-danger{background:var(--red-soft);color:var(--red);border:1px solid #e1b9b5}
@@ -984,8 +1009,13 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 }
 @media(max-width:530px){
   .connected-line,.review-line,.connected-side{grid-template-columns:1fr}
-  .connected-actions{align-items:stretch;flex-direction:column}
-  .connected-actions .button{width:100%}
+}
+/* Barra pegajosa: ancho completo en pantallas estrechas (dueño del producto, ≤720px) — apilada,
+   con la primaria y el menú ocupando todo el ancho en vez de amontonarse a la derecha. */
+@media(max-width:720px){
+  .connected-actions{align-items:stretch;flex-direction:column;position:static}
+  .connected-actions-totals{margin-right:0}
+  .connected-actions .button,.connected-actions .action-menu,.connected-actions .action-menu-trigger{width:100%}
 }
 @media(max-width:530px){
   .attachment-picker-action{margin-left:0}

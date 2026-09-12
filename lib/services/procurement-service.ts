@@ -137,6 +137,20 @@ export class ProcurementService {
         if (!(await tx.catalogs.isEligibleApprover(aprobadorDeItem))) throw new DomainError("INVALID_INPUT", "El aprobador de un ítem debe ser un usuario activo y elegible");
       }
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
+      // Autoguardado (reunión 2026-09, rediseño "una acción por estado/rol"): con el disparo cada
+      // blur/1.500ms desde la pantalla, `review()` se llama muchas más veces por sesión que antes
+      // — y cada llamada auditaba "revisada" aunque el payload fuera IDÉNTICO al ya guardado (el
+      // usuario tecleó y borró, o el debounce disparó dos veces seguidas). El historial de
+      // trazabilidad (sección "Historial" del detalle) se llenaría de entradas sin ningún cambio
+      // real que contar. Se compara contra lo YA guardado (antes de tocar nada) y solo se audita
+      // si algo material (etiqueta/aprobador/obra/forma de pago/ítems) de verdad cambió.
+      const beforeReview = JSON.stringify({
+        tagId: requisition.tagId,
+        approverId: requisition.approverId,
+        workId: requisition.workId,
+        paymentTerms: requisition.paymentTerms,
+        items: requisition.items,
+      });
       if (requisition.status === "devuelta") await this.transition(requisition, "en_revision", actor, "retomada_revision", undefined, this.origin(context), tx.audit);
       if (requisition.status !== "en_revision") throw new DomainError("INVALID_STATE", "La requisición no está en revisión");
       // Solicitud de pago (feat/solicitud-de-pago): mismo listón que create() — beneficiario y
@@ -189,7 +203,16 @@ export class ProcurementService {
         return line;
       });
       await tx.requisitions.save(requisition);
-      await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId: requisition.approverId, workId: input.workId, paymentTerms: input.paymentTerms }, this.origin(context), tx.audit);
+      const afterReview = JSON.stringify({
+        tagId: requisition.tagId,
+        approverId: requisition.approverId,
+        workId: requisition.workId,
+        paymentTerms: requisition.paymentTerms,
+        items: requisition.items,
+      });
+      if (afterReview !== beforeReview) {
+        await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId: requisition.approverId, workId: input.workId, paymentTerms: input.paymentTerms }, this.origin(context), tx.audit);
+      }
       return requisition;
     });
   }
