@@ -1,4 +1,4 @@
-import type { Actor, AuditEvent, DashboardAmountByKey, Expense, ExpenseShare, Order, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
+import type { Actor, AuditEvent, DashboardAmountByKey, Expense, ExpenseShare, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
 import type { ListQuery, Page } from "./list-query";
 
 /** Persistence ports. Infrastructure adapters (e.g. Supabase) implement these; domain services do not depend on them. */
@@ -77,6 +77,15 @@ export interface ExpenseRepository {
  * otros tres repositorios este método no recibe `Actor`.
  */
 export interface PettyCashRepository { save(entry: PettyCash): Promise<Expense>; list(query?: ListQuery): Promise<PettyCash[] | Page<PettyCash>>; }
+/**
+ * Reunión agosto 2026: pagos parciales de una orden. `save` es solo INSERT (un pago no se edita, ver
+ * `pagos_orden` en 202609120002_pagos_orden.sql: la tabla no lleva `updated_at`) — a diferencia de
+ * `OrderRepository.save`, que sí es upsert. `listByOrder` ordena por fecha (mismo criterio que el
+ * índice `pagos_orden_orden_fecha_idx`), de más antiguo a más reciente: es el orden en que la ficha
+ * de la pantalla los muestra y en el que `ProcurementService` calcula "fecha del último pago" para
+ * `updateOrderAdminStatus`.
+ */
+export interface OrderPaymentRepository { save(payment: OrderPayment): Promise<void>; listByOrder(orderId: string): Promise<OrderPayment[]>; }
 export interface AuditRepository { append(event: AuditEvent): Promise<void>; list(entity: string, entityId: string): Promise<AuditEvent[]>; }
 export interface ConsecutiveRepository { take(prefix: "REQ" | "OC" | "OP", year: number): Promise<string>; }
 /** Verifies a public link and code without exposing storage or clear-text comparison to the service. */
@@ -136,7 +145,7 @@ export type CatalogPatchRecord = CatalogRecord extends infer T ? T extends Catal
 export interface CatalogRepository { create(kind: CatalogKind, value: CatalogCreateRecord): Promise<CatalogRecord>; get(kind: CatalogKind, id: string): Promise<CatalogRecord | null>; update(kind: CatalogKind, id: string, value: CatalogPatchRecord): Promise<CatalogRecord>; findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null>; /** HUECO 1: compara con el MISMO criterio que `public.normalizar_telefono_co` (ver lib/infrastructure/phone.ts), para que "3001112233" y "+57 300 111 2233" choquen como el mismo solicitante antes de tocar la BD. */ findRequesterDuplicate(phone: string, exceptId?: string): Promise<string | null>; isEligibleApprover(id: string): Promise<boolean>;  /** GRAVE 3 (QA Postgres real): existe al menos una requisición (de cualquier estado) anclada a esta obra — usado para bloquear un cambio de sociedad que las dejaría inservibles. */ hasRequisitionsForWork(workId: string): Promise<boolean>; }
 export interface NotificationRepository { enqueue(notification: { userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }): Promise<void>; }
 /** Repositories provided to the callback are pinned to the same database transaction/connection. */
-export interface TransactionRepositories { requisitions: RequisitionRepository; orders: OrderRepository; expenses: ExpenseRepository; pettyCash: PettyCashRepository; audit: AuditRepository; consecutives: ConsecutiveRepository; features: FeatureRepository; items: ItemCatalogRepository; catalogs: CatalogRepository; notifications: NotificationRepository; }
+export interface TransactionRepositories { requisitions: RequisitionRepository; orders: OrderRepository; expenses: ExpenseRepository; orderPayments: OrderPaymentRepository; pettyCash: PettyCashRepository; audit: AuditRepository; consecutives: ConsecutiveRepository; features: FeatureRepository; items: ItemCatalogRepository; catalogs: CatalogRepository; notifications: NotificationRepository; }
 /**
  * Executes a unit of work on one database transaction. A lock key is `requisition:<id>`
  * or `order:<id>` when a state transition must be serialized; undefined is still atomic.
@@ -145,7 +154,7 @@ export interface TransactionManager { transaction<T>(lockKey: string | undefined
 export interface Clock { now(): Date; }
 export interface IdGenerator { next(): string; }
 export interface ServiceDependencies {
-  requisitions: RequisitionRepository; orders: OrderRepository; expenses: ExpenseRepository; pettyCash: PettyCashRepository;
+  requisitions: RequisitionRepository; orders: OrderRepository; expenses: ExpenseRepository; orderPayments: OrderPaymentRepository; pettyCash: PettyCashRepository;
   audit: AuditRepository; consecutives: ConsecutiveRepository; publicAccess: PublicAccessVerifier; features: FeatureRepository; items: ItemCatalogRepository; catalogs: CatalogRepository; notifications: NotificationRepository; transactions: TransactionManager; clock: Clock; ids: IdGenerator;
 }
 export interface RequestContext { actor?: Actor; origin?: "web" | "mcp" | "kapso"; }

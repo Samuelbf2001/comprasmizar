@@ -1,5 +1,5 @@
 import postgres, { type Sql } from "postgres";
-import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
+import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
 import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
 import { generalLinkToken, verifyPublicLinkToken } from "../security/public-link";
@@ -85,6 +85,10 @@ function order(row: DbRow): Order {
     // es "no se preguntó".
     requiredDate: asIsoDate(row.requisicion_fecha_requerida),
     lines: Array.isArray(row.lines) ? (row.lines as DbRow[]).map(item) : undefined,
+    // Reunión agosto 2026: ausente (no `0`) cuando la consulta no hizo el `left join lateral` de
+    // `orderSelectColumns()`/`orderFromJoins()` — mismo criterio que requisitionConsecutive/lines de
+    // arriba, ver el comentario de `Order.paidAmount` en lib/domain/model.ts.
+    paidAmount: row.pagado_total != null ? asNumber(row.pagado_total) : undefined,
   };
 }
 // Reunión 2026-09: `fecha` (fecha de pago) y `periodo` (mes de `fecha`) son NULL en la BD mientras la
@@ -92,6 +96,16 @@ function order(row: DbRow): Order {
 // NO se fuerza `as string`: un gasto sin pagar debe poder representarse en memoria sin fecha de pago.
 // `fecha_orden` (nace con el registro, NOT NULL en la BD) sí es obligatoria.
 function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7) }; }
+/** Reunión agosto 2026: un pago parcial de orden. `fecha` es `date` en Postgres (asIsoDate, mismo
+ *  criterio que `orderDate`/`date` de Expense arriba); `valor` viaja como string desde `numeric(16,2)`
+ *  (el driver `postgres` no lo convierte solo), de ahí `asNumber`. */
+function orderPayment(row: DbRow): OrderPayment {
+  return {
+    id: String(row.id), orderId: String(row.orden_id), date: asIsoDate(row.fecha) as string, amount: asNumber(row.valor),
+    method: row.medio_pago as OrderPayment["method"], externalReference: row.referencia_externa ? String(row.referencia_externa) : undefined,
+    registeredBy: row.registrado_por ? String(row.registrado_por) : undefined,
+  };
+}
 // `periodo` es una columna `date` (generada, ver migración core_compras): la librería `postgres` la
 // entrega como Date, y `String(fecha)` da "Tue Sep 01 2026 ..." — el `.slice(0, 7)` anterior producía
 // "Tue Sep" en vez de "2026-09", con lo que el filtro por periodo de la pantalla de gastos y el
@@ -263,13 +277,23 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     // en `calculateLineTotal`/`sumLines` (lib/domain/rules.ts), la única fuente de verdad también usada
     // por el PDF. `filter (where ri.id is not null)` deja `lines: '[]'` en vez de una fila fantasma con
     // todo NULL cuando la orden no tiene (o no debería tener) ítems.
-    return this.sql`o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.fecha_requerida as requisicion_fecha_requerida, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids, coalesce(json_agg(json_build_object('id', ri.id, 'item_id', ri.item_id, 'descripcion_libre', ri.descripcion_libre, 'cantidad', ri.cantidad, 'unidad', ri.unidad, 'posible_proveedor_texto', ri.posible_proveedor_texto, 'link_producto', ri.link_producto, 'proveedor_final_id', ri.proveedor_final_id, 'valor_base', ri.valor_base, 'iva', ri.iva, 'estado', ri.estado, 'motivo_declinacion', ri.motivo_declinacion, 'iva_tasa', ri.iva_tasa, 'descuento_tasa', ri.descuento_tasa) order by ri.created_at) filter (where ri.id is not null), '[]') as lines`;
+    // `max(pago.pagado)`: agregado (no columna cruda) porque `pago` es un `left join lateral` sobre
+    // `pagos_orden`, no una tabla con llave primaria declarada — Postgres no puede inferir que sea
+    // funcionalmente dependiente de `o.id`/`r.id` (a diferencia de `r.consecutivo`/`r.obra_id`, que sí
+    // lo son porque `r.id` es su PK y ya está en el GROUP BY). `max` es un passthrough seguro: el
+    // LATERAL correlaciona solo por `o.id`, así que vale lo mismo en cada una de las filas que el
+    // `left join ... ri` de abajo pueda fanning-out para esa misma orden.
+    return this.sql`o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.fecha_requerida as requisicion_fecha_requerida, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids, coalesce(json_agg(json_build_object('id', ri.id, 'item_id', ri.item_id, 'descripcion_libre', ri.descripcion_libre, 'cantidad', ri.cantidad, 'unidad', ri.unidad, 'posible_proveedor_texto', ri.posible_proveedor_texto, 'link_producto', ri.link_producto, 'proveedor_final_id', ri.proveedor_final_id, 'valor_base', ri.valor_base, 'iva', ri.iva, 'estado', ri.estado, 'motivo_declinacion', ri.motivo_declinacion, 'iva_tasa', ri.iva_tasa, 'descuento_tasa', ri.descuento_tasa) order by ri.created_at) filter (where ri.id is not null), '[]') as lines, max(pago.pagado) as pagado_total`;
   }
   // `ri` cuelga del mismo `left join orden_items oi` que ya resolvía `item_ids`: si algún día ambos joins
   // dejan de compartir la misma fila, `lines` y `item_ids` dejarían de corresponder al mismo conjunto de
   // ítems — no separar esta cadena sin revisar ese acoplamiento.
+  // `pago`: reunión agosto 2026, `Order.paidAmount` resuelto en el MISMO select (nunca una consulta
+  // por orden) — `coalesce(sum(...), 0)` deja `pagado = 0` (no NULL) para una orden sin ningún pago,
+  // y `left join lateral ... on true` (no un `left join` normal) porque la subconsulta no correlaciona
+  // con ninguna columna de `pagos_orden` en el ON, solo en el WHERE interno.
   private orderFromJoins() {
-    return this.sql`from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id left join requisicion_items ri on ri.id=oi.requisicion_item_id`;
+    return this.sql`from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id left join requisicion_items ri on ri.id=oi.requisicion_item_id left join lateral (select coalesce(sum(po.valor), 0) as pagado from pagos_orden po where po.orden_id = o.id) pago on true`;
   }
   async listOrders(): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} group by o.id, r.id`; return rows.map(order); }
   async listVisibleOrders(actor: Actor, query?: ListQuery): Promise<Order[] | Page<Order>> {
@@ -377,6 +401,15 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     return { rows: pageRows.map(expense), nextCursor };
   }
   async listByReference(referenceId: string): Promise<Expense[]> { return (await this.sql<DbRow[]>`select g.* from gastos g where g.referencia_id=${referenceId} or exists (select 1 from ordenes o where o.id=g.referencia_id and o.requisicion_id=${referenceId})`).map(expense); }
+  // Reunión agosto 2026: pagos parciales de una orden. `save` es INSERT puro (la tabla no lleva
+  // `updated_at`, ver 202609120002_pagos_orden.sql — un pago no se edita); el trigger
+  // `validar_pago_no_excede_orden` de esa misma migración es quien de verdad impide sobre-pasar el
+  // total, ASÍ QUE `assertPaymentWithinOrder` (lib/domain/rules.ts) en el servicio es la primera
+  // línea de defensa (un DomainError legible en vez del 23514 crudo de la base), no la única.
+  async saveOrderPayment(value: OrderPayment): Promise<void> { await this.sql`insert into pagos_orden (id, orden_id, fecha, valor, medio_pago, referencia_externa, registrado_por) values (${value.id}, ${value.orderId}, ${value.date}, ${value.amount}, ${value.method}, ${value.externalReference ?? null}, ${value.registeredBy ?? null})`; }
+  // Orden cronológico (mismo criterio que el índice `pagos_orden_orden_fecha_idx`): es el orden en
+  // que la ficha de la pantalla los lista y en el que el servicio calcula la "fecha del último pago".
+  async listOrderPayments(orderId: string): Promise<OrderPayment[]> { return (await this.sql<DbRow[]>`select * from pagos_orden where orden_id=${orderId} order by fecha, created_at`).map(orderPayment); }
   // H3: agregados en SQL que reproducen exactamente calculateDashboard/groupExpenseByWork/
   // groupExpenseByTag/groupExpenseByPeriod (lib/domain/rules.ts) sobre la MISMA visibilidad por actor
   // que listVisibleExpenses (join a ordenes/requisiciones para aprobador/solicitante; sin filtro para
@@ -562,6 +595,7 @@ function transactionRepositories(ports: PostgresPorts): TransactionRepositories 
     requisitions: { get: ports.getRequisition.bind(ports), save: ports.saveRequisition.bind(ports), list: ports.listRequisitions.bind(ports), listVisibleTo: ports.listVisibleRequisitions.bind(ports), listVisibleHeaders: ports.listVisibleHeaders.bind(ports), dashboardByStatus: ports.dashboardByStatus.bind(ports) },
     orders: { save: ports.saveOrder.bind(ports), list: ports.listOrders.bind(ports), listVisibleTo: ports.listVisibleOrders.bind(ports), listByRequisition: ports.listByRequisition.bind(ports), get: ports.getOrder.bind(ports), listAttentionCandidates: ports.listAttentionCandidates.bind(ports), listRecentlyUpdated: ports.listOrdersRecentlyUpdated.bind(ports), dashboardPendingCount: ports.dashboardPendingCount.bind(ports) },
     expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), deleteByReference: ports.deleteExpenseByReference.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports), dashboardAggregates: ports.dashboardAggregates.bind(ports), listRecentlyUpdated: ports.listExpensesRecentlyUpdated.bind(ports) },
+    orderPayments: { save: ports.saveOrderPayment.bind(ports), listByOrder: ports.listOrderPayments.bind(ports) },
     pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) },
     audit: ports, consecutives: ports, features: ports, items: ports, catalogs: ports, notifications: ports,
   };

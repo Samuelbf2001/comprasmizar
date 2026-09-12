@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DomainError } from "../../lib/domain";
-import { reviewedItemSchema, requisitionActionSchema } from "../../lib/http/schemas";
+import { orderPaymentSchema, reviewedItemSchema, requisitionActionSchema } from "../../lib/http/schemas";
 
 // H8 (docs/plan-rendimiento.md): authenticatedJson() llama a requireServerActor() — se mockea igual que
 // tests/unit/public-access-route.test.ts para probar SOLO la cabecera Server-Timing, sin Supabase/Postgres.
@@ -196,5 +196,39 @@ describe("requisitionActionSchema — review reparte aprobador por ítem", () =>
       expect(parsed.data.items[0].approverId).toBe("44444444-4444-4444-8444-444444444444");
       expect(parsed.data.items[1].approverId).toBeUndefined(); // sin reparto: hereda el de cabecera
     }
+  });
+});
+
+// Reunión agosto 2026: registro de un pago parcial de orden (POST /api/orders/[id]/payments).
+describe("orderPaymentSchema — pago parcial de orden", () => {
+  const base = { date: "2026-08-05", amount: 100, method: "efectivo" as const };
+  it("acepta el shape mínimo (sin externalReference)", () => {
+    expect(orderPaymentSchema.safeParse(base).success).toBe(true);
+  });
+  it("acepta los cinco medios de public.medio_pago (202609120002_pagos_orden.sql) y rechaza cualquier otro", () => {
+    for (const method of ["efectivo", "transferencia", "cheque", "tarjeta", "otro"]) {
+      expect(orderPaymentSchema.safeParse({ ...base, method }).success).toBe(true);
+    }
+    expect(orderPaymentSchema.safeParse({ ...base, method: "bitcoin" }).success).toBe(false);
+  });
+  // Mismo criterio que expenseSharesSchema/pettyCashSchema: el dominio entero asume peso colombiano
+  // entero (lib/domain/model.ts), así que un valor con centavos o no positivo se rechaza en la
+  // frontera HTTP, antes de llegar al servicio.
+  it("exige amount entero y positivo", () => {
+    expect(orderPaymentSchema.safeParse({ ...base, amount: 0 }).success).toBe(false);
+    expect(orderPaymentSchema.safeParse({ ...base, amount: -100 }).success).toBe(false);
+    expect(orderPaymentSchema.safeParse({ ...base, amount: 100.5 }).success).toBe(false);
+  });
+  it("exige date en formato YYYY-MM-DD", () => {
+    expect(orderPaymentSchema.safeParse({ ...base, date: "05/08/2026" }).success).toBe(false);
+    expect(orderPaymentSchema.safeParse({ ...base, date: "2026-08-05" }).success).toBe(true);
+  });
+  it("acepta externalReference opcional y lo recorta; rechaza uno vacío o demasiado largo", () => {
+    expect(orderPaymentSchema.safeParse({ ...base, externalReference: "CONS-123" }).success).toBe(true);
+    expect(orderPaymentSchema.safeParse({ ...base, externalReference: "" }).success).toBe(false);
+    expect(orderPaymentSchema.safeParse({ ...base, externalReference: "x".repeat(241) }).success).toBe(false);
+  });
+  it("es .strict(): rechaza campos que el esquema no declara", () => {
+    expect(orderPaymentSchema.safeParse({ ...base, orderId: "no-corresponde-aqui" }).success).toBe(false);
   });
 });

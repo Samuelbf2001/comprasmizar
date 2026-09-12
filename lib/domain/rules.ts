@@ -7,9 +7,13 @@ const permissions: Record<Role, readonly string[]> = {
   // "order:create" (generar órdenes) es del revisor, NO del aprobador: aprobar y designar proveedor/generar
   // órdenes son roles distintos por decisión explícita de la reunión 2026-08-31 — exigirle al aprobador
   // proveedor o generación de órdenes rompería su rol de solo aprobar.
-  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "petty_cash:create", "petty_cash:read", "expense:read", "order:read", "order:update", "order:create", "order:pay", "dashboard:read"],
+  // "payment:register" (reunión agosto 2026, pagos parciales): revisor/contabilidad/admin_sixteam —
+  // los mismos que hoy pueden mover el eje administrativo hacia "pagada" (order:pay/order:account),
+  // sumados en un solo permiso porque registrar un abono parcial no es "contabilizar" ni "pagar el
+  // saldo completo": es un tercer gesto, más frecuente, que ninguno de los dos cubre por sí solo.
+  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "petty_cash:create", "petty_cash:read", "expense:read", "order:read", "order:update", "order:create", "order:pay", "payment:register", "dashboard:read"],
   aprobador: ["requisition:read:assigned", "requisition:approve", "requisition:return", "order:read", "dashboard:read"],
-  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:export", "order:read", "order:account", "dashboard:read"],
+  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:export", "order:read", "order:account", "payment:register", "dashboard:read"],
   admin_mizar: ["requisition:create", "catalog:manage", "dashboard:read", "expense:read", "report:export"],
   admin_sixteam: ["*"],
 };
@@ -145,6 +149,20 @@ const adminTransitions: Record<OrderAdminStatus, readonly OrderAdminStatus[]> = 
 export function assertAdminTransition(from: OrderAdminStatus, to: OrderAdminStatus, fulfillment: OrderStatus): void {
   if (!adminTransitions[from].includes(to)) throw new DomainError("INVALID_ADMIN_TRANSITION", `No se puede pasar de ${from} a ${to}`);
   if (fulfillment === "no_necesario") throw new DomainError("ORDER_NOT_NEEDED", "Una orden no necesaria no se contabiliza ni se paga");
+}
+/**
+ * Reunión agosto 2026: un pago parcial nunca puede dejar la orden "sobre-pagada". `total` es
+ * `gastos.valor_total` del gasto de la orden (única fuente de verdad, igual que en la base — ver el
+ * trigger `validar_pago_no_excede_orden` de 202609120002_pagos_orden.sql, que impone EXACTAMENTE
+ * esta misma regla al insertar directamente en la base); `paid` es la suma de los pagos ya
+ * registrados (sin contar `next`); `next` es el pago que se intenta registrar ahora. El límite es
+ * "excede", no "alcanza": el saldo EXACTO restante sí se acepta (paid + next === total cierra la
+ * orden, no la rebasa).
+ */
+export function assertPaymentWithinOrder(total: Money, paid: Money, next: Money): void {
+  assertCop(next, "Valor del pago");
+  if (next <= 0) throw new DomainError("INVALID_MONEY", "El pago debe ser mayor a cero");
+  if (paid + next > total) throw new DomainError("PAYMENT_EXCEEDS_ORDER", "El pago excede el saldo pendiente de la orden");
 }
 export function validateShares(total: Money, shares: readonly ExpenseShare[]): void {
   if (!Number.isInteger(total) || total <= 0 || shares.length === 0 || shares.some((share) => !share.expenseId || !share.workId || !Number.isInteger(share.amount) || share.amount <= 0)) throw new DomainError("INVALID_SHARE", "Reparto inválido");

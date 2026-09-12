@@ -19,6 +19,7 @@ import { POST as completeAttachment } from "../../app/api/attachments/[entity]/[
 import { GET as downloadAttachment } from "../../app/api/attachments/[entity]/[entityId]/[attachmentId]/download/route";
 import { GET as requisitionDetail } from "../../app/api/requisitions/[id]/detail/route";
 import { GET as orders } from "../../app/api/orders/route";
+import { GET as orderPayments, POST as registerOrderPayment } from "../../app/api/orders/[id]/payments/route";
 import { GET as expenses } from "../../app/api/expenses/route";
 import { POST as mcpTools } from "../../app/mcp/route";
 
@@ -29,5 +30,8 @@ describe("routes fail closed without runtime credentials", () => {
     expect((await attachmentsBatch(new Request(`http://localhost/api/attachments/caja_menor?ids=${entityId}`), { params: Promise.resolve({ entity: "caja_menor" }) })).status).toBe(503);
     expect((await orders(new Request(`http://localhost/api/orders?requisitionId=${entityId}`))).status).toBe(503);
     expect((await expenses(new Request(`http://localhost/api/expenses?referenceId=${entityId}`))).status).toBe(503);
+    // Reunión agosto 2026: pagos parciales de orden — mismo contrato "falla cerrado" que el resto.
+    expect((await orderPayments(new Request(`http://localhost/api/orders/${entityId}/payments`), { params: Promise.resolve({ id: entityId }) })).status).toBe(503);
+    expect((await registerOrderPayment(new Request(`http://localhost/api/orders/${entityId}/payments`, { method: "POST", body: "{}" }), { params: Promise.resolve({ id: entityId }) })).status).toBe(503);
   });
 });
