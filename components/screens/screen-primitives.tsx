@@ -13,7 +13,19 @@ export function RequestRows({ rows, onOpen }: { rows: Requisition[]; onOpen: (id
 // disparador + `role="menu"`, cierra con Escape o clic fuera, y devuelve el foco al disparador al
 // cerrar (mismo criterio de foco que el resto de diálogos de este archivo).
 export type ActionMenuItem = { label: string; onSelect: () => void; disabled?: boolean; tone?: 'default' | 'danger' };
-export function ActionMenu({ label = 'Más', items }: { label?: string; items: ActionMenuItem[] }) {
+export function ActionMenu({
+  label = 'Más',
+  ariaLabel,
+  items,
+}: {
+  label?: string;
+  /** Nombre accesible del disparador cuando el texto visible ("⋯ a todos", repetido en cada
+   *  columna) no basta para distinguir un menú de otro — sin esto, tres botones con el mismo
+   *  texto visible tendrían el mismo nombre accesible, y quien navega por lector de pantalla no
+   *  podría saber a cuál columna afecta cada uno. */
+  ariaLabel?: string;
+  items: ActionMenuItem[];
+}) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -45,6 +57,7 @@ export function ActionMenu({ label = 'Más', items }: { label?: string; items: A
         className="button button-secondary action-menu-trigger"
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={ariaLabel}
         onClick={() => setOpen((current) => !current)}
       >
         {label} <MoreHorizontal aria-hidden="true" size={15} />

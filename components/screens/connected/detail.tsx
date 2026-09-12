@@ -964,6 +964,7 @@ export function ConnectedRequisitionDetail({
                           <span>IVA %</span>
                           <ActionMenu
                             label="⋯ a todos"
+                            ariaLabel="Aplicar un IVA a todos los ítems vigentes"
                             items={[0, 0.05, 0.19].map((rate) => ({
                               label: `${Math.round(rate * 100)} % a todos`,
                               onSelect: () => applyToAllLines({ ivaRate: rate }),
@@ -977,6 +978,7 @@ export function ConnectedRequisitionDetail({
                           <span>Proveedor</span>
                           <ActionMenu
                             label="⋯ a todos"
+                            ariaLabel="Aplicar un proveedor a todos los ítems vigentes"
                             items={supplierOptions.map((supplier) => ({
                               label: `${supplier.name} a todos`,
                               onSelect: () => applyToAllLines({ finalSupplierId: supplier.id }),
@@ -989,6 +991,7 @@ export function ConnectedRequisitionDetail({
                           <span>Aprobador</span>
                           <ActionMenu
                             label="⋯ a todos"
+                            ariaLabel="Aplicar un aprobador a todos los ítems vigentes"
                             items={(catalogs.approvers ?? []).map((user) => ({
                               label: `${user.name} a todos`,
                               onSelect: () => aplicarAprobadorATodos(user.id),

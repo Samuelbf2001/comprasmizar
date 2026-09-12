@@ -42,14 +42,23 @@ function renderDetail(role: "Revisor" | "Aprobador" = "Revisor") {
   );
 }
 
-describe("alta rápida de proveedor desde revisión", () => {
+/** «+ Crear proveedor…» ya no es un botón único en una barra masiva (ese botón usaba SIEMPRE
+ *  `lines[0].id`, así que el proveedor nuevo terminaba en el primer ítem sin importar en qué fila
+ *  se hubiera pulsado) — ahora es la última opción del `<select>` de proveedor de CADA fila. */
+function openQuickSupplierFromRow(nombre = "Arena") {
+  const select = screen.getByRole("combobox", { name: `Proveedor de ${nombre}` });
+  fireEvent.change(select, { target: { value: "__nuevo__" } });
+  return select;
+}
+
+describe("alta rápida de proveedor desde una fila (fija el line.id correcto)", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
   });
 
-  it("crea solo con nombre, omite NIT vacío y asigna inmediatamente sin duplicar POST", async () => {
+  it("crea solo con nombre, omite NIT vacío y asigna inmediatamente a ESA fila sin duplicar POST", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "supplier-2", name: "Canteras Norte" }), {
         status: 201,
@@ -57,8 +66,7 @@ describe("alta rápida de proveedor desde revisión", () => {
       }),
     );
     renderDetail();
-    const trigger = screen.getByRole("button", { name: /Crear proveedor/ });
-    fireEvent.click(trigger);
+    const trigger = openQuickSupplierFromRow();
     fireEvent.change(screen.getByLabelText("Razón social *"), {
       target: { value: "Canteras Norte" },
     });
@@ -76,9 +84,8 @@ describe("alta rápida de proveedor desde revisión", () => {
     expect(screen.getByRole("combobox", { name: "Proveedor de Arena" })).toHaveValue(
       "supplier-2",
     );
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Canteras Norte quedó asignado",
-    );
+    expect(screen.getByText(/Canteras Norte quedó asignado al ítem/)).toBeInTheDocument();
+    // El foco vuelve al disparador — que ahora es el <select> de la fila, no un botón aparte.
     expect(document.activeElement).toBe(trigger);
   });
 
@@ -90,7 +97,7 @@ describe("alta rápida de proveedor desde revisión", () => {
       }),
     );
     renderDetail();
-    fireEvent.click(screen.getByRole("button", { name: /Crear proveedor/ }));
+    openQuickSupplierFromRow();
     fireEvent.change(screen.getByLabelText("Razón social *"), {
       target: { value: "Duplicado" },
     });
@@ -99,9 +106,6 @@ describe("alta rápida de proveedor desde revisión", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Crear y asignar" }));
 
-    // GRAVE 3 (QA 2026-08-31) añadió otros `role="alert"` fuera del diálogo (razones de
-    // botones deshabilitados en este fixture sin obra/etiqueta) — se acota la búsqueda al
-    // diálogo de alta de proveedor para no ambigüar con esos.
     const dialog = screen.getByRole("dialog", { name: "Nuevo proveedor" });
     await waitFor(() =>
       expect(within(dialog).getByRole("alert")).toHaveTextContent("mismo NIT"),
@@ -110,9 +114,9 @@ describe("alta rápida de proveedor desde revisión", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("atrapa Tab y Shift+Tab en el diálogo y bloquea la alta para Aprobador", () => {
+  it("atrapa Tab y Shift+Tab en el diálogo; para Aprobador la fila ni siquiera existe (no ve la revisión)", () => {
     renderDetail();
-    fireEvent.click(screen.getByRole("button", { name: /Crear proveedor/ }));
+    openQuickSupplierFromRow();
     const close = screen.getByRole("button", { name: "Cerrar alta de proveedor" });
     // El envío solo se habilita con razón social; deshabilitado quedaría fuera
     // de la trampa de foco y nunca sería el último elemento enfocable.
@@ -130,7 +134,9 @@ describe("alta rápida de proveedor desde revisión", () => {
 
     cleanup();
     renderDetail("Aprobador");
-    expect(screen.queryByRole("button", { name: /Crear proveedor/ })).toBeNull();
+    // Un Aprobador no revisa (la requisición sigue en_revision): no ve la tabla editable en
+    // absoluto, así que el <select> de proveedor de la fila ni siquiera está en el DOM.
+    expect(screen.queryByRole("combobox", { name: /Proveedor de/ })).toBeNull();
   });
 });
 
@@ -187,16 +193,17 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
     expect(workSelect).toBeInTheDocument();
   });
 
-  // Reunión 2026-09: el 19 % se teclaaba una vez por ítem, y ese tecleo repetido era la mayor
-  // parte del coste de revisar. La acción masiva es la razón de ser de la tabla, así que si
-  // deja de aplicar a todas las líneas vigentes el rediseño pierde su sentido.
-  it("aplica el IVA a todos los ítems vigentes de una sola vez y respeta los declinados", async () => {
+  // Reunión 2026-09: el 19 % se tecleaba una vez por ítem, y ese tecleo repetido era la mayor
+  // parte del coste de revisar. La acción masiva ya no vive en una barra fija: cuelga de un
+  // botón «⋯ a todos» en la cabecera de su propia columna — sigue siendo un solo gesto.
+  it("aplica el IVA a todos los ítems vigentes de una sola vez y respeta los declinados (vía autoguardado)", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "req-1", items: [] }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
     );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const varias = {
       ...reviewData,
       requisition: {
@@ -222,14 +229,13 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
     });
     fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), { target: { value: "work-1" } });
 
-    // Un solo gesto en la barra, en vez de abrir el select de cada ítem.
-    fireEvent.change(
-      screen.getByRole("combobox", { name: "Aplicar un IVA a todos los ítems vigentes" }),
-      { target: { value: "0.19" } },
-    );
+    // Un solo gesto: abrir el menú de la columna IVA y elegir "19 % a todos".
+    fireEvent.click(screen.getByRole("button", { name: "Aplicar un IVA a todos los ítems vigentes" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "19 % a todos" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Guardar revisión" }));
+    await vi.advanceTimersByTimeAsync(1600);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    vi.useRealTimers();
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     const porId = Object.fromEntries(body.items.map((i: { id: string }) => [i.id, i]));
     expect(porId["item-1"].ivaRate).toBe(0.19);
@@ -239,7 +245,7 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
     expect(porId["item-3"].status).toBe("declinado");
   });
 
-  it("envía IVA/Desc como fracción, obra y forma de pago, sin exigir proveedor para enviar a aprobación", async () => {
+  it("envía IVA/Desc como fracción, obra y forma de pago al pulsar Enviar a aprobación, sin exigir proveedor", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "req-1", items: [] }), {
         status: 200,
@@ -260,24 +266,24 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
     fireEvent.change(screen.getByRole("spinbutton", { name: "Descuento de Arena" }), {
       target: { value: "10" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Guardar revisión" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(body.workId).toBe("work-1");
-    expect(body.paymentTerms).toBe("ANTICIPADO");
-    expect(body.items[0].ivaRate).toBe(0.19);
-    expect(body.items[0].discountRate).toBe(0.1);
+    fireEvent.click(screen.getByRole("button", { name: "Enviar a aprobación" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [primera, segunda] = fetchMock.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(primera.action).toBe("review");
+    expect(primera.workId).toBe("work-1");
+    expect(primera.paymentTerms).toBe("ANTICIPADO");
+    expect(primera.items[0].ivaRate).toBe(0.19);
+    expect(primera.items[0].discountRate).toBe(0.1);
     // Elegir "tag-1" prerellenó el aprobador con su sugerencia por defecto (approver-1); el review
     // enviado lo lleva sin que el revisor haya tocado el select de aprobador.
-    expect(body.approverId).toBe("approver-1");
-
-    const sendButton = screen.getByRole("button", { name: "Enviar a aprobación" });
-    expect(sendButton).toBeEnabled();
+    expect(primera.approverId).toBe("approver-1");
+    expect(segunda).toEqual({ action: "send_for_approval" });
   });
 
   // Reunión 2026-09 (decisión del cliente): "etiqueto a qué obra va y etiqueto quién me va a aprobar" —
-  // el aprobador se sugiere por la etiqueta pero el revisor puede cambiarlo, y sin aprobador "Enviar a
-  // aprobación" queda deshabilitado con el motivo explicado al lado (regla única del repo).
+  // el aprobador se sugiere por la etiqueta pero el revisor puede cambiarlo. Ya no hay un botón
+  // deshabilitado con el motivo al lado: la primaria SIEMPRE se puede pulsar, y si falta algo
+  // enfoca y marca el campo que falta.
   it("elegir etiqueta pre-rellena el aprobador (sugerencia por defecto) pero se puede cambiar", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "req-1", items: [] }), {
@@ -290,32 +296,36 @@ describe("revisión: obra por empresa, IVA/Desc como fracción y proveedor sin b
     expect(approverSelect).toHaveValue(""); // nada elegido todavía: sin sugerencia disparada
     fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), { target: { value: "work-1" } });
 
-    // "Enviar a aprobación" explica por qué está deshabilitado antes de elegir nada.
-    expect(screen.getByRole("button", { name: "Enviar a aprobación" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Falta elegir la etiqueta");
+    // Sin etiqueta, pulsar la primaria enfoca y marca el campo que falta en vez de solo avisar.
+    fireEvent.click(screen.getByRole("button", { name: "Enviar a aprobación" }));
+    expect(screen.getByText("Falta elegir la etiqueta.")).toBeInTheDocument();
+    expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Etiqueta" }));
+    expect(fetchMock).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta" }), { target: { value: "tag-1" } });
     expect(approverSelect).toHaveValue("approver-1"); // sugerencia por defecto de la etiqueta
-    expect(screen.getByRole("button", { name: "Enviar a aprobación" })).toBeEnabled();
 
     // El revisor cambia el aprobador sugerido: la elección manual gana, no la etiqueta.
     fireEvent.change(approverSelect, { target: { value: "approver-2" } });
     expect(approverSelect).toHaveValue("approver-2");
-    fireEvent.click(screen.getByRole("button", { name: "Guardar revisión" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(body.approverId).toBe("approver-2");
+    fireEvent.click(screen.getByRole("button", { name: "Enviar a aprobación" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [primera] = fetchMock.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(primera.approverId).toBe("approver-2");
   });
 
-  it("sin aprobador, Enviar a aprobación queda deshabilitado con el motivo explicado al lado", () => {
-    // Etiqueta sin aprobador por defecto: elegirla no prerellena nada, y el botón sigue explicando por qué.
+  it("sin aprobador, pulsar Enviar a aprobación enfoca el select de aprobador y no manda nada", () => {
+    // Etiqueta sin aprobador por defecto: elegirla no prerellena nada.
     const sinSugerencia = { ...reviewData, catalogs: { ...reviewData.catalogs, tags: [{ id: "tag-2", name: "Sin sugerencia" }] } };
+    const fetchMock = vi.spyOn(globalThis, "fetch");
     render(<ConnectedRequisitionDetail data={sinSugerencia} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
     fireEvent.change(screen.getByRole("combobox", { name: "Etiqueta" }), { target: { value: "tag-2" } });
     fireEvent.change(screen.getByRole("combobox", { name: "Obra" }), { target: { value: "work-1" } });
     expect(screen.getByRole("combobox", { name: "Aprobador" })).toHaveValue("");
-    expect(screen.getByRole("button", { name: "Enviar a aprobación" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Falta elegir el aprobador");
+    fireEvent.click(screen.getByRole("button", { name: "Enviar a aprobación" }));
+    expect(screen.getByText("Falta elegir el aprobador.")).toBeInTheDocument();
+    expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Aprobador" }));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -357,8 +367,8 @@ describe("ítem declinado se conserva visible en la ficha", () => {
   });
 });
 
-// "Generar órdenes" es su propio paso con su propio botón (el cliente dijo que no la veía):
-// agrupa ítems aprobados por proveedor y anticipa SUPPLIER_REQUIRED antes de que el usuario choque con él.
+// "Generar órdenes (K)" es la primaria de este estado, al pie del panel de ítems: agrupa ítems
+// aprobados por proveedor y anticipa SUPPLIER_REQUIRED antes de que el usuario choque con él.
 describe("bloque Generar órdenes agrupa por proveedor", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => {
@@ -413,72 +423,93 @@ describe("bloque Generar órdenes agrupa por proveedor", () => {
     expect(screen.getByText(/Ferretería Uno/, { selector: "b" })).toBeInTheDocument();
     expect(screen.getByText(/Ferretería Dos/, { selector: "b" })).toBeInTheDocument();
     expect(screen.getByTestId("missing-supplier-warning")).toHaveTextContent("Grava");
-    expect(screen.getByRole("button", { name: "Generar órdenes" })).toBeDisabled();
+    // La primaria "Generar órdenes (K)" cuenta los grupos YA completos (2), no incluye a Grava.
+    expect(screen.getByRole("button", { name: /Generar órdenes \(2\)/ })).toBeEnabled();
   });
 
-  // Bloqueante de atasco (reunión 2026-08-31): antes este bloque solo mostraba una advertencia con el
-  // botón deshabilitado, sin ninguna forma de resolverlo desde aquí. Prueba de punta a punta en la UI:
-  // elegir proveedor para el ítem que no lo tiene, disparar assign_suppliers, y que al refrescar con la
-  // requisición ya corregida el botón "Generar órdenes" quede habilitado.
-  it("permite asignar proveedor a un ítem sin él desde el propio bloque, y tras asignarlo el botón se habilita", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
-    const dataConProveedorFaltante = {
-      requisition: {
-        id: "req-1",
-        consecutive: "RQ-001",
-        type: "compra" as const,
-        channel: "interno",
-        societyId: "soc-1",
-        workId: "work-1",
-        status: "aprobada",
-        items: [
-          { id: "item-1", description: "Arena", quantity: 1, unit: "saco", unitBase: 100000, status: "aprobado" as const, finalSupplierId: "supplier-1" },
-          { id: "item-3", description: "Grava", quantity: 3, unit: "m3", unitBase: 20000, status: "aprobado" as const },
-        ],
-      },
-      catalogs,
-      orders: [],
-      expenses: [],
-      history: [],
-      attachments: [],
-    };
-    const { rerender } = render(
-      <ConnectedRequisitionDetail role="Revisor" go={vi.fn()} refresh={vi.fn()} data={dataConProveedorFaltante} />,
-    );
-    const asignarButton = screen.getByRole("button", { name: "Asignar proveedor" });
-    expect(asignarButton).toBeDisabled(); // sin selección todavía
-    const select = within(screen.getByTestId("missing-supplier-warning")).getByRole("combobox");
-    fireEvent.change(select, { target: { value: "supplier-1" } });
-    expect(asignarButton).toBeEnabled();
-    fireEvent.click(asignarButton);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/api/requisitions/req-1/actions");
-    expect(JSON.parse(String(init.body))).toEqual({ action: "assign_suppliers", assignments: [{ itemId: "item-3", supplierId: "supplier-1" }] });
-
-    // Simula el refresh real (RF-1105: la pantalla vuelve a pintarse con la requisición ya corregida) —
-    // el ítem ya trae finalSupplierId, así que la advertencia desaparece y el botón se habilita solo.
-    rerender(
+  // Bloqueante de atasco (reunión 2026-08-31): ya no hay un botón "Asignar proveedor(es)" aparte —
+  // la primaria "Generar órdenes (K)" hace `assign_suppliers` + `generate_orders` en una sola
+  // secuencia; si falta elegir un proveedor, pulsarla enfoca el primer select faltante en vez de
+  // intentarlo.
+  it("si falta elegir un proveedor, pulsar la primaria enfoca el primer select faltante en vez de intentarlo", () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    render(
       <ConnectedRequisitionDetail
         role="Revisor"
         go={vi.fn()}
         refresh={vi.fn()}
         data={{
-          ...dataConProveedorFaltante,
           requisition: {
-            ...dataConProveedorFaltante.requisition,
-            items: dataConProveedorFaltante.requisition.items.map((item) => (item.id === "item-3" ? { ...item, finalSupplierId: "supplier-1" } : item)),
+            id: "req-1",
+            consecutive: "RQ-001",
+            type: "compra",
+            channel: "interno",
+            societyId: "soc-1",
+            workId: "work-1",
+            status: "aprobada",
+            items: [
+              { id: "item-1", description: "Arena", quantity: 1, unit: "saco", unitBase: 100000, status: "aprobado", finalSupplierId: "supplier-1" },
+              { id: "item-3", description: "Grava", quantity: 3, unit: "m3", unitBase: 20000, status: "aprobado" },
+            ],
           },
+          catalogs,
+          orders: [],
+          expenses: [],
+          history: [],
+          attachments: [],
         }}
       />,
     );
-    expect(screen.queryByTestId("missing-supplier-warning")).toBeNull();
-    expect(screen.getByRole("button", { name: "Generar órdenes" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /Generar órdenes/ }));
+    expect(document.activeElement).toBe(within(screen.getByTestId("missing-supplier-warning")).getByRole("combobox"));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("habilita el botón y dispara generate_orders cuando todos los ítems tienen proveedor", async () => {
+  it("con el proveedor elegido, la primaria manda assign_suppliers y luego generate_orders en una sola secuencia", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(
+      <ConnectedRequisitionDetail
+        role="Revisor"
+        go={vi.fn()}
+        refresh={vi.fn()}
+        data={{
+          requisition: {
+            id: "req-1",
+            consecutive: "RQ-001",
+            type: "compra",
+            channel: "interno",
+            societyId: "soc-1",
+            workId: "work-1",
+            status: "aprobada",
+            items: [
+              { id: "item-1", description: "Arena", quantity: 1, unit: "saco", unitBase: 100000, status: "aprobado", finalSupplierId: "supplier-1" },
+              { id: "item-3", description: "Grava", quantity: 3, unit: "m3", unitBase: 20000, status: "aprobado" },
+            ],
+          },
+          catalogs,
+          orders: [],
+          expenses: [],
+          history: [],
+          attachments: [],
+        }}
+      />,
+    );
+    const select = within(screen.getByTestId("missing-supplier-warning")).getByRole("combobox");
+    fireEvent.change(select, { target: { value: "supplier-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Generar órdenes/ }));
+    fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const cuerpos = fetchMock.mock.calls
+      .filter(([url]) => String(url) === "/api/requisitions/req-1/actions")
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(cuerpos[0]).toEqual({ action: "assign_suppliers", assignments: [{ itemId: "item-3", supplierId: "supplier-1" }] });
+    expect(cuerpos[1]).toEqual({ action: "generate_orders" });
+  });
+
+  it("habilita la primaria y dispara solo generate_orders cuando todos los ítems ya tienen proveedor", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
@@ -509,7 +540,7 @@ describe("bloque Generar órdenes agrupa por proveedor", () => {
       />,
     );
     expect(screen.queryByTestId("missing-supplier-warning")).toBeNull();
-    const button = screen.getByRole("button", { name: "Generar órdenes" });
+    const button = screen.getByRole("button", { name: /Generar órdenes \(1\)/ });
     expect(button).toBeEnabled();
     fireEvent.click(button);
     // MENOR: el confirm nativo se reemplazó por un diálogo accesible propio
@@ -524,8 +555,9 @@ describe("bloque Generar órdenes agrupa por proveedor", () => {
 
 // BLOQUEANTE (QA reasignación, reunión 2026-09): el revisor necesita poder reasignar el aprobador de
 // una requisición ya en_aprobacion (el caso real: el asignado dejó de ser elegible) sin pasar por
-// review(), que solo opera en_revision/devuelta.
-describe("reasignar aprobador en en_aprobacion", () => {
+// review(), que solo opera en_revision/devuelta. Ahora vive detrás de «Más ⋯» en vez del bloque
+// lateral fijo de siempre.
+describe("reasignar aprobador en en_aprobacion (detrás de «Más ⋯»)", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
@@ -557,9 +589,12 @@ describe("reasignar aprobador en en_aprobacion", () => {
     attachments: [],
   };
 
-  it("el revisor ve el aprobador asignado y un control para reasignarlo, con el texto de cuándo usarlo", () => {
+  it("el revisor ve el aprobador asignado y, tras abrir «Más ⋯», el control para reasignarlo con el texto de cuándo usarlo", () => {
     render(<ConnectedRequisitionDetail data={detailData} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
     expect(screen.getByTestId("requisition-approver")).toHaveTextContent("Nelson");
+    expect(screen.queryByTestId("reassign-approver")).toBeNull(); // el diálogo no está abierto todavía
+    fireEvent.click(screen.getByRole("button", { name: "Más" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Reasignar aprobador" }));
     expect(screen.getByTestId("reassign-approver")).toHaveTextContent(
       "Si el aprobador asignado no puede atenderla, reasígnala aquí.",
     );
@@ -573,6 +608,8 @@ describe("reasignar aprobador en en_aprobacion", () => {
       }),
     );
     render(<ConnectedRequisitionDetail data={detailData} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Más" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Reasignar aprobador" }));
     const panel = within(screen.getByTestId("reassign-approver"));
     fireEvent.change(panel.getByRole("combobox"), { target: { value: "approver-2" } });
     fireEvent.click(panel.getByRole("button", { name: "Reasignar aprobador" }));
@@ -582,8 +619,13 @@ describe("reasignar aprobador en en_aprobacion", () => {
     expect(JSON.parse(String(init.body))).toEqual({ action: "reassign_approver", approverId: "approver-2" });
   });
 
-  it("un aprobador (no revisor) no ve el control de reasignación", () => {
+  it("un aprobador (no revisor) no ve la opción de reasignar aprobador", () => {
+    // El aprobador SÍ ve su propia primaria/menú (decide sus ítems, con "Devolver a revisión" en
+    // «Más ⋯») — lo que nunca debe ver es "Reasignar aprobador", que es cosa del revisor.
     render(<ConnectedRequisitionDetail data={detailData} role="Aprobador" go={vi.fn()} refresh={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Más" }));
+    expect(screen.getByRole("menuitem", { name: "Devolver a revisión" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Reasignar aprobador" })).toBeNull();
     expect(screen.queryByTestId("reassign-approver")).toBeNull();
   });
 });
