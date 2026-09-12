@@ -21,6 +21,8 @@ const FORBIDDEN_SPECIFIERS = [
   "../catalog-admin",
   "./suppliers",
   "../suppliers",
+  "./settings",
+  "../settings",
   "./demo-screens",
   "../demo-screens",
   "./workflow",

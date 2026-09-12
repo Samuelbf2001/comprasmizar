@@ -53,6 +53,14 @@ const SuppliersScreen = dynamic(
   () => import("./screens/suppliers").then((mod) => mod.SuppliersScreen),
   { ssr: false, loading: () => null },
 );
+// RF-1401 ("en Configuración todavía no lo tenemos listo", 11-sep-2026): igual que
+// SuppliersScreen, se carga fuera de la máquina de ConnectedScreen/routeKind — hace sus propias
+// llamadas (public-access, catalogs/manage, health) en vez de sumar un RouteKind nuevo a
+// connected/data.ts para una única ruta de administración.
+const SettingsScreen = dynamic(
+  () => import("./screens/settings").then((mod) => mod.SettingsScreen),
+  { ssr: false, loading: () => null },
+);
 const DemoRequisitionScreen = dynamic(
   () =>
     import("./screens/connected/new-requisition").then(
@@ -332,6 +340,11 @@ export default function MizarApp({
     content = <SuppliersScreen role={role} demoMode={demoMode} />;
   else if (!demoMode && isConnectedReadRoute(pathname))
     content = <ConnectedScreen pathname={pathname} role={role} viewingAs={role === realRole ? null : role} go={go} />;
+  // RF-1401: solo en producción (demoMode deja el Placeholder existente más abajo intacto, ver
+  // el propio comentario de SettingsScreen sobre por qué no vale la pena una versión de demo
+  // completa para una pantalla puramente administrativa).
+  else if (!demoMode && pathname.startsWith("/configuracion"))
+    content = <SettingsScreen role={role} go={go} />;
   else if (!demoMode) content = <IntegrationGate role={role} />;
   else if (pathname === "/" || pathname === "/inicio")
     content = <DashboardScreen go={go} />;
