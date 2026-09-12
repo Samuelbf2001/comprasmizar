@@ -58,7 +58,7 @@ test.describe("operación demo visible", () => {
 
   test("mensajes no monta iframe sin configuración de Kapso", async ({ page }) => {
     await page.goto("/mensajes");
-    const inbox = page.locator('iframe[title="Bandeja de mensajes Kapso"]');
+    const inbox = page.locator('iframe[title="Bandeja de mensajes de WhatsApp"]');
     test.skip(await inbox.count() > 0, "El servidor bajo prueba tiene Kapso configurado; esta aserción corresponde únicamente a ausencia de env.");
     await expect(page.getByRole("heading", { name: "La bandeja está lista para conectarse" })).toBeVisible();
     await expect(inbox).toHaveCount(0);

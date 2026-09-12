@@ -57,7 +57,7 @@ describe("MessagesScreen — el iframe depende del endpoint autenticado", () => 
       new Response(JSON.stringify({ url: EMBED }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<MessagesScreen />);
-    const iframe = await screen.findByTitle("Bandeja de mensajes Kapso");
+    const iframe = await screen.findByTitle("Bandeja de mensajes de WhatsApp");
     expect(iframe).toHaveAttribute("src", EMBED);
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
   });
@@ -68,7 +68,7 @@ describe("MessagesScreen — el iframe depende del endpoint autenticado", () => 
     );
     render(<MessagesScreen />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "La bandeja está lista para conectarse" })).toBeInTheDocument());
-    expect(screen.queryByTitle("Bandeja de mensajes Kapso")).toBeNull();
+    expect(screen.queryByTitle("Bandeja de mensajes de WhatsApp")).toBeNull();
   });
 
   it("descarta una URL de dominio no permitido aunque el servidor la entregue", async () => {
@@ -77,6 +77,6 @@ describe("MessagesScreen — el iframe depende del endpoint autenticado", () => 
     );
     render(<MessagesScreen />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "La bandeja está lista para conectarse" })).toBeInTheDocument());
-    expect(screen.queryByTitle("Bandeja de mensajes Kapso")).toBeNull();
+    expect(screen.queryByTitle("Bandeja de mensajes de WhatsApp")).toBeNull();
   });
 });
