@@ -240,6 +240,7 @@ export class ProcurementService {
         tagId: requisition.tagId,
         approverId: requisition.approverId,
         workId: requisition.workId,
+        costCenterId: requisition.costCenterId,
         paymentTerms: requisition.paymentTerms,
         items: requisition.items,
       });
