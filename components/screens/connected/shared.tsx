@@ -41,8 +41,9 @@ export type NamedOption = { id: string; name: string };
 export type CatalogData = {
   // Centros de costo (UI, 2026-09-12): `costCenterId` es el DEFAULT de esta obra (columna
   // `obras.centro_costo_id`, ver `CatalogWork` en lib/services/contracts.ts) — la revisión lo usa para
-  // precargar el selector "Centro de costo" al elegir obra (ver detail.tsx). Opcional: una obra puede
-  // no tener centro configurado.
+  // precargar el selector "Centro de costo" al elegir obra (ver detail.tsx), y "Gastos y caja" lo
+  // reutiliza igual para predeterminar el centro del gasto directo (ver resolveWorkCostCenter más
+  // abajo). Opcional: una obra puede no tener centro configurado.
   works: Array<NamedOption & { societyId?: string; costCenterId?: string }>;
   // Reunión 2026-09: approverId por etiqueta es SOLO la sugerencia por defecto (prerellena el select de
   // aprobador al elegir etiqueta en la revisión); el aprobador real de la requisición ya no se deriva de
@@ -59,8 +60,11 @@ export type CatalogData = {
   // resolveUserName más abajo. Nunca trae correo ni teléfono.
   users?: NamedOption[];
   // Centros de costo (UI, 2026-09-12): catálogo de centros activos (GET /api/catalogs), para el
-  // selector de la revisión, la columna de reportes/órdenes y el filtro de reportes.
+  // selector de la revisión, la columna de reportes/órdenes, el filtro de reportes y los filtros/
+  // formularios de "Gastos y caja".
   costCenters?: NamedOption[];
+  // Cajas (2026-09-12): catálogo de "dónde vive la plata" para "Gastos y caja".
+  cashBoxes?: Array<NamedOption & { type: string }>;
 };
 // HUECO 2: nunca se debe llegar a mostrar el UUID crudo; si el id no aparece en `catalogs.users`
 // (usuario borrado del bootstrap, dato ausente, etc.) se conserva el fallback genérico ya existente.
@@ -173,6 +177,8 @@ export type OrderPaymentRow = {
 };
 // Reunión 2026-09: "la fecha del gasto es la del pago" — orderDate (nace con el registro) siempre
 // viaja; date/period (fecha y periodo de PAGO) faltan mientras la orden no se ha pagado.
+// Cajas (2026-09-12): cashBoxId/concept/paymentMethod/closeId son copia de caja_menor — SOLO presentes
+// en origin "caja_menor" (una orden de origen "requisicion" no tiene caja ni un único medio de pago).
 export type ExpenseRow = {
   id: string;
   workId: string;
@@ -183,6 +189,11 @@ export type ExpenseRow = {
   date?: string;
   total: number;
   period?: string;
+  costCenterId?: string;
+  cashBoxId?: string;
+  concept?: string;
+  paymentMethod?: OrderPaymentMethod;
+  closeId?: string;
 };
 export type AttachmentRow = {
   id: string;
@@ -194,6 +205,9 @@ export type AttachmentRow = {
   sizeBytes: number;
   uploadedAt?: string;
 };
+// Cajas (2026-09-12): "gasto directo" — cashBoxId/paymentMethod obligatorios, costCenterId el mismo
+// patrón "hereda-o-elige" que en requisiciones (ausente = hereda el de la obra), iva opcional (ausente
+// = 0, el caso de la caja menor clásica que nunca lo llevaba).
 export type PettyRow = {
   id: string;
   workId: string;
@@ -201,6 +215,42 @@ export type PettyRow = {
   concept: string;
   tagId: string;
   amount: number;
+  cashBoxId?: string;
+  paymentMethod?: OrderPaymentMethod;
+  costCenterId?: string;
+  iva?: number;
+  closeId?: string;
+};
+// Ingresos (2026-09-12): tabla APARTE de gastos — nunca un gasto negativo. Mismo shape que Income en
+// lib/domain/model.ts, tal como lo sirve GET /api/incomes.
+export type IncomeRow = {
+  id: string;
+  cashBoxId: string;
+  costCenterId: string;
+  workId?: string;
+  date: string;
+  concept: string;
+  amount: number;
+  paymentMethod: OrderPaymentMethod;
+  thirdParty?: string;
+  registeredBy: string;
+  closeId?: string;
+  period?: string;
+};
+// Cierres mensuales (2026-09-12): mismo shape que CashClose en lib/domain/model.ts. `id: ""` (sentinela
+// de CashService.getCashPeriodSummary) significa "todavía no existe una fila" — el mes en curso,
+// calculado en vivo, antes de cerrarlo.
+export type CashCloseRow = {
+  id: string;
+  cashBoxId: string;
+  period: string;
+  status: "abierto" | "cerrado";
+  openingBalance: number;
+  totalIncome: number;
+  totalExpense: number;
+  closingBalance: number;
+  closedBy?: string;
+  closedAt?: string;
 };
 // RF-405: `actorId` ya viaja en el JSON de /api/requisitions/:id/history (AuditEvent.actorId
 // en lib/domain/model.ts); faltaba en este tipo de cliente y por eso nunca se mostraba.
@@ -226,6 +276,12 @@ export type ExpenseBundle = {
   catalogs: CatalogData;
   pettyCash: PettyRow[];
   pettyAttachments: Record<string, AttachmentRow[]>;
+  // Ingresos (2026-09-12): mismo criterio de visibilidad que pettyCash (income:register es
+  // revisor/contabilidad/admin_sixteam, el mismo conjunto que ya lee caja menor). Opcional (a
+  // diferencia de pettyCash/pettyAttachments) para no romper los `data={{...}}` de pruebas existentes
+  // que no lo mencionan (tests/unit/connected-expenses-detail.test.tsx) — ConnectedExpenses trata la
+  // ausencia como `[]`, igual que ya hace con `expenses`/`pettyCash` si llegaran undefined.
+  incomes?: IncomeRow[];
 };
 // BLOQUEANTE 2: `orders` es opcional porque solo se pide cuando el rol puede leerlas (mismo
 // permiso que ya usa /ordenes) — sin esto, una requisición `aprobada` sin órdenes generadas no
@@ -455,6 +511,34 @@ export function originLabel(origin: string): string {
   if (known) return known;
   const text = origin.replace(/_/g, " ");
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+// Cajas (2026-09-12): mismo criterio que ORIGIN_LABELS/EVENT_LABELS — public.medio_pago/public.tipo_caja
+// (migraciones 202609120002/202609120003) son valores en snake_case; se traducen para presentación.
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  efectivo: "Efectivo",
+  transferencia: "Transferencia",
+  cheque: "Cheque",
+  tarjeta: "Tarjeta",
+  otro: "Otro",
+};
+export function paymentMethodLabel(method: string): string {
+  return PAYMENT_METHOD_LABELS[method] ?? method;
+}
+const CASH_BOX_TYPE_LABELS: Record<string, string> = {
+  caja_menor: "Caja menor",
+  administrativa: "Administrativa",
+  banco: "Banco",
+  personal: "Personal",
+};
+export function cashBoxTypeLabel(type: string): string {
+  return CASH_BOX_TYPE_LABELS[type] ?? type;
+}
+// DECISIÓN DEL DUEÑO (2026-09-12): "en la requisición debe salir predeterminado el centro asociado a
+// esa obra" — mismo criterio de herencia que `resolveCostCenter` en lib/domain/rules.ts, del lado del
+// cliente: solo para PRERELLENAR el select (el usuario puede cambiarlo); la validación real la hace el
+// servidor.
+export function resolveWorkCostCenter(catalogs: CatalogData, workId: string): string {
+  return catalogs.works.find((work) => work.id === workId)?.costCenterId ?? "";
 }
 
 // Fecha de HOY en horario local (YYYY-MM-DD). toISOString() usa UTC y en Colombia

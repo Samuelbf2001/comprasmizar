@@ -146,18 +146,22 @@ describe("superficies demo de adjuntos operativos", () => {
           catalogs: {
             works: [{ id: "work-1", name: "Torre Norte" }],
             tags: [{ id: "tag-1", name: "Operación" }],
+            // Cajas (2026-09-12): registerPettyCash exige ahora cashBoxId — sin al menos una caja
+            // activa en el catálogo, el formulario nunca tendría una preseleccionada.
+            cashBoxes: [{ id: "cash-1", name: "Caja Menor", type: "caja_menor" }],
             suppliers: [], items: [], features: {},
           },
         }}
       />,
     );
     fireEvent.change(screen.getByLabelText("Concepto"), { target: { value: "Caja" } });
-    fireEvent.change(screen.getByLabelText("Valor COP"), { target: { value: "1000" } });
+    fireEvent.change(screen.getByLabelText("Valor base COP"), { target: { value: "1000" } });
     fireEvent.change(screen.getByLabelText("Recibo o soporte (opcional)"), {
       target: { files: [new File(["pdf"], "recibo.pdf", { type: "application/pdf" })] },
     });
     fireEvent.click(screen.getByRole("button", { name: "Registrar gasto" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("sí fue creada"));
+    // "El gasto" (masculino) — antes era "la caja menor" (femenino), ver el mensaje en expenses.tsx.
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("sí fue creado"));
     expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/petty-cash")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Actualizar lista" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Registrar gasto" })).toBeDisabled();

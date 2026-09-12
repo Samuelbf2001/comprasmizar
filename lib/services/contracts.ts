@@ -1,4 +1,4 @@
-import type { Actor, AuditEvent, CashBox, CashBoxType, CashClose, CashCloseStatus, CostCenterMovement, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
+import type { Actor, AuditEvent, CashBoxType, CashClose, CashCloseStatus, CostCenterMovement, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
 import type { ListQuery, Page } from "./list-query";
 
 /** Persistence ports. Infrastructure adapters (e.g. Supabase) implement these; domain services do not depend on them. */

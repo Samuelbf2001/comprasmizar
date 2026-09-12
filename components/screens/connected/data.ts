@@ -22,6 +22,7 @@ import type {
   DetailBundle,
   ExpenseBundle,
   ExpenseRow,
+  IncomeRow,
   LoadState,
   OrderRow,
   OrdersBundle,
@@ -210,15 +211,18 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
     } satisfies OrdersBundle;
   }
   if (kind === "expenses") {
+    // income:register (revisor/contabilidad/admin_sixteam) es el MISMO conjunto de roles que ya lee
+    // caja menor — se reutiliza el nombre existente en vez de declarar una lista aparte idéntica.
     const canReadPettyCash = [
       "Revisor",
       "Contabilidad",
       "Administrador Sixteam",
     ].includes(role);
-    const [expenses, catalogs, pettyCash] = await Promise.all([
+    const [expenses, catalogs, pettyCash, incomes] = await Promise.all([
       readJson("/api/expenses"),
       getCatalogs(),
       canReadPettyCash ? readJson("/api/petty-cash") : Promise.resolve([]),
+      canReadPettyCash ? readJson("/api/incomes") : Promise.resolve([]),
     ]);
     const pettyRows = pettyCash as PettyRow[];
     // H2: una sola llamada por lote (`/api/attachments/caja_menor?ids=...`) en vez de una por
@@ -232,6 +236,7 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
       catalogs: catalogs as CatalogData,
       pettyCash: pettyRows,
       pettyAttachments,
+      incomes: incomes as IncomeRow[],
     } satisfies ExpenseBundle;
   }
   if (kind === "reports") {
@@ -465,6 +470,7 @@ const REQUISITION_ID_URL_RE = /^\/api\/requisitions\/([^/?]+)(?:\/|$)/;
 //                                 una requisición), dashboard, expenses.
 //   /api/expenses               -> expenses, dashboard.
 //   /api/petty-cash             -> expenses, dashboard.
+//   /api/incomes, /api/cash-closes -> expenses, dashboard (cajas/ingresos/cierres, 2026-09-12).
 //   /api/catalogs, /api/suppliers -> invalidateCatalogs() (catálogos + caché "catalogs"); un alta
 //                                 rápida de proveedor desde la revisión (detail.tsx) también pasa
 //                                 por aquí porque pega a /api/suppliers.
@@ -486,7 +492,13 @@ function invalidateForMutation(url: string, body: unknown): void {
     clearRouteCacheByKind(["orders", "detail", "dashboard", "expenses"]);
     return;
   }
-  if (url.startsWith("/api/expenses") || url.startsWith("/api/petty-cash")) {
+  if (url.startsWith("/api/expenses") || url.startsWith("/api/petty-cash") || url.startsWith("/api/incomes")) {
+    clearRouteCacheByKind(["expenses", "dashboard"]);
+    return;
+  }
+  // Cierres (2026-09-12): cerrar/reabrir etiqueta movimientos existentes (caja_menor/ingresos) con
+  // `cierre_id` y puede cambiar sus totales — mismo alcance de invalidación que expenses/petty-cash.
+  if (url.startsWith("/api/cash-closes")) {
     clearRouteCacheByKind(["expenses", "dashboard"]);
     return;
   }
