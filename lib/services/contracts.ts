@@ -96,8 +96,14 @@ export interface PublicAccessVerifier {
 }
 export interface FeatureRepository { isEnabled(name: string): Promise<boolean>; }
 export interface ItemCatalogRepository { propose(description: string, unit: string, createdBy?: string): Promise<{ id: string; created: boolean }>; }
-export type CatalogKind = "works" | "tags" | "items" | "suppliers" | "societies" | "users" | "requesters";
-export interface CatalogWork { id: string; name: string; societyId: string; active: boolean; }
+export type CatalogKind = "works" | "tags" | "items" | "suppliers" | "societies" | "users" | "requesters" | "costCenters";
+/**
+ * `costCenterId`: centro de costo DEFAULT de esta obra (columna `obras.centro_costo_id`, migración
+ * 202609120001) — de aquí sale el centro sugerido al elegir la obra en una requisición, resuelto por
+ * `resolveCostCenter` (lib/domain/rules.ts). Opcional: una obra puede no tener centro configurado
+ * todavía, igual que puede no tener obligación de portal público.
+ */
+export interface CatalogWork { id: string; name: string; societyId: string; active: boolean; costCenterId?: string; }
 export interface CatalogTag { id: string; name: string; approverId?: string | null; active: boolean; }
 export interface CatalogItem { id: string; name: string; specification?: string | null; unit: string; category?: string | null; active: boolean; }
 export interface CatalogSupplier { id: string; name: string; nit?: string | null; phone?: string | null; email?: string | null; address?: string | null; active: boolean; }
@@ -128,7 +134,14 @@ export type CatalogUserCreate = Omit<CatalogUser, "id"> & { password: string };
  * fila no tiene ninguna función — es lo único contra lo que se compara el remitente entrante.
  */
 export interface CatalogRequester { id: string; name: string; phone: string; active: boolean; }
-export type CatalogRecord = CatalogWork | CatalogTag | CatalogItem | CatalogSupplier | CatalogSociety | CatalogUser | CatalogRequester;
+/**
+ * DECISIÓN DEL DUEÑO (2026-09-12, migración 202609120001): catálogo nuevo de centros de costo.
+ * `societyId` NULL = centro COMPARTIDO entre empresas (p. ej. "Administración"); si viene informado,
+ * el centro solo es válido en requisiciones de esa sociedad (`validar_centro_costo_requisicion`,
+ * trigger de la migración). `code` es opcional, como el NIT de sociedades/proveedores.
+ */
+export interface CatalogCostCenter { id: string; name: string; code?: string | null; societyId?: string | null; active: boolean; }
+export type CatalogRecord = CatalogWork | CatalogTag | CatalogItem | CatalogSupplier | CatalogSociety | CatalogUser | CatalogRequester | CatalogCostCenter;
 /** Todos los catálogos generan su id en la base de datos. "users" además recibe la contraseña inicial. */
 export type CatalogCreateRecord = CatalogRecord extends infer T ? T extends CatalogUser ? CatalogUserCreate : T extends CatalogRecord ? Omit<T, "id"> : never : never;
 export type CatalogPatchRecord = CatalogRecord extends infer T ? T extends CatalogRecord ? Partial<Omit<T, "id">> : never : never;

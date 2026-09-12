@@ -1,6 +1,6 @@
 import postgres, { type Sql } from "postgres";
 import { DomainError, normalizeItemName, type Actor, type AuditEvent, type DashboardAmountByKey, type Expense, type ExpenseShare, type ItemLine, type Order, type OrderAdminStatus, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
-import type { AuditRepository, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
+import type { AuditRepository, CatalogCostCenter, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
 import { generalLinkToken, verifyPublicLinkToken } from "../security/public-link";
 import { safeEqual } from "../security/crypto";
@@ -55,6 +55,8 @@ function requisition(row: DbRow, items: ItemLine[]): Requisition {
     declineReason: row.motivo_declinacion ? String(row.motivo_declinacion) : undefined, returnReason: row.motivo_devolucion ? String(row.motivo_devolucion) : undefined,
     kapsoEventId: row.kapso_event_id ? String(row.kapso_event_id) : undefined, items, updatedAt: row.updated_at ? new Date(String(row.updated_at)).toISOString() : undefined,
     paymentTerms: row.forma_pago ? String(row.forma_pago) : undefined,
+    // Centros de costo (2026-09-12): valor EFECTIVO de la requisición (ver Requisition.costCenterId).
+    costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined,
   };
 }
 // H3 (docs/plan-rendimiento.md): requisicion_consecutivo/requisicion_obra_id son alias deliberados (no
@@ -91,13 +93,16 @@ function order(row: DbRow): Order {
 // orden que originó el gasto no se ha pagado — `asIsoDate` ya devuelve `undefined` para NULL, así que
 // NO se fuerza `as string`: un gasto sin pagar debe poder representarse en memoria sin fecha de pago.
 // `fecha_orden` (nace con el registro, NOT NULL en la BD) sí es obligatoria.
-function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7) }; }
+function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7), costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined }; }
 // `periodo` es una columna `date` (generada, ver migración core_compras): la librería `postgres` la
 // entrega como Date, y `String(fecha)` da "Tue Sep 01 2026 ..." — el `.slice(0, 7)` anterior producía
 // "Tue Sep" en vez de "2026-09", con lo que el filtro por periodo de la pantalla de gastos y el
 // `periodExpense` del dominio nunca coincidían. `asIsoDate` ya resuelve Date/NULL igual que `fecha`.
 function catalogRecord(kind: CatalogKind, row: DbRow): CatalogRecord {
-  if (kind === "works") return { id: String(row.id), name: String(row.nombre), societyId: String(row.sociedad_id), active: row.estado === "activa" };
+  // Centros de costo (2026-09-12): costCenterId viaja en la fila de `obras` (columna centro_costo_id,
+  // ver 202609120001) — es el DEFAULT de la obra, no el catálogo de centros en sí (ese es "costCenters").
+  if (kind === "works") return { id: String(row.id), name: String(row.nombre), societyId: String(row.sociedad_id), active: row.estado === "activa", costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined };
+  if (kind === "costCenters") return { id: String(row.id), name: String(row.nombre), code: row.codigo ? String(row.codigo) : undefined, societyId: row.sociedad_id ? String(row.sociedad_id) : undefined, active: row.activo === true };
   if (kind === "tags") return { id: String(row.id), name: String(row.nombre), approverId: row.aprobador_id ? String(row.aprobador_id) : undefined, active: row.activa === true };
   if (kind === "items") return { id: String(row.id), name: String(row.nombre), specification: row.especificacion ? String(row.especificacion) : undefined, unit: String(row.unidad_defecto), category: row.categoria ? String(row.categoria) : undefined, active: row.estado === "activo" };
   if (kind === "societies") return { id: String(row.id), name: String(row.nombre), nit: row.nit ? String(row.nit) : undefined, active: row.activa === true };
@@ -145,7 +150,10 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     // forma_pago y aprobador_id van también en el `on conflict do update`: si no, review() los asigna y
     // nunca se persisten (el mismo bug que ya existía con fecha_requerida y con obra_id antes de
     // arreglarse — ya van tres veces).
-    await this.sql`insert into requisiciones (id, consecutivo, tipo, sociedad_id, obra_id, solicitante_id, solicitante_nombre_externo, solicitante_telefono_externo, canal, fecha_requerida, observaciones, etiqueta_id, aprobador_id, estado, motivo_declinacion, motivo_devolucion, forma_pago, kapso_event_id) values (${value.id}, ${value.consecutive}, ${value.type}, ${value.societyId ?? null}, ${value.workId ?? null}, ${value.requesterId ?? null}, ${value.externalRequester?.name ?? null}, ${value.externalRequester?.phone ?? null}, ${value.channel}, ${value.requiredDate || null}, ${value.observations ?? null}, ${value.tagId ?? null}, ${value.approverId ?? null}, ${value.status}, ${value.declineReason ?? null}, ${value.returnReason ?? null}, ${value.paymentTerms ?? null}, ${value.kapsoEventId ?? null}) on conflict (id) do update set obra_id = excluded.obra_id, etiqueta_id = excluded.etiqueta_id, aprobador_id = excluded.aprobador_id, estado = excluded.estado, motivo_declinacion = excluded.motivo_declinacion, motivo_devolucion = excluded.motivo_devolucion, observaciones = excluded.observaciones, fecha_requerida = excluded.fecha_requerida, forma_pago = excluded.forma_pago, kapso_event_id = coalesce(requisiciones.kapso_event_id, excluded.kapso_event_id), updated_at = now()`;
+    // centro_costo_id va en el `on conflict do update` por la MISMA razón que forma_pago/aprobador_id
+    // (comentario de arriba): review() lo asigna (heredado de la obra o elegido por el revisor) y sin
+    // reenviarlo aquí el cambio nunca se persistiría.
+    await this.sql`insert into requisiciones (id, consecutivo, tipo, sociedad_id, obra_id, solicitante_id, solicitante_nombre_externo, solicitante_telefono_externo, canal, fecha_requerida, observaciones, etiqueta_id, aprobador_id, centro_costo_id, estado, motivo_declinacion, motivo_devolucion, forma_pago, kapso_event_id) values (${value.id}, ${value.consecutive}, ${value.type}, ${value.societyId ?? null}, ${value.workId ?? null}, ${value.requesterId ?? null}, ${value.externalRequester?.name ?? null}, ${value.externalRequester?.phone ?? null}, ${value.channel}, ${value.requiredDate || null}, ${value.observations ?? null}, ${value.tagId ?? null}, ${value.approverId ?? null}, ${value.costCenterId ?? null}, ${value.status}, ${value.declineReason ?? null}, ${value.returnReason ?? null}, ${value.paymentTerms ?? null}, ${value.kapsoEventId ?? null}) on conflict (id) do update set obra_id = excluded.obra_id, etiqueta_id = excluded.etiqueta_id, aprobador_id = excluded.aprobador_id, centro_costo_id = excluded.centro_costo_id, estado = excluded.estado, motivo_declinacion = excluded.motivo_declinacion, motivo_devolucion = excluded.motivo_devolucion, observaciones = excluded.observaciones, fecha_requerida = excluded.fecha_requerida, forma_pago = excluded.forma_pago, kapso_event_id = coalesce(requisiciones.kapso_event_id, excluded.kapso_event_id), updated_at = now()`;
     // iva_tasa: NULL (no 0) cuando la línea no trae ivaRate. B2 (QA Postgres real): con `?? 0` una
     // línea legacy cuya tasa se restauró como `undefined` (defensa IVA legacy en review(), ver
     // procurement-service.ts) se reescribiría como 0 al guardar — el mismo bug que hizo nullable la
@@ -326,7 +334,11 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // `fecha` (fecha de pago) viaja nullable: un gasto recién nacido de una orden generada (aún sin
   // pagar) se guarda con `date` ausente en memoria -> NULL en la BD -> `periodo` NULL (columna
   // generada). `fecha_orden` sí siempre viaja (obligatoria en el dominio).
-  async saveExpense(value: Expense): Promise<void> { await this.sql`insert into gastos (id, obra_id, origen, referencia_id, etiqueta_id, proveedor_id, fecha_orden, fecha, valor_base, iva) values (${value.id}, ${value.workId}, ${value.origin}, ${value.referenceId}, ${value.tagId ?? null}, ${value.supplierId ?? null}, ${value.orderDate}, ${value.date ?? null}, ${value.base}, ${value.iva}) on conflict (origen, referencia_id) do nothing`; }
+  // centro_costo_id va EN EL INSERT, no en un UPDATE posterior: `on conflict do nothing` significa que
+  // esta es la ÚNICA oportunidad de fijarlo — un gasto ya guardado nunca se reescribe por aquí (ver el
+  // comentario de la firma en contracts.ts). Es la instantánea de Expense.costCenterId, copiada tal
+  // cual (nunca derivada aquí de `obra_id`): quien la resolvió ya fue generateOrders()/ProcurementService.
+  async saveExpense(value: Expense): Promise<void> { await this.sql`insert into gastos (id, obra_id, origen, referencia_id, etiqueta_id, proveedor_id, fecha_orden, fecha, valor_base, iva, centro_costo_id) values (${value.id}, ${value.workId}, ${value.origin}, ${value.referenceId}, ${value.tagId ?? null}, ${value.supplierId ?? null}, ${value.orderDate}, ${value.date ?? null}, ${value.base}, ${value.iva}, ${value.costCenterId ?? null}) on conflict (origen, referencia_id) do nothing`; }
   // Único método que actualiza `gastos.fecha` de un gasto ya existente: `saveExpense` inserta con `on
   // conflict do nothing` a propósito (no reescribe un gasto ya guardado), así que no sirve para fijar
   // la fecha de pago cuando `updateOrderAdminStatus(..., "pagada")` la conoce. Solo aplica a
@@ -367,11 +379,14 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const limit = pageLimit(query.limit);
     const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and public.es_aprobador_de(r.id, ${actor.id})` : this.sql`and r.solicitante_id = ${actor.id}`;
     const workFilter = query.workId ? this.sql`and g.obra_id = ${query.workId}` : this.sql``;
+    // Centros de costo (2026-09-12): filtro aditivo, mismo patrón que workFilter — `costCenterId`
+    // compara contra la INSTANTÁNEA copiada en el gasto (gastos.centro_costo_id), no contra la obra.
+    const costCenterFilter = query.costCenterId ? this.sql`and g.centro_costo_id = ${query.costCenterId}` : this.sql``;
     const fromFilter = query.from ? this.sql`and g.fecha >= ${query.from}::date` : this.sql``;
     const toFilter = query.to ? this.sql`and g.fecha < (${query.to}::date + 1)` : this.sql``;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const cursorFilter = cursor ? this.sql`and (g.fecha_orden, g.id) < (${cursor.at}::date, ${cursor.id}::uuid)` : this.sql``;
-    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by g.fecha_orden desc, g.id desc limit ${limit + 1}`;
+    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} ${workFilter} ${costCenterFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by g.fecha_orden desc, g.id desc limit ${limit + 1}`;
     const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
     const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha_orden) as string, String(last.id)) : null;
     return { rows: pageRows.map(expense), nextCursor };
@@ -444,7 +459,8 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   async enqueue(notification: { userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }): Promise<void> { await this.sql`insert into notificaciones (usuario_id, telefono_destino, canal, plantilla, payload) values (${notification.userId ?? null}, ${notification.phone ?? null}, ${notification.channel}, ${notification.template}, ${asJsonb(this.sql, notification.payload)})`; }
   async create(kind: CatalogKind, value: Omit<CatalogRecord, "id">): Promise<CatalogRecord> {
     let rows: DbRow[];
-    if (kind === "works") { const work = value as Extract<CatalogRecord, { societyId: string }>; rows = await this.sql<DbRow[]>`insert into obras (nombre, sociedad_id, estado) values (${work.name}, ${work.societyId}, ${work.active ? "activa" : "cerrada"}) returning *`; }
+    if (kind === "works") { const work = value as Extract<CatalogRecord, { societyId: string }>; rows = await this.sql<DbRow[]>`insert into obras (nombre, sociedad_id, estado, centro_costo_id) values (${work.name}, ${work.societyId}, ${work.active ? "activa" : "cerrada"}, ${work.costCenterId ?? null}) returning *`; }
+    else if (kind === "costCenters") { const costCenter = value as CatalogCostCenter; rows = await this.sql<DbRow[]>`insert into centros_costo (nombre, codigo, sociedad_id, activo) values (${costCenter.name}, ${costCenter.code ?? null}, ${costCenter.societyId ?? null}, ${costCenter.active}) returning *`; }
     else if (kind === "tags") { const tag = value as CatalogTag; rows = await this.sql<DbRow[]>`insert into etiquetas (nombre, aprobador_id, activa) values (${tag.name}, ${tag.approverId ?? null}, ${tag.active}) returning *`; }
     else if (kind === "items") { const itemValue = value as Extract<CatalogRecord, { unit: string }>; rows = await this.sql<DbRow[]>`insert into items (nombre, nombre_normalizado, especificacion, unidad_defecto, categoria, estado) values (${itemValue.name}, ${normalizeItemName(itemValue.name)}, ${itemValue.specification ?? null}, ${itemValue.unit}, ${itemValue.category ?? null}, ${itemValue.active ? "activo" : "inactivo"}) returning *`; }
     else if (kind === "societies") { const society = value as CatalogSociety; rows = await this.sql<DbRow[]>`insert into sociedades (nombre, nit, activa) values (${society.name}, ${society.nit ?? null}, ${society.active}) returning *`; }
@@ -476,18 +492,23 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   }
   async get(kind: CatalogKind, id: string): Promise<CatalogRecord | null> {
     if (kind === "users") { const rows = await this.sql<DbRow[]>`select u.*, coalesce(array_agg(ur.rol) filter (where ur.rol is not null), '{}') as roles from usuarios u left join usuario_roles ur on ur.usuario_id = u.id where u.id = ${id} group by u.id`; return rows[0] ? catalogRecord(kind, rows[0]) : null; }
-    const table = kind === "works" ? "obras" : kind === "tags" ? "etiquetas" : kind === "items" ? "items" : kind === "societies" ? "sociedades" : kind === "requesters" ? "solicitantes_autorizados" : "proveedores";
+    const table = kind === "works" ? "obras" : kind === "tags" ? "etiquetas" : kind === "items" ? "items" : kind === "societies" ? "sociedades" : kind === "requesters" ? "solicitantes_autorizados" : kind === "costCenters" ? "centros_costo" : "proveedores";
     const rows = await this.sql.unsafe<DbRow[]>(`select * from ${table} where id = $1`, [id]);
     return rows[0] ? catalogRecord(kind, rows[0]) : null;
   }
   async update(kind: CatalogKind, id: string, value: CatalogPatchRecord): Promise<CatalogRecord> {
     let rows: DbRow[];
     if (kind === "works") {
-      const work = value as Partial<Extract<CatalogRecord, { societyId: string }>>;
+      const work = value as Partial<Extract<CatalogRecord, { societyId: string }>>, hasCostCenter = Object.hasOwn(work, "costCenterId");
       // Los ${x ?? null} dentro de `case when ... is null` van con cast explícito: un NULL sin tipo
       // en esa posición (a diferencia de coalesce, que infiere del otro argumento) dispara
       // 42P18 "could not determine data type of parameter" contra Postgres real.
-      rows = await this.sql<DbRow[]>`update obras set nombre=coalesce(${work.name ?? null}, nombre), sociedad_id=coalesce(${work.societyId ?? null}, sociedad_id), estado=case when ${work.active ?? null}::boolean is null then estado when ${work.active ?? false} then 'activa' else 'cerrada' end where id=${id} returning *`;
+      // centro_costo_id sigue el mismo patrón "hasOwn" que aprobador_id en tags (abajo): así un PATCH
+      // puede DESASIGNAR el centro default de la obra (costCenterId: null), no solo asignarlo.
+      rows = await this.sql<DbRow[]>`update obras set nombre=coalesce(${work.name ?? null}, nombre), sociedad_id=coalesce(${work.societyId ?? null}, sociedad_id), estado=case when ${work.active ?? null}::boolean is null then estado when ${work.active ?? false} then 'activa' else 'cerrada' end, centro_costo_id=case when ${hasCostCenter} then ${work.costCenterId ?? null} else centro_costo_id end where id=${id} returning *`;
+    } else if (kind === "costCenters") {
+      const costCenter = value as Partial<CatalogCostCenter>, hasSociety = Object.hasOwn(costCenter, "societyId"), hasCode = Object.hasOwn(costCenter, "code");
+      rows = await this.sql<DbRow[]>`update centros_costo set nombre=coalesce(${costCenter.name ?? null}, nombre), codigo=case when ${hasCode} then ${costCenter.code ?? null} else codigo end, sociedad_id=case when ${hasSociety} then ${costCenter.societyId ?? null} else sociedad_id end, activo=coalesce(${costCenter.active ?? null}, activo) where id=${id} returning *`;
     } else if (kind === "tags") {
       const tag = value as Partial<CatalogTag>, hasApprover = Object.hasOwn(tag, "approverId");
       rows = await this.sql<DbRow[]>`update etiquetas set nombre=coalesce(${tag.name ?? null}, nombre), aprobador_id=case when ${hasApprover} then ${tag.approverId ?? null} else aprobador_id end, activa=coalesce(${tag.active ?? null}, activa) where id=${id} returning *`;

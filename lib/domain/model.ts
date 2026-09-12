@@ -39,7 +39,16 @@ export interface Requisition {
    *  sociedad deriva la base (trigger `requisiciones_0_derivar_sociedad`) — nunca se le pide al público. */
   societyId?: string; workId?: string; requesterId?: string;
   externalRequester?: { name: string; phone?: string }; channel: RequisitionChannel; requiredDate?: string;
-  observations?: string; tagId?: string; approverId?: string; status: RequisitionStatus;
+  observations?: string; tagId?: string; approverId?: string;
+  /**
+   * DECISIÓN DEL DUEÑO (Ernesto, 2026-09-12): «obra y centro de costo están correlacionados, pero
+   * varias obras pueden ir a un centro de costo; en la requisición debe salir predeterminado el centro
+   * asociado a esa obra y poder cambiarse». Este es el valor EFECTIVO (editable) — nace heredado del
+   * `costCenterId` de la obra (ver `resolveCostCenter` en lib/domain/rules.ts, la ÚNICA definición de
+   * esa herencia) y el revisor puede cambiarlo en `review()`. `gastos.centro_costo_id` es una copia
+   * congelada de este valor al momento de generarse, no una referencia viva: ver `Expense.costCenterId`.
+   */
+  costCenterId?: string; status: RequisitionStatus;
   /** Forma de pago capturada en la revisión, persistida en `requisiciones.forma_pago` y copiada a cada
    *  orden generada (`ordenes.forma_pago`). Ver procurement-service.ts. */
   paymentTerms?: string;
@@ -86,7 +95,12 @@ export interface Order {
  * (es un compromiso, todavía no un gasto). Para `origin: "caja_menor"` ambas fechas coinciden siempre
  * (se paga en el acto).
  */
-export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; }
+/**
+ * `costCenterId`: INSTANTÁNEA copiada al crear el gasto (generateOrders/registerPettyCash), NUNCA
+ * derivada en lectura — si la requisición de origen cambia de centro después, el gasto ya generado no
+ * debe moverse solo (decisión del dueño, 2026-09-12, ver Requisition.costCenterId más arriba).
+ */
+export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; }
 export interface ExpenseShare { expenseId: string; workId: string; amount: Money; }
 export interface PettyCash { id: string; workId: string; date: string; concept: string; tagId: string; amount: Money; registeredBy: string; attachmentUrl?: string; }
 /** RF-1102: un elemento de la cola de "qué espera algo de mí" en el dashboard conectado. */
