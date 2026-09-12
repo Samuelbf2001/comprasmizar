@@ -14,6 +14,8 @@ const referenceIdSchema = z.string().uuid();
 // H3: `?workId=&from=&to=&limit=&cursor=` son ADITIVOS — mismo contrato que las demás rutas de listas.
 // Sin `status`: gastos no tiene columna de estado (ver ListQuery en lib/services/list-query.ts); un
 // `?status=` en esta ruta se ignora en vez de fallar (parseListQuery sin `statusValues`).
+// Centros de costo (2026-09-12): `?costCenterId=` filtra por `gastos.centro_costo_id` (ver
+// listVisibleExpenses en postgres-repositories.ts) — mismo patrón aditivo que `workId`.
 export function GET(request: Request) {
   return authenticatedJson((actor) => {
     const url = new URL(request.url);

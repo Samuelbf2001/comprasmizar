@@ -11,7 +11,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const input = await parseJson(request, requisitionActionSchema), service = new ProcurementService(createPostgresDependencies()), requestContext = { actor };
     switch (input.action) {
       case "start_review": return service.startReview(id, requestContext);
-      case "review": return service.review(id, { tagId: input.tagId, approverId: input.approverId, workId: input.workId, paymentTerms: input.paymentTerms, items: input.items }, requestContext);
+      case "review": return service.review(id, { tagId: input.tagId, approverId: input.approverId, workId: input.workId, costCenterId: input.costCenterId, paymentTerms: input.paymentTerms, items: input.items }, requestContext);
       case "send_for_approval": return service.sendForApproval(id, requestContext);
       case "approve": return service.approve(id, requestContext);
       case "return": return service.returnForCorrection(id, input.comment, requestContext);

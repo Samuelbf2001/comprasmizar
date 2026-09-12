@@ -10,7 +10,8 @@ import { invalidateActorCache } from "../../../lib/infrastructure/actor-cache";
 export const runtime = "nodejs";
 
 type NamedRow = { id: string; name: string };
-type WorkRow = NamedRow & { societyId: string };
+type WorkRow = NamedRow & { societyId: string; costCenterId: string | null };
+type CostCenterRow = NamedRow & { societyId: string | null };
 const uuid = z.string().uuid();
 const name = z.string().trim().min(2).max(160);
 const active = z.boolean().optional();
@@ -18,10 +19,16 @@ const active = z.boolean().optional();
 const roleLiteral = z.enum(["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"]);
 const phone = z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/);
 const nit = z.string().trim().min(3).max(32);
+// Centros de costo (2026-09-12): código opcional, más corto que el NIT (no es un identificador legal).
+const costCenterCode = z.string().trim().min(1).max(32);
 const tagCreateData = z.object({ name, approverId: uuid.optional(), active }).strict().superRefine((value, context) => { if (value.active !== false && !value.approverId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["approverId"], message: "Active tags require an approver" }); });
 const createCatalogSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("works"), data: z.object({ name, societyId: uuid, active }).strict() }),
+  // costCenterId (2026-09-12): DEFAULT de la obra, opcional — una obra puede crearse sin centro
+  // configurado todavía (igual que puede crearse sin portal público habilitado).
+  z.object({ kind: z.literal("works"), data: z.object({ name, societyId: uuid, costCenterId: uuid.optional(), active }).strict() }),
   z.object({ kind: z.literal("tags"), data: tagCreateData }),
+  // societyId ausente/opcional = centro COMPARTIDO entre empresas (ver 202609120001_centros_costo.sql).
+  z.object({ kind: z.literal("costCenters"), data: z.object({ name, code: costCenterCode.optional(), societyId: uuid.optional(), active }).strict() }),
   z.object({ kind: z.literal("items"), data: z.object({ name, specification: z.string().trim().min(1).max(1_000).optional(), unit: z.string().trim().min(1).max(40), category: z.string().trim().min(1).max(100).optional(), active }).strict() }),
   z.object({ kind: z.literal("suppliers"), data: z.object({ name, nit: nit.optional(), phone: phone.optional(), email: z.string().trim().email().max(254).optional(), address: z.string().trim().min(1).max(300).optional(), active }).strict() }),
   z.object({ kind: z.literal("societies"), data: z.object({ name, nit: nit.optional(), active }).strict() }),
@@ -39,8 +46,11 @@ const createCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("requesters"), data: z.object({ name, phone, active }).strict() }),
 ]);
 const patchCatalogSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("works"), id: uuid, data: z.object({ name: name.optional(), societyId: uuid.optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  // costCenterId admite null: el revisor de catálogos debe poder DESASIGNAR el centro default de una
+  // obra, no solo cambiarlo (mismo patrón que approverId en tags, justo abajo).
+  z.object({ kind: z.literal("works"), id: uuid, data: z.object({ name: name.optional(), societyId: uuid.optional(), costCenterId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("tags"), id: uuid, data: z.object({ name: name.optional(), approverId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  z.object({ kind: z.literal("costCenters"), id: uuid, data: z.object({ name: name.optional(), code: costCenterCode.nullable().optional(), societyId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("items"), id: uuid, data: z.object({ name: name.optional(), specification: z.string().trim().min(1).max(1_000).nullable().optional(), unit: z.string().trim().min(1).max(40).optional(), category: z.string().trim().min(1).max(100).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("suppliers"), id: uuid, data: z.object({ name: name.optional(), nit: nit.nullable().optional(), phone: phone.nullable().optional(), email: z.string().trim().email().max(254).nullable().optional(), address: z.string().trim().min(1).max(300).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("societies"), id: uuid, data: z.object({ name: name.optional(), nit: nit.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
@@ -79,16 +89,20 @@ export function GET() {
     // de elegibilidad que ya usa app/api/catalogs/manage/route.ts (no se duplica el SQL, se repite el
     // texto porque manage/route.ts la gatea por permiso de administrar catálogos y esta lista es para
     // cualquier revisor). Nunca expone teléfono ni correo, igual que el resto de este bootstrap mínimo.
-    const [works, tags, suppliers, items, societies, users, approvers] = await Promise.all([
-      sql<WorkRow[]>`select id, nombre as name, sociedad_id as "societyId" from obras where estado = 'activa' order by nombre`,
+    // Centros de costo (2026-09-12): lista mínima (activos) para que la ficha de revisión (fuera del
+    // alcance de esta entrega) pueda ofrecer el selector, y para que el formulario de Obras (catalog-
+    // admin.tsx) elija el DEFAULT de una obra nueva — mismo criterio que "societies" arriba.
+    const [works, tags, suppliers, items, societies, users, approvers, costCenters] = await Promise.all([
+      sql<WorkRow[]>`select id, nombre as name, sociedad_id as "societyId", centro_costo_id as "costCenterId" from obras where estado = 'activa' order by nombre`,
       sql<Array<NamedRow & { approverId: string | null }>>`select id, nombre as name, aprobador_id as "approverId" from etiquetas where activa = true order by nombre`,
       canReadSuppliers ? sql<NamedRow[]>`select id, razon_social as name from proveedores where activo = true order by razon_social` : Promise.resolve([]),
       sql<Array<NamedRow & { unit: string; status: string }>>`select id, nombre as name, unidad_defecto as unit, estado as status from items where estado = 'activo' order by nombre`,
       sql<NamedRow[]>`select id, nombre as name from sociedades where activa = true order by nombre`,
       sql<NamedRow[]>`select id, nombre as name from usuarios order by nombre`,
       sql<NamedRow[]>`select distinct u.id, u.nombre as name from usuarios u join usuario_roles ur on ur.usuario_id=u.id where u.estado='activo' and ur.rol in ('aprobador', 'revisor', 'admin_sixteam') order by u.nombre`,
+      sql<CostCenterRow[]>`select id, nombre as name, sociedad_id as "societyId" from centros_costo where activo = true order by nombre`,
     ]);
-    return { works, tags, suppliers, items, societies, users, approvers, features };
+    return { works, tags, suppliers, items, societies, users, approvers, costCenters, features };
   });
 }
 
