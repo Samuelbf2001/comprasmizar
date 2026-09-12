@@ -128,7 +128,7 @@ export function ConnectedOrders({
   const setStatus = async (id: string, status: string, consecutive?: string) => {
     const ref = consecutive ?? id;
     // Cambio irreversible y sin deshacer: se confirma explícitamente antes de aplicar.
-    const ok = await confirm({
+    const { ok } = await confirm({
       title: `Marcar la orden como "${estadoLabel(status)}"`,
       description: `La orden ${ref} quedará marcada como "${estadoLabel(status)}". Esta acción es irreversible y no se puede deshacer.`,
       confirmLabel: "Confirmar",
@@ -159,7 +159,7 @@ export function ConnectedOrders({
     const description = adminStatus === "pagada"
       ? `La orden ${ref} quedará marcada como "Pagada": se registrará automáticamente un pago por el saldo pendiente (si queda alguno) con la fecha de hoy. Esta acción es irreversible.`
       : `La orden ${ref} quedará marcada como "${estadoLabel(adminStatus)}" en contabilidad. Esta acción es irreversible.`;
-    const ok = await confirm({
+    const { ok } = await confirm({
       title: `Marcar la orden como "${estadoLabel(adminStatus)}"`,
       description,
       confirmLabel: "Confirmar",
