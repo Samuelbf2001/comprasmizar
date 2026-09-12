@@ -76,6 +76,9 @@ const HARNESSES = [
   path.join(ROOT, "supabase", "tests", "estado_entrega_verification.sql"),
   path.join(ROOT, "supabase", "tests", "aprobador_por_item_verification.sql"),
   path.join(ROOT, "supabase", "tests", "adjuntos_aprobador_verification.sql"),
+  // Centros de costo (2026-09-12, decisión del dueño): catálogo nuevo + herencia obra->requisición y
+  // copia (no derivación) en gasto.
+  path.join(ROOT, "supabase", "tests", "centros_costo_verification.sql"),
 ];
 
 function migrationFiles(): string[] {
