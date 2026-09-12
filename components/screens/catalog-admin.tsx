@@ -29,7 +29,10 @@ type CatalogKind =
   | "users"
   // HUECO 1 (reunión 2026-08-31): lista blanca global de quién puede pedir por WhatsApp
   // (tabla solicitantes_autorizados, migración 202609010001).
-  | "requesters";
+  | "requesters"
+  // DECISIÓN DEL DUEÑO (Ernesto, 2026-09-12): catálogo nuevo de centros de costo (migración
+  // 202609120001) — el DEFAULT de una obra, y el valor efectivo (editable) de una requisición.
+  | "costCenters";
 type CatalogRecord = {
   id: string;
   name: string;
@@ -48,6 +51,11 @@ type CatalogRecord = {
   approverName?: string;
   // RF-004: roles asignados a un usuario del catálogo (no confundir con el rol de sesión `role: Role`).
   roles?: string[];
+  // Centros de costo (2026-09-12): código corto opcional (distinto del NIT); costCenterId es el DEFAULT
+  // de una obra (kind "works"), costCenterName solo se usa para mostrarlo en la tabla de obras.
+  code?: string;
+  costCenterId?: string;
+  costCenterName?: string;
 };
 type CatalogData = {
   works: CatalogRecord[];
@@ -68,6 +76,11 @@ type CatalogData = {
   requesters?: CatalogRecord[];
   // Igual que canReadUsers: revisor puede CONSULTAR aunque access.requesters (escritura) sea false.
   canReadRequesters?: boolean;
+  // Centros de costo (2026-09-12): "costCenters" (activos, mínimo) alimenta el selector del formulario
+  // de Obras; "costCenterRecords" (completo, incluye inactivos) es la pestaña de administración propia
+  // — mismo patrón por el que "societies"/"societyRecords" son dos claves distintas.
+  costCenters?: Array<{ id: string; name: string }>;
+  costCenterRecords?: CatalogRecord[];
 };
 type FormValues = Record<string, string | boolean | string[]>;
 
@@ -84,6 +97,7 @@ const labels: Record<CatalogKind, string> = {
   // Lenguaje de producto (HUECO 1): quien administra esto piensa en "quién puede pedir por
   // WhatsApp", no en el nombre de la tabla `solicitantes_autorizados`.
   requesters: "Solicitantes WhatsApp",
+  costCenters: "Centros de costo",
 };
 // El título "Nuevo X" por defecto solo quita la "s" final de labels[kind] (falla en géneros y en
 // plurales irregulares como "Empresas"); para las pestañas nuevas se declara explícito en vez
@@ -92,6 +106,7 @@ const NEW_RECORD_LABEL: Partial<Record<CatalogKind, string>> = {
   societies: "Nueva empresa",
   users: "Nuevo usuario",
   requesters: "Nuevo solicitante autorizado",
+  costCenters: "Nuevo centro de costo",
 };
 // RF-004: debe coincidir exactamente con el tipo Role de lib/domain (lib/domain/model.ts) y con
 // `roleLiteral` en app/api/catalogs/route.ts.
@@ -116,6 +131,10 @@ const emptyForm: FormValues = {
   address: "",
   password: "",
   roles: [],
+  // Centros de costo (2026-09-12): "code" es propio (no reutiliza "nit"); "costCenterId" es el DEFAULT
+  // que gana el formulario de Obras (kind "works"), reutilizando el mismo selector de la pestaña nueva.
+  code: "",
+  costCenterId: "",
 };
 function rolesFromForm(values: FormValues): string[] {
   return Array.isArray(values.roles) ? values.roles : [];
@@ -123,9 +142,10 @@ function rolesFromForm(values: FormValues): string[] {
 
 // RF-002/RF-004: la clave de estado real difiere del `kind` para sociedades/usuarios (ver CatalogData);
 // rowsFor y las actualizaciones optimistas de save/toggle comparten este único mapeo para no divergir.
-function fieldFor(kind: CatalogKind): "societyRecords" | "userRecords" | Exclude<CatalogKind, "societies" | "users"> {
+function fieldFor(kind: CatalogKind): "societyRecords" | "userRecords" | "costCenterRecords" | Exclude<CatalogKind, "societies" | "users" | "costCenters"> {
   if (kind === "societies") return "societyRecords";
   if (kind === "users") return "userRecords";
+  if (kind === "costCenters") return "costCenterRecords";
   return kind;
 }
 function rowsFor(data: CatalogData, kind: CatalogKind) {
@@ -230,7 +250,21 @@ function payloadFor(
   const data: Record<string, unknown> = {
     name: String(values.name || "").trim(),
   };
-  if (kind === "works") data.societyId = String(values.societyId || "").trim();
+  if (kind === "works") {
+    data.societyId = String(values.societyId || "").trim();
+    // Centros de costo (2026-09-12): opcional — una obra puede no tener centro configurado todavía.
+    // `editing || costCenterId` sigue el mismo patrón que nit/specification/category más abajo: en
+    // edición SIEMPRE se envía (permite desasignarlo con null); en alta solo si se eligió alguno.
+    const costCenterId = String(values.costCenterId || "").trim();
+    if (editing || costCenterId) data.costCenterId = costCenterId || null;
+  }
+  if (kind === "costCenters") {
+    // societyId ausente = centro COMPARTIDO entre empresas (ver 202609120001_centros_costo.sql).
+    const societyId = String(values.societyId || "").trim();
+    if (editing || societyId) data.societyId = societyId || null;
+    const code = String(values.code || "").trim();
+    if (editing || code) data.code = code || null;
+  }
   if (kind === "tags") data.approverId = String(values.approverId || "").trim();
   if (kind === "items") {
     data.unit = String(values.unit || "").trim();
@@ -302,7 +336,9 @@ export function ConnectedCatalogAdmin({
               ? "users"
               : pathname.startsWith("/catalogos/solicitantes-whatsapp")
                 ? "requesters"
-                : undefined;
+                : pathname.startsWith("/catalogos/centros-costo")
+                  ? "costCenters"
+                  : undefined;
   const initialFeatureEnabled = dataFeatureEnabled(initialData);
   const firstAllowed = (Object.keys(labels) as CatalogKind[]).find((option) =>
     canViewKind(option, role, initialData, initialFeatureEnabled),
@@ -361,6 +397,22 @@ export function ConnectedCatalogAdmin({
         !UUID_RE.test(String(form.societyId)))
     )
       return "Selecciona una empresa elegible con un UUID válido.";
+    // Centros de costo (2026-09-12): opcional en Obras, pero si se eligió algo debe ser un UUID válido
+    // (nunca un valor a medio escribir de un <select> corrupto).
+    if (
+      kind === "works" &&
+      String(form.costCenterId || "").trim() &&
+      !UUID_RE.test(String(form.costCenterId))
+    )
+      return "Selecciona un centro de costo válido, o deja el campo sin elegir.";
+    if (
+      kind === "costCenters" &&
+      String(form.societyId || "").trim() &&
+      !UUID_RE.test(String(form.societyId))
+    )
+      return "Selecciona una empresa válida, o deja el centro compartido (sin empresa).";
+    if (kind === "costCenters" && String(form.code || "").trim().length > 32)
+      return "El código admite hasta 32 caracteres.";
     if (
       kind === "tags" &&
       (!editing || editing.active !== false) &&
@@ -631,6 +683,7 @@ export function ConnectedCatalogAdmin({
               onCancel={closeForm}
               societies={data.societies ?? []}
               approvers={data.approvers ?? []}
+              costCenters={data.costCenters ?? []}
             />
           ) : null}
           {rows.length === 0 ? (
@@ -647,7 +700,18 @@ export function ConnectedCatalogAdmin({
                 <thead>
                   <tr>
                     <th>Nombre</th>
-                    {kind === "works" && <th>Empresa</th>}
+                    {kind === "works" && (
+                      <>
+                        <th>Empresa</th>
+                        <th>Centro de costo</th>
+                      </>
+                    )}
+                    {kind === "costCenters" && (
+                      <>
+                        <th>Código</th>
+                        <th>Empresa</th>
+                      </>
+                    )}
                     {kind === "items" && (
                       <>
                         <th>Unidad</th>
@@ -692,13 +756,36 @@ export function ConnectedCatalogAdmin({
                         )}
                       </td>
                       {kind === "works" && (
-                        <td className="mono-id">
-                          {row.societyName ||
-                            data.societies?.find(
+                        <>
+                          <td className="mono-id">
+                            {row.societyName ||
+                              data.societies?.find(
+                                (society) => society.id === row.societyId,
+                              )?.name ||
+                              "No configurada"}
+                          </td>
+                          <td className="mono-id">
+                            {row.costCenterName ||
+                              data.costCenters?.find(
+                                (costCenter) =>
+                                  costCenter.id === row.costCenterId,
+                              )?.name ||
+                              "Sin centro"}
+                          </td>
+                        </>
+                      )}
+                      {kind === "costCenters" && (
+                        <>
+                          <td>{row.code || "—"}</td>
+                          <td className="mono-id">
+                            {data.societies?.find(
                               (society) => society.id === row.societyId,
                             )?.name ||
-                            "No configurada"}
-                        </td>
+                              (row.societyId
+                                ? "No configurada"
+                                : "Compartido")}
+                          </td>
+                        </>
                       )}
                       {kind === "items" && (
                         <>
@@ -971,6 +1058,7 @@ function CatalogForm({
   onCancel,
   societies,
   approvers,
+  costCenters,
 }: {
   kind: CatalogKind;
   values: FormValues;
@@ -983,6 +1071,7 @@ function CatalogForm({
   onCancel: () => void;
   societies: Array<{ id: string; name: string }>;
   approvers: Array<{ id: string; name: string }>;
+  costCenters: Array<{ id: string; name: string }>;
 }) {
   const invalidName = Boolean(
     feedback && String(values.name || "").trim().length < 2,
@@ -1071,6 +1160,65 @@ function CatalogForm({
                 </small>
               )}
           </label>
+        )}
+        {kind === "works" && (
+          <label className="field">
+            <span>
+              Centro de costo <small>opcional</small>
+            </span>
+            <select
+              value={String(values.costCenterId || "")}
+              disabled={!costCenters.length}
+              onChange={(event) => update("costCenterId", event.target.value)}
+            >
+              <option value="">
+                {costCenters.length
+                  ? "Sin centro de costo"
+                  : "No hay centros de costo activos"}
+              </option>
+              {costCenters.map((costCenter) => (
+                <option key={costCenter.id} value={costCenter.id}>
+                  {costCenter.name}
+                </option>
+              ))}
+            </select>
+            <small>
+              El centro que verá predeterminado (y podrá cambiar) quien
+              revise una requisición de esta obra.
+            </small>
+          </label>
+        )}
+        {kind === "costCenters" && (
+          <>
+            <label className="field">
+              <span>
+                Código <small>opcional</small>
+              </span>
+              <input
+                value={String(values.code || "")}
+                maxLength={32}
+                onChange={(event) => update("code", event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>
+                Empresa <small>opcional: vacío = compartido</small>
+              </span>
+              <select
+                value={String(values.societyId || "")}
+                onChange={(event) =>
+                  update("societyId", event.target.value)
+                }
+              >
+                <option value="">Compartido entre empresas</option>
+                {societies.map((society) => (
+                  <option key={society.id} value={society.id}>
+                    {society.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
         )}
         {kind === "tags" && (
           <label className="field">
