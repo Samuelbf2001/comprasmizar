@@ -15,16 +15,29 @@ export type Requisition = {
   tag: string;
 };
 
-export const navigation = [
+// Tipado explícito (2026-09-12): antes era un literal inferido sin anotar, y `hidden` solo existía en
+// UN elemento del array — quitarle `hidden: true` a "Gastos y caja" (ver más abajo) hacía que TS
+// infiriera un tipo de UNIÓN sin ningún miembro con `hidden`, rompiendo `item.hidden` en app-shell.tsx
+// para CUALQUIER entrada. La anotación explícita hace que `hidden` exista (opcional) en todas.
+export const navigation: Array<{
+  label: string;
+  href: string;
+  icon: string;
+  genericLabel?: string;
+  badge?: string;
+  hidden?: boolean;
+}> = [
   { label: 'Inicio', href: '/', icon: 'LayoutDashboard' },
   { label: 'Nueva requisición', href: '/requisiciones/nueva', icon: 'PlusCircle' },
   { label: 'Mis requisiciones', href: '/requisiciones/mis', icon: 'ClipboardList' },
   { label: 'Revisión de Daniel', genericLabel: 'Revisión', href: '/revision', icon: 'Inbox', badge: '12' },
   { label: 'Aprobaciones', href: '/aprobaciones', icon: 'CheckCircle2', badge: '4' },
   { label: 'Órdenes', href: '/ordenes', icon: 'FileCheck2' },
-  // Oculta del menú a pedido del cliente: no quiere ese módulo a la vista por ahora. Sigue
-  // listada aquí a propósito para que roleAllowed (navigation.map) no le quite /gastos a nadie.
-  { label: 'Gastos y caja menor', href: '/gastos', icon: 'Receipt', hidden: true },
+  // Reunión con el cliente (11-sep-2026): "TODOS los gastos (cajas, bancos, personales) quedan en el
+  // sistema por centro de costo; Daniel cierra la caja administrativa e ingresa esos gastos para el
+  // reporte" — ya no es un módulo aparte que el cliente pidió ocultar (ver commit anterior), ahora es
+  // la pantalla que hace posible ese cierre. Deja de estar `hidden`.
+  { label: 'Gastos y caja', href: '/gastos', icon: 'Receipt' },
   { label: 'Catálogos', href: '/catalogos', icon: 'Database' },
   { label: 'Proveedores', href: '/proveedores', icon: 'Truck' },
   { label: 'Mensajes de WhatsApp', href: '/mensajes', icon: 'MessageSquare' },
