@@ -4,7 +4,19 @@ export const PRIVATE_ATTACHMENT_BUCKET = "requisicion-adjuntos";
 export const PRIVATE_ATTACHMENT_TYPES = ["soporte", "cotizacion", "foto"] as const;
 export const MAX_PRIVATE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
+/** Subconjunto de `MIME_TYPES` que son imágenes de verdad — lo usa también
+ *  `lib/infrastructure/public-photos.ts` (foto opcional por artículo del portal público) para no
+ *  redefinir qué cuenta como imagen en dos sitios distintos. */
+export const IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const PREFIX: Record<AttachmentEntity, string> = { requisicion: "requisiciones", requisicion_item: "requisicion-items", caja_menor: "caja-menor" };
+/**
+ * Extensiones válidas para un MIME dado — la MISMA lista que usaba `validate()` a pelo, ahora
+ * exportada para que `public-photos.ts` (foto del portal público) compruebe la extensión con el
+ * mismo criterio en vez de reinventarlo. Devuelve `[]` para un MIME fuera de la lista blanca.
+ */
+export function expectedAttachmentExtensions(mimeType: string): string[] {
+  return mimeType === "application/pdf" ? ["pdf"] : mimeType === "image/jpeg" ? ["jpg", "jpeg"] : mimeType === "image/png" ? ["png"] : mimeType === "image/webp" ? ["webp"] : [];
+}
 
 export interface PrivateAttachmentUpload { type: (typeof PRIVATE_ATTACHMENT_TYPES)[number]; name: string; mimeType: string; sizeBytes: number; }
 // `approverId` es el aprobador de CABECERA (requisiciones.aprobador_id) e `itemApproverIds` los
@@ -38,7 +50,9 @@ type AttachmentView = Omit<PrivateAttachment, "entity" | "entityId" | "storagePa
 type AttachmentBatchView = AttachmentView & { entity: AttachmentEntity; entityId: string };
 const MAX_BATCH_IDS = 100;
 
-function filename(value: string): string {
+/** Exportado para que `public-photos.ts` (portal público) sanee el nombre del archivo con el MISMO
+ *  criterio — sin esto habría dos definiciones de "nombre de archivo válido" divergiendo con el tiempo. */
+export function filename(value: string): string {
   const normalized = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
   if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(normalized) || normalized.includes("..")) throw new DomainError("INVALID_DOCUMENT", "Nombre de archivo inválido");
   return normalized;
@@ -65,7 +79,7 @@ export class PrivateAttachmentService {
     if (entity === "caja_menor" && input.type !== "soporte") throw new DomainError("INVALID_DOCUMENT", "Caja menor sólo admite soportes");
     if (!MIME_TYPES.has(mimeType)) throw new DomainError("INVALID_DOCUMENT", "MIME de soporte no permitido");
     if (input.type === "foto" && !mimeType.startsWith("image/")) throw new DomainError("INVALID_DOCUMENT", "Las fotos deben usar un MIME de imagen");
-    const extension = name.slice(name.lastIndexOf(".") + 1), expected = mimeType === "application/pdf" ? ["pdf"] : mimeType === "image/jpeg" ? ["jpg", "jpeg"] : mimeType === "image/png" ? ["png"] : ["webp"];
+    const extension = name.slice(name.lastIndexOf(".") + 1), expected = expectedAttachmentExtensions(mimeType);
     if (!expected.includes(extension)) throw new DomainError("INVALID_DOCUMENT", "La extensión no coincide con el MIME");
     if (!Number.isInteger(input.sizeBytes) || input.sizeBytes < 1 || input.sizeBytes > MAX_PRIVATE_ATTACHMENT_BYTES) throw new DomainError("PAYLOAD_TOO_LARGE", "El soporte supera el tamaño permitido");
     return { type: input.type, name, mimeType, sizeBytes: input.sizeBytes };

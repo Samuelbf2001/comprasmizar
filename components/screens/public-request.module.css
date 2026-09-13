@@ -92,6 +92,9 @@
 .summaryRow dd{margin:0;text-align:right;font-weight:800;color:#2c333b}
 .summaryList{display:grid;gap:var(--space-3);margin:0;padding:0;list-style:none}
 .summaryLine{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);padding:var(--space-3) var(--space-4);border:1px solid #d8dcd7;border-radius:14px;background:#fff}
+/* Con miniatura (foto opcional por artículo), el bloque de texto crece y el "Quitar" se queda a la
+   derecha en vez de que `justify-content:space-between` reparta el hueco entre los tres. */
+.summaryLine>div{flex:1;min-width:0}
 .summaryLine b{display:block;font-size:var(--text-xs);color:#2c333b;font-weight:800}
 .summaryLine span{display:block;margin-top:2px}
 .uploadLabel{position:relative;display:flex;align-items:flex-start;gap:var(--space-3);min-height:72px;padding:var(--space-3);border:1px dashed #aeb9b1;border-radius:14px;background:#fff;color:var(--muted);cursor:pointer}
@@ -100,6 +103,12 @@
 .uploadLabel b,.uploadLabel small{display:block}
 .uploadLabel b{font-size:var(--text-xs);color:#3d4651}
 .uploadLabel small{margin-top:3px;font-size:var(--text-3xs);line-height:1.4}
+/* Miniatura de la foto elegida (foto opcional por artículo, RF portal-fotos-articulo): ocupa el lugar
+   del icono de cámara dentro de `.uploadLabel` una vez hay archivo. */
+.photoThumb{width:44px;height:44px;flex:none;border-radius:10px;object-fit:cover;background:var(--surface)}
+/* Misma miniatura en el resumen, junto al artículo al que pertenece — algo más grande porque ahí no
+   compite con el texto "Agregar una foto". */
+.summaryPhoto{width:52px;height:52px;flex:none;border-radius:10px;object-fit:cover;background:var(--surface)}
 .securityNote{display:flex;align-items:flex-start;gap:var(--space-2);margin:0;padding:var(--space-3);border-radius:12px;background:#edf3f6;color:#345167;font-size:var(--text-3xs);font-weight:700;line-height:1.45}
 .securityNote svg{flex:none;margin-top:1px}
 .success{max-width:520px;margin:var(--space-7) auto;text-align:center}

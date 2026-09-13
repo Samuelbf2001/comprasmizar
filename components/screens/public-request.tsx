@@ -1,10 +1,20 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight, Check, ClipboardList, FileText, HardHat, LockKeyhole, PackageCheck, Phone, Plus, ShieldCheck, SquarePen } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Camera, Check, ClipboardList, FileText, HardHat, LockKeyhole, PackageCheck, Phone, Plus, ShieldCheck, SquarePen, X } from 'lucide-react';
 import { companies } from '../../lib/demo-data';
+import { formatAttachmentSize, IMAGE_MIME_TYPES, validateAttachmentFile } from './attachment-upload';
 import styles from './public-request.module.css';
+
+/**
+ * 5 MB — el MISMO tope que vuelve a comprobar el servidor con los bytes reales
+ * (`MAX_PUBLIC_PHOTO_BYTES` en `lib/infrastructure/public-photos.ts`). Duplicado a propósito: cliente
+ * y servidor no comparten build, igual que `MAX_LINEAS` de abajo y el `items.max(20)` del endpoint.
+ * Esta comprobación es solo cortesía —evita subir 40 MB para que el servidor los rechace— nunca la
+ * autoridad: quien decide de verdad es el servidor, oliendo los bytes.
+ */
+const MAX_PUBLIC_PHOTO_BYTES = 5 * 1024 * 1024;
 
 // `workId` ausente = enlace GENERAL (uno solo para todas las obras): la obra se elige en el
 // formulario, no viene firmada en el enlace. Ver lib/security/public-link.ts.
@@ -20,7 +30,10 @@ type PublicCompany = { id: string; name: string };
 // notes/observations, ver "Observaciones" del paso ¿Para cuándo?); requiredDate ya era opcional aquí.
 /** Una línea del pedido. Ernesto, 11-sep-2026: "solo dejas agregar un ítem por form, debe permitir ir
  *  agregando más" — un maestro que necesita cemento, arena y varilla tenía que radicar tres veces. */
-type RequestLine = { description: string; quantity: string; unit: string; supplier: string; productLink: string };
+/** `photo` es EL ARCHIVO tal cual, nunca serializado: viaja aparte en el envío (multipart, ver
+ *  `ProductionPublicRequest.handleEnviar`), calcado del `PhotoPicker` del Flow de WhatsApp — una foto
+ *  opcional por artículo. `null` = sin foto, el caso normal. */
+type RequestLine = { description: string; quantity: string; unit: string; supplier: string; productLink: string; photo: File | null };
 type RequestValues = {
   // `company`, no `work`: el solicitante elige EMPRESA y la obra la asigna el revisor (reunión
   // 2026-08-31; Ernesto: "ya dijimos era empresa"). El enlace POR OBRA sigue trayendo la suya fija,
@@ -62,7 +75,7 @@ const TYPE_LABELS: Record<RequestValues['type'], string> = { compra: 'Compra de 
 function nuevaLinea(): RequestLine {
   // Unidad VACÍA, no "Unidad": era el valor por defecto de un desplegable que ya no existe, y dejarlo
   // haría que se radicara "Unidad" como unidad real sin que nadie lo eligiera.
-  return { description: "", quantity: "1", unit: "", supplier: "", productLink: "" };
+  return { description: "", quantity: "1", unit: "", supplier: "", productLink: "", photo: null };
 }
 
 /** Tope de ítems por requisición. Es el mismo orden de magnitud que el esquema del endpoint
@@ -105,6 +118,10 @@ function useFormularioRequisicion() {
   // React compara por identidad y una mutación in situ no repintaría el campo.
   const updateLinea = (indice: number, campo: keyof RequestLine, valor: string) =>
     setValues(current => ({ ...current, lines: current.lines.map((linea, i) => (i === indice ? { ...linea, [campo]: valor } : linea)) }));
+  // Aparte de `updateLinea`: esa función solo mueve strings (`campo: keyof RequestLine, valor:
+  // string`), y un `File` no lo es. `null` quita la foto (botón "Quitar foto").
+  const setLineaFoto = (indice: number, foto: File | null) =>
+    setValues(current => ({ ...current, lines: current.lines.map((linea, i) => (i === indice ? { ...linea, photo: foto } : linea)) }));
   const agregarLinea = () => setValues(current => (current.lines.length >= MAX_LINEAS ? current : { ...current, lines: [...current.lines, nuevaLinea()] }));
   // NUNCA por debajo de una línea. El esquema exige `items.min(1)`, así que llegar al resumen sin
   // ítems daría un 202 neutro sin requisición: el peor final posible, porque parece que sí se envió.
@@ -124,7 +141,7 @@ function useFormularioRequisicion() {
   };
   const alternarDetalle = (indice: number) => setDetalles(abiertos => (abiertos.includes(indice) ? abiertos.filter(i => i !== indice) : [...abiertos, indice]));
   const reiniciar = () => { setValues(initialValues()); setErrors({}); setDetalles([]); setPhone(''); setPhase('tipo'); setItemIndex(0); };
-  return { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, agregarLinea, quitarLinea, alternarDetalle, reiniciar };
+  return { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, setLineaFoto, agregarLinea, quitarLinea, alternarDetalle, reiniciar };
 }
 
 /**
@@ -292,9 +309,65 @@ function SelectorEmpresa({ empresas, cargadas, valor, error, onChange }: {
  * Proveedor y enlace SIGUEN opcionales y detrás de "Agregar detalles": son justo los dos campos que
  * el Flow de WhatsApp también deja opcionales en su pantalla de artículo.
  */
-function PantallaArticulo({ indice, linea, errors, detalleAbierto, onCampo, onAlternarDetalle }: {
+/**
+ * Vista previa de una foto ya elegida, en miniatura. Vive aparte de `CampoFoto` porque su único
+ * trabajo es el ciclo de vida del `object URL` (crearlo al montar/cambiar de archivo, revocarlo al
+ * desmontar): con un `useEffect` propio, quitar el artículo (que desmonta este componente) libera la
+ * miniatura sola, sin que `quitarLinea` tenga que saber nada de URLs.
+ */
+function FotoPreview({ file, className }: { file: File; className: string }) {
+  // `useMemo`, no `useState`+efecto: el object URL se calcula EN EL RENDER a partir de `file` (con la
+  // misma identidad de archivo, siempre la misma URL), y el único trabajo del efecto es revocar la
+  // anterior — nunca dispara un segundo render llamando `setState` desde dentro de sí mismo.
+  const url = useMemo(() => URL.createObjectURL(file), [file]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  // Vista previa de un archivo LOCAL (object URL), nunca una imagen remota: el optimizador de
+  // next/image no aplica aquí.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={url} alt="" className={className} />;
+}
+
+/**
+ * Foto opcional por artículo (RF portal-fotos-articulo), calcada del `PhotoPicker` del Flow de
+ * WhatsApp que ya conoce el cliente: como allá, es UNA foto, nunca un documento, y el tope de tamaño
+ * (5 MB) se explica en `MAX_PUBLIC_PHOTO_BYTES` más arriba. Reutiliza `validateAttachmentFile` de
+ * `attachment-upload.tsx` en vez de reinventar "¿esto pesa demasiado o no es una imagen?" — es la
+ * MISMA comprobación que ya usa el resto de la plataforma para adjuntos internos, solo que aquí es
+ * cortesía de cliente, no la autoridad (esa es del servidor, ver `lib/infrastructure/public-photos.ts`).
+ */
+function CampoFoto({ indice, foto, error, onFoto, onError }: {
+  indice: number; foto: File | null; error?: string; onFoto: (file: File | null) => void; onError: (mensaje: string) => void;
+}) {
+  const onChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    // Se limpia SIEMPRE, se acepte o no el archivo: sin esto, elegir la MISMA foto dos veces seguidas
+    // (p.ej. tras "Quitar foto") no dispararía un segundo `change` — el navegador no ve diferencia.
+    event.target.value = '';
+    if (!file) return;
+    const mensaje = validateAttachmentFile(file, { allowedMimeTypes: IMAGE_MIME_TYPES, maxBytes: MAX_PUBLIC_PHOTO_BYTES });
+    if (mensaje) { onError(mensaje); return; }
+    onError('');
+    onFoto(file);
+  };
+  // `<div>`, no `<label>`, envolviendo todo: el `<label htmlFor>` de verdad es el interno
+  // (`.uploadLabel`), que ya asocia el input con su texto. Anidar dos `<label>` es HTML inválido y
+  // duplicaría el disparo del selector de archivos al hacer click.
+  return <div className={styles.field}>
+    <span className={styles.fieldLabel}>Foto <small className={styles.hint}>opcional</small></span>
+    <label className={styles.uploadLabel} htmlFor={`photo-${indice}`}>
+      {foto ? <FotoPreview file={foto} className={styles.photoThumb} /> : <Camera aria-hidden="true" size={18} />}
+      <span><b>{foto ? foto.name : 'Agregar una foto'}</b><small>{foto ? formatAttachmentSize(foto.size) : 'JPG, PNG o WebP. Hasta 5 MB.'}</small></span>
+      <input aria-label="Foto (opcional)" id={`photo-${indice}`} name={`photo-${indice}`} type="file" accept="image/*" capture="environment" onChange={onChange} aria-invalid={Boolean(error)} aria-describedby={error ? `portal-photo-${indice}-error` : undefined} />
+    </label>
+    {foto && <button className={styles.lineRemove} type="button" onClick={() => onFoto(null)}><X aria-hidden="true" size={13} /> Quitar foto</button>}
+    {error && <small className={styles.error} id={`portal-photo-${indice}-error`}>{error}</small>}
+  </div>;
+}
+
+function PantallaArticulo({ indice, linea, errors, detalleAbierto, onCampo, onAlternarDetalle, onFoto, onFotoError }: {
   indice: number; linea: RequestLine; errors: FieldErrors; detalleAbierto: boolean;
   onCampo: (campo: keyof RequestLine, valor: string) => void; onAlternarDetalle: () => void;
+  onFoto: (file: File | null) => void; onFotoError: (mensaje: string) => void;
 }) {
   return <>
     <label className={styles.field}><span className={styles.fieldLabel}>¿Qué necesitas? <em className={styles.required}>*</em></span><input className={styles.control} name={`description-${indice}`} value={linea.description} onChange={event => onCampo('description', event.target.value)} maxLength={500} placeholder="Ej. 20 bultos de cemento gris" aria-invalid={Boolean(errors[`description-${indice}`])} aria-describedby={errors[`description-${indice}`] ? `portal-description-${indice}-error` : undefined} />{errors[`description-${indice}`] && <small className={styles.error} id={`portal-description-${indice}-error`}>{errors[`description-${indice}`]}</small>}</label>
@@ -302,15 +375,13 @@ function PantallaArticulo({ indice, linea, errors, detalleAbierto, onCampo, onAl
       <label className={styles.field}><span className={styles.fieldLabel}>Cantidad <em className={styles.required}>*</em></span><input className={styles.control} name={`quantity-${indice}`} type="number" inputMode="decimal" min="0.001" step="0.001" value={linea.quantity} onChange={event => onCampo('quantity', event.target.value)} aria-invalid={Boolean(errors[`quantity-${indice}`])} aria-describedby={errors[`quantity-${indice}`] ? `portal-quantity-${indice}-error` : undefined} />{errors[`quantity-${indice}`] && <small className={styles.error} id={`portal-quantity-${indice}-error`}>{errors[`quantity-${indice}`]}</small>}</label>
       <label className={styles.field}><span className={styles.fieldLabel}>Unidad <em className={styles.required}>*</em></span><input className={styles.control} name={`unit-${indice}`} list="portal-unidades" value={linea.unit} onChange={event => onCampo('unit', event.target.value)} maxLength={20} placeholder="und, m², bulto…" aria-invalid={Boolean(errors[`unit-${indice}`])} aria-describedby={errors[`unit-${indice}`] ? `portal-unit-${indice}-error` : undefined} />{errors[`unit-${indice}`] && <small className={styles.error} id={`portal-unit-${indice}-error`}>{errors[`unit-${indice}`]}</small>}</label>
     </div>
+    <CampoFoto indice={indice} foto={linea.photo} error={errors[`photo-${indice}`]} onFoto={onFoto} onError={onFotoError} />
     <button className={styles.optionalToggle} type="button" onClick={onAlternarDetalle} aria-expanded={detalleAbierto}><span><SquarePen aria-hidden="true" size={18} /> Agregar detalles <small className={styles.hint}>(opcional)</small></span><span aria-hidden="true">{detalleAbierto ? '−' : '+'}</span></button>
     {detalleAbierto && <div className={styles.optionalPanel}>
       <label className={styles.field}><span className={styles.fieldLabel}>Posible proveedor <small className={styles.hint}>opcional</small></span><input className={styles.control} name={`supplier-${indice}`} value={linea.supplier} onChange={event => onCampo('supplier', event.target.value)} maxLength={240} /></label>
       <label className={styles.field}><span className={styles.fieldLabel}>Enlace del producto <small className={styles.hint}>HTTPS opcional</small></span><input className={styles.control} name={`productLink-${indice}`} type="url" inputMode="url" value={linea.productLink} onChange={event => onCampo('productLink', event.target.value)} maxLength={2048} placeholder="https://…" aria-invalid={Boolean(errors[`productLink-${indice}`])} aria-describedby={errors[`productLink-${indice}`] ? `portal-link-${indice}-error` : undefined} />{errors[`productLink-${indice}`] && <small className={styles.error} id={`portal-link-${indice}-error`}>{errors[`productLink-${indice}`]}</small>}</label>
     </div>}
-    {/* Pendiente (ver informe): el Flow de WhatsApp adjunta una foto por artículo (`PhotoPicker`), pero
-        el portal público no tiene ningún mecanismo de subida (`app/api/public/*` no expone ninguno).
-        Inventar uno aquí habría significado un endpoint nuevo que nadie pidió en este cambio. */}
-    <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> Fotos y PDF aún no están disponibles en el portal público.</p>
+    <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> La foto solo la ve quien revisa tu solicitud.</p>
   </>;
 }
 
@@ -331,7 +402,16 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
   exigirEmpresa: boolean; empresas: PublicCompany[]; empresasCargadas: boolean;
   onEnviar: () => void | Promise<void>; enviando?: boolean; errorEnvio?: string;
 }) {
-  const { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, agregarLinea, quitarLinea, alternarDetalle } = formulario;
+  const { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, setLineaFoto, agregarLinea, quitarLinea, alternarDetalle } = formulario;
+  // Un error de foto no es como los demás: no lo pone `validarItem` al avanzar de pantalla (la foto es
+  // opcional, nunca bloquea "Ir al resumen"), lo pone `CampoFoto` EN EL MOMENTO de elegir un archivo
+  // inválido. Por eso es un `set`/`delete` puntual sobre la clave `photo-<índice>`, no parte de un
+  // objeto de errores que se reconstruye entero como `validarItem`.
+  const onFotoError = (indiceArticulo: number, mensaje: string) => setErrors(actuales => {
+    const clave = `photo-${indiceArticulo}`;
+    if (!mensaje) { if (!(clave in actuales)) return actuales; const resto = { ...actuales }; delete resto[clave]; return resto; }
+    return { ...actuales, [clave]: mensaje };
+  });
   const etapaActual = ETAPAS.findIndex(etapa => etapa.fase === phase) + 1;
 
   const validarEsteItem = () => {
@@ -394,7 +474,7 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
       {phase === 'item' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso {etapaActual} de {ETAPAS.length} · Artículo {itemIndex + 1}</p><h2>Artículo {itemIndex + 1}</h2><p>Uno a la vez. Si necesitas más materiales, los agregamos después de este.</p></div><div className={styles.stepBody}>
         <fieldset className={styles.lineCard}>
           <legend className={styles.lineLegend}><span>Ítem {itemIndex + 1}</span></legend>
-          <PantallaArticulo indice={itemIndex} linea={values.lines[itemIndex]} errors={errors} detalleAbierto={detalles.includes(itemIndex)} onCampo={(campo, valor) => updateLinea(itemIndex, campo, valor)} onAlternarDetalle={() => alternarDetalle(itemIndex)} />
+          <PantallaArticulo indice={itemIndex} linea={values.lines[itemIndex]} errors={errors} detalleAbierto={detalles.includes(itemIndex)} onCampo={(campo, valor) => updateLinea(itemIndex, campo, valor)} onAlternarDetalle={() => alternarDetalle(itemIndex)} onFoto={foto => setLineaFoto(itemIndex, foto)} onFotoError={mensaje => onFotoError(itemIndex, mensaje)} />
         </fieldset>
         <datalist id="portal-unidades">{UNIDADES_SUGERIDAS.map(unidad => <option key={unidad} value={unidad} />)}</datalist>
         <div className={styles.itemActions}>
@@ -421,6 +501,7 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
         </dl>
         <ol className={styles.summaryList} aria-label="Artículos de la requisición">
           {values.lines.map((linea, indice) => <li className={styles.summaryLine} key={indice}>
+            {linea.photo && <FotoPreview file={linea.photo} className={styles.summaryPhoto} />}
             <div><b>{indice + 1}. {linea.description}</b><span className={styles.hint}>{linea.quantity} {linea.unit}{linea.supplier ? ` · ${linea.supplier}` : ''}</span></div>
             {values.lines.length > 1 && <button className={styles.lineRemove} type="button" onClick={() => quitarLinea(indice)}>Quitar</button>}
           </li>)}
@@ -570,8 +651,32 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
       observations: formulario.values.notes || undefined,
       items: formulario.values.lines.map(linea => ({ description: linea.description, quantity: Number(linea.quantity), unit: linea.unit, possibleSupplier: linea.supplier || undefined, productLink: linea.productLink || undefined })),
     };
+    // El ÍNDICE de cada foto es su posición en `items` arriba — el mismo que usa el servidor para
+    // ligarla al ítem que crea (ver app/api/public/requisitions/route.ts). `payload.items` y
+    // `formulario.values.lines` nacen del mismo `.map` en el mismo orden, así que el índice de una
+    // lista sirve para la otra sin traducción.
+    const fotos = formulario.values.lines
+      .map((linea, indice) => ({ indice, file: linea.photo }))
+      .filter((entrada): entrada is { indice: number; file: File } => entrada.file !== null);
     try {
-      const response = await fetch('/api/public/requisitions', { method: 'POST', headers: { 'content-type': 'application/json', ...(access.token ? { 'x-public-link-token': access.token } : {}) }, body: JSON.stringify(payload) });
+      // Con fotos, `multipart/form-data`: el JSON de siempre viaja intacto en el campo `payload`, y
+      // cada foto en su propio campo `foto_<índice>` (ver el endpoint). SIN fotos, el envío es
+      // EXACTAMENTE el de siempre — nunca se cambia a FormData sin necesidad.
+      //
+      // Nunca se fija `content-type` a mano cuando el cuerpo es FormData: el navegador necesita
+      // calcular el boundary del multipart, y un `content-type` manual se lo pisaría.
+      const headers: Record<string, string> = access.token ? { 'x-public-link-token': access.token } : {};
+      let body: BodyInit;
+      if (fotos.length) {
+        const formData = new FormData();
+        formData.set('payload', JSON.stringify(payload));
+        for (const { indice, file } of fotos) formData.set(`foto_${indice}`, file, file.name);
+        body = formData;
+      } else {
+        headers['content-type'] = 'application/json';
+        body = JSON.stringify(payload);
+      }
+      const response = await fetch('/api/public/requisitions', { method: 'POST', headers, body });
       if (response.status === 202) setSent(true);
       else if (response.status === 503) setFormError('El servicio de requisiciones no está disponible. Intenta más tarde.');
       else setFormError('No pudimos recibir la solicitud. Revisa los campos e intenta otra vez.');
