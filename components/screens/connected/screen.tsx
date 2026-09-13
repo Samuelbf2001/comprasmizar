@@ -271,6 +271,7 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
             data={load.data as RequisitionsBundle}
             pathname={pathname}
             go={go}
+            refresh={refresh}
           />
         )}
         {kind === "orders" && (

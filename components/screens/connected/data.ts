@@ -83,7 +83,10 @@ function requisitionsPageUrl(pathname: string, cursor?: string): string {
   return `/api/requisitions?${params.toString()}`;
 }
 
-type RequisitionsPage = { rows: RequisitionRow[]; nextCursor: string | null };
+// «Aprobar desde la lista»: `viewerId` viaja igual que en el detalle (ver el comentario del GET en
+// app/api/requisitions/route.ts) — opcional porque `loadMoreRequisitions` reusa este mismo tipo y
+// a esa llamada (solo rows/nextCursor le importan) no le hace falta declararlo.
+type RequisitionsPage = { rows: RequisitionRow[]; nextCursor: string | null; viewerId?: string };
 
 // Usado por requisitions.tsx para el botón "Cargar más": misma URL/filtro que la carga inicial,
 // con el cursor de la página siguiente.
@@ -187,10 +190,11 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
       getCatalogs(),
       canReadOrders ? readJson("/api/orders") : Promise.resolve([]),
     ]);
-    const { rows, nextCursor } = page as RequisitionsPage;
+    const { rows, nextCursor, viewerId } = page as RequisitionsPage;
     return {
       rows,
       nextCursor,
+      viewerId,
       catalogs: catalogs as CatalogData,
       orders: orders as OrderRow[],
     } satisfies RequisitionsBundle;

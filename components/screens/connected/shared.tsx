@@ -288,11 +288,18 @@ export type ExpenseBundle = {
 // tenía forma de saber si ya le tocaba "Listas para generar orden" en /revision.
 // H3: `nextCursor` (paginación de servidor, `?limit=100`) — `null`/`undefined` cuando no hay más
 // páginas. requisitions.tsx lo usa para mostrar (o no) el botón "Cargar más".
+// «Aprobar desde la lista» (reunión 11-sep, patrón Precoro): `viewerId` es quién está mirando —
+// lo pone el servidor desde la sesión (mismo campo que ya trae DetailBundle) — para que la bandeja
+// calcule, con `pendingItemsFor`/`itemApproverId` (lib/domain/rules.ts), qué ítems de CADA fila
+// decide esta persona, sin adivinarlo ni duplicar esa herencia en el cliente. Ausente en payloads
+// viejos (caché de sessionStorage de antes de este cambio): requisitions.tsx trata eso como "no
+// se puede calcular todavía" y no muestra acciones, nunca como "decide todo".
 export type RequisitionsBundle = {
   rows: RequisitionRow[];
   catalogs: CatalogData;
   orders?: OrderRow[];
   nextCursor?: string | null;
+  viewerId?: string;
 };
 // H2/H3: `requisitions` (el array completo de requisiciones, solo para resolver consecutivo/obra
 // por fila) se quita del bundle — nada más lo usaba y `OrderRow.requisitionConsecutive`/`workId`
