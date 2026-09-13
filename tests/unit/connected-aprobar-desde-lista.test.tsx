@@ -22,8 +22,15 @@ function accionesUrl(id: string) {
   return `/api/requisitions/${id}/actions`;
 }
 
+// `status: "aprobada"` porque es la respuesta real más común de `approve()` (un solo aprobador,
+// nada declinado) — el mensaje de éxito se lee de esta respuesta, nunca se adivina por el botón
+// pulsado (ver settleRow en requisitions.tsx). Las pruebas que necesitan otro cierre (`declinada`,
+// `aprobada` con otros ítems vigentes, `APPROVAL_PENDING_OTHERS`) mockean su propia respuesta.
 function respuestaOk() {
-  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+  return new Response(JSON.stringify({ id: "req-1", status: "aprobada" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /** Cuerpos JSON enviados a la ruta de acciones de UNA requisición, en orden. */
@@ -145,8 +152,20 @@ describe("Aprobar desde la lista: body exacto por fila", () => {
     expect(await screen.findByText(/RQ-201: quedó aprobada\./)).toBeInTheDocument();
   });
 
-  it("«Declinar» exige motivo, manda SOLO decide_items (declinado) y nunca approve", async () => {
-    const fetchMock = vi.fn(async () => respuestaOk());
+  it("«Declinar» exige motivo y manda el MISMO lote que el detalle: decide_items (declinado) y DESPUÉS approve", async () => {
+    // Ajuste del coordinador: sin el `approve` final, la última declinación dejaba la
+    // requisición `en_aprobacion` para siempre — nadie volvía a tocarla hasta abrir el detalle.
+    // `approve()` responde con la requisición ya cerrada (`declinada`, un único ítem y se declina).
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (body?.action === "approve") {
+        return new Response(JSON.stringify({ id: "req-1", status: "declinada" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return respuestaOk();
+    });
     vi.stubGlobal("fetch", fetchMock);
     render(
       <ConnectedRequisitions
@@ -167,15 +186,73 @@ describe("Aprobar desde la lista: body exacto por fila", () => {
     expect(confirmar).not.toBeDisabled();
     fireEvent.click(confirmar);
 
-    await waitFor(() => expect(accionesEnviadas(fetchMock, "req-1")).toHaveLength(1));
-    expect(accionesEnviadas(fetchMock, "req-1")[0]).toEqual({
+    await waitFor(() => expect(accionesEnviadas(fetchMock, "req-1")).toHaveLength(2));
+    const [primera, segunda] = accionesEnviadas(fetchMock, "req-1");
+    expect(primera).toEqual({
       action: "decide_items",
       decisions: [{ itemId: "item-1", status: "declinado", quantity: 10, declineReason: "No se necesita este material" }],
     });
-    // Nunca se manda approve: declinar desde la lista solo registra la decisión (ver el
-    // comentario de handleDeclineRow en requisitions.tsx sobre quién cierra la requisición).
-    expect(accionesEnviadas(fetchMock, "req-1").some((body) => body.action === "approve")).toBe(false);
-    expect(await screen.findByText(/RQ-201: tus 1 ítem quedó declinado\./)).toBeInTheDocument();
+    expect(segunda).toEqual({ action: "approve" });
+    // El mensaje se lee de la respuesta del servidor (aquí `declinada`), no se adivina por el
+    // botón pulsado: declinar TUS ítems no siempre cierra la requisición entera como declinada.
+    expect(await screen.findByText("RQ-201: quedó declinada.")).toBeInTheDocument();
+  });
+
+  it("si declinar tus ítems deja otros vigentes de otro aprobador, el cierre real (aprobada) se lee del servidor, no se adivina", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (body?.action === "approve") {
+        return new Response(JSON.stringify({ id: "req-1", status: "aprobada" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return respuestaOk();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <ConnectedRequisitions
+        data={{ rows: [fila()], catalogs, viewerId: VIEWER }}
+        pathname="/aprobaciones"
+        go={vi.fn()}
+        refresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Declinar" }));
+    fireEvent.change(screen.getByLabelText("Motivo para declinar"), { target: { value: "No se necesita" } });
+    fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
+
+    expect(await screen.findByText("RQ-201: quedó aprobada.")).toBeInTheDocument();
+  });
+
+  it("APPROVAL_PENDING_OTHERS al declinar también se muestra como éxito parcial", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (body?.action === "approve") {
+        return new Response(
+          JSON.stringify({ error: "approval_pending_others", message: "Faltan 1 aprobador(es) por decidir sus ítems" }),
+          { status: 422, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return respuestaOk();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <ConnectedRequisitions
+        data={{ rows: [fila()], catalogs, viewerId: VIEWER }}
+        pathname="/aprobaciones"
+        go={vi.fn()}
+        refresh={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Declinar" }));
+    fireEvent.change(screen.getByLabelText("Motivo para declinar"), { target: { value: "No se necesita" } });
+    fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
+
+    expect(await screen.findByText(/quedaron decididos; falta 1 aprobador\./)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("APPROVAL_PENDING_OTHERS al aprobar se muestra como éxito parcial, no como error", async () => {
@@ -309,5 +386,76 @@ describe("Aprobar desde la lista: selección múltiple", () => {
     expect(screen.getByRole("button", { name: "Aprobar seleccionadas (0)" })).toBeInTheDocument();
     expect(screen.getByLabelText("Seleccionar RQ-201")).toBeInTheDocument();
     expect(screen.queryByLabelText("Seleccionar RQ-202")).toBeNull();
+  });
+});
+
+// M-5 (mismo bypass que detail.tsx, lib/domain/rules.ts): admin_sixteam decide CUALQUIER
+// requisición en_aprobacion, esté o no asignado — el servicio (`omnipotente`) ya se lo permite;
+// sin este bypass en la lista, un admin no veía "Aprobar"/"Declinar" en filas que no fueran suyas,
+// aunque el detalle sí lo dejara resolverlas.
+describe("Aprobar desde la lista: bypass de admin_sixteam (M-5)", () => {
+  it("con rol Administrador Sixteam, las acciones aparecen aunque la requisición no esté asignada a él", () => {
+    const rows = [
+      fila({ approverId: "user-9", items: [{ id: "item-1", description: "Cemento gris", quantity: 10, unit: "bulto", unitBase: 30_000 }] }),
+    ];
+    render(
+      <ConnectedRequisitions
+        data={{ rows, catalogs, viewerId: VIEWER }}
+        pathname="/aprobaciones"
+        go={vi.fn()}
+        refresh={vi.fn()}
+        role="Administrador Sixteam"
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Aprobar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Declinar" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Seleccionar RQ-201")).toBeInTheDocument();
+  });
+
+  it("sin rol Administrador Sixteam (aprobador normal), la misma fila no asignada NO muestra acciones", () => {
+    const rows = [
+      fila({ approverId: "user-9", items: [{ id: "item-1", description: "Cemento gris", quantity: 10, unit: "bulto", unitBase: 30_000 }] }),
+    ];
+    render(
+      <ConnectedRequisitions
+        data={{ rows, catalogs, viewerId: VIEWER }}
+        pathname="/aprobaciones"
+        go={vi.fn()}
+        refresh={vi.fn()}
+        role="Aprobador"
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Aprobar" })).toBeNull();
+  });
+
+  it("«Aprobar» como admin decide TODOS los ítems pendientes de la fila, no solo los asignados a él", async () => {
+    const fetchMock = vi.fn(async () => respuestaOk());
+    vi.stubGlobal("fetch", fetchMock);
+    const rows = [
+      fila({
+        approverId: "user-9",
+        items: [
+          { id: "item-1", description: "Cemento gris", quantity: 10, unit: "bulto", unitBase: 30_000 }, // hereda de user-9
+          { id: "item-2", description: "Arena", quantity: 4, unit: "m3", unitBase: 10_000, approverId: "user-5" }, // de otro aprobador más
+        ],
+      }),
+    ];
+    render(
+      <ConnectedRequisitions
+        data={{ rows, catalogs, viewerId: VIEWER }}
+        pathname="/aprobaciones"
+        go={vi.fn()}
+        refresh={vi.fn()}
+        role="Administrador Sixteam"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Aprobar" }));
+    fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(accionesEnviadas(fetchMock, "req-1")).toHaveLength(2));
+    const [primera] = accionesEnviadas(fetchMock, "req-1");
+    expect(primera.decisions.map((d: { itemId: string }) => d.itemId).sort()).toEqual(["item-1", "item-2"]);
+    expect(primera.decisions.every((d: { status: string }) => d.status === "aprobado")).toBe(true);
   });
 });
