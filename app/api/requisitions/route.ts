@@ -10,12 +10,20 @@ export const runtime = "nodejs";
 // obligatoria: la bandeja/mis requisiciones/detalle actuales lo consumen tal cual). `limit`/`cursor`
 // deciden el shape de la respuesta (`{ rows, nextCursor }` vs el array de siempre); status/workId/
 // from/to sin limit/cursor filtran mientras siguen devolviendo un array plano.
+//
+// «Aprobar desde la lista» (reunión 11-sep, patrón Precoro): la bandeja necesita saber, por fila,
+// qué ítems decide QUIEN MIRA — misma pregunta que ya resuelve DetailBundle.viewerId en
+// app/api/requisitions/[id]/detail/route.ts. Se añade SOLO a la forma paginada `{ rows, nextCursor }`
+// (la única que consume components/screens/connected/data.ts): la forma en array (sin filtros/paginación,
+// compatibilidad hacia atrás) se deja intacta a propósito, para no romper a quien todavía espera un array.
 export function GET(request: Request) {
   return authenticatedJson((actor) => {
     const { query, paginated } = parseListQuery(new URL(request.url), REQUISITION_STATUS_VALUES);
     const service = new ProcurementService(createPostgresDependencies());
     if (!paginated && !hasListFilters(query)) return service.listRequisitions({ actor });
-    return service.listRequisitionsPage(query, { actor }).then((page) => (paginated ? page : page.rows));
+    return service
+      .listRequisitionsPage(query, { actor })
+      .then((page) => (paginated ? { ...page, viewerId: actor.id } : page.rows));
   });
 }
 // Solicitud de pago (feat/solicitud-de-pago): `unitBase`/`ivaRate`/`finalSupplierId` viajan tal
