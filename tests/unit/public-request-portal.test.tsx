@@ -1,8 +1,17 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicRequestRedirect, PublicRequestScreen } from "../../components/screens/public-request";
+
+// jsdom no implementa `URL.createObjectURL`/`revokeObjectURL` (los usa `FotoPreview`, la vista previa
+// de la foto opcional por artículo): se rellenan con un stub mínimo UNA sola vez para el archivo
+// entero, fuera de cualquier `vi.stubGlobal` — así `vi.unstubAllGlobals()` (que ya corre en los
+// `afterEach` de abajo) nunca los toca.
+beforeAll(() => {
+  if (typeof URL.createObjectURL !== "function") URL.createObjectURL = () => "blob:mock-url";
+  if (typeof URL.revokeObjectURL !== "function") URL.revokeObjectURL = () => {};
+});
 
 // Portal público GUIADO (11-sep-2026). Hasta ahora eran dos pasos («¿Para quién y cuándo?» con todo
 // mezclado, y un paso 2 con la lista completa de ítems); Ernesto pidió que se pareciera al Flow de
@@ -399,6 +408,130 @@ describe("portal público guiado — varios artículos, uno por pantalla", () =>
     fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
     expect(JSON.parse(String(llamadasA(RADICACION)[0][1]?.body)).items[0].unit).toBe("cuñete");
+  });
+});
+
+// RF portal-fotos-articulo: UNA foto opcional por artículo, calcada del `PhotoPicker` del Flow de
+// WhatsApp. Diseño de seguridad (ver app/api/public/requisitions/route.ts y
+// lib/infrastructure/public-photos.ts): la foto viaja en la MISMA petición que radica, como
+// `multipart/form-data` con el JSON de siempre intacto en el campo `payload` y cada foto en
+// `foto_<índice>` — nunca un endpoint de subida previa. Aquí se prueba SOLO el cliente: selección,
+// vista previa, quitar, el tope de 5 MB, y que el envío cambia a FormData nada más que cuando hace
+// falta.
+describe("foto opcional por artículo (RF portal-fotos-articulo)", () => {
+  beforeEach(() => {
+    setHash({ obra: workId, token });
+    stubFetch();
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
+
+  async function llegarAlPrimerArticulo() {
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
+    pasarDatos();
+    await screen.findByText(/^Artículo 1$/i);
+  }
+
+  it("se elige una foto, se ve su vista previa y su nombre, y se puede quitar", async () => {
+    await llegarAlPrimerArticulo();
+    expect(screen.getByText(/Agregar una foto/i)).toBeInTheDocument();
+    const archivo = new File([new Uint8Array(10)], "frente-obra.jpg", { type: "image/jpeg" });
+    fireEvent.change(campo("photo-0"), { target: { files: [archivo] } });
+
+    expect(await screen.findByText("frente-obra.jpg")).toBeInTheDocument();
+    // La vista previa es una miniatura de verdad, no solo el nombre del archivo.
+    expect(document.querySelector("img")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Quitar foto/i }));
+    expect(screen.queryByText("frente-obra.jpg")).not.toBeInTheDocument();
+    expect(screen.getByText(/Agregar una foto/i)).toBeInTheDocument();
+  });
+
+  it("una foto de más de 5 MB se rechaza en el cliente, con un mensaje claro, y no se elige", async () => {
+    await llegarAlPrimerArticulo();
+    const grande = new File([new Uint8Array(6 * 1024 * 1024)], "grande.jpg", { type: "image/jpeg" });
+    fireEvent.change(campo("photo-0"), { target: { files: [grande] } });
+
+    expect(await screen.findByText(/máximo 5 MB/i)).toBeInTheDocument();
+    expect(screen.queryByText("grande.jpg")).not.toBeInTheDocument();
+    expect(screen.getByText(/Agregar una foto/i)).toBeInTheDocument();
+  });
+
+  it("un archivo que no es imagen se rechaza en el cliente", async () => {
+    await llegarAlPrimerArticulo();
+    const pdf = new File([new Uint8Array(10)], "cotizacion.pdf", { type: "application/pdf" });
+    fireEvent.change(campo("photo-0"), { target: { files: [pdf] } });
+
+    expect(await screen.findByText(/debe ser JPG, PNG o WebP/i)).toBeInTheDocument();
+    expect(screen.queryByText("cotizacion.pdf")).not.toBeInTheDocument();
+  });
+
+  it("con foto, el envío usa FormData: el JSON de siempre viaja intacto en 'payload' y la foto en 'foto_<índice>'", async () => {
+    await llegarAlPrimerArticulo();
+    const archivo = new File([new Uint8Array(10)], "frente-obra.jpg", { type: "image/jpeg" });
+    fireEvent.change(campo("photo-0"), { target: { files: [archivo] } });
+    await screen.findByText("frente-obra.jpg");
+    llenarItem(0, { descripcion: "Cemento gris", cantidad: "5", unidad: "bulto" });
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+    await screen.findByRole("heading", { name: /^Resumen$/i });
+    // El resumen también muestra una miniatura del artículo con foto.
+    expect(document.querySelector("img")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const [, init] = llamadasA(RADICACION)[0];
+    expect(init?.body).toBeInstanceOf(FormData);
+    // Nunca se fija `content-type` a mano con FormData: el navegador calcula el boundary.
+    expect(init?.headers).not.toHaveProperty("content-type");
+    expect((init?.headers as Record<string, string>)["x-public-link-token"]).toBe(token);
+
+    const body = init!.body as FormData;
+    const payload = JSON.parse(String(body.get("payload")));
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0].description).toBe("Cemento gris");
+    expect(payload).not.toHaveProperty("photo"); // la foto nunca viaja dentro del JSON
+
+    const foto = body.get("foto_0");
+    expect(foto).toBeInstanceOf(File);
+    expect((foto as File).name).toBe("frente-obra.jpg");
+  });
+
+  it("el ÍNDICE de la foto es la posición del artículo, no la del que tiene foto", async () => {
+    // Dos artículos, foto SOLO en el segundo (índice 1): el campo debe ser `foto_1`, no `foto_0`.
+    await llegarAlPrimerArticulo();
+    llenarItem(0, { descripcion: "Cemento gris", cantidad: "20", unidad: "bulto" });
+    fireEvent.click(screen.getByRole("button", { name: /Agregar otro artículo/i }));
+    await screen.findByText(/^Artículo 2$/i);
+    llenarItem(1, { descripcion: "Arena de río", cantidad: "3", unidad: "m³" });
+    const archivo = new File([new Uint8Array(10)], "arena.jpg", { type: "image/jpeg" });
+    fireEvent.change(campo("photo-1"), { target: { files: [archivo] } });
+    await screen.findByText("arena.jpg");
+
+    fireEvent.click(screen.getByRole("button", { name: /Ir al resumen/i }));
+    await screen.findByText(/¿Para cuándo\?/i);
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+
+    const body = llamadasA(RADICACION)[0][1]!.body as FormData;
+    expect(body.get("foto_0")).toBeNull();
+    expect(body.get("foto_1")).toBeInstanceOf(File);
+  });
+
+  it("sin ninguna foto, el envío sigue siendo JSON de siempre — nunca FormData sin necesidad", async () => {
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    pasarTipoYEmpresa();
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
+    await rellenarYEnviar();
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const [, init] = llamadasA(RADICACION)[0];
+    expect(typeof init?.body).toBe("string");
+    expect((init?.headers as Record<string, string>)["content-type"]).toBe("application/json");
   });
 });
 
