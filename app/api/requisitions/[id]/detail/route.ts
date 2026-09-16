@@ -22,6 +22,6 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       new ProcurementService(createPostgresDependencies()).getRequisitionDetail(id, requestContext),
       new PrivateAttachmentService(createPrivateAttachmentServiceDependencies()).listForRequisition(id, actor),
     ]);
-    return { ...detail, attachments: attachments.attachments, viewerId: actor.id };
+    return { ...detail, attachments: attachments.attachments, viewerId: actor.id, viewerRoles: actor.roles };
   });
 }

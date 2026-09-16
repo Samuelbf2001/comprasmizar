@@ -5,7 +5,7 @@
 // el mismo archivo) para que dashboard.tsx, new-requisition.tsx, requisitions.tsx, detail.tsx,
 // orders.tsx, expenses.tsx, data.ts y screen.tsx puedan importarlo.
 import type { Role } from "../../../lib/demo-data";
-import type { PaymentMethod, PaymentStatus } from "../../../lib/domain";
+import type { PaymentMethod, PaymentStatus, Role as DomainRole } from "../../../lib/domain";
 import { uploadSignedAttachment, type AttachmentMetadata } from "../attachment-upload";
 import type { RouteKind } from "../skeletons";
 import type { FriendlyError } from "../../../lib/http/friendly-error";
@@ -63,7 +63,7 @@ export type CatalogData = {
   // Centros de costo (UI, 2026-09-12): catálogo de centros activos (GET /api/catalogs), para el
   // selector de la revisión, la columna de reportes/órdenes, el filtro de reportes y los filtros/
   // formularios de "Gastos y caja".
-  costCenters?: NamedOption[];
+  costCenters?: Array<NamedOption & { societyId?: string }>;
   // Cajas (2026-09-12): catálogo de "dónde vive la plata" para "Gastos y caja".
   cashBoxes?: Array<NamedOption & { type: string }>;
 };
@@ -114,6 +114,7 @@ export type RequisitionRow = {
   // `Requisition.costCenterId`/`resolveCostCenter` en lib/domain/rules.ts) — semántica de tres estados
   // igual que approverId: ausente = hereda el de la obra, "" = desasignar, un id = fijado.
   costCenterId?: string;
+  billedCompanyId?: string;
   paymentTerms?: string;
   status: string;
   returnReason?: string;
@@ -276,6 +277,9 @@ export type DetailBundle = {
   /** Quién está mirando. Lo pone el servidor desde la sesión: la pantalla necesita saber qué ítems
    *  decide esta persona, y preguntárselo al cliente sería dejar que se lo invente. */
   viewerId?: string;
+  /** RF-308/A9: roles del actor que mira, para que "Aprobar yo mismo" (detail.tsx) distinga revisor+
+   *  aprobador de la lente `role`, que solo conoce el rol único con el que se inició sesión. */
+  viewerRoles?: DomainRole[];
   catalogs: CatalogData;
   orders: OrderRow[];
   expenses: ExpenseRow[];

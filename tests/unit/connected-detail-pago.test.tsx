@@ -156,6 +156,9 @@ describe("Aprobar yo mismo (RF-308)", () => {
     renderDetail({}, "Revisor", { viewerId: "master-1", viewerRoles: ["revisor"] });
     expect(screen.queryByRole("button", { name: "Aprobar yo mismo" })).toBeNull();
     cleanup();
+    renderDetail({}, "Revisor", { viewerId: "master-1", viewerRoles: ["aprobador"] });
+    expect(screen.queryByRole("button", { name: "Aprobar yo mismo" })).toBeNull();
+    cleanup();
     renderDetail({}, "Revisor", { viewerId: "master-1" });
     expect(screen.queryByRole("button", { name: "Aprobar yo mismo" })).toBeNull();
     cleanup();
