@@ -8,6 +8,8 @@ import { verifyKapsoSignature } from "../../../lib/security/crypto";
 import { isKapsoConfigured, kapsoEnv } from "../../../lib/security/env";
 import { adaptNfmReply, createPostgresNfmReplyRejectionRecorder, createPostgresSocietyResolver, isNfmReplyWebhookPayload, resolveKapsoMediaDownloadUrl } from "../../../lib/infrastructure/nfm-reply-adapter";
 import { adaptApprovalReply, createPostgresApproverResolver, isApprovalNfmReply } from "../../../lib/infrastructure/approval-reply-adapter";
+import { adaptPaymentReply, isPaymentNfmReply } from "../../../lib/infrastructure/payment-reply-adapter";
+import { beneficiarySchema } from "../../../lib/http/schemas";
 import { applyApprovalDecision } from "../../../lib/infrastructure/approval-processor";
 import { resolveAuthorizedRequesterName } from "../../../lib/infrastructure/public-access";
 import { atenderMensajeEntrante, esMensajeEnrutable } from "../../../lib/infrastructure/whatsapp-router";
@@ -42,6 +44,7 @@ const kapsoItemSchema = z.object({
   quantity: z.number().finite().positive().max(1_000_000), unit: z.string().trim().min(1).max(40),
   itemId: z.string().uuid().optional(), proposedDescription: z.string().trim().min(1).max(500).optional(),
   possibleSupplier: z.string().trim().min(1).max(240).optional(), productLink: httpsUrl.optional(), attachmentUrl: httpsUrl.optional(),
+  unitBase: z.number().int().nonnegative().max(1_000_000_000_000).optional(),
 }).strict().refine((item) => Boolean(item.itemId || item.proposedDescription), { message: "itemId or proposedDescription is required" });
 
 // requiredDate opcional (reunión 2026-08-31, los tres canales). `destination` desaparece del
@@ -53,10 +56,17 @@ const kapsoItemSchema = z.object({
 export const kapsoWebhookSchema = z.object({
   eventId: z.string().trim().min(1).max(200), type: z.enum(["flow_submission", "message_status"]), receivedAt: z.string().datetime(),
   messageId: z.string().trim().min(1).max(200).optional(), deliveryStatus: z.enum(["sent", "delivered", "failed"]).optional(),
-  submission: z.object({ eventId: z.string().trim().min(1).max(200), phone: z.string().trim().min(7).max(20), societyId: z.string().uuid(), workId: z.string().uuid().optional(), requiredDate: z.string().date().optional(), type: z.enum(["compra", "pago"]), requesterName: z.string().trim().min(2).max(160), observations: z.string().trim().min(1).max(1024).optional(), items: z.array(kapsoItemSchema).min(1).max(100) }).strict().optional(),
+  submission: z.object({ eventId: z.string().trim().min(1).max(200), phone: z.string().trim().min(7).max(20), societyId: z.string().uuid(), workId: z.string().uuid().optional(), requiredDate: z.string().date().optional(), type: z.enum(["compra", "pago"]), requesterName: z.string().trim().min(2).max(160), observations: z.string().trim().min(1).max(1024).optional(), items: z.array(kapsoItemSchema).min(1).max(100), beneficiary: beneficiarySchema.optional() }).strict().optional(),
 }).strict().superRefine((event, context) => {
   if (event.type === "flow_submission" && !event.submission) context.addIssue({ code: z.ZodIssueCode.custom, message: "submission required" });
   if (event.submission && event.submission.eventId !== event.eventId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["submission", "eventId"], message: "event IDs must match" });
+  // RF-908: una solicitud de pago es UNA línea con valor y un beneficiario por identificación. Se
+  // exige aquí, en la frontera, para que `create()` nunca reciba un pago a medias (antes moría con
+  // PAYMENT_BENEFICIARY_REQUIRED → 503 → reintentos de Kapso de un evento que jamás iba a pasar).
+  if (event.submission?.type === "pago") {
+    if (!event.submission.beneficiary) context.addIssue({ code: z.ZodIssueCode.custom, path: ["submission", "beneficiary"], message: "beneficiary required for pago" });
+    if (event.submission.items.length !== 1 || !((event.submission.items[0].unitBase ?? 0) > 0)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["submission", "items"], message: "pago requires exactly one item with unitBase > 0" });
+  }
 });
 /**
  * Kapso firma con la cabecera `X-Webhook-Signature` (HMAC-SHA256 hex del cuerpo crudo, sin prefijo;
@@ -118,7 +128,25 @@ export async function POST(request: Request) {
     }
   }
 
-  if (isNfmReplyWebhookPayload(payload)) {
+  // Flow de SOLICITUD DE PAGO (RF-908): también `nfm_reply`, distinguido por `kind: "pago"`. Va
+  // antes que el de captura por la misma razón que el de aprobación. A diferencia de aquel, este SÍ
+  // crea una requisición: se traduce al contrato normalizado y sigue el mismo camino idempotente.
+  if (isPaymentNfmReply(payload)) {
+    const adapted = await adaptPaymentReply(payload, {
+      secret: kapsoEnv().KAPSO_WEBHOOK_SECRET,
+      resolveRequester: resolveAuthorizedRequesterName,
+      resolveSocietyId: (nameOrLabel) => createPostgresSocietyResolver()(nameOrLabel),
+    });
+    if (!adapted.ok) {
+      try {
+        await createPostgresNfmReplyRejectionRecorder().record({ wamid: adapted.wamid, phone: adapted.phone, reason: adapted.reason, rawPayload: payload });
+      } catch {
+        // Best-effort, como en los otros dos Flows.
+      }
+      return Response.json({ received: true, status: "rejected", reason: adapted.reason });
+    }
+    payload = adapted.event;
+  } else if (isNfmReplyWebhookPayload(payload)) {
     const adapted = await adaptNfmReply(payload, {
       secret: kapsoEnv().KAPSO_WEBHOOK_SECRET,
       resolveAttachmentUrl: resolveKapsoMediaDownloadUrl,
@@ -211,6 +239,7 @@ export async function POST(request: Request) {
         kapsoEventId: inputEvent.eventId,
         observations: submission.observations,
         externalRequester: { name: submission.requesterName, phone: submission.phone },
+        beneficiary: submission.beneficiary,
         items: submission.items.map((item) => ({
           id: randomUUID(),
           itemId: item.itemId,
@@ -219,7 +248,7 @@ export async function POST(request: Request) {
           unit: item.unit,
           possibleSupplier: item.possibleSupplier,
           productLink: item.productLink,
-          unitBase: 0,
+          unitBase: item.unitBase ?? 0,
           unitIva: 0,
         })),
       }, { origin: "kapso" });

@@ -90,3 +90,47 @@ Riesgos:
 - Si `/api/orders` filtrado fallara (400 por un uuid inválido, p. ej. un `costCenterId` que no sea uuid), la pantalla muestra el error y conserva las filas anteriores; los valores salen de `catalogs`, así que en la práctica siempre son uuid.
 - `AttachmentPicker` limita a 10 MB (MAX_ATTACHMENT_BYTES) mientras `attachmentUploadSchema` admite 20 MB: discrepancia previa a esta rama, no la toqué.
 - La tabla pasa de 12 a 13 columnas; ya desplazaba en horizontal dentro de `.table-wrap`, así que no cambia el comportamiento en móvil.
+
+
+---
+
+# ESTADO — feat/flow-pago
+Rama y base: feat/flow-pago desde feat/pagos-nucleo @ 35aae5f (ola 1 verificada; origin/main @ f9a7e00)
+Último commit: (este commit) — «WhatsApp Flow de solicitud de pago: tercer Flow con beneficiario por identificación, opción "Solicitar un pago" en el menú del bot, y el Flow de captura deja de ofrecer un tipo pago que no funcionaba»
+Hecho:
+- S4 (docs/TASKS-pagos-y-caja.md §4, A11 / RF-908 / RF-902 modificado):
+- `scripts/build-flow-pago.ts` (nuevo) genera `integrations/whatsapp-flow/solicitud-pago.flow.json`: 3 pantallas sin PhotoPicker — BENEFICIARIO (tipo de identificación CC por defecto/NIT/CE/PAS + número + nombre o razón social), PAGO (empresa que paga = `data.sociedades`, con nombre como valor igual que en captura; monto en pesos solo dígitos; concepto), RESUMEN (rótulos estáticos + bindings puros; única concatenación `` `${data.tipo_identificacion} ${data.identificacion}` ``; `complete` con `kind: "pago"`). Reutiliza `textoRecibido`/`listaRecibida` (ahora exportadas) y las reglas del README.
+- `lib/infrastructure/flow-sender.ts`: `sendPaymentFlow(to, deps)` con env `WHATSAPP_FLOW_PAGO_ID` (+ `_CTA`, `_BODY`, `_MODE`), `buildPaymentFlowSendPayload`, `PAYMENT_FLOW_ENTRY_SCREEN`, `isPaymentFlowConfigured`; falla cerrado con `PAYMENT_FLOW_NOT_CONFIGURED`. Mismo `flow_token` que captura (`issueFlowToken`). La firma de `sendRequisitionFlow` no cambia; el POST al proxy quedó en `postFlowMessage`, compartido. Texto por defecto del Flow de captura ya no dice «o pagos».
+- `lib/infrastructure/whatsapp-router.ts`: tercer botón `mizar_solicitar_pago` («Solicitar un pago», 17 caracteres; tres es el tope de WhatsApp), acción `flow_pago` registrada en `whatsapp_eventos` como las demás, `RouterDeps.enviarFlowPago`; saludo neutro; «Mis requisiciones» ya listaba todos los tipos (no filtra) y ahora marca `Pago ·` las de tipo pago (`RequisicionResumen.tipo`).
+- `lib/infrastructure/payment-reply-adapter.ts` (nuevo): `isPaymentNfmReply` (discriminador `kind: "pago"`), `adaptPaymentReply` (token → forma → `invalid_amount` → empresa por nombre → lista blanca) → `KapsoWebhookEvent` con `type: "pago"`, `beneficiary {identificationType, identification, name, phone = remitente}` e `items: [{quantity: 1, unit: "unidad", proposedDescription: concepto, unitBase: monto}]`. `parsePaymentAmount` acepta puntos de miles.
+- `app/api/kapso/route.ts`: rama del Flow de pago antes de la de captura (rechazo neutro 200 + `createPostgresNfmReplyRejectionRecorder`, igual que captura); `kapsoWebhookSchema` acepta `beneficiary` (`beneficiarySchema`) y `items[].unitBase`, y para `type: "pago"` exige beneficiario y exactamente un ítem con `unitBase > 0`; `creator.create` pasa `beneficiary` y `unitBase` a `ProcurementService.create` (ola 1 enlaza o crea el proveedor pendiente en la misma transacción).
+- `lib/services/kapso-contracts.ts` (el plan lo nombra en `lib/infrastructure/`, pero vive en `lib/services/`; es el contrato del canal, no un servicio): `KapsoFlowItem.unitBase?`, `KapsoFlowSubmission.beneficiary?: BeneficiaryInput`.
+- `scripts/build-flow-captura.ts` + JSON regenerado: se retira `tipo_solicitud` (pantalla, `data`, reenvíos y resumen); el `complete` manda `type: "compra"` fijo.
+- `lib/infrastructure/nfm-reply-adapter.ts` (fuera de la lista, es el «parseo asociado» que pide el paquete): `extractTopLevelFields` solo acepta `type: "compra"`; un `pago` del Flow v3 publicado se rechaza como `invalid_fields` (antes: `PAYMENT_BENEFICIARY_REQUIRED` → 503 → reintentos de Kapso).
+- `scripts/publish-whatsapp-flow.ts` (fuera de la lista, sin conflicto con S1–S5): entrada `pago` («Solicitud de pago – Mizar») y `requisicion` pasa a «Requisición de obra – Mizar v4» (el v3 está publicado y no se puede editar).
+- `.env.example` (bloque `WHATSAPP_FLOW_PAGO_*`), `integrations/whatsapp-flow/README.md` (sección «WhatsApp Flow — Solicitud de pago», v4 de captura, tabla de mapeo).
+- Pruebas: `fixtures/nfm-reply-pago.json`; `tests/integration/kapso-pago.test.ts` (adaptador puro, ruta HTTP: crea tipo pago con beneficiario pendiente / reutiliza por identificación / sin monto → `rejected:invalid_amount` sin crear requisición ni proveedor / no autorizado / duplicado / captura vieja con `type: pago` → `invalid_fields` / esquema normalizado 400; estructura del Flow JSON y cruce `complete` ⇄ `CAMPOS_PAGO_LEIDOS`); `tests/unit/whatsapp-router.test.ts` (tres botones, el tercero envía el Flow de pago con `WHATSAPP_FLOW_PAGO_ID` y pantalla BENEFICIARIO, fallo cerrado sin la variable, `Pago ·` en la lista).
+A medias:
+- Nada del paquete. La validación remota de Meta y la publicación son pasos manuales (abajo).
+Próximos pasos:
+- Coordinador: `npx tsx --env-file=.env.local scripts/publish-whatsapp-flow.ts pago` → pegar `validation_errors` (debe ser `[]`); cargar `WHATSAPP_FLOW_PAGO_ID=<flow_id>` y `WHATSAPP_FLOW_PAGO_MODE=draft`; recorrer la vista previa en un teléfono; publicar (`POST /{FLOW_ID}/publish?business_account_id=$KAPSO_WABA_ID`, README) y quitar `_MODE`.
+- Coordinador: lo mismo para el Flow de captura v4 (`npx tsx --env-file=.env.local scripts/publish-whatsapp-flow.ts`), y al publicarlo apuntar `WHATSAPP_FLOW_ID` al nuevo id. Mientras tanto el v3 sigue en producción y su opción «pago» recibe un rechazo neutro (registrado), no un 503.
+- Producción: `WHATSAPP_FLOW_PAGO_ID` en el env del servicio (EasyPanel). Sin ella el botón queda como `error:PAYMENT_FLOW_NOT_CONFIGURED` en `whatsapp_eventos`.
+Cómo verificar:
+- `npm run typecheck` · `npm run lint`
+- `npm run test -- tests/integration/kapso tests/unit/whatsapp-router` (incluye `kapso-attachments`, `kapso-idempotency`, `kapso-pago`, `whatsapp-router`)
+- `npx tsx scripts/build-flow-pago.ts --check` y `npx tsx scripts/build-flow-captura.ts --check` (JSON al día)
+- También tocados: `npm run test -- tests/integration/nfm-reply tests/unit/flow-captura-v2 tests/unit/flow-sender tests/unit/send-flow-route tests/unit/nfm-reply-society-resolver`
+- Validación remota de Meta (manual, requiere `KAPSO_API_KEY` y `KAPSO_WABA_ID` en `.env.local`):
+  `npx tsx --env-file=.env.local scripts/publish-whatsapp-flow.ts pago` → esperado `"validation_errors": []`
+  Vista previa: `curl -s "https://api.kapso.ai/meta/whatsapp/v24.0/<FLOW_ID>?fields=preview.invalidate(false),status,validation_errors&business_account_id=$KAPSO_WABA_ID" -H "X-API-Key: $KAPSO_API_KEY"`
+Decisiones pendientes del usuario:
+- El teléfono del remitente se guarda como contacto del beneficiario cuando nace pendiente (quien pide el pago por WhatsApp casi siempre es quien cobra). Si Daniel prefiere que un tercero nazca sin teléfono, es quitar `phone` en `adaptPaymentReply`.
+- El monto en el Flow admite solo dígitos (`^[1-9][0-9]{0,11}$`, sin puntos): el patrón lo valida el teléfono antes de enviar. El adaptador sí tolera puntos de miles por si otro emisor los manda.
+- El Flow de captura pasa a v4 al retirar el tipo: exige crear un Flow nuevo en Meta y cambiar `WHATSAPP_FLOW_ID`. Alternativa si no se quiere republicar ya: dejar el v3 (la opción «pago» ahora se rechaza limpio) y publicar el v4 más adelante.
+- «Mis requisiciones» sigue diciendo «requisiciones» en el botón (17 caracteres; «Mis solicitudes» también cabe). El cuerpo ya dice «solicitudes».
+Riesgos:
+- La validación remota de Meta no se corrió (sin credenciales aquí): `init-value` en `RadioButtonsGroup` y `pattern` en `TextInput` de tipo texto ya se usan en los Flows validados (aprobación y captura), pero este JSON concreto no ha pasado por `validation_errors` todavía.
+- Un rechazo del adaptador (monto inválido, número no autorizado) responde 200 a Kapso y NO le dice nada a la persona, igual que en captura: el formulario «se pierde» desde su punto de vista. Está registrado en `whatsapp_eventos`.
+- `sendPaymentFlow` es un mensaje interactivo: solo sale dentro de la ventana de 24 h. Aquí siempre se cumple (responde a un botón que la persona acaba de pulsar).
+- Hasta que se publique el v4 de captura, `WHATSAPP_FLOW_ID` apunta al v3 publicado, cuyo JSON ya no coincide con `requisicion-captura.flow.json` del repo (solo difiere en el tipo).

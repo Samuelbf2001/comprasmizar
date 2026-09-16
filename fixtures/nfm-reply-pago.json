@@ -1,0 +1,39 @@
+{
+  "message": {
+    "id": "wamid.HBgLNTczMDAxMjM0NTY3FQIAERgSUEFHTzAwMDAwMDAwMDAwMDAwAA==",
+    "from": "573001234567",
+    "timestamp": "1787654400",
+    "type": "interactive",
+    "interactive": {
+      "type": "nfm_reply",
+      "nfm_reply": {
+        "name": "flow",
+        "body": "Sent",
+        "response_json": "{\"flow_token\":\"2026-08-24T12:00:00.000Z.538b871704a37e2018ba7fd57ace6cbfd86abf9dfd5bdba05171a0012699f713\",\"kind\":\"pago\",\"tipo_identificacion\":\"CC\",\"identificacion\":\"1020304050\",\"nombre\":\"Juan Camilo Topógrafo\",\"empresa\":\"Mizar\",\"monto\":\"1500000\",\"concepto\":\"Levantamiento topográfico lote 4\"}"
+      }
+    },
+    "kapso": {
+      "flow_response": {
+        "flow_token": "2026-08-24T12:00:00.000Z.538b871704a37e2018ba7fd57ace6cbfd86abf9dfd5bdba05171a0012699f713",
+        "kind": "pago",
+        "tipo_identificacion": "CC",
+        "identificacion": "1020304050",
+        "nombre": "Juan Camilo Topógrafo",
+        "empresa": "Mizar",
+        "monto": "1500000",
+        "concepto": "Levantamiento topográfico lote 4"
+      },
+      "flow_token": "2026-08-24T12:00:00.000Z.538b871704a37e2018ba7fd57ace6cbfd86abf9dfd5bdba05171a0012699f713",
+      "flow_name": "flow"
+    }
+  },
+  "conversation": {
+    "id": "conv_9f2c1d7b",
+    "contact_name": "Maestro de obra",
+    "phone_number": "573001234567",
+    "phone_number_id": "1221974497672719",
+    "status": "active"
+  },
+  "is_new_conversation": false,
+  "phone_number_id": "1221974497672719"
+}

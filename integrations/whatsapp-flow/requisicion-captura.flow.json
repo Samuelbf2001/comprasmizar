@@ -55,23 +55,7 @@
           },
           {
             "type": "TextBody",
-            "text": "Elige el tipo de solicitud y la empresa. La obra la asigna Compras."
-          },
-          {
-            "type": "RadioButtonsGroup",
-            "name": "tipo_solicitud",
-            "label": "Tipo de solicitud",
-            "required": true,
-            "data-source": [
-              {
-                "id": "compra",
-                "title": "Compra de material"
-              },
-              {
-                "id": "pago",
-                "title": "Solicitud de pago"
-              }
-            ]
+            "text": "Elige la empresa para la que compras. La obra la asigna Compras."
           },
           {
             "type": "Dropdown",
@@ -91,7 +75,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${form.tipo_solicitud}",
                 "empresa": "${form.empresa}"
               }
             }
@@ -123,13 +106,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         }
       },
       "layout": {
@@ -260,7 +239,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${form.catalogo}",
                 "item_1_descripcion": "${form.descripcion}",
@@ -282,7 +260,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${form.catalogo}",
                 "item_1_descripcion": "${form.descripcion}",
@@ -362,13 +339,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -523,7 +496,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -551,7 +523,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -631,13 +602,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -816,7 +783,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -850,7 +816,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -930,13 +895,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -1139,7 +1100,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -1179,7 +1139,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -1259,13 +1218,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -1492,7 +1447,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -1538,7 +1492,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -1618,13 +1571,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -1875,7 +1824,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -1927,7 +1875,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -2007,13 +1954,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -2288,7 +2231,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -2346,7 +2288,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -2426,13 +2367,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -2731,7 +2668,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -2811,13 +2747,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -3044,7 +2976,6 @@
               },
               "payload": {
                 "catalogo": "${data.catalogo}",
-                "tipo_solicitud": "${data.tipo_solicitud}",
                 "empresa": "${data.empresa}",
                 "item_1_catalogo": "${data.item_1_catalogo}",
                 "item_1_descripcion": "${data.item_1_descripcion}",
@@ -3128,13 +3059,9 @@
             }
           ]
         },
-        "tipo_solicitud": {
-          "type": "string",
-          "__example__": "compra"
-        },
         "empresa": {
           "type": "string",
-          "__example__": "20000000-0000-4000-8000-000000000001"
+          "__example__": "Mizar"
         },
         "item_1_catalogo": {
           "type": "string",
@@ -3354,14 +3281,6 @@
           },
           {
             "type": "TextCaption",
-            "text": "Tipo de solicitud"
-          },
-          {
-            "type": "TextBody",
-            "text": "${data.tipo_solicitud}"
-          },
-          {
-            "type": "TextCaption",
             "text": "Fecha requerida"
           },
           {
@@ -3512,7 +3431,7 @@
             "on-click-action": {
               "name": "complete",
               "payload": {
-                "type": "${data.tipo_solicitud}",
+                "type": "compra",
                 "societyId": "${data.empresa}",
                 "requiredDate": "${data.fecha_requerida}",
                 "observations": "${data.observaciones}",

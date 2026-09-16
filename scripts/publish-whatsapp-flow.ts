@@ -8,6 +8,7 @@
  * Uso:
  *   npx tsx scripts/publish-whatsapp-flow.ts             # Flow de captura (por defecto)
  *   npx tsx scripts/publish-whatsapp-flow.ts aprobacion  # Flow de aprobación
+ *   npx tsx scripts/publish-whatsapp-flow.ts pago        # Flow de solicitud de pago (RF-908)
  *
  * Variables de entorno requeridas (ver .env.local):
  *   KAPSO_API_KEY        - header X-API-Key contra el proxy de Kapso
@@ -42,7 +43,11 @@ const FLOWS = {
    * cada vuelta solo genera churn y enlaces rotos. La versión vive donde importa —el `name`, que es
    * la clave de búsqueda contra la WABA— y el historial, en git.
    */
-  requisicion: { name: "Requisición de obra – Mizar v3", path: "integrations/whatsapp-flow/requisicion-captura.flow.json" },
+  // v4 (adenda de pagos, A11): se retira la opción `tipo_solicitud=pago`, que existía y no
+  // funcionaba. El v3 (`875992355468043`) está PUBLICADO y Meta no deja editarlo, así que el nuevo
+  // JSON solo puede subirse como un Flow nuevo; el v3 sigue en producción hasta que se cargue el id
+  // del v4 en `WHATSAPP_FLOW_ID`.
+  requisicion: { name: "Requisición de obra – Mizar v4", path: "integrations/whatsapp-flow/requisicion-captura.flow.json" },
   /**
    * DEPRECADO. Flow de captura v1, `1972861836748301`. Sustituido por el v2 el 2026-09-11 por dos
    * defectos que solo se vieron usándolo: el resumen pintaba las llaves en vez de los datos (ninguna
@@ -65,6 +70,8 @@ const FLOWS = {
    */
 
   aprobacion: { name: "Aprobación de requisición – Mizar", path: "integrations/whatsapp-flow/aprobacion.flow.json" },
+  /** Flow de solicitud de pago (RF-908). El JSON lo genera `scripts/build-flow-pago.ts`; su id va en `WHATSAPP_FLOW_PAGO_ID`. */
+  pago: { name: "Solicitud de pago – Mizar", path: "integrations/whatsapp-flow/solicitud-pago.flow.json" },
 } as const;
 type FlowKey = keyof typeof FLOWS;
 const requestedFlow = (process.argv[2]?.trim() || "requisicion") as FlowKey;

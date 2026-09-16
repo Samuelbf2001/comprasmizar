@@ -12,9 +12,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // siempre y el mock existe únicamente para que el import del módulo no arrastre el driver.
 vi.mock("../../lib/infrastructure/postgres-repositories", () => ({ sharedPostgres: () => () => Promise.resolve([]) }));
 
+import { PAYMENT_FLOW_ENTRY_SCREEN, sendPaymentFlow } from "../../lib/infrastructure/flow-sender";
 import {
   BOTON_ESTADO_REQUISICIONES,
   BOTON_NUEVA_REQUISICION,
+  BOTON_SOLICITAR_PAGO,
   atenderMensajeEntrante,
   construirMenu,
   construirTexto,
@@ -87,10 +89,13 @@ describe("reconocimiento del entrante", () => {
 });
 
 describe("mensajes que se construyen", () => {
-  it("el menú lleva exactamente los dos botones del contrato", () => {
+  it("el menú lleva exactamente los tres botones del contrato, y tres es el tope de WhatsApp", () => {
+    // RF-902 modificado (adenda de pagos): "Montar requisición" Y "Solicitar un pago". Un cuarto
+    // botón no cabe: WhatsApp rechaza el mensaje interactivo de tipo button con más de tres.
     const menu = construirMenu(TELEFONO) as unknown as { interactive: { type: string; action: { buttons: { reply: { id: string; title: string } }[] } } };
     expect(menu.interactive.type).toBe("button");
-    expect(menu.interactive.action.buttons.map((b) => b.reply.id)).toEqual([BOTON_NUEVA_REQUISICION, BOTON_ESTADO_REQUISICIONES]);
+    expect(menu.interactive.action.buttons.map((b) => b.reply.id)).toEqual([BOTON_NUEVA_REQUISICION, BOTON_SOLICITAR_PAGO, BOTON_ESTADO_REQUISICIONES]);
+    expect(menu.interactive.action.buttons.length).toBeLessThanOrEqual(3);
   });
 
   it("ningún título de botón pasa de 20 caracteres", () => {
@@ -130,6 +135,13 @@ describe("respuesta de estado", () => {
   it("un estado desconocido se muestra tal cual en vez de desaparecer", () => {
     expect(formatearRespuestaEstado([fila("REQ-2026-0004", "estado_nuevo")])).toContain("estado_nuevo");
   });
+
+  it("una solicitud de pago se distingue en la lista: las dos llevan consecutivo REQ-", () => {
+    const salida = formatearRespuestaEstado([{ ...fila("REQ-2026-0005", "enviada"), tipo: "pago" }, { ...fila("REQ-2026-0006", "enviada"), tipo: "compra" }]);
+    const lineas = salida.split("\n").slice(1);
+    expect(lineas[0]).toContain("Pago · Enviada");
+    expect(lineas[1]).not.toContain("Pago");
+  });
 });
 
 describe("atenderMensajeEntrante", () => {
@@ -152,6 +164,68 @@ describe("atenderMensajeEntrante", () => {
     expect(resultado.atendido && resultado.accion).toBe("flow");
     expect(flows).toEqual([TELEFONO]);
     expect(enviados).toHaveLength(0);
+  });
+
+  it("el botón de solicitar un pago dispara el Flow de PAGO: ni el de captura ni un texto", async () => {
+    const { enviados, impl } = fetchEspia();
+    const capturas: string[] = [];
+    const pagos: string[] = [];
+    const espia = registroEspia();
+    const resultado = await atenderMensajeEntrante(entranteBoton(BOTON_SOLICITAR_PAGO), {
+      fetchImpl: impl, registro: espia.registro,
+      enviarFlow: async (to) => { capturas.push(to); return { messageId: "wamid.CAPTURA" }; },
+      enviarFlowPago: async (to) => { pagos.push(to); return { messageId: "wamid.PAGO" }; },
+    });
+    expect(resultado).toEqual({ atendido: true, accion: "flow_pago", resultado: "ok" });
+    expect(pagos).toEqual([TELEFONO]);
+    expect(capturas).toEqual([]);
+    expect(enviados).toHaveLength(0);
+    expect(espia.cerrados).toEqual([{ clase: "flow_pago", resultado: "ok" }]);
+  });
+
+  it("el Flow de pago sale con el id de WHATSAPP_FLOW_PAGO_ID (no el de captura) y abre en su pantalla de entrada", async () => {
+    // Aquí el emisor es el real (`sendPaymentFlow`), con la BD y la red sustituidas: es la única
+    // prueba que ata el botón del menú al Flow correcto de Meta. Con el id de captura, el maestro
+    // vería el formulario de materiales al pedir un pago.
+    process.env.KAPSO_WEBHOOK_SECRET = "secreto-webhook-de-prueba-bien-largo-32";
+    process.env.WHATSAPP_FLOW_ID = "1111111111111111";
+    process.env.WHATSAPP_FLOW_PAGO_ID = "2222222222222222";
+    try {
+      const { enviados, impl } = fetchEspia();
+      const sociedades = [{ id: "Mizar", title: "Mizar" }];
+      const catalogSource = { listActiveSocieties: async () => sociedades, listActiveCatalogItems: async () => { throw new Error("el Flow de pago no lleva catálogo"); } };
+      const resultado = await atenderMensajeEntrante(entranteBoton(BOTON_SOLICITAR_PAGO), {
+        registro: registroEspia().registro,
+        enviarFlowPago: (to) => sendPaymentFlow(to, { catalogSource, fetchImpl: impl }),
+      });
+      expect(resultado).toEqual({ atendido: true, accion: "flow_pago", resultado: "ok" });
+      expect(enviados).toHaveLength(1);
+      const mensaje = enviados[0] as { to: string; interactive: { type: string; action: { parameters: { flow_id: string; flow_token: string; flow_action_payload: { screen: string; data: Record<string, unknown> } } } } };
+      expect(mensaje.to).toBe(TELEFONO);
+      expect(mensaje.interactive.type).toBe("flow");
+      expect(mensaje.interactive.action.parameters.flow_id).toBe("2222222222222222");
+      expect(mensaje.interactive.action.parameters.flow_token).toMatch(/\.[0-9a-f]{64}$/);
+      expect(mensaje.interactive.action.parameters.flow_action_payload).toEqual({ screen: PAYMENT_FLOW_ENTRY_SCREEN, data: { sociedades } });
+    } finally {
+      delete process.env.KAPSO_WEBHOOK_SECRET;
+      delete process.env.WHATSAPP_FLOW_ID;
+      delete process.env.WHATSAPP_FLOW_PAGO_ID;
+    }
+  });
+
+  it("sin WHATSAPP_FLOW_PAGO_ID el botón de pago falla cerrado, no lanza y queda registrado con su código", async () => {
+    process.env.KAPSO_WEBHOOK_SECRET = "secreto-webhook-de-prueba-bien-largo-32";
+    delete process.env.WHATSAPP_FLOW_PAGO_ID;
+    try {
+      const { enviados, impl } = fetchEspia();
+      const espia = registroEspia();
+      const resultado = await atenderMensajeEntrante(entranteBoton(BOTON_SOLICITAR_PAGO), { fetchImpl: impl, registro: espia.registro, enviarFlowPago: (to) => sendPaymentFlow(to, { fetchImpl: impl }) });
+      expect(resultado).toEqual({ atendido: true, accion: "flow_pago", resultado: "error:PAYMENT_FLOW_NOT_CONFIGURED" });
+      expect(enviados).toHaveLength(0);
+      expect(espia.cerrados).toEqual([{ clase: "flow_pago", resultado: "error:PAYMENT_FLOW_NOT_CONFIGURED" }]);
+    } finally {
+      delete process.env.KAPSO_WEBHOOK_SECRET;
+    }
   });
 
   it("el botón de estado consulta con el teléfono NORMALIZADO y responde el resumen", async () => {

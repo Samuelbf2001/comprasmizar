@@ -5,10 +5,12 @@ Definición versionada del formulario de requisición dentro del chat de WhatsAp
 proxy de Kapso. Antes de este cambio solo existía el receptor del webhook
 (`app/api/kapso/route.ts`); el Flow en sí no existía en ningún lado.
 
-> **Hay dos Flows en este directorio.** Este documento describe primero el de
+> **Hay tres Flows en este directorio.** Este documento describe primero el de
 > **captura** (`requisicion.flow.json`, RF-902), que es el que existía. El de
 > **aprobación** (`aprobacion.flow.json`) es posterior y tiene su propia sección
 > al final: [WhatsApp Flow — Aprobación de requisición](#whatsapp-flow--aprobación-de-requisición).
+> El de **solicitud de pago** (`solicitud-pago.flow.json`, RF-908) es el tercero:
+> [WhatsApp Flow — Solicitud de pago](#whatsapp-flow--solicitud-de-pago).
 
 ## Archivos
 
@@ -19,12 +21,16 @@ proxy de Kapso. Antes de este cambio solo existía el receptor del webhook
   **GENERADO: no se edita a mano.** Su fuente es `../../scripts/build-flow-captura.ts`; una prueba
   compara byte a byte que no se separen.
 - `aprobacion.flow.json` — fuente de verdad del Flow de aprobación (misma regla).
+- `solicitud-pago.flow.json` — Flow de **solicitud de pago** (RF-908). **GENERADO: no se edita a
+  mano.** Su fuente es `../../scripts/build-flow-pago.ts`; `tests/integration/kapso-pago.test.ts`
+  compara byte a byte que no se separen.
 - `../../scripts/publish-whatsapp-flow.ts` — crea el Flow (si no existe, por nombre)
   o actualiza su Flow JSON (si ya existe). Siempre dentro del estado `DRAFT`.
-  Recibe cuál de los tres: `requisicion` (v1, por defecto), `requisicion_v2` o `aprobacion`.
+  Recibe cuál: `requisicion` (captura, por defecto), `aprobacion` o `pago`.
 - `../../scripts/build-flow-captura.ts` — genera `requisicion-captura.flow.json`. Se ejecuta con
   `npx tsx scripts/build-flow-captura.ts`; con `--check` no escribe y falla si el JSON commiteado
   difiere.
+- `../../scripts/build-flow-pago.ts` — genera `solicitud-pago.flow.json`, mismo uso y mismo `--check`.
 - `../../tests/unit/whatsapp-flow.test.ts` y `../../tests/unit/approval-flow.test.ts` —
   validan la estructura local de cada JSON (pantallas, requeridos, terminal/complete)
   sin llamar a ninguna API.
@@ -36,10 +42,13 @@ cifrado, sin health checks). Toda la navegación es `navigate`/`complete` en el
 cliente. **Un artículo por pantalla** para que cada ítem se distinga con claridad
 del anterior (feedback de la prueba real):
 
-1. **TIPO_Y_EMPRESA** (entrada) — tipo (`compra`/`pago`) y **empresa** (`Dropdown`,
+1. **TIPO_Y_EMPRESA** (entrada) — **empresa** (`Dropdown`,
    reunión 2026-08-31: el solicitante elige empresa, no obra — la obra/centro de
    costo la asigna el revisor en la oficina). El listado de sociedades **no
-   está quemado**: llega dinámico por `data.sociedades`.
+   está quemado**: llega dinámico por `data.sociedades`. Desde el v4 (adenda de
+   pagos, A11) **ya no se elige tipo**: la opción `tipo_solicitud=pago` existía y no
+   funcionaba (el payload no traía beneficiario ni valor); la solicitud de pago tiene
+   [Flow propio](#whatsapp-flow--solicitud-de-pago) y el `complete` manda `type: "compra"` fijo.
 2. **ARTICULO_UNO** — artículo obligatorio: catálogo (opcional), descripción,
    cantidad, unidad, posible proveedor y link. Es el único obligatorio.
 3. **ARTICULO_DOS** — segundo artículo, todo opcional (se omite con Continuar).
@@ -185,7 +194,7 @@ un objeto JSON que llena el `data` declarado en la pantalla `TIPO_Y_EMPRESA`
   "type": "interactive",
   "interactive": {
     "type": "flow",
-    "body": { "text": "Solicita materiales o pagos para tu obra directamente desde WhatsApp." },
+    "body": { "text": "Solicita materiales para tu obra directamente desde WhatsApp." },
     "action": {
       "name": "flow",
       "parameters": {
@@ -357,7 +366,7 @@ campos vigentes tras la reunión 2026-08-31):
 
 | Campo del Flow (`response_json`) | Campo de `KapsoFlowSubmission` | Nota |
 | --- | --- | --- |
-| `type` | `type` | Coincide tal cual (`"compra"\|"pago"`). |
+| `type` | `type` | Siempre `"compra"`. Un `"pago"` (Flow v3 publicado, aún en producción) se rechaza como `invalid_fields`: la solicitud de pago tiene Flow y adaptador propios (`payment-reply-adapter.ts`). |
 | `societyId` | `societyId` | Empresa elegida en el dropdown dinámico — el solicitante elige empresa, no obra (la asigna el revisor). Llega como el NOMBRE de la sociedad (o uuid, en Flows enviados antes de este cambio — ver subsección "El resumen mostraba el uuid" más abajo); `adaptNfmReply` lo resuelve al uuid real antes de construir `KapsoFlowSubmission`. Obligatorio y exigido por `ProcurementService.create` para el canal whatsapp. `workId` se conserva como campo OPCIONAL de compatibilidad (ver comentario en `extractTopLevelFields`, `nfm-reply-adapter.ts`); el Flow vigente ya no lo manda. |
 | `requiredDate` | `requiredDate` | **Opcional** (reunión 2026-08-31): si viene, ya llega `YYYY-MM-DD` (DatePicker ≥5.0) y se valida el formato; si no viene, se omite en vez de rechazar el evento. |
 | `requesterName` | `requesterName` | Coincide tal cual. |
@@ -420,9 +429,12 @@ npx tsx scripts/publish-whatsapp-flow.ts                  # captura — el vigen
 npx tsx scripts/publish-whatsapp-flow.ts aprobacion       # Flow de aprobación
 ```
 
-`requisicion` apunta al **v2** (`1076158778395724`, publicado el 2026-09-11). El v1
-(`1972861836748301`) queda como `requisicion_v1_deprecado`: la entrada existe solo para que nadie
-suba `requisicion.flow.json` creyendo que es la fuente vigente. No se actualiza ni se republica.
+`requisicion` apunta al **v4** («Requisición de obra – Mizar v4», sin id todavía: se crea la
+primera vez que se corra el comando). El v3 (`875992355468043`, publicado) sigue en producción
+hasta que `WHATSAPP_FLOW_ID` apunte al v4; Meta no deja editar un Flow publicado, por eso cada
+corrección es un Flow nuevo. El v1 (`1972861836748301`) queda como `requisicion_v1_deprecado`: la
+entrada existe solo para que nadie suba `requisicion.flow.json` creyendo que es la fuente vigente.
+No se actualiza ni se republica.
 
 El script imprime `validation_errors`. **Que la lista salga vacía significa que Meta acepta la
 estructura, no que el Flow se vea bien**: las dos cosas que fallan en silencio —un binding que pinta
@@ -694,3 +706,87 @@ Flow de captura, y nunca devuelven 5xx.
    contra la API real (y devolvió el 422 de la ventana, que es lo que motivó la plantilla);
    la respuesta (webhook → requisición aprobada) no se puede probar desde local porque Kapso
    no alcanza `localhost`, así que exige el sitio desplegado con el webhook conectado.
+
+---
+
+# WhatsApp Flow — Solicitud de pago
+
+RF-908 (adenda «Órdenes de Pago y caja menor», §4.5): un Flow **aparte** del de captura para pedir un
+pago a una persona o empresa. Daniel: «si no es por ahí, no es por ningún otro lado». Llega a la
+misma bandeja de revisión como `tipo=pago`, `canal=whatsapp`, con el beneficiario **por
+identificación** (RF-606): si la identificación ya existe en `proveedores` se enlaza; si no, nace
+`pendiente_normalizacion` y Compras completa la ficha.
+
+## Cómo se llega
+
+El menú del bot (`lib/infrastructure/whatsapp-router.ts`, RF-902 modificado) ofrece tres botones:
+**Montar requisición**, **Solicitar un pago** y **Mis requisiciones**. Tres es el tope de WhatsApp
+para botones de respuesta. Al pulsar el segundo, `sendPaymentFlow` (`flow-sender.ts`) envía este
+Flow con el mismo mensaje `interactive.type=flow` de siempre, pero:
+
+- `flow_id` = `WHATSAPP_FLOW_PAGO_ID` (con `WHATSAPP_FLOW_PAGO_CTA`, `_BODY` y `_MODE` opcionales,
+  ver `.env.example`).
+- `flow_action_payload.screen` = `BENEFICIARIO`, y `data` solo trae `sociedades` (no hay catálogo:
+  una solicitud de pago es un concepto libre con un valor). Las opciones salen de
+  `buildSocietyOptions`, con `id = title = nombre`, por la misma razón que en el de captura.
+- `flow_token` con el **mismo contrato** que el de captura (`issueFlowToken`: teléfono + timestamp,
+  24 h). Es deliberado: desde la plataforma es la misma operación, un solicitante autorizado por su
+  número crea una requisición nueva.
+
+«Mis requisiciones» lista también las de tipo pago, marcadas con `Pago ·`.
+
+## Diseño
+
+3 pantallas, **sin Data Endpoint y sin PhotoPicker** (generadas por `scripts/build-flow-pago.ts`):
+
+1. **BENEFICIARIO** (entrada) — tipo de identificación (`RadioButtonsGroup`: CC por defecto, NIT,
+   CE, PAS — los mismos valores que `SUPPLIER_IDENTIFICATION_TYPE_VALUES`), número (`TextInput`,
+   `^[0-9A-Za-z.-]{3,32}$`) y nombre completo o razón social.
+2. **PAGO** — empresa a la que cobra (`Dropdown` sobre `data.sociedades`), monto en pesos
+   (`TextInput` con `^[1-9][0-9]{0,11}$`: solo dígitos, sin puntos) y concepto corto.
+3. **RESUMEN** (terminal) — rótulos estáticos en `TextCaption` y bindings **puros** en `TextBody`;
+   la única concatenación es `` `${data.tipo_identificacion} ${data.identificacion}` `` (solo
+   bindings y espacios, regla 5). El `complete` manda `kind: "pago"` más
+   `tipo_identificacion, identificacion, nombre, empresa, monto, concepto`, todo encadenado desde
+   `data` (ninguna referencia entre pantallas).
+
+Cada pantalla declara en `data` lo que recibe y lo reenvía completo en el `navigate` (regla 2).
+`tests/integration/kapso-pago.test.ts` fija todo esto y cruza el `complete` con
+`CAMPOS_PAGO_LEIDOS` del adaptador, en las dos direcciones.
+
+## Recepción: `lib/infrastructure/payment-reply-adapter.ts`
+
+Llega como `nfm_reply`, igual que los otros dos; se reconoce por `kind: "pago"` y se atiende en
+`app/api/kapso/route.ts` **antes** que el camino de captura. Valida en este orden: `flow_token`
+(mismo `validateFlowToken`), forma de los campos, **monto** (`invalid_amount` si falta, es cero,
+negativo, con letras o decimales; acepta puntos de miles), empresa (nombre → uuid con
+`createPostgresSocietyResolver`, o uuid crudo) y lista blanca (`unauthorized_requester`). Un rechazo
+responde `200 {status:"rejected", reason}` y se registra en `whatsapp_eventos` con
+`createPostgresNfmReplyRejectionRecorder`, sin crear requisición ni proveedor.
+
+Si pasa, se traduce al contrato normalizado y entra por `processKapsoEvent` (idempotencia por wamid,
+registro en `whatsapp_eventos` vía `claim`) hasta `ProcurementService.create`:
+
+| Campo del Flow | `KapsoFlowSubmission` | Nota |
+| --- | --- | --- |
+| `kind` | — | Discriminador; debe ser `"pago"`. |
+| `tipo_identificacion`, `identificacion`, `nombre` | `beneficiary` | + `phone` = remitente verificado (E.164), como contacto del proveedor si nace pendiente. |
+| `empresa` | `societyId` | Nombre del Dropdown → uuid. |
+| `monto` | `items[0].unitBase` | COP entero > 0; `quantity: 1`, `unit: "unidad"`. |
+| `concepto` | `items[0].proposedDescription` | Es la `descripcion_libre` de la única línea. |
+| remitente (`message.from`) | `phone`, `requesterName` | Identidad por lista blanca global. |
+
+`kapsoWebhookSchema` exige, para `type: "pago"`, `beneficiary` y exactamente un ítem con
+`unitBase > 0`: un pago a medias no llega nunca a `create()`.
+
+## Publicar y activar
+
+```sh
+npx tsx scripts/build-flow-pago.ts --check                       # el JSON commiteado está al día
+npx tsx --env-file=.env.local scripts/publish-whatsapp-flow.ts pago   # crea/actualiza el borrador; imprime validation_errors
+```
+
+Luego cargar `WHATSAPP_FLOW_PAGO_ID=<flow_id>` y `WHATSAPP_FLOW_PAGO_MODE=draft`, recorrer la vista
+previa en un teléfono real (ver «Publicar el borrador» arriba: `validation_errors: []` no garantiza
+que se vea bien) y publicar con el mismo `POST /{FLOW_ID}/publish` documentado allí. Al publicar,
+quitar `WHATSAPP_FLOW_PAGO_MODE`.

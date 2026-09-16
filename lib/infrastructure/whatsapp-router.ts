@@ -2,7 +2,7 @@ import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 import { normalizeCoPhone } from "./phone";
 import { asJsonb } from "./jsonb";
-import { sendRequisitionFlow, type FlowSenderDeps } from "./flow-sender";
+import { sendPaymentFlow, sendRequisitionFlow, type FlowSenderDeps } from "./flow-sender";
 
 /**
  * Router de mensajes ENTRANTES de WhatsApp.
@@ -35,15 +35,18 @@ import { sendRequisitionFlow, type FlowSenderDeps } from "./flow-sender";
 
 /** Identificadores de los botones. Viajan en el webhook al pulsarlos, así que son contrato. */
 export const BOTON_NUEVA_REQUISICION = "mizar_nueva_requisicion";
+export const BOTON_SOLICITAR_PAGO = "mizar_solicitar_pago";
 export const BOTON_ESTADO_REQUISICIONES = "mizar_estado_requisiciones";
 
-/** WhatsApp corta los títulos de botón a 20 caracteres. Estos miden 18 y 17. */
+/** WhatsApp corta los títulos de botón a 20 caracteres y admite como máximo TRES botones de
+ *  respuesta por mensaje: con "Solicitar un pago" (RF-902 modificado) el menú queda lleno. */
 const TITULO_NUEVA = "Montar requisición";
+const TITULO_PAGO = "Solicitar un pago";
 const TITULO_ESTADO = "Mis requisiciones";
 
-const SALUDO = "Hola, ¿quieres montar una requisición?";
+const SALUDO = "Hola, ¿qué necesitas hoy?";
 const SIN_REQUISICIONES =
-  "No encuentro requisiciones registradas a este número. Si acabas de enviar una, dale unos minutos; si no, pulsa \"Montar requisición\" para crear la primera.";
+  "No encuentro solicitudes registradas a este número. Si acabas de enviar una, dale unos minutos; si no, pulsa \"Montar requisición\" o \"Solicitar un pago\" para crear la primera.";
 
 /** Cuántas requisiciones se listan en la respuesta de estado. Un mensaje de WhatsApp se lee en el
  *  móvil, de pie y en obra: cinco es lo que cabe sin que haya que hacer scroll. */
@@ -141,6 +144,7 @@ export function construirMenu(to: string, saludo = SALUDO): PayloadWhatsApp {
       action: {
         buttons: [
           { type: "reply", reply: { id: BOTON_NUEVA_REQUISICION, title: TITULO_NUEVA } },
+          { type: "reply", reply: { id: BOTON_SOLICITAR_PAGO, title: TITULO_PAGO } },
           { type: "reply", reply: { id: BOTON_ESTADO_REQUISICIONES, title: TITULO_ESTADO } },
         ],
       },
@@ -159,7 +163,8 @@ export function construirTexto(to: string, cuerpo: string): PayloadWhatsApp {
 // Consulta de estado por teléfono
 // ---------------------------------------------------------------------------------------------
 
-export interface RequisicionResumen { consecutivo: string; estado: string; fecha: string }
+/** `tipo` distingue una solicitud de pago de una compra en la lista: las dos llevan consecutivo REQ-. */
+export interface RequisicionResumen { consecutivo: string; estado: string; fecha: string; tipo?: string }
 export interface FuenteEstadoRequisiciones { listarPorTelefono(telefonoNormalizado: string): Promise<RequisicionResumen[]> }
 
 /**
@@ -180,8 +185,8 @@ export function createPostgresFuenteEstadoRequisiciones(databaseUrl = runtimeEnv
   const sql = sharedPostgres(databaseUrl);
   return {
     async listarPorTelefono(telefonoNormalizado) {
-      const filas = await sql<{ consecutivo: string; estado: string; fecha: Date }[]>`
-        select r.consecutivo, r.estado::text as estado, r.created_at as fecha
+      const filas = await sql<{ consecutivo: string; estado: string; fecha: Date; tipo: string }[]>`
+        select r.consecutivo, r.estado::text as estado, r.created_at as fecha, r.tipo::text as tipo
           from public.requisiciones r
           left join public.usuarios u on u.id = r.solicitante_id
          where public.normalizar_telefono_co(coalesce(r.solicitante_telefono_externo, u.telefono)) = ${telefonoNormalizado}
@@ -191,6 +196,7 @@ export function createPostgresFuenteEstadoRequisiciones(databaseUrl = runtimeEnv
         consecutivo: String(fila.consecutivo),
         estado: String(fila.estado),
         fecha: new Date(fila.fecha).toISOString().slice(0, 10),
+        tipo: String(fila.tipo),
       }));
     },
   };
@@ -208,8 +214,8 @@ const ETIQUETA_ESTADO: Record<string, string> = {
 
 export function formatearRespuestaEstado(filas: readonly RequisicionResumen[]): string {
   if (!filas.length) return SIN_REQUISICIONES;
-  const lineas = filas.map((fila) => `• ${fila.consecutivo} · ${ETIQUETA_ESTADO[fila.estado] ?? fila.estado} · ${fila.fecha}`);
-  const encabezado = filas.length === 1 ? "Tu requisición:" : `Tus últimas ${filas.length} requisiciones:`;
+  const lineas = filas.map((fila) => `• ${fila.consecutivo} · ${fila.tipo === "pago" ? "Pago · " : ""}${ETIQUETA_ESTADO[fila.estado] ?? fila.estado} · ${fila.fecha}`);
+  const encabezado = filas.length === 1 ? "Tu solicitud:" : `Tus últimas ${filas.length} solicitudes:`;
   return `${encabezado}\n${lineas.join("\n")}`;
 }
 
@@ -322,15 +328,17 @@ export function createPostgresRegistroEntrante(databaseUrl = runtimeEnv().DATABA
 // Orquestación
 // ---------------------------------------------------------------------------------------------
 
+export type AccionRouter = "menu" | "flow" | "flow_pago" | "estado";
 export type ResultadoRouter =
   | { atendido: false; motivo: "no_enrutable" | "no_configurado" | "otra_linea" }
-  | { atendido: true; accion: "menu" | "flow" | "estado"; resultado: string };
+  | { atendido: true; accion: AccionRouter; resultado: string };
 
 export interface RouterDeps {
   fuenteEstado?: FuenteEstadoRequisiciones;
   registro?: RegistroEntrante;
   fetchImpl?: typeof fetch;
   enviarFlow?: (to: string, deps?: FlowSenderDeps) => Promise<{ messageId: string }>;
+  enviarFlowPago?: (to: string, deps?: FlowSenderDeps) => Promise<{ messageId: string }>;
 }
 
 /**
@@ -351,10 +359,13 @@ export async function atenderMensajeEntrante(payload: unknown, deps: RouterDeps 
   const from = (texto ?? boton)!.from;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const enviarFlow = deps.enviarFlow ?? sendRequisitionFlow;
+  const enviarFlowPago = deps.enviarFlowPago ?? sendPaymentFlow;
   const registro = deps.registro ?? createPostgresRegistroEntrante();
 
-  const accion: "menu" | "flow" | "estado" =
-    boton?.botonId === BOTON_NUEVA_REQUISICION ? "flow" : boton?.botonId === BOTON_ESTADO_REQUISICIONES ? "estado" : "menu";
+  const accion: AccionRouter =
+    boton?.botonId === BOTON_NUEVA_REQUISICION ? "flow"
+      : boton?.botonId === BOTON_SOLICITAR_PAGO ? "flow_pago"
+        : boton?.botonId === BOTON_ESTADO_REQUISICIONES ? "estado" : "menu";
 
   // Reclamar antes de enviar es lo que evita saludar dos veces a quien escribió una: Kapso reentrega
   // un mismo mensaje cuando el webhook tarda. Si la reclamación falla (base caída), se sigue
@@ -367,6 +378,8 @@ export async function atenderMensajeEntrante(payload: unknown, deps: RouterDeps 
   try {
     if (accion === "flow") {
       await enviarFlow(from);
+    } else if (accion === "flow_pago") {
+      await enviarFlowPago(from);
     } else if (accion === "estado") {
       const fuente = deps.fuenteEstado ?? createPostgresFuenteEstadoRequisiciones();
       const filas = await fuente.listarPorTelefono(normalizeCoPhone(from));

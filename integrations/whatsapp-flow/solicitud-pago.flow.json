@@ -1,0 +1,292 @@
+{
+  "version": "7.3",
+  "screens": [
+    {
+      "id": "BENEFICIARIO",
+      "title": "Solicitud de pago",
+      "data": {
+        "sociedades": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "¿A quién se le paga?"
+          },
+          {
+            "type": "TextBody",
+            "text": "Puedes ser tú o un tercero. Si aún no está en el catálogo, Compras completa sus datos después."
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "tipo_identificacion",
+            "label": "Tipo de identificación",
+            "required": true,
+            "init-value": "CC",
+            "data-source": [
+              {
+                "id": "CC",
+                "title": "Cédula de ciudadanía"
+              },
+              {
+                "id": "NIT",
+                "title": "NIT"
+              },
+              {
+                "id": "CE",
+                "title": "Cédula de extranjería"
+              },
+              {
+                "id": "PAS",
+                "title": "Pasaporte"
+              }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "identificacion",
+            "label": "Identificación",
+            "input-type": "text",
+            "required": true,
+            "max-chars": 32,
+            "pattern": "^[0-9A-Za-z.-]{3,32}$",
+            "helper-text": "Sin espacios; el NIT con su dígito de verificación (ej. 900123456-7)"
+          },
+          {
+            "type": "TextInput",
+            "name": "nombre",
+            "label": "Nombre completo",
+            "required": true,
+            "max-chars": 160,
+            "helper-text": "De la persona, o la razón social si es una empresa"
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "PAGO"
+              },
+              "payload": {
+                "sociedades": "${data.sociedades}",
+                "tipo_identificacion": "${form.tipo_identificacion}",
+                "identificacion": "${form.identificacion}",
+                "nombre": "${form.nombre}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "PAGO",
+      "title": "Empresa y monto",
+      "data": {
+        "sociedades": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "ejemplo",
+              "title": "Ejemplo"
+            }
+          ]
+        },
+        "tipo_identificacion": {
+          "type": "string",
+          "__example__": "CC"
+        },
+        "identificacion": {
+          "type": "string",
+          "__example__": "1020304050"
+        },
+        "nombre": {
+          "type": "string",
+          "__example__": "Juan Pérez"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "¿Cuánto y a qué empresa?"
+          },
+          {
+            "type": "Dropdown",
+            "name": "empresa",
+            "label": "Empresa que paga",
+            "required": true,
+            "data-source": "${data.sociedades}"
+          },
+          {
+            "type": "TextInput",
+            "name": "monto",
+            "label": "Monto en pesos",
+            "input-type": "text",
+            "required": true,
+            "max-chars": 12,
+            "pattern": "^[1-9][0-9]{0,11}$",
+            "helper-text": "Solo números, sin puntos ni signo (ej. 1500000)"
+          },
+          {
+            "type": "TextInput",
+            "name": "concepto",
+            "label": "Concepto",
+            "required": true,
+            "max-chars": 160,
+            "helper-text": "Qué se paga, en pocas palabras (ej. corte de obra semana 37)"
+          },
+          {
+            "type": "Footer",
+            "label": "Continuar",
+            "on-click-action": {
+              "name": "navigate",
+              "next": {
+                "type": "screen",
+                "name": "RESUMEN"
+              },
+              "payload": {
+                "tipo_identificacion": "${data.tipo_identificacion}",
+                "identificacion": "${data.identificacion}",
+                "nombre": "${data.nombre}",
+                "empresa": "${form.empresa}",
+                "monto": "${form.monto}",
+                "concepto": "${form.concepto}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "RESUMEN",
+      "title": "Resumen",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "tipo_identificacion": {
+          "type": "string",
+          "__example__": "CC"
+        },
+        "identificacion": {
+          "type": "string",
+          "__example__": "1020304050"
+        },
+        "nombre": {
+          "type": "string",
+          "__example__": "Juan Pérez"
+        },
+        "empresa": {
+          "type": "string",
+          "__example__": "Mizar"
+        },
+        "monto": {
+          "type": "string",
+          "__example__": "1500000"
+        },
+        "concepto": {
+          "type": "string",
+          "__example__": "Corte de obra semana 37"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Revisa antes de enviar"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Beneficiario"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.nombre}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Identificación"
+          },
+          {
+            "type": "TextBody",
+            "text": "`${data.tipo_identificacion} ${data.identificacion}`"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Empresa que paga"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.empresa}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Monto en pesos"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.monto}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Concepto"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.concepto}"
+          },
+          {
+            "type": "Footer",
+            "label": "Enviar solicitud",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "kind": "pago",
+                "tipo_identificacion": "${data.tipo_identificacion}",
+                "identificacion": "${data.identificacion}",
+                "nombre": "${data.nombre}",
+                "empresa": "${data.empresa}",
+                "monto": "${data.monto}",
+                "concepto": "${data.concepto}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
