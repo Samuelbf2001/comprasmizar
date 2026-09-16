@@ -133,9 +133,15 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
       expenses: ExpenseRow[];
       history: AuditRow[];
       attachments: AttachmentRow[];
+      viewerId?: string;
+      viewerRoles?: DetailBundle["viewerRoles"];
     };
+    // QA H3: sin `viewerId`/`viewerRoles` el detalle no sabe quién mira — «Aprobar yo mismo» no se
+    // pintaba nunca y el maestro no veía las acciones de aprobación de lo que tiene asignado.
     return {
       requisition: payload.requisition,
+      viewerId: payload.viewerId,
+      viewerRoles: payload.viewerRoles,
       catalogs: catalogs as CatalogData,
       orders: payload.orders,
       expenses: payload.expenses,

@@ -116,6 +116,29 @@ describe("H2: el detalle de una requisición pide /detail + catálogos, sin llam
     expect(bundle.history).toHaveLength(1);
     expect(bundle.attachments).toHaveLength(2);
   });
+
+  // QA H3 (adenda de pagos): el servidor ya mandaba quién mira, pero esta normalización lo tiraba y
+  // «Aprobar yo mismo» nunca se pintaba. Las pruebas de detail.tsx inyectaban ambos campos a mano y
+  // por eso no lo vieron; esta mira el bundle tal como lo arma loadRoute.
+  it("conserva viewerId y viewerRoles del payload del servidor", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      routedFetch({
+        "/api/requisitions/req-1/detail": () =>
+          jsonResponse({
+            requisition: { id: "req-1", consecutive: "RQ-001", type: "compra", channel: "web", status: "en_revision", items: [] },
+            orders: [], expenses: [], history: [], attachments: [],
+            viewerId: "daniel-1",
+            viewerRoles: ["revisor", "aprobador"],
+          }),
+        "/api/catalogs": () => jsonResponse(catalogsPayload),
+      }),
+    );
+
+    const bundle = (await loadRoute("/requisiciones/req-1", "Revisor")) as { viewerId?: string; viewerRoles?: string[] };
+
+    expect(bundle.viewerId).toBe("daniel-1");
+    expect(bundle.viewerRoles).toEqual(["revisor", "aprobador"]);
+  });
 });
 
 // Adenda de pagos (A10): /gastos es "Cierre de caja" y consulta los pagos por caja bajo demanda desde
