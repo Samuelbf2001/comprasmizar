@@ -89,6 +89,9 @@ const HARNESSES = [
   // Órdenes de pago y caja menor, N1 (2026-09-15): anulación de pagos (el trigger anti-sobrepago ignora
   // anulados), auditoría de pagos_orden por trigger y comprobante como adjunto `pago_orden`.
   path.join(ROOT, "supabase", "tests", "pagos_anulacion_verification.sql"),
+  // N2 (2026-09-15): beneficiario persona o empresa — tipo/identificación con espejo hacia `nit`,
+  // unicidad por (tipo, identificación normalizada) y redacción de la identificación en auditoría.
+  path.join(ROOT, "supabase", "tests", "proveedores_identificacion_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

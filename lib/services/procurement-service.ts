@@ -1,4 +1,4 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeIdentification, normalizeItemName, orderTypeFor, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type BeneficiaryInput, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogCostCenter, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
@@ -13,7 +13,13 @@ function isPage<T>(value: T[] | Page<T>): value is Page<T> { return !Array.isArr
 // lib/domain/rules.ts — vivía duplicada aquí y en app/api/pantalla/route.ts (que además la tenía MAL,
 // en UTC crudo). Ver el comentario completo junto a su definición en el dominio; no la reimplementes.
 
-export interface CreateRequisitionInput { type: RequisitionType; societyId?: string; workId?: string; requiredDate?: string; channel: RequisitionChannel; requesterId?: string; externalRequester?: { name: string; phone?: string }; observations?: string; items: ItemLine[]; publicCode?: string; publicLinkToken?: string; kapsoEventId?: string; }
+/**
+ * `beneficiary` (RF-606, adenda de pagos): alternativa a `items[0].finalSupplierId` en `type: "pago"` para
+ * los canales que no tienen catálogo delante (portal público, WhatsApp): identificación + nombre. Se
+ * enlaza al proveedor existente por (tipo, identificación) o se crea `pendingNormalization` dentro de la
+ * MISMA transacción de la requisición. En el canal web solo lo puede usar quien administra proveedores.
+ */
+export interface CreateRequisitionInput { type: RequisitionType; societyId?: string; workId?: string; requiredDate?: string; channel: RequisitionChannel; requesterId?: string; externalRequester?: { name: string; phone?: string }; observations?: string; items: ItemLine[]; beneficiary?: BeneficiaryInput; publicCode?: string; publicLinkToken?: string; kapsoEventId?: string; }
 /**
  * Decisión del cliente (reunión 2026-09, literal de Daniel): "etiqueto a qué obra va y etiqueto quién me
  * va a aprobar" — approverId lo elige el revisor, ya NO se deriva de tagId. Opcional aquí: review()
@@ -95,8 +101,11 @@ export class ProcurementService {
     if (!input.items.length) throw new DomainError("INVALID_INPUT", "Los ítems son obligatorios"); sumLines(input.items);
     // Solicitud de pago (feat/solicitud-de-pago): beneficiario y valor > 0 se exigen DESDE la
     // creación — a diferencia de una compra, un pago no tiene un paso de revisión previo que los
-    // complete (review() vuelve a exigir esto mismo, ver más abajo).
-    if (input.type === "pago") assertPaymentRequestShape(input.items);
+    // complete (review() vuelve a exigir esto mismo, ver más abajo). RF-606: si el beneficiario viene
+    // por identificación (sin `finalSupplierId`), la forma se comprueba dentro de la transacción, una
+    // vez resuelto el proveedor.
+    const beneficiary = input.type === "pago" && input.beneficiary && !input.items[0]?.finalSupplierId ? input.beneficiary : undefined;
+    if (input.type === "pago" && !beneficiary) assertPaymentRequestShape(input.items);
     const externalPhone = input.externalRequester?.phone?.replace(/[\s()\-]/g, "");
     // El NOMBRE es obligatorio en los dos canales externos: sin él la requisición no tiene autor.
     //
@@ -113,6 +122,8 @@ export class ProcurementService {
     if (externalPhone && !/^\+?[1-9]\d{6,14}$/.test(externalPhone)) throw new DomainError("INVALID_INPUT", "El teléfono del solicitante no es válido");if (!isExternalChannel && input.externalRequester) throw new DomainError("INVALID_INPUT", "Solicitante externo no permitido en canal web");
     const actor = context.actor ?? { id: input.channel === "whatsapp" ? "kapso" : "public", roles: [] }, elevated = actor.roles.includes("revisor") || actor.roles.includes("admin_mizar") || actor.roles.includes("admin_sixteam");
     if (!isExternalChannel && input.requesterId && input.requesterId !== actor.id && !elevated) throw new DomainError("FORBIDDEN", "Un solicitante solo puede crear para sí mismo");
+    // Crear un proveedor "al vuelo" desde la web es alta de catálogo: solo quien ya puede administrarlos.
+    if (beneficiary && !isExternalChannel && !hasPermission(actor.roles, "supplier:manage", this.authOrigin(context))) throw new DomainError("FORBIDDEN", "Solo compras puede crear un beneficiario por identificación; elija uno del catálogo");
     const requesterId = isExternalChannel ? undefined : input.requesterId ?? actor.id;
     // El año del consecutivo sale SIEMPRE del reloj del servidor, nunca de la fecha requerida (que ahora es
     // opcional y ya era inconsistente con approve()/generateOrders() y con los triggers SQL de consecutivo).
@@ -122,17 +133,44 @@ export class ProcurementService {
     // antes del insert. El objeto en memoria devuelto aquí para el canal público queda sin sociedad hasta
     // la próxima lectura real desde Postgres, pero eso ya lo dice el tipo (`societyId?: string`).
     return this.transaction(undefined, async (tx) => {
+      let items = input.items;
+      // RF-606: beneficiario por identificación — se enlaza o se crea pendiente, y la línea de concepto
+      // recibe su id antes de la misma comprobación de forma que hace el camino con `finalSupplierId`.
+      if (beneficiary) {
+        const supplier = await this.resolveBeneficiary(beneficiary, input.channel, actor, origin, tx);
+        items = [{ ...input.items[0], finalSupplierId: supplier.id }, ...input.items.slice(1)];
+        assertPaymentRequestShape(items);
+      }
       // El beneficiario debe existir y estar activo en el catálogo — mismo criterio que
       // assignSuppliers()/generateOrders() para el proveedor final de una compra. Sin este chequeo,
       // un finalSupplierId inválido moría en el insert con la FK cruda (proveedor_final_id
       // references proveedores) en vez de un error de dominio legible.
       if (input.type === "pago") {
-        const supplier = await tx.catalogs.get("suppliers", input.items[0].finalSupplierId as string) as CatalogSupplier | null;
+        const supplier = await tx.catalogs.get("suppliers", items[0].finalSupplierId as string) as CatalogSupplier | null;
         if (!supplier || !supplier.active) throw new DomainError("INVALID_INPUT", "El beneficiario debe ser un proveedor activo del catálogo");
       }
-      const requisition: Requisition = { id: this.deps.ids.next(), consecutive: await tx.consecutives.take("REQ", year), type: input.type, societyId: input.societyId, workId: input.workId, requesterId, externalRequester: input.externalRequester ? { ...input.externalRequester, phone: externalPhone } : undefined, channel: input.channel, requiredDate: input.requiredDate, observations: input.observations, kapsoEventId: input.channel === "whatsapp" ? input.kapsoEventId : undefined, items: await this.materializeProposals(input.items, actor, origin, tx, input.type), status: "enviada" };
+      const requisition: Requisition = { id: this.deps.ids.next(), consecutive: await tx.consecutives.take("REQ", year), type: input.type, societyId: input.societyId, workId: input.workId, requesterId, externalRequester: input.externalRequester ? { ...input.externalRequester, phone: externalPhone } : undefined, channel: input.channel, requiredDate: input.requiredDate, observations: input.observations, kapsoEventId: input.channel === "whatsapp" ? input.kapsoEventId : undefined, items: await this.materializeProposals(items, actor, origin, tx, input.type), status: "enviada" };
       await tx.requisitions.save(requisition); await this.audit("requisicion", requisition.id, "creada", actor, { channel: input.channel }, origin, tx.audit); if (isExternalChannel) await this.notifyRequester(requisition, "requisicion_recibida", tx); return requisition;
     });
+  }
+  /**
+   * RF-606: la identidad del beneficiario es su identificación, no su nombre — si existe se enlaza aunque
+   * el nombre venga distinto (Daniel normaliza después); si está inactivo se rechaza (mismo criterio que
+   * un `finalSupplierId` inactivo); si no existe nace `pendingNormalization` con el teléfono que dejó el
+   * solicitante como único contacto. `razon_social` es única en la base: un homónimo con OTRA
+   * identificación se traduce a CONFLICT en vez de un 500 crudo.
+   */
+  private async resolveBeneficiary(input: BeneficiaryInput, channel: RequisitionChannel, actor: Actor, origin: "web" | "mcp" | "kapso", tx: TransactionRepositories): Promise<CatalogSupplier> {
+    const identification = input.identification.trim(), name = input.name.trim();
+    if (!normalizeIdentification(identification)) throw new DomainError("INVALID_INPUT", "La identificación del beneficiario es obligatoria");
+    if (!name) throw new DomainError("INVALID_INPUT", "El nombre del beneficiario es obligatorio");
+    const existing = await tx.catalogs.findSupplierByIdentification(input.identificationType, identification);
+    if (existing) { if (!existing.active) throw new DomainError("INVALID_INPUT", "El beneficiario existe en el catálogo pero está inactivo"); return existing; }
+    let created: CatalogSupplier;
+    try { created = await tx.catalogs.create("suppliers", { name, nit: input.identificationType === "NIT" ? identification : null, identificationType: input.identificationType, identification, pendingNormalization: true, phone: input.phone?.trim() || undefined, active: true }) as CatalogSupplier; }
+    catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con ese nombre y otra identificación"); throw error; }
+    await this.audit("proveedor", created.id, "creado", actor, { identificationType: input.identificationType, identificationConfigured: true, pendingNormalization: true, source: "beneficiario", channel }, origin, tx.audit);
+    return created;
   }
   async startReview(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); await this.transition(requisition, "en_revision", actor, "entrada_revision", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition); return requisition; }); }
   async proposeItem(requisitionId: string, description: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:create", this.authOrigin(context)); if (!description.trim()) throw new DomainError("INVALID_INPUT", "Descripción obligatoria"); return this.transaction(`requisition:${requisitionId}`, async (tx) => { const requisition = await tx.requisitions.get(requisitionId); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const reviewer = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam"); if (!reviewer && requisition.requesterId !== actor.id) throw new DomainError("FORBIDDEN", "No puede modificar una requisición ajena"); const editable = reviewer ? ["en_revision", "devuelta"] : ["enviada"]; if (!editable.includes(requisition.status)) throw new DomainError("INVALID_STATE", "La requisición no admite nuevos ítems en este estado"); const [line] = await this.materializeProposals([{ id: this.deps.ids.next(), description: description.trim(), quantity: 1, unit: "unidad", unitBase: 0, unitIva: 0 }], actor, this.origin(context), tx); requisition.items.push(line); await tx.requisitions.save(requisition); await this.audit("requisicion", requisition.id, "item_propuesto", actor, { itemId: line.itemId }, this.origin(context), tx.audit); return requisition; }); }

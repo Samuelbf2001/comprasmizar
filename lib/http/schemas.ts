@@ -27,6 +27,17 @@ const createItemSchema = z.object({
   ivaRate: rateFraction.optional(),
 }).strict().refine((item) => Boolean(item.itemId || item.description), "itemId or description is required");
 
+// RF-601/RF-606 (adenda de pagos): MISMOS valores que `SupplierIdentificationType` (lib/domain/model.ts)
+// y que el CHECK de `proveedores.tipo_identificacion` (202609150002) — repetidos aquí por el mismo
+// motivo que ORDER_STATUS_VALUES.
+export const SUPPLIER_IDENTIFICATION_TYPE_VALUES = ["NIT", "CC", "CE", "PAS"] as const;
+export const beneficiarySchema = z.object({
+  identificationType: z.enum(SUPPLIER_IDENTIFICATION_TYPE_VALUES),
+  identification: z.string().trim().min(3).max(32),
+  name: z.string().trim().min(2).max(160),
+  phone: z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/).optional(),
+}).strict();
+
 export const createRequisitionSchema = z.object({
   type: z.enum(["compra", "pago"]),
   societyId: z.string().uuid(),
@@ -35,6 +46,9 @@ export const createRequisitionSchema = z.object({
   requiredDate: z.string().date().optional(),
   observations: z.string().trim().min(1).max(3_000).optional(),
   items: z.array(createItemSchema).min(1).max(100),
+  // RF-606: beneficiario por identificación en `type: "pago"` (alternativa a items[0].finalSupplierId);
+  // el servicio lo enlaza o lo crea pendiente de normalizar — ver ProcurementService.create.
+  beneficiary: beneficiarySchema.optional(),
 }).strict();
 
 // "unitIva" pasa a derivado: el servidor lo calcula desde ivaRate/unitBase, ya no lo captura el cliente.

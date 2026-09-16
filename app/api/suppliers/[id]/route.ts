@@ -9,6 +9,10 @@ export const runtime = "nodejs";
 const patchSchema = z.object({
   name: supplierCreateSchema.shape.name.optional(),
   nit: supplierCreateSchema.shape.nit.nullable().optional(),
+  // RF-601/RF-606: cambiar tipo/identificación y cerrar la normalización pendiente (Daniel completa la ficha).
+  identificationType: supplierCreateSchema.shape.identificationType,
+  identification: supplierCreateSchema.shape.identification.nullable().optional(),
+  pendingNormalization: supplierCreateSchema.shape.pendingNormalization,
   contact: supplierCreateSchema.shape.contact.optional(),
   bankDetails: supplierCreateSchema.shape.bankDetails.optional(),
   active: z.boolean().optional(),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEvent } from "../../lib/domain";
-import { CatalogService, canManageCatalog, type CatalogKind, type CatalogRecord, type ServiceDependencies } from "../../lib/services";
+import { CatalogService, canManageCatalog, type CatalogKind, type CatalogRecord, type CatalogSupplier, type ServiceDependencies } from "../../lib/services";
 
 const reviewer = { id: "daniel", roles: ["revisor"] as const };
 const mizarAdmin = { id: "mizar", roles: ["admin_mizar"] as const };
@@ -22,6 +22,8 @@ function deps(options: { feature?: boolean; transactionFeature?: boolean; eligib
       const next = { ...prior, ...value } as CatalogRecord; records.set(`${kind}:${id}`, structuredClone(next)); return next;
     },
     findSupplierDuplicate: async (value: { name: string; nit?: string }, exceptId?: string) => [...records.entries()].find(([key, record]) => key.startsWith("suppliers:") && record.id !== exceptId && (record.name.toLowerCase() === value.name.toLowerCase() || ("nit" in record && Boolean(value.nit) && record.nit === value.nit)))?.[1].id ?? null,
+    // RF-606: por (tipo, identificación normalizada), mismo criterio que la columna generada real.
+    findSupplierByIdentification: async (type: string, identification: string) => ([...records.entries()].find(([key, record]) => key.startsWith("suppliers:") && "identification" in record && (record.identificationType ?? "NIT") === type && String(record.identification ?? record.nit ?? "").replace(/[^0-9A-Za-z]/g, "") === identification.replace(/[^0-9A-Za-z]/g, ""))?.[1] as CatalogSupplier | undefined) ?? null,
     // Simula telefono_normalizado con el mismo criterio de normalizeCoPhone: un local de 10 dígitos se
     // homologa anteponiendo "57"; cualquier otro largo solo pierde los no-dígitos.
     findRequesterDuplicate: async (phone: string, exceptId?: string) => { const digits = phone.replace(/[^0-9]/g, ""), normalized = digits.length === 10 ? `57${digits}` : digits; return [...records.entries()].find(([key, record]) => key.startsWith("requesters:") && record.id !== exceptId && "phone" in record && (() => { const other = String(record.phone).replace(/[^0-9]/g, ""); return (other.length === 10 ? `57${other}` : other) === normalized; })())?.[1].id ?? null; },

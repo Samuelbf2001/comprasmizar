@@ -1,5 +1,5 @@
 import postgres, { type Sql } from "postgres";
-import { DomainError, normalizeItemName, paymentStatus, type Actor, type AuditEvent, type CashClose, type CashCloseStatus, type CashPayment, type CostCenterMovement, type DashboardAmountByKey, type Expense, type ExpenseShare, type Income, type ItemLine, type Order, type OrderAdminStatus, type OrderPayment, type PaymentMethod, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
+import { DomainError, normalizeIdentification, normalizeItemName, paymentStatus, type Actor, type AuditEvent, type CashClose, type CashCloseStatus, type CashPayment, type CostCenterMovement, type DashboardAmountByKey, type Expense, type ExpenseShare, type Income, type ItemLine, type Order, type OrderAdminStatus, type OrderPayment, type PaymentMethod, type PettyCash, type Requisition, type RequisitionStatus, type Role, type SupplierIdentificationType } from "../domain";
 import type { AuditRepository, CatalogCashBox, CatalogCostCenter, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ReportCatalogSource, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
 import { PRIVATE_ATTACHMENT_BUCKET } from "../services/attachment-service";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
@@ -179,7 +179,8 @@ function catalogRecord(kind: CatalogKind, row: DbRow): CatalogRecord {
   // HUECO 1: solicitantes_autorizados (lista blanca global de WhatsApp, migración 202609010001).
   if (kind === "requesters") return { id: String(row.id), name: String(row.nombre), phone: String(row.telefono), active: row.activo === true };
   const contact = row.contacto && typeof row.contacto === "object" ? row.contacto as Record<string, unknown> : {};
-  return { id: String(row.id), name: String(row.razon_social), nit: row.nit ? String(row.nit) : undefined, phone: typeof contact.phone === "string" ? contact.phone : undefined, email: typeof contact.email === "string" ? contact.email : undefined, address: typeof contact.address === "string" ? contact.address : undefined, active: row.activo === true };
+  // RF-601 (202609150002): tipo/identificación/pendiente — defaults NIT/false en la base.
+  return { id: String(row.id), name: String(row.razon_social), nit: row.nit ? String(row.nit) : undefined, identificationType: (row.tipo_identificacion as SupplierIdentificationType | undefined) ?? "NIT", identification: row.identificacion ? String(row.identificacion) : undefined, pendingNormalization: row.pendiente_normalizacion === true, phone: typeof contact.phone === "string" ? contact.phone : undefined, email: typeof contact.email === "string" ? contact.email : undefined, address: typeof contact.address === "string" ? contact.address : undefined, active: row.activo === true };
 }
 
 /** Forma que exige la columna `auditoria.entidad_id` (uuid). Deliberadamente laxa con los nibbles
@@ -714,7 +715,9 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
       return catalogRecord(kind, { ...rows[0], roles: [...user.roles] });
     }
     else if (kind === "requesters") { const requester = value as CatalogRequester; rows = await this.sql<DbRow[]>`insert into solicitantes_autorizados (nombre, telefono, activo) values (${requester.name}, ${requester.phone}, ${requester.active}) returning *`; }
-    else { const supplier = value as CatalogSupplier; rows = await this.sql<DbRow[]>`insert into proveedores (razon_social, nit, contacto, activo) values (${supplier.name}, ${supplier.nit ?? null}, ${asJsonb(this.sql, { ...(supplier.phone ? { phone: supplier.phone } : {}), ...(supplier.email ? { email: supplier.email } : {}), ...(supplier.address ? { address: supplier.address } : {}) })}, ${supplier.active}) returning *`; }
+    // RF-601: tipo/identificación/pendiente; el trigger `proveedores_identificacion` deja `nit` e
+    // `identificacion` coherentes, así que un alta legado (solo `nit`) sigue funcionando tal cual.
+    else { const supplier = value as CatalogSupplier; rows = await this.sql<DbRow[]>`insert into proveedores (razon_social, nit, tipo_identificacion, identificacion, pendiente_normalizacion, contacto, activo) values (${supplier.name}, ${supplier.nit ?? null}, ${supplier.identificationType ?? "NIT"}, ${supplier.identification ?? null}, ${supplier.pendingNormalization ?? false}, ${asJsonb(this.sql, { ...(supplier.phone ? { phone: supplier.phone } : {}), ...(supplier.email ? { email: supplier.email } : {}), ...(supplier.address ? { address: supplier.address } : {}) })}, ${supplier.active}) returning *`; }
     return catalogRecord(kind, rows[0]);
   }
   async get(kind: CatalogKind, id: string): Promise<CatalogRecord | null> {
@@ -771,10 +774,10 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
       const requester = value as Partial<CatalogRequester>;
       rows = await this.sql<DbRow[]>`update solicitantes_autorizados set nombre=coalesce(${requester.name ?? null}, nombre), telefono=coalesce(${requester.phone ?? null}, telefono), activo=coalesce(${requester.active ?? null}, activo) where id=${id} returning *`;
     } else {
-      const supplier = value as Partial<CatalogSupplier>, hasNit = Object.hasOwn(supplier, "nit"), contactPatch: Record<string, string | null> = {};
+      const supplier = value as Partial<CatalogSupplier>, hasNit = Object.hasOwn(supplier, "nit"), hasIdentification = Object.hasOwn(supplier, "identification"), contactPatch: Record<string, string | null> = {};
       for (const field of ["phone", "email", "address"] as const) if (Object.hasOwn(supplier, field)) contactPatch[field] = supplier[field] ?? null;
       const contact = JSON.stringify(contactPatch);
-      rows = await this.sql<DbRow[]>`update proveedores set razon_social=coalesce(${supplier.name ?? null}, razon_social), nit=case when ${hasNit} then ${supplier.nit ?? null} else nit end, contacto=(contacto - array(select jsonb_object_keys(${contact}::jsonb))) || jsonb_strip_nulls(${contact}::jsonb), activo=coalesce(${supplier.active ?? null}, activo) where id=${id} returning *`;
+      rows = await this.sql<DbRow[]>`update proveedores set razon_social=coalesce(${supplier.name ?? null}, razon_social), nit=case when ${hasNit} then ${supplier.nit ?? null} else nit end, tipo_identificacion=coalesce(${supplier.identificationType ?? null}, tipo_identificacion), identificacion=case when ${hasIdentification} then ${supplier.identification ?? null} else identificacion end, pendiente_normalizacion=coalesce(${supplier.pendingNormalization ?? null}, pendiente_normalizacion), contacto=(contacto - array(select jsonb_object_keys(${contact}::jsonb))) || jsonb_strip_nulls(${contact}::jsonb), activo=coalesce(${supplier.active ?? null}, activo) where id=${id} returning *`;
     }
     if (!rows[0]) throw new Error("CATALOG_NOT_FOUND");
     return catalogRecord(kind, rows[0]);
@@ -783,6 +786,8 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // parámetro sin otro contexto de tipo no permite a Postgres inferir el tipo EN TIEMPO DE PREPARE
   // (independiente del valor), y dispara 42P18. Esta consulta corre en cada alta/edición de
   // proveedor vía supplierConflict, así que sin el cast ninguna se podía crear contra Postgres real.
+  // RF-606: misma normalización que la columna generada `identificacion_normalizada` (202609150002).
+  async findSupplierByIdentification(type: SupplierIdentificationType, identification: string): Promise<CatalogSupplier | null> { const rows = await this.sql<DbRow[]>`select * from proveedores where tipo_identificacion=${type} and identificacion_normalizada=${normalizeIdentification(identification)} limit 1`; return rows[0] ? catalogRecord("suppliers", rows[0]) as CatalogSupplier : null; }
   async findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null> { const rows = await this.sql<{ id: string }[]>`select id from proveedores where (${exceptId ?? null}::uuid is null or id <> ${exceptId ?? null}) and (lower(btrim(razon_social)) = lower(btrim(${value.name})) or (${value.nit ?? null}::text is not null and nit_normalizado = nullif(regexp_replace(${value.nit ?? null}, '[^0-9A-Za-z]', '', 'g'), ''))) limit 1`; return rows[0]?.id ?? null; }
   // HUECO 1: compara contra telefono_normalizado (columna generada) con el MISMO criterio que
   // normalizeCoPhone (ver lib/infrastructure/phone.ts) — así "3001112233" y "+57 300 111 2233" chocan

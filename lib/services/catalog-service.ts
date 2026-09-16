@@ -38,7 +38,8 @@ function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
   if ("societyId" in value) return { name: value.name, societyId: value.societyId, active: value.active };
   if ("approverId" in value) return { name: value.name, approverAssigned: Boolean(value.approverId), active: value.active };
   if ("unit" in value) return { name: value.name, unit: value.unit, category: value.category, active: value.active };
-  if ("phone" in value || "email" in value || "address" in value) { const supplier = value as CatalogSupplier; return { name: supplier.name, nitConfigured: Boolean(supplier.nit), contactConfigured: Boolean(supplier.phone || supplier.email || supplier.address), active: supplier.active }; }
+  // RF-601: tipo y "si hay identificación", nunca el número (la cédula de una persona es dato personal).
+  if ("phone" in value || "email" in value || "address" in value) { const supplier = value as CatalogSupplier; return { name: supplier.name, nitConfigured: Boolean(supplier.nit), identificationType: supplier.identificationType ?? "NIT", identificationConfigured: Boolean(supplier.identification ?? supplier.nit), pendingNormalization: supplier.pendingNormalization ?? false, contactConfigured: Boolean(supplier.phone || supplier.email || supplier.address), active: supplier.active }; }
   if ("nit" in value) { const society = value as CatalogSociety; return { name: society.name, nitConfigured: Boolean(society.nit), active: society.active }; }
   return { name: value.name, active: value.active };
 }

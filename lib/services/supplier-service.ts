@@ -1,13 +1,20 @@
-import { DomainError, type Actor, type Supplier, type SupplierBankDetails, type SupplierContact, type SupplierDocument, type SupplierDocumentType, type SupplierOrderHistory } from "../domain";
+import { DomainError, normalizeIdentification, type Actor, type BeneficiaryInput, type Supplier, type SupplierBankDetails, type SupplierContact, type SupplierDocument, type SupplierDocumentType, type SupplierIdentificationType, type SupplierOrderHistory } from "../domain";
 
 export const SUPPLIER_DOCUMENT_BUCKET = "proveedor-documentos-privados";
 export const SUPPLIER_DOCUMENT_TYPES = ["rut", "camara_comercio", "certificacion_bancaria", "certificado_calidad"] as const;
+export const SUPPLIER_IDENTIFICATION_TYPES = ["NIT", "CC", "CE", "PAS"] as const;
 export const MAX_SUPPLIER_DOCUMENT_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
 
-export interface SupplierWrite { name?: string; nit?: string | null; contact?: SupplierContact; bankDetails?: SupplierBankDetails; active?: boolean; }
+/**
+ * RF-601 (adenda de pagos): `identificationType` + `identification` son la identidad del tercero; `nit`
+ * sigue aceptándose como camino legado (equivale a `{ identificationType: "NIT", identification }`). El
+ * servicio deja ambos coherentes antes de escribir (y el trigger `proveedores_identificacion` lo
+ * garantiza en la base, incluido lo que entre por SQL directo).
+ */
+export interface SupplierWrite { name?: string; nit?: string | null; identificationType?: SupplierIdentificationType; identification?: string | null; pendingNormalization?: boolean; contact?: SupplierContact; bankDetails?: SupplierBankDetails; active?: boolean; }
 export interface SupplierDocumentUpload { type: SupplierDocumentType; name: string; mimeType: string; sizeBytes: number; }
-export interface SupplierRepository { list(): Promise<Supplier[]>; get(id: string): Promise<Supplier | null>; create(value: Required<Pick<SupplierWrite, "name" | "contact" | "bankDetails" | "active">> & Pick<SupplierWrite, "nit">): Promise<Supplier>; update(id: string, value: SupplierWrite): Promise<Supplier | null>; listOrders(supplierId: string): Promise<SupplierOrderHistory[]>; listDocuments(supplierId: string): Promise<SupplierDocument[]>; getDocument(supplierId: string, documentId: string): Promise<SupplierDocument | null>; insertDocument(value: SupplierDocument): Promise<SupplierDocument>; }
+export interface SupplierRepository { list(): Promise<Supplier[]>; get(id: string): Promise<Supplier | null>; create(value: Required<Pick<SupplierWrite, "name" | "contact" | "bankDetails" | "active">> & Pick<SupplierWrite, "nit" | "identificationType" | "identification" | "pendingNormalization">): Promise<Supplier>; update(id: string, value: SupplierWrite): Promise<Supplier | null>; /** RF-606: por (tipo, identificación normalizada), activo o no. */ findByIdentification(type: SupplierIdentificationType, identification: string): Promise<Supplier | null>; listOrders(supplierId: string): Promise<SupplierOrderHistory[]>; listDocuments(supplierId: string): Promise<SupplierDocument[]>; getDocument(supplierId: string, documentId: string): Promise<SupplierDocument | null>; insertDocument(value: SupplierDocument): Promise<SupplierDocument>; }
 export interface SupplierFeatures { isEnabled(name: string): Promise<boolean>; }
 export interface SupplierTransaction { suppliers: SupplierRepository; features: SupplierFeatures; audit: { append(event: { entity: string; entityId: string; event: string; actorId?: string; at: Date; origin: "web"; data?: Record<string, unknown> }): Promise<void> }; }
 export interface SupplierTransactionManager { transaction<T>(supplierId: string | undefined, work: (tx: SupplierTransaction) => Promise<T>): Promise<T>; }
@@ -26,6 +33,22 @@ function cleanFilename(name: string): string {
 
 function safeDocument(document: SupplierDocument): PublicDocument { return { id: document.id, type: document.type, name: document.name, mimeType: document.mimeType, sizeBytes: document.sizeBytes, uploadedAt: document.uploadedAt }; }
 function redactBankDetails(value: SupplierBankDetails | undefined): Record<string, boolean> { return { configured: Boolean(value && Object.values(value).some(Boolean)), accountNumberConfigured: Boolean(value?.accountNumber), bankConfigured: Boolean(value?.bankName) }; }
+/** La cédula de una persona es dato personal: la auditoría solo dice tipo y si hay identificación, nunca el número. */
+function identitySnapshot(value: Pick<Supplier, "nit" | "identificationType" | "identification" | "pendingNormalization">): Record<string, unknown> { return { identificationType: value.identificationType ?? "NIT", identificationConfigured: Boolean(value.identification ?? value.nit), pendingNormalization: value.pendingNormalization ?? false }; }
+/**
+ * RF-601: deja `identificationType`/`identification`/`nit` coherentes ANTES de escribir — misma regla que
+ * el trigger `proveedores_identificacion` (202609150002), aquí para que el objeto devuelto (y los dobles
+ * en memoria) no dependan de la base: NIT espeja `identification` en `nit`; una persona no lleva NIT.
+ * Lanza INVALID_INPUT si la identificación queda vacía tras normalizar.
+ */
+export function resolveSupplierIdentity(value: Pick<SupplierWrite, "nit" | "identificationType" | "identification">, previous?: Pick<Supplier, "nit" | "identificationType" | "identification">): { identificationType: SupplierIdentificationType; identification: string | null; nit: string | null } {
+  const identificationType = value.identificationType ?? previous?.identificationType ?? "NIT";
+  const explicit = value.identification !== undefined ? value.identification?.trim() || null : undefined;
+  const legacyNit = value.nit !== undefined ? value.nit?.trim() || null : undefined;
+  const identification = explicit !== undefined ? explicit : legacyNit !== undefined && identificationType === "NIT" ? legacyNit : previous?.identification ?? (identificationType === "NIT" ? previous?.nit ?? null : null);
+  if (identification !== null && !normalizeIdentification(identification)) throw new DomainError("INVALID_INPUT", "La identificación debe tener al menos un dígito o letra");
+  return { identificationType, identification, nit: identificationType === "NIT" ? identification : null };
+}
 
 export class SupplierService {
   constructor(private readonly deps: SupplierServiceDependencies) {}
@@ -69,11 +92,38 @@ export class SupplierService {
     return this.deps.transactions.transaction(supplierId, async (tx) => { await this.canRead(actor, tx); const supplier = await tx.suppliers.get(supplierId); if (!supplier) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const access = await this.access(actor, tx); const [orders, documents] = await Promise.all([tx.suppliers.listOrders(supplierId), tx.suppliers.listDocuments(supplierId)]); return { supplier: this.view(supplier, access.canReadBank), orders, documents: documents.map(safeDocument), access }; });
   }
   async create(value: SupplierWrite & { name: string }, actor: Actor): Promise<SupplierView> {
-    const nit = value.nit?.trim() || null;
-    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.canManage(actor, tx); const created = await tx.suppliers.create({ name: value.name, nit, contact: value.contact ?? {}, bankDetails: value.bankDetails ?? {}, active: value.active ?? true }); await this.audit(tx, "creado", created.id, actor, { nitConfigured: Boolean(created.nit), contactConfigured: Object.values(created.contact).some(Boolean), active: created.active }); return this.view(created, false); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o NIT"); throw error; }
+    const identity = resolveSupplierIdentity(value);
+    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.canManage(actor, tx); const created = await tx.suppliers.create({ name: value.name, ...identity, pendingNormalization: value.pendingNormalization ?? false, contact: value.contact ?? {}, bankDetails: value.bankDetails ?? {}, active: value.active ?? true }); await this.audit(tx, "creado", created.id, actor, { nitConfigured: Boolean(created.nit), ...identitySnapshot(created), contactConfigured: Object.values(created.contact).some(Boolean), active: created.active }); return this.view(created, false); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o identificación"); throw error; }
   }
   async update(supplierId: string, value: SupplierWrite, actor: Actor): Promise<SupplierView> {
-    try { return await this.deps.transactions.transaction(supplierId, async (tx) => { await this.canManage(actor, tx); const before = await tx.suppliers.get(supplierId); if (!before) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const after = await tx.suppliers.update(supplierId, value); if (!after) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); await this.audit(tx, "actualizado", supplierId, actor, { before: { name: before.name, nitConfigured: Boolean(before.nit), contactConfigured: Object.values(before.contact).some(Boolean), bankDetails: redactBankDetails(before.bankDetails), active: before.active }, after: { name: after.name, nitConfigured: Boolean(after.nit), contactConfigured: Object.values(after.contact).some(Boolean), bankDetails: redactBankDetails(after.bankDetails), active: after.active } }); return this.view(after, await this.canReadBank(actor, tx)); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o NIT"); throw error; }
+    try { return await this.deps.transactions.transaction(supplierId, async (tx) => { await this.canManage(actor, tx); const before = await tx.suppliers.get(supplierId); if (!before) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const touchesIdentity = value.nit !== undefined || value.identification !== undefined || value.identificationType !== undefined; const after = await tx.suppliers.update(supplierId, touchesIdentity ? { ...value, ...resolveSupplierIdentity(value, before) } : value); if (!after) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); await this.audit(tx, "actualizado", supplierId, actor, { before: { name: before.name, nitConfigured: Boolean(before.nit), ...identitySnapshot(before), contactConfigured: Object.values(before.contact).some(Boolean), bankDetails: redactBankDetails(before.bankDetails), active: before.active }, after: { name: after.name, nitConfigured: Boolean(after.nit), ...identitySnapshot(after), contactConfigured: Object.values(after.contact).some(Boolean), bankDetails: redactBankDetails(after.bankDetails), active: after.active } }); return this.view(after, await this.canReadBank(actor, tx)); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o identificación"); throw error; }
+  }
+  /** RF-606: búsqueda por identificación en los formularios (interno, público, Flow) — `null` si no existe. Mismo permiso de lectura que `get`. */
+  async findByIdentification(type: SupplierIdentificationType, identification: string, actor: Actor): Promise<SupplierView | null> {
+    if (!normalizeIdentification(identification)) throw new DomainError("INVALID_INPUT", "La identificación debe tener al menos un dígito o letra");
+    return this.deps.transactions.transaction(undefined, async (tx) => { await this.canRead(actor, tx); const found = await tx.suppliers.findByIdentification(type, identification.trim()); return found ? this.view(found, false) : null; });
+  }
+  /**
+   * RF-606 (alta rápida desde la captura interna, S2): si la identificación ya existe se enlaza
+   * (`created: false`), incluso si el nombre difiere — la identidad es la identificación, no el nombre; si
+   * no, se crea con `pendingNormalization: true` para que Daniel complete la ficha. Mismo permiso que
+   * `create` (compras): la versión SIN permiso, para portal/WhatsApp, vive en `ProcurementService.create`
+   * (dentro de la misma transacción de la requisición).
+   */
+  async resolveOrCreateBeneficiary(input: BeneficiaryInput, actor: Actor): Promise<{ supplier: SupplierView; created: boolean }> {
+    const identification = input.identification.trim(), name = input.name.trim();
+    if (!normalizeIdentification(identification)) throw new DomainError("INVALID_INPUT", "La identificación del beneficiario es obligatoria");
+    if (!name) throw new DomainError("INVALID_INPUT", "El nombre del beneficiario es obligatorio");
+    try {
+      return await this.deps.transactions.transaction(undefined, async (tx) => {
+        await this.canManage(actor, tx);
+        const existing = await tx.suppliers.findByIdentification(input.identificationType, identification);
+        if (existing) return { supplier: this.view(existing, false), created: false };
+        const created = await tx.suppliers.create({ name, ...resolveSupplierIdentity({ identificationType: input.identificationType, identification }), pendingNormalization: true, contact: input.phone?.trim() ? { phone: input.phone.trim() } : {}, bankDetails: {}, active: true });
+        await this.audit(tx, "creado", created.id, actor, { nitConfigured: Boolean(created.nit), ...identitySnapshot(created), contactConfigured: Object.values(created.contact).some(Boolean), active: created.active, source: "beneficiario" });
+        return { supplier: this.view(created, false), created: true };
+      });
+    } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con ese nombre y otra identificación"); throw error; }
   }
   async prepareDocument(supplierId: string, value: SupplierDocumentUpload, actor: Actor): Promise<{ document: PublicDocument; upload: { url: string; method: "PUT"; multipart: { cacheControl: "3600"; fileField: "" } } }> {
     const validated = this.validateUpload(value), documentId = this.deps.ids.next(), path = this.path(supplierId, documentId, validated.name);

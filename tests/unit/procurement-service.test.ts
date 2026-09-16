@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DomainError, calculateDashboard, groupExpenseByCostCenter, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, paymentStatus, sumApprovedLines, sumLines, sumPaid, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
-import { ProcurementService, type ServiceDependencies } from "../../lib/services";
+import { ProcurementService, type CatalogSupplier, type ServiceDependencies } from "../../lib/services";
 
 const ZERO_BY_STATUS: Record<RequisitionStatus, number> = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
 
-function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; ordersData: Order[]; expensesData: Expense[]; paymentsData: OrderPayment[]; pettyData: PettyCash[]; proposedItems: Map<string, string>; notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }>; audits: AuditEvent[]; shares: ExpenseShare[]; visibleActors: string[]; transactionCalls: number; inactiveSuppliers: Set<string> } {
+function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; ordersData: Order[]; expensesData: Expense[]; paymentsData: OrderPayment[]; pettyData: PettyCash[]; proposedItems: Map<string, string>; notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }>; audits: AuditEvent[]; shares: ExpenseShare[]; visibleActors: string[]; transactionCalls: number; inactiveSuppliers: Set<string>; createdSuppliers: Map<string, CatalogSupplier> } {
   const req = new Map<string, Requisition>(), ordersData: Order[] = [], expensesData: Expense[] = [], paymentsData: OrderPayment[] = [], petty: PettyCash[] = [], audits: AuditEvent[] = [], shares: ExpenseShare[] = [], visibleActors: string[] = []; let seq = 0;
   // H3 (docs/plan-rendimiento.md): mismo criterio de visibilidad que listVisibleTo (arriba), reutilizado
   // por los métodos nuevos del dashboard (dashboardByStatus/listVisibleHeaders) — un solo lugar donde
@@ -106,6 +106,12 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // inactiveSuppliers: mutable, para probar el chequeo de generateOrders() (proveedor desactivado
   // DESPUÉS de assignSuppliers()/approve()) sin acoplarse al chequeo estático de "p-inactivo".
   const inactiveSuppliers = new Set<string>();
+  // RF-606 (adenda de pagos): proveedores creados "al vuelo" por create() con `beneficiary` — el
+  // repositorio real les da id en la base; aquí se guardan para que get()/findSupplierByIdentification
+  // los encuentren dentro de la misma transacción. "p1" nace con NIT 900.111.222-3 para poder probar
+  // el enlace por identificación contra un proveedor ya existente.
+  const createdSuppliers = new Map<string, CatalogSupplier>();
+  const normalizeId = (value: string) => value.replace(/[^0-9A-Za-z]/g, "");
   // "no-elegible": único id que review() debe rechazar como aprobador (usuario sin rol
   // aprobador/revisor/admin_sixteam, o dado de baja) — cualquier otro id (incluidos "nelson" y "sonia",
   // los dos actores aprobador de este archivo) es elegible.
@@ -113,8 +119,10 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // el 99% de los tests existentes, que ya asignan workId "work" en review() sin mencionar centro,
   // siguen heredándolo automáticamente y sendForApproval() no los rompe (ver resolveCostCenter). Los
   // demás ids cubren los casos de rechazo/override que ejercitan las pruebas nuevas de este archivo.
-  const catalogs = { create: async (_kind: string, value: never) => value, get: async (kind: string, id: string) => (
-    kind === "works" && id === "work" ? { id: "work", name: "Obra Test", societyId: "soc", active: true, costCenterId: "cc-work" }
+  const catalogs = { create: async (kind: string, value: never) => { if (kind !== "suppliers") return value; const id = `sup-${++seq}`; const created = { ...(value as object), id } as CatalogSupplier; createdSuppliers.set(id, created); return created as never; }, get: async (kind: string, id: string) => (
+    kind === "suppliers" && createdSuppliers.has(id) ? createdSuppliers.get(id)!
+    : kind === "suppliers" && id === "p1" ? { id: "p1", name: "Proveedor p1", nit: "900.111.222-3", identificationType: "NIT" as const, identification: "900.111.222-3", active: !inactiveSuppliers.has("p1") }
+    : kind === "works" && id === "work" ? { id: "work", name: "Obra Test", societyId: "soc", active: true, costCenterId: "cc-work" }
     : kind === "costCenters" && id === "cc-work" ? { id: "cc-work", name: "Centro Test", societyId: "soc", active: true }
     : kind === "costCenters" && id === "cc-alterno" ? { id: "cc-alterno", name: "Centro Alterno", societyId: "soc", active: true }
     : kind === "costCenters" && id === "cc-compartido" ? { id: "cc-compartido", name: "Centro Compartido", societyId: undefined, active: true }
@@ -130,13 +138,19 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
     : kind === "cashBoxes" && id === "caja-menor" ? { id: "caja-menor", name: "Caja Menor", type: "caja_menor", active: true }
     : kind === "cashBoxes" && id === "caja-inactiva" ? { id: "caja-inactiva", name: "Caja Inactiva", type: "caja_menor", active: false }
     : null
-  ), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null, findRequesterDuplicate: async () => null, isEligibleApprover: async (id: string) => id !== "no-elegible", hasRequisitionsForWork: async () => false };
+  ), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null,
+    findSupplierByIdentification: async (type: string, identification: string) => {
+      const wanted = normalizeId(identification);
+      if (type === "NIT" && wanted === "9001112223") return (await catalogs.get("suppliers", "p1")) as CatalogSupplier;
+      return [...createdSuppliers.values()].find((supplier) => (supplier.identificationType ?? "NIT") === type && normalizeId(supplier.identification ?? "") === wanted) ?? null;
+    },
+    findRequesterDuplicate: async () => null, isEligibleApprover: async (id: string) => id !== "no-elegible", hasRequisitionsForWork: async () => false };
   const transactions = { transaction: async <T>(_id: string | undefined, work: (repositories: Parameters<ServiceDependencies["transactions"]["transaction"]>[1] extends (repositories: infer R) => Promise<unknown> ? R : never) => Promise<T>) => {
     const snapshot = { req: structuredClone([...req.entries()]), orders: structuredClone(ordersData), expenses: structuredClone(expensesData), payments: structuredClone(paymentsData), petty: structuredClone(petty), audits: structuredClone(audits), shares: structuredClone(shares), proposed: structuredClone([...proposed.entries()]), notifications: structuredClone(notificationData) };
     try { return await work({ requisitions, orders, expenses, orderPayments, pettyCash, incomes: {} as never, cashCloses: {} as never, audit, consecutives, features, items: itemCatalog, catalogs, notifications }); }
     catch (error) { req.clear(); for (const [id, value] of snapshot.req) req.set(id, value); ordersData.splice(0, ordersData.length, ...snapshot.orders); expensesData.splice(0, expensesData.length, ...snapshot.expenses); paymentsData.splice(0, paymentsData.length, ...snapshot.payments); petty.splice(0, petty.length, ...snapshot.petty); audits.splice(0, audits.length, ...snapshot.audits); shares.splice(0, shares.length, ...snapshot.shares); proposed.clear(); for (const [key, value] of snapshot.proposed) proposed.set(key, value); notificationData.splice(0, notificationData.length, ...snapshot.notifications); throw error; }
   } };
-  return { req, ordersData, expensesData, paymentsData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234", verifySociety: async (societyId, token, code) => societyId === "society" && token === null && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, orderPayments, pettyCash, incomes: {} as never, cashCloses: {} as never, audit, inactiveSuppliers };
+  return { req, ordersData, expensesData, paymentsData, pettyData: petty, proposedItems: proposed, notificationData, audits, shares, visibleActors, transactionCalls: 0, ids: { next: () => `id-${++seq}` }, clock: { now: () => new Date("2026-08-24T12:00:00.000Z") }, consecutives, publicAccess: { verify: async (workId, token, code) => workId === "work" && token === "link" && code === "1234", verifySociety: async (societyId, token, code) => societyId === "society" && token === null && code === "1234" }, features, items: itemCatalog, catalogs, notifications, transactions, requisitions, orders, expenses, orderPayments, pettyCash, incomes: {} as never, cashCloses: {} as never, audit, inactiveSuppliers, createdSuppliers };
 }
 const reviewer = { actor: { id: "daniel", roles: ["revisor"] as const } }, approver = { actor: { id: "nelson", roles: ["aprobador"] as const } }, requester = { actor: { id: "sol", roles: ["solicitante"] as const } };
 // "sonia": segundo actor aprobador, distinto de "nelson" — usado para probar que el aprobador ELEGIDO
@@ -576,6 +590,35 @@ describe("ProcurementService", () => {
       await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [items[0], items[1]] }, reviewer)).rejects.toMatchObject({ code: "PAYMENT_SINGLE_LINE" });
       // Camino feliz: un review válido sigue aceptándose.
       await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [items[0]] }, reviewer)).resolves.toMatchObject({ status: "en_revision" });
+    });
+    // RF-606 (adenda de pagos): el portal público y WhatsApp no tienen catálogo delante — mandan
+    // identificación + nombre; create() enlaza al proveedor existente o lo crea pendiente de normalizar
+    // en la MISMA transacción, y la línea de concepto sale con su finalSupplierId.
+    it("create() con `beneficiary` desde el portal: crea el proveedor pendiente_normalizacion y lo enlaza a la línea", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps);
+      const created = await service.create({ type: "pago", workId: "work", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Juan Camilo", phone: "+57 300 123 4567" }, beneficiary: { identificationType: "CC", identification: "1.020.304.050", name: "Juan Camilo Topógrafo", phone: "+57 300 123 4567" }, items: [{ ...items[0], itemId: undefined, description: "Levantamiento topográfico", finalSupplierId: undefined }] }, {});
+      const supplier = [...deps.createdSuppliers.values()][0];
+      expect(supplier).toMatchObject({ name: "Juan Camilo Topógrafo", identificationType: "CC", identification: "1.020.304.050", nit: null, pendingNormalization: true, phone: "+57 300 123 4567", active: true });
+      expect(created.items[0].finalSupplierId).toBe(supplier.id);
+      expect(deps.audits.some((a) => a.entity === "proveedor" && a.entityId === supplier.id && a.event === "creado" && a.data?.pendingNormalization === true && a.data?.channel === "publico")).toBe(true);
+      expect(JSON.stringify(deps.audits)).not.toContain("1.020.304.050");
+    });
+    it("create() con `beneficiary` reutiliza por identificación (aunque el nombre difiera) y rechaza uno inactivo o sin datos", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps);
+      const created = await service.create({ type: "pago", societyId: "soc", channel: "whatsapp", kapsoEventId: "evt-1", externalRequester: { name: "Maestro", phone: "+573001234567" }, beneficiary: { identificationType: "NIT", identification: "900111222-3", name: "Nombre distinto" }, items: [{ ...items[0], itemId: undefined, description: "Corte semanal", finalSupplierId: undefined }] }, { origin: "kapso" });
+      expect(created.items[0].finalSupplierId).toBe("p1"); // el p1 del arnés tiene NIT 900.111.222-3
+      expect(deps.createdSuppliers.size).toBe(0);
+      deps.inactiveSuppliers.add("p1");
+      await expect(service.create({ type: "pago", societyId: "soc", channel: "whatsapp", kapsoEventId: "evt-2", externalRequester: { name: "Maestro", phone: "+573001234567" }, beneficiary: { identificationType: "NIT", identification: "900111222-3", name: "x" }, items: [{ ...items[0], itemId: undefined, description: "Corte", finalSupplierId: undefined }] }, { origin: "kapso" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(service.create({ type: "pago", societyId: "soc", channel: "whatsapp", kapsoEventId: "evt-3", externalRequester: { name: "Maestro", phone: "+573001234567" }, beneficiary: { identificationType: "CC", identification: " - ", name: "Sin cédula" }, items: [{ ...items[0], itemId: undefined, description: "Corte", finalSupplierId: undefined }] }, { origin: "kapso" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    });
+    it("create() con `beneficiary` en la web: solo quien administra proveedores (compras); un solicitante debe elegir del catálogo", async () => {
+      const service = new ProcurementService(fakeDeps());
+      const input = { type: "pago" as const, societyId: "soc", workId: "work", channel: "web" as const, beneficiary: { identificationType: "CC" as const, identification: "71.555.666", name: "Maestro Pérez" }, items: [{ ...items[0], itemId: undefined, description: "Corte semanal", finalSupplierId: undefined }] };
+      await expect(service.create(input, requester)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(service.create(input, reviewer)).resolves.toMatchObject({ items: [{ finalSupplierId: expect.stringMatching(/^sup-/) }] });
+      // Si la línea YA trae finalSupplierId, `beneficiary` se ignora (manda el catálogo).
+      await expect(service.create({ ...input, items: [items[0]] }, requester)).resolves.toMatchObject({ items: [{ finalSupplierId: "p1" }] });
     });
   });
   // Hallazgo de revisión (reunión 2026-08-31, atajo #1): paymentTerms ya no se reconstruye leyendo el

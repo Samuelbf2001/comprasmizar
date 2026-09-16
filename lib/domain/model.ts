@@ -225,7 +225,19 @@ export interface DashboardMetrics {
 /** Supplier records are deliberately separate from the generic catalogue shape: bank data must never leak through catalogue/bootstrap responses. */
 export interface SupplierContact { name?: string; phone?: string; email?: string; address?: string; }
 export interface SupplierBankDetails { bankName?: string; accountType?: "ahorros" | "corriente"; accountNumber?: string; accountHolder?: string; accountHolderNit?: string; }
-export interface Supplier { id: string; name: string; nit?: string | null; contact: SupplierContact; bankDetails: SupplierBankDetails; active: boolean; }
+/** RF-601 (adenda de pagos): NIT = empresa; CC/CE/PAS = persona natural (topógrafo, maestro de obra, un socio). */
+export type SupplierIdentificationType = "NIT" | "CC" | "CE" | "PAS";
+/**
+ * RF-601/RF-606: `identificationType` + `identification` son la identidad del tercero (unicidad por
+ * tipo + identificación normalizada, migración 202609150002); `nit` se conserva como espejo LEGADO de
+ * `identification` cuando el tipo es NIT (NULL para personas) — lo mantiene un trigger, no el código.
+ * `pendingNormalization`: creado al vuelo desde un canal externo con solo identificación + nombre; Daniel
+ * completa la ficha. Los tres son opcionales en el tipo por los objetos legado en memoria (fakes de
+ * test): desde Postgres siempre viajan (defaults NIT / false).
+ */
+export interface Supplier { id: string; name: string; nit?: string | null; identificationType?: SupplierIdentificationType; identification?: string | null; pendingNormalization?: boolean; contact: SupplierContact; bankDetails: SupplierBankDetails; active: boolean; }
+/** RF-606: lo mínimo con lo que un canal externo (portal, WhatsApp) o el alta rápida identifican a un beneficiario. */
+export interface BeneficiaryInput { identificationType: SupplierIdentificationType; identification: string; name: string; phone?: string; }
 export type SupplierDocumentType = "rut" | "camara_comercio" | "certificacion_bancaria" | "certificado_calidad";
 /** A document record only exists after its private Storage object passed server-side HEAD validation. */
 export interface SupplierDocument { id: string; supplierId: string; type: SupplierDocumentType; name: string; mimeType: string; sizeBytes: number; uploadedBy?: string; uploadedAt: string; storagePath: string; }

@@ -35,7 +35,7 @@ function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisi
     audit, consecutives,
     features: { isEnabled: unused },
     items,
-    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, findRequesterDuplicate: unused, isEligibleApprover: unused, hasRequisitionsForWork: unused },
+    catalogs: { create: unused, get: unused, update: unused, findSupplierDuplicate: unused, findSupplierByIdentification: unused, findRequesterDuplicate: unused, isEligibleApprover: unused, hasRequisitionsForWork: unused },
     notifications,
   };
   const dependencies: ServiceDependencies = {

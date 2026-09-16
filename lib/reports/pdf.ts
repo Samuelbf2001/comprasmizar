@@ -57,7 +57,10 @@ export async function buildOrderPdf(order: OrderDocument): Promise<Uint8Array> {
   text(isPayment ? "BENEFICIARIO" : "PROVEEDOR", MARGIN, 10, true); advance(10);
   if (order.supplier) {
     text(order.supplier.name, MARGIN, 9); advance(9);
-    if (order.supplier.nit) { text(`NIT: ${order.supplier.nit}`, MARGIN, 9); advance(9); }
+    // RF-601: un beneficiario puede ser persona — se imprime el TIPO de identificación (NIT, CC, CE,
+    // PAS) delante del número; `nit` solo como respaldo de datos legado sin identificación.
+    const identification = order.supplier.identification ?? order.supplier.nit;
+    if (identification) { text(`${order.supplier.identificationType ?? "NIT"}: ${identification}`, MARGIN, 9); advance(9); }
     if (order.supplier.contact) { text(`Contacto: ${order.supplier.contact}`, MARGIN, 9); advance(9); }
     if (order.supplier.address) { text(`Dirección: ${order.supplier.address}`, MARGIN, 9); advance(9); }
     if (order.supplier.email) { text(`Correo: ${order.supplier.email}`, MARGIN, 9); advance(9); }
