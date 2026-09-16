@@ -116,7 +116,8 @@ function order(row: DbRow): Order {
 // `fecha_orden` (nace con el registro, NOT NULL en la BD) sí es obligatoria.
 // caja_id/concepto/medio_pago/registrado_por/cierre_id (2026-09-12, 202609120003): copiados por
 // sincronizar_gasto_caja_menor solo en origen 'caja_menor' — NULL en origen 'requisicion'.
-function expense(row: DbRow): Expense { return { id: String(row.id), workId: String(row.obra_id), origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7), costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined, billedCompanyId: row.empresa_facturada_id ? String(row.empresa_facturada_id) : undefined, cashBoxId: row.caja_id ? String(row.caja_id) : undefined, concept: row.concepto ? String(row.concepto) : undefined, paymentMethod: row.medio_pago ? (row.medio_pago as Expense["paymentMethod"]) : undefined, registeredBy: row.registrado_por ? String(row.registrado_por) : undefined, closeId: row.cierre_id ? String(row.cierre_id) : undefined }; }
+// obra_id NULL (RF-008, 202609150004: gasto bajo un centro no-obra) viaja como "" — ver Expense.workId.
+function expense(row: DbRow): Expense { return { id: String(row.id), workId: row.obra_id ? String(row.obra_id) : "", origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7), costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined, billedCompanyId: row.empresa_facturada_id ? String(row.empresa_facturada_id) : undefined, cashBoxId: row.caja_id ? String(row.caja_id) : undefined, concept: row.concepto ? String(row.concepto) : undefined, paymentMethod: row.medio_pago ? (row.medio_pago as Expense["paymentMethod"]) : undefined, registeredBy: row.registrado_por ? String(row.registrado_por) : undefined, closeId: row.cierre_id ? String(row.cierre_id) : undefined }; }
 /** Ingresos (2026-09-12, migración 202609120003): tabla APARTE de gastos, nunca negativa. */
 function income(row: DbRow): Income {
   return {
@@ -458,7 +459,7 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // comentario de la firma en contracts.ts). Es la instantánea de Expense.costCenterId, copiada tal
   // cual (nunca derivada aquí de `obra_id`): quien la resolvió ya fue generateOrders()/ProcurementService.
   // empresa_facturada_id (RF-009): misma regla que centro_costo_id — instantánea, solo en el INSERT.
-  async saveExpense(value: Expense): Promise<void> { await this.sql`insert into gastos (id, obra_id, origen, referencia_id, etiqueta_id, proveedor_id, fecha_orden, fecha, valor_base, iva, centro_costo_id, empresa_facturada_id) values (${value.id}, ${value.workId}, ${value.origin}, ${value.referenceId}, ${value.tagId ?? null}, ${value.supplierId ?? null}, ${value.orderDate}, ${value.date ?? null}, ${value.base}, ${value.iva}, ${value.costCenterId ?? null}, ${value.billedCompanyId ?? null}) on conflict (origen, referencia_id) do nothing`; }
+  async saveExpense(value: Expense): Promise<void> { await this.sql`insert into gastos (id, obra_id, origen, referencia_id, etiqueta_id, proveedor_id, fecha_orden, fecha, valor_base, iva, centro_costo_id, empresa_facturada_id) values (${value.id}, ${value.workId || null}, ${value.origin}, ${value.referenceId}, ${value.tagId ?? null}, ${value.supplierId ?? null}, ${value.orderDate}, ${value.date ?? null}, ${value.base}, ${value.iva}, ${value.costCenterId ?? null}, ${value.billedCompanyId ?? null}) on conflict (origen, referencia_id) do nothing`; }
   // Único método que actualiza `gastos.fecha` de un gasto ya existente: `saveExpense` inserta con `on
   // conflict do nothing` a propósito (no reescribe un gasto ya guardado), así que no sirve para fijar
   // la fecha de pago cuando `updateOrderAdminStatus(..., "pagada")` la conoce. Solo aplica a
@@ -559,7 +560,7 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and public.es_aprobador_de(r.id, ${actor.id})` : this.sql`and r.solicitante_id = ${actor.id}`;
     const periodStart = `${period}-01`;
     const totalsRows = await this.sql<{ period_expense: string; in_process_value: string }[]>`select coalesce(sum(g.valor_total) filter (where g.periodo = ${periodStart}::date), 0) as period_expense, coalesce(sum(g.valor_total) filter (where g.fecha is null), 0) as in_process_value from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility}`;
-    const byWorkRows = await this.sql<{ key: string; total: string }[]>`select g.obra_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.obra_id order by total desc`;
+    const byWorkRows = await this.sql<{ key: string | null; total: string }[]>`select g.obra_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.obra_id order by total desc`;
     const byTagRows = await this.sql<{ key: string | null; total: string }[]>`select g.etiqueta_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.etiqueta_id order by total desc`;
     // order by periodo desc limit 6, invertido en JS: mismo resultado final que groupExpenseByPeriod
     // (que ordena cronológico ascendente y se queda con los últimos `monthsBack`).
@@ -570,7 +571,8 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const totals = totalsRows[0];
     return {
       periodExpense: asNumber(totals?.period_expense), inProcessValue: asNumber(totals?.in_process_value),
-      expenseByWork: byWorkRows.map((row) => ({ key: String(row.key), total: asNumber(row.total) })),
+      // obra_id NULL (RF-008) agrupa bajo "" — mismo criterio que etiquetas/centros sin valor.
+      expenseByWork: byWorkRows.map((row) => ({ key: row.key ? String(row.key) : "", total: asNumber(row.total) })),
       expenseByTag: byTagRows.map((row) => ({ key: row.key ? String(row.key) : "", total: asNumber(row.total) })),
       expenseByPeriod: byPeriodRows.map((row) => ({ key: row.key, total: asNumber(row.total) })).reverse(),
       expenseByCostCenter: byCostCenterRows.map((row) => ({ key: row.key ? String(row.key) : "", total: asNumber(row.total) })),

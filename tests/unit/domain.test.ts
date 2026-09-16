@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeIdentification, normalizeItemName, orderTypeFor, paymentStatus, resolveBilledCompany, sumApprovedLines, sumLines, sumPaid, validateShares, type Order, type OrderPayment, type Requisition } from "../../lib/domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, costCenterRequiresWork, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeIdentification, normalizeItemName, orderTypeFor, paymentStatus, resolveBilledCompany, sumApprovedLines, sumLines, sumPaid, validateShares, type Order, type OrderPayment, type Requisition } from "../../lib/domain";
 
 const line = { id: "i1", quantity: 2, unit: "und", unitBase: 100, unitIva: 19, unitTotal: 119 };
 describe("domain permissions", () => {
@@ -172,6 +172,15 @@ describe("adenda de pagos: empresa facturada, auto-aprobación e identificación
     expect(() => assertCanSelfApprove({ id: "daniel", roles: ["revisor"] })).toThrow(DomainError);
     expect(() => assertCanSelfApprove({ id: "nelson", roles: ["aprobador"] })).toThrow(DomainError);
     expect(() => assertCanSelfApprove({ id: "claudia", roles: ["contabilidad", "admin_mizar"] })).toThrow(DomainError);
+  });
+  it("RF-008: la obra solo deja de ser obligatoria con un centro administrativo/personal/empresa; sin centro, tipo obra o sin tipo cargado sigue exigiéndose", () => {
+    expect(costCenterRequiresWork(null)).toBe(true);
+    expect(costCenterRequiresWork(undefined)).toBe(true);
+    expect(costCenterRequiresWork({})).toBe(true);
+    expect(costCenterRequiresWork({ type: "obra" })).toBe(true);
+    expect(costCenterRequiresWork({ type: "administrativo" })).toBe(false);
+    expect(costCenterRequiresWork({ type: "personal" })).toBe(false);
+    expect(costCenterRequiresWork({ type: "empresa" })).toBe(false);
   });
   it("normalizeIdentification compara por forma (sin puntos, guiones ni espacios), conservando letras", () => {
     expect(normalizeIdentification("900.123.456-7")).toBe("9001234567");

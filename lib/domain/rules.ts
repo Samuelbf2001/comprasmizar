@@ -1,4 +1,4 @@
-import type { Actor, DashboardActivityItem, DashboardAmountByKey, DashboardMetrics, DashboardQueueItem, Expense, ExpenseShare, ItemLine, Money, Order, OrderAdminStatus, OrderPayment, OrderStatus, OrderType, PaymentStatus, Requisition, RequisitionStatus, Role } from "./model";
+import type { Actor, CostCenterType, DashboardActivityItem, DashboardAmountByKey, DashboardMetrics, DashboardQueueItem, Expense, ExpenseShare, ItemLine, Money, Order, OrderAdminStatus, OrderPayment, OrderStatus, OrderType, PaymentStatus, Requisition, RequisitionStatus, Role } from "./model";
 import { DomainError } from "./model";
 
 export const ALL_ROLES: readonly Role[] = ["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"];
@@ -152,6 +152,17 @@ export function itemApproverId(line: ItemLine, headApproverId?: string): string 
  */
 export function resolveCostCenter(requisition: { costCenterId?: string }, work?: { costCenterId?: string } | null): string | undefined {
   return requisition.costCenterId ?? work?.costCenterId ?? undefined;
+}
+/**
+ * RF-008 (adenda de pagos): «un CC de tipo administrativo o personal no requiere obra». Es LA función
+ * de esa excepción — sin centro, o con un centro de tipo `obra` (el default, y lo que son todos los
+ * nacidos del backfill de 202609120001), la obra sigue siendo obligatoria; solo un centro
+ * administrativo/personal/empresa la libera. La misma regla la aplica la base sobre `gastos`
+ * (trigger `gastos_obra_segun_centro`, 202609150004). Un centro sin `type` cargado (fakes, filas
+ * anteriores a la columna) cuenta como obra: es el lado seguro.
+ */
+export function costCenterRequiresWork(costCenter?: { type?: CostCenterType } | null): boolean {
+  return !costCenter || (costCenter.type ?? "obra") === "obra";
 }
 /**
  * RF-009 (adenda de pagos, A7): la EMPRESA FACTURADA es la sociedad a cuyo nombre viene el soporte —

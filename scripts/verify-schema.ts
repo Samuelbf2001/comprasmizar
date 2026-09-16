@@ -95,6 +95,8 @@ const HARNESSES = [
   // N3 (2026-09-15): centro de costo con tipo, empresa facturada en requisiciones (default por trigger,
   // NOT NULL) y su instantánea en gastos.
   path.join(ROOT, "supabase", "tests", "centro_costo_tipo_empresa_facturada_verification.sql"),
+  // N4 (2026-09-15, RF-008): gastos.obra_id nullable solo bajo un centro de costo que no sea de tipo obra.
+  path.join(ROOT, "supabase", "tests", "obra_opcional_centros_no_obra_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

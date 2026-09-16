@@ -128,6 +128,10 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
     : kind === "costCenters" && id === "cc-compartido" ? { id: "cc-compartido", name: "Centro Compartido", societyId: undefined, active: true }
     : kind === "costCenters" && id === "cc-otra-sociedad" ? { id: "cc-otra-sociedad", name: "Centro de otra empresa", societyId: "otra-sociedad", active: true }
     : kind === "costCenters" && id === "cc-inactivo" ? { id: "cc-inactivo", name: "Centro Inactivo", societyId: "soc", active: false }
+    // RF-008 (N4): centros que NO son obra liberan la exigencia de obra; "cc-obra-explicita" la conserva.
+    : kind === "costCenters" && id === "cc-admin" ? { id: "cc-admin", name: "Administración", societyId: "soc", type: "administrativo" as const, active: true }
+    : kind === "costCenters" && id === "cc-admin-proim" ? { id: "cc-admin-proim", name: "Servicios PROIM", societyId: "proim", type: "empresa" as const, active: true }
+    : kind === "costCenters" && id === "cc-obra-explicita" ? { id: "cc-obra-explicita", name: "Obra Sur", societyId: "soc", type: "obra" as const, active: true }
     // Obra sin centro configurado: ejercita el caso "no hay de dónde heredar" (a diferencia de "work",
     // que siempre trae "cc-work").
     : kind === "works" && id === "obra-sin-centro" ? { id: "obra-sin-centro", name: "Obra Sin Centro", societyId: "soc", active: true }
@@ -1361,6 +1365,53 @@ describe("empresa facturada, monto auditado y auto-aprobación (adenda de pagos)
     expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); // no se envió a aprobación a medias
     await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const } })).resolves.toMatchObject({ status: "aprobada" });
     await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const }, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" }); // nunca por MCP
+  });
+});
+// RF-008 (N4): «un CC de tipo administrativo o personal no requiere obra» — la obra deja de ser
+// obligatoria solo bajo un centro que no es de tipo obra; el gasto nace sin obra y su empresa facturada
+// sale de la sociedad del centro.
+describe("obra opcional cuando el centro de costo no es de tipo obra (RF-008)", () => {
+  it("un CC administrativo permite enviar a aprobación sin obra; la orden y el gasto nacen sin obra", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "compra", societyId: "soc", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", costCenterId: "cc-admin", items }, reviewer);
+    await expect(service.sendForApproval(r.id, reviewer)).resolves.toMatchObject({ status: "en_aprobacion", workId: undefined, costCenterId: "cc-admin" });
+    await service.approve(r.id, approver);
+    const orders = await service.generateOrders(r.id, reviewer);
+    expect(orders).toHaveLength(2);
+    for (const order of orders) expect(deps.expensesData.find((e) => e.referenceId === order.id)).toMatchObject({ workId: "", costCenterId: "cc-admin", billedCompanyId: "soc" });
+  });
+  it("un CC de tipo obra sigue exigiendo obra (explícito, o sin tipo cargado), tanto al enviar a aprobación como al generar órdenes", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "compra", societyId: "soc", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", costCenterId: "cc-obra-explicita", items }, reviewer);
+    await expect(service.sendForApproval(r.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", costCenterId: "cc-work", items }, reviewer); // sin `type`: cuenta como obra
+    await expect(service.sendForApproval(r.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
+    // Con obra, como siempre.
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", workId: "work", items }, reviewer);
+    await expect(service.sendForApproval(r.id, reviewer)).resolves.toMatchObject({ status: "en_aprobacion" });
+    // generateOrders aplica la misma regla (dato legado: aprobada sin obra bajo un centro de tipo obra).
+    await service.approve(r.id, approver);
+    const stored = deps.req.get(r.id)!; stored.workId = undefined; stored.costCenterId = "cc-obra-explicita"; deps.req.set(r.id, stored);
+    await expect(service.generateOrders(r.id, reviewer)).rejects.toMatchObject({ code: "INVALID_STATE" });
+    expect(deps.ordersData).toHaveLength(0);
+  });
+  it("gasto sin obra hereda la sociedad del CC como empresa facturada", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "pago", societyId: "proim", channel: "web", items: [items[0]] }, requester);
+    await service.startReview(r.id, reviewer);
+    const reviewedR = await service.review(r.id, { tagId: "tag", approverId: "nelson", costCenterId: "cc-admin-proim", items: [items[0]] }, reviewer);
+    expect(reviewedR.billedCompanyId).toBe("proim"); // derivada del centro en la revisión
+    await service.sendForApproval(r.id, reviewer);
+    await service.approve(r.id, approver);
+    // Dato anterior a la columna: sin empresa facturada guardada, generateOrders la resuelve desde el centro.
+    const stored = deps.req.get(r.id)!; stored.billedCompanyId = undefined; deps.req.set(r.id, stored);
+    const [order] = await service.generateOrders(r.id, reviewer);
+    expect(order.workId).toBeUndefined();
+    expect(deps.expensesData.find((e) => e.referenceId === order.id)).toMatchObject({ workId: "", costCenterId: "cc-admin-proim", billedCompanyId: "proim" });
   });
 });
 describe("centros de costo", () => {

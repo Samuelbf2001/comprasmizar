@@ -420,6 +420,22 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
     expect(expenseInsert.text).toMatch(/centro_costo_id, empresa_facturada_id\)/);
     expect(expenseInsert.values.slice(-2)).toEqual(["cc", "proim"]);
   });
+  // RF-008 (N4): gastos.obra_id NULL viaja como workId "" (Expense.workId sigue siendo string por el
+  // reporte, fuera de la ola 1) y nunca se persiste "" — saveExpense escribe NULL.
+  it("un gasto sin obra se lee con workId \"\", se escribe con obra_id NULL y agrupa bajo \"\" en el dashboard", async () => {
+    const sql = fakeSql((call) => (/^select \* from gastos where id=/i.test(call.text)
+      ? [{ id: "g1", obra_id: null, origen: "requisicion", referencia_id: "o1", fecha_orden: "2026-09-15", valor_base: "250000", iva: "0", valor_total: "250000", centro_costo_id: "cc-admin", empresa_facturada_id: "proim" }]
+      : /select g\.obra_id as key/i.test(call.text) ? [{ key: null, total: "250000" }, { key: "obra-1", total: "1000" }]
+      : /^select coalesce\(sum\(g\.valor_total\)/i.test(call.text) ? [{ period_expense: "0", in_process_value: "0" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    expect(await ports.getExpense("g1")).toMatchObject({ workId: "", costCenterId: "cc-admin", billedCompanyId: "proim" });
+    await ports.saveExpense({ id: "g2", workId: "", origin: "requisicion", referenceId: "o2", orderDate: "2026-09-15", base: 100, iva: 0, total: 100, costCenterId: "cc-admin", billedCompanyId: "proim" });
+    const insert = sql.calls.find((call) => /^insert into gastos/i.test(call.text))!;
+    expect(insert.values[1]).toBeNull();
+    const aggregates = await ports.dashboardAggregates({ id: "daniel", roles: ["revisor"] }, "2026-09");
+    expect(aggregates.expenseByWork).toEqual([{ key: "", total: 250000 }, { key: "obra-1", total: 1000 }]);
+  });
   it("costCenters: create/update escriben tipo (default obra) y el mapeador lo expone como type", async () => {
     const sql = fakeSql((call) => (/^insert into centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", codigo: null, sociedad_id: null, tipo: "empresa", activo: true }] : /^update centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", tipo: "personal", activo: true }] : []));
     const ports = new PostgresPorts(sql);

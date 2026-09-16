@@ -184,6 +184,13 @@ export interface CashPayment extends OrderPayment { orderConsecutive: string; or
  * que lo originó ya se cerró.
  */
 /** `billedCompanyId` (RF-009, 202609150003): INSTANTÁNEA de `Requisition.billedCompanyId` al generar la orden, misma regla que `costCenterId`. */
+/**
+ * `workId` (RF-008, 202609150004): un gasto bajo un centro de costo administrativo/personal/empresa no
+ * tiene obra — en la base `gastos.obra_id` es NULL. Aquí viaja como `""` (no como `undefined`) porque el
+ * reporte de gastos (`app/api/reports/expenses-report.ts`, fuera de la ola 1) lo consume como `string`;
+ * pasar a `workId?: string` es el parche pendiente del coordinador. Nunca se persiste "": el adaptador
+ * escribe NULL.
+ */
 export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; billedCompanyId?: string; cashBoxId?: string; concept?: string; paymentMethod?: PaymentMethod; registeredBy?: string; closeId?: string; }
 export interface ExpenseShare { expenseId: string; workId: string; amount: Money; }
 /**
