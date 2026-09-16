@@ -58,7 +58,7 @@ describe("alta rápida de proveedor desde una fila (fija el line.id correcto)", 
     vi.restoreAllMocks();
   });
 
-  it("crea solo con nombre, omite NIT vacío y asigna inmediatamente a ESA fila sin duplicar POST", async () => {
+  it("crea solo con nombre, omite la identificación vacía y asigna inmediatamente a ESA fila sin duplicar POST", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "supplier-2", name: "Canteras Norte" }), {
         status: 201,
@@ -75,10 +75,12 @@ describe("alta rápida de proveedor desde una fila (fija el line.id correcto)", 
     fireEvent.click(submit);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    // Alta rápida unificada (components/screens/supplier-quick-create.tsx): sin identificación no
+    // viaja tipo ni número; la ficha queda marcada pendiente de completar.
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ name: "Canteras Norte" }),
+        body: JSON.stringify({ name: "Canteras Norte", pendingNormalization: true }),
       }),
     );
     expect(screen.getByRole("combobox", { name: "Proveedor de Arena" })).toHaveValue(
@@ -101,7 +103,7 @@ describe("alta rápida de proveedor desde una fila (fija el line.id correcto)", 
     fireEvent.change(screen.getByLabelText("Razón social *"), {
       target: { value: "Duplicado" },
     });
-    fireEvent.change(screen.getByLabelText("NIT (opcional)"), {
+    fireEvent.change(screen.getByLabelText("Identificación (opcional)"), {
       target: { value: "900123" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Crear y asignar" }));

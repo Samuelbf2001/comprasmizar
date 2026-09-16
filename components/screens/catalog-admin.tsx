@@ -14,6 +14,7 @@ import {
 import type { Role } from "../../lib/demo-data";
 import { SectionTitle } from "./screen-primitives";
 import { apiRequest, friendlyErrorText } from "../../lib/http/friendly-error";
+import { SUPPLIER_IDENTIFICATION_TYPE_OPTIONS, identificationLabel } from "./supplier-quick-create";
 // H2/H6 (docs/plan-rendimiento.md): esta pantalla escribe con su propio `apiRequest` (no el
 // `mutate` de connected/data.ts, que invalida por afectación según la URL) — así que tiene que
 // invalidar los catálogos a mano tras cada escritura. Import liviano: data.ts no arrastra
@@ -47,6 +48,10 @@ type CatalogRecord = {
   specification?: string;
   category?: string;
   nit?: string;
+  // RF-601 (adenda de pagos): identidad del proveedor persona o empresa; `nit` queda como legado.
+  identificationType?: string;
+  identification?: string;
+  pendingNormalization?: boolean;
   phone?: string;
   email?: string;
   address?: string;
@@ -128,6 +133,13 @@ const CASH_BOX_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "banco", label: "Banco" },
   { value: "personal", label: "Personal" },
 ];
+// Centros de costo (RF-007): EXACTAMENTE los valores del CHECK `centros_costo_tipo_check` (202609150003).
+const COST_CENTER_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "obra", label: "Obra" },
+  { value: "administrativo", label: "Administrativo" },
+  { value: "personal", label: "Personal" },
+  { value: "empresa", label: "Empresa" },
+];
 const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "solicitante", label: "Solicitante" },
   { value: "revisor", label: "Revisor" },
@@ -144,6 +156,9 @@ const emptyForm: FormValues = {
   specification: "",
   category: "",
   nit: "",
+  identificationType: "NIT",
+  identification: "",
+  pendingNormalization: false,
   phone: "",
   email: "",
   address: "",
@@ -285,6 +300,7 @@ function payloadFor(
     if (editing || societyId) data.societyId = societyId || null;
     const code = String(values.code || "").trim();
     if (editing || code) data.code = code || null;
+    data.type = String(values.type || "obra");
   }
   if (kind === "cashBoxes") {
     data.type = String(values.type || "").trim();
@@ -304,8 +320,11 @@ function payloadFor(
     if (editing || category) data.category = category || null;
   }
   if (kind === "suppliers") {
-    const nit = String(values.nit || "").trim();
-    if (editing || nit) data.nit = nit || null;
+    // RF-601: se manda la identidad nueva; `nit` lo deja coherente el servicio (espejo para NIT).
+    data.identificationType = String(values.identificationType || "NIT");
+    const identification = String(values.identification || "").trim();
+    if (editing || identification) data.identification = identification || null;
+    data.pendingNormalization = values.pendingNormalization === true;
     for (const key of ["phone", "email", "address"])
       if (editing || String(values[key] || "").trim())
         data[key] = String(values[key] || "").trim() || null;
@@ -483,11 +502,17 @@ export function ConnectedCatalogAdmin({
     )
       return "La especificación admite 1000 caracteres y la categoría 100.";
     if (
-      (kind === "suppliers" || kind === "societies") &&
+      kind === "societies" &&
       String(form.nit || "").trim() &&
       (String(form.nit).length < 3 || String(form.nit).length > 32)
     )
       return "El NIT debe tener entre 3 y 32 caracteres.";
+    if (
+      kind === "suppliers" &&
+      String(form.identification || "").trim() &&
+      (String(form.identification).trim().length < 3 || String(form.identification).trim().length > 32)
+    )
+      return "La identificación debe tener entre 3 y 32 caracteres.";
     // HUECO 1: a diferencia de proveedores/usuarios, el teléfono es obligatorio para un solicitante
     // autorizado (sin él la fila no identifica a nadie en el canal WhatsApp).
     if (kind === "requesters" && !String(form.phone || "").trim())
@@ -760,6 +785,7 @@ export function ConnectedCatalogAdmin({
                     {kind === "costCenters" && (
                       <>
                         <th>Código</th>
+                        <th>Tipo</th>
                         <th>Empresa</th>
                       </>
                     )}
@@ -783,7 +809,7 @@ export function ConnectedCatalogAdmin({
                     )}
                     {kind === "suppliers" && (
                       <>
-                        <th>NIT</th>
+                        <th>Identificación</th>
                         <th>Contacto</th>
                       </>
                     )}
@@ -835,6 +861,11 @@ export function ConnectedCatalogAdmin({
                       {kind === "costCenters" && (
                         <>
                           <td>{row.code || "—"}</td>
+                          <td>
+                            {COST_CENTER_TYPE_OPTIONS.find(
+                              (option) => option.value === (row.type || "obra"),
+                            )?.label ?? row.type}
+                          </td>
                           <td className="mono-id">
                             {data.societies?.find(
                               (society) => society.id === row.societyId,
@@ -887,7 +918,14 @@ export function ConnectedCatalogAdmin({
                       )}
                       {kind === "suppliers" && (
                         <>
-                          <td>{row.nit || "—"}</td>
+                          <td>
+                            {identificationLabel(row) || "—"}
+                            {row.pendingNormalization && (
+                              <small className="table-sub">
+                                <span className="badge badge-warning">Pendiente de completar</span>
+                              </small>
+                            )}
+                          </td>
                           <td>{row.email || row.phone || "—"}</td>
                         </>
                       )}
@@ -1283,6 +1321,25 @@ function CatalogForm({
             </label>
             <label className="field">
               <span>
+                Tipo <em>*</em>
+              </span>
+              <select
+                value={String(values.type || "obra")}
+                required
+                onChange={(event) => update("type", event.target.value)}
+              >
+                {COST_CENTER_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <small>
+                Administrativo, personal o empresa: gastos que no cuelgan de una obra.
+              </small>
+            </label>
+            <label className="field">
+              <span>
                 Empresa <small>opcional: vacío = compartido</small>
               </span>
               <select
@@ -1450,14 +1507,41 @@ function CatalogForm({
         {kind === "suppliers" && (
           <>
             <label className="field">
+              <span>Tipo de identificación</span>
+              <select
+                value={String(values.identificationType || "NIT")}
+                onChange={(event) => update("identificationType", event.target.value)}
+              >
+                {SUPPLIER_IDENTIFICATION_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
               <span>
-                NIT <small>opcional</small>
+                Identificación <small>opcional</small>
               </span>
               <input
-                value={String(values.nit || "")}
+                value={String(values.identification || "")}
                 maxLength={32}
-                onChange={(event) => update("nit", event.target.value)}
+                aria-invalid={Boolean(
+                  feedback &&
+                    String(values.identification || "").trim() &&
+                    (String(values.identification).trim().length < 3 ||
+                      String(values.identification).trim().length > 32),
+                )}
+                onChange={(event) => update("identification", event.target.value)}
               />
+            </label>
+            <label className="checkbox-field field-wide">
+              <input
+                type="checkbox"
+                checked={values.pendingNormalization === true}
+                onChange={(event) => update("pendingNormalization", event.target.checked)}
+              />
+              Pendiente de completar
             </label>
             <label className="field">
               <span>
