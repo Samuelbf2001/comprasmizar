@@ -58,6 +58,9 @@ describe("dos ejes de estado de la orden, visibles a la vez", () => {
   it("en la ficha de la orden, contabilidad puede marcar pagada solo cuando ya está contabilizada", async () => {
     // Abrir la ficha también dispara, en segundo plano, la carga del expediente del
     // proveedor (GET /api/suppliers/:id) — se filtra por URL en vez de contar llamadas totales.
+    // Adenda de pagos (A3): la orden no trae líneas, así que su saldo es cero y sigue existiendo
+    // "Marcar pagada" (solo cierra el estado). Con saldo, el botón es "Pagar saldo" — ver
+    // tests/unit/connected-orders-pagos.test.tsx.
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "order-1", documents: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
@@ -156,7 +159,9 @@ describe("columna Valor y filtro por fecha requerida (restaurados tras la correc
 
 // Reunión agosto 2026 (pedido del cliente): "saber cuánto se ha pagado de cada orden" con pagos
 // parciales, sin romper el marcado de "pagada" existente (ver los describe de arriba, sin tocar).
-describe("panel de Pagos — columna 'Pagado / Total' y formulario de la ficha", () => {
+// Adenda de pagos (S1): el formulario inline pasó a un diálogo — "Registrar pago" lo abre y
+// "Guardar pago" envía; el detalle del diálogo vive en tests/unit/connected-orders-pagos.test.tsx.
+describe("panel de Pagos — columna 'Pagado / Total' y diálogo de la ficha", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
@@ -217,14 +222,16 @@ describe("panel de Pagos — columna 'Pagado / Total' y formulario de la ficha",
     await waitFor(() =>
       expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/orders/order-1/payments")).toBe(true),
     );
-    // El historial ya cargado se ve en la ficha (medio de pago, vía estadoLabel). getAllByText
-    // porque "Efectivo" también es una opción del <select> del formulario, más abajo.
-    await waitFor(() => expect(screen.getAllByText("Efectivo").length).toBeGreaterThan(0));
+    // El historial ya cargado se ve en la ficha (medio de pago, vía medioPagoLabel de
+    // payment-labels.tsx: la caja menor ES el medio `efectivo`, adenda A1). getAllByText porque
+    // "Caja (efectivo)" también es una opción del filtro "Medio de pago".
+    await waitFor(() => expect(screen.getAllByText("Caja (efectivo)").length).toBeGreaterThan(0));
 
+    fireEvent.click(screen.getByRole("button", { name: "Registrar pago" }));
     fireEvent.change(screen.getByLabelText("Fecha"), { target: { value: "2026-08-20" } });
     fireEvent.change(screen.getByLabelText("Valor"), { target: { value: "20000" } });
     fireEvent.change(screen.getByLabelText("Medio"), { target: { value: "transferencia" } });
-    fireEvent.click(screen.getByRole("button", { name: "Registrar pago" }));
+    fireEvent.click(screen.getByRole("button", { name: "Guardar pago" }));
 
     await waitFor(() =>
       expect(
@@ -236,7 +243,7 @@ describe("panel de Pagos — columna 'Pagado / Total' y formulario de la ficha",
     await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
-  it("un aprobador (sin payment:register) ve el historial pero no el formulario de registro", async () => {
+  it("un aprobador (sin payment:register) ve el historial pero no el botón de registro", async () => {
     mockFetch([]);
     render(<ConnectedOrders data={{ rows: [rowWithPayment], catalogs }} role="Aprobador" refresh={vi.fn()} go={vi.fn()} />);
     fireEvent.click(screen.getByText("OC-001"));
@@ -244,7 +251,7 @@ describe("panel de Pagos — columna 'Pagado / Total' y formulario de la ficha",
     expect(screen.queryByRole("button", { name: "Registrar pago" })).toBeNull();
   });
 
-  it("una orden ya pagada no ofrece el formulario, ni siquiera a contabilidad", async () => {
+  it("una orden ya pagada no ofrece el registro de pagos, ni siquiera a contabilidad", async () => {
     mockFetch([]);
     render(<ConnectedOrders data={{ rows: [{ ...rowWithPayment, adminStatus: "pagada" }], catalogs }} role="Contabilidad" refresh={vi.fn()} go={vi.fn()} />);
     fireEvent.click(screen.getByText("OC-001"));

@@ -5,7 +5,7 @@
 // "Compra"/"Pago" en vez del código crudo.
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectedOrders } from "../../components/screens/connected";
 
@@ -64,7 +64,8 @@ describe("órdenes: centro de costo y chip de tipo (Compra/Pago)", () => {
   it("el tipo se lee como chip 'Compra'/'Pago', no como el código crudo OC/OP", () => {
     renderOrders();
     expect(screen.getByText("Compra")).toBeInTheDocument();
-    expect(screen.getByText("Pago")).toBeInTheDocument();
+    // Dentro de la fila: "Pago" también es el encabezado de la columna del estado de pago (RF-508).
+    expect(within(screen.getByText("OP-001").closest("tr")!).getByText("Pago")).toBeInTheDocument();
   });
 
   it("la ficha de la orden muestra el centro de costo", () => {
