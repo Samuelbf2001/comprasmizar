@@ -1,7 +1,8 @@
 import { z, type ZodType } from "zod";
-import { DomainError, type Actor } from "../domain";
+import { DomainError, type Actor, type PaymentMethod, type PaymentStatus } from "../domain";
 import { requireServerActor } from "../infrastructure/auth";
 import type { ListQuery } from "../services/list-query";
+import { PAYMENT_METHOD_VALUES, PAYMENT_STATUS_VALUES } from "./schemas";
 
 const noStore = { "Cache-Control": "no-store" };
 class RequestValidationError extends Error { constructor(readonly issues: z.core.$ZodIssue[]) { super("INVALID_INPUT"); } }
@@ -102,11 +103,20 @@ export function parseListQuery(url: URL, statusValues?: readonly string[]): { qu
   if (rawWorkId !== null) { if (!z.string().uuid().safeParse(rawWorkId).success) throw new DomainError("INVALID_INPUT", "workId debe ser un uuid válido"); query.workId = rawWorkId; }
   const rawCostCenterId = params.get("costCenterId");
   if (rawCostCenterId !== null) { if (!z.string().uuid().safeParse(rawCostCenterId).success) throw new DomainError("INVALID_INPUT", "costCenterId debe ser un uuid válido"); query.costCenterId = rawCostCenterId; }
+  // RF-509/RF-707 (adenda de pagos): empresa facturada — requisiciones, órdenes y gastos.
+  const rawBilledCompanyId = params.get("billedCompanyId");
+  if (rawBilledCompanyId !== null) { if (!z.string().uuid().safeParse(rawBilledCompanyId).success) throw new DomainError("INVALID_INPUT", "billedCompanyId debe ser un uuid válido"); query.billedCompanyId = rawBilledCompanyId; }
   // Cajas (2026-09-12): `?cashBoxId=` genérico para caja menor/ingresos; `/api/expenses` usa además
   // `?cajaId=` (ver app/api/expenses/route.ts) — mismo filtro, nombre de parámetro pedido aparte.
   const rawCashBoxId = params.get("cashBoxId");
   if (rawCashBoxId !== null) { if (!z.string().uuid().safeParse(rawCashBoxId).success) throw new DomainError("INVALID_INPUT", "cashBoxId debe ser un uuid válido"); query.cashBoxId = rawCashBoxId; }
-  for (const field of ["from", "to"] as const) {
+  // RF-509 (adenda de pagos): filtros del panel de órdenes — solo los consume `listVisibleOrders`; en
+  // las demás rutas se aceptan y se ignoran, mismo criterio aditivo que costCenterId/cashBoxId.
+  const rawPaymentMethod = params.get("paymentMethod");
+  if (rawPaymentMethod !== null) { if (!(PAYMENT_METHOD_VALUES as readonly string[]).includes(rawPaymentMethod)) throw new DomainError("INVALID_INPUT", `paymentMethod inválido: ${rawPaymentMethod}`); query.paymentMethod = rawPaymentMethod as PaymentMethod; }
+  const rawPaymentStatus = params.get("paymentStatus");
+  if (rawPaymentStatus !== null) { if (!(PAYMENT_STATUS_VALUES as readonly string[]).includes(rawPaymentStatus)) throw new DomainError("INVALID_INPUT", `paymentStatus inválido: ${rawPaymentStatus}`); query.paymentStatus = rawPaymentStatus as PaymentStatus; }
+  for (const field of ["from", "to", "paidFrom", "paidTo"] as const) {
     const raw = params.get(field);
     if (raw !== null) { if (!isoDatePattern.test(raw) || Number.isNaN(Date.parse(raw))) throw new DomainError("INVALID_INPUT", `${field} debe ser una fecha YYYY-MM-DD`); query[field] = raw; }
   }
@@ -123,7 +133,7 @@ export function parseListQuery(url: URL, statusValues?: readonly string[]): { qu
 /** `true` si `query` trae algún filtro (status/workId/from/to) — decide si el modo "array sin paginar"
  *  debe reutilizar el camino filtrado (con el límite por defecto de `pageLimit`, ver
  *  lib/services/list-query.ts) o el camino sin `query` de siempre, más barato. */
-export function hasListFilters(query: ListQuery): boolean { return query.status !== undefined || query.workId !== undefined || query.costCenterId !== undefined || query.cashBoxId !== undefined || query.from !== undefined || query.to !== undefined; }
+export function hasListFilters(query: ListQuery): boolean { return query.status !== undefined || query.workId !== undefined || query.costCenterId !== undefined || query.billedCompanyId !== undefined || query.cashBoxId !== undefined || query.from !== undefined || query.to !== undefined || query.paymentMethod !== undefined || query.paymentStatus !== undefined || query.paidFrom !== undefined || query.paidTo !== undefined; }
 
 export function apiError(error: unknown, serverTiming?: string): Response {
   const headers = serverTiming ? { ...noStore, "Server-Timing": serverTiming } : noStore;

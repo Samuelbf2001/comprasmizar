@@ -1,4 +1,4 @@
-import type { Actor, DashboardActivityItem, DashboardAmountByKey, DashboardMetrics, DashboardQueueItem, Expense, ExpenseShare, ItemLine, Money, Order, OrderAdminStatus, OrderStatus, OrderType, Requisition, RequisitionStatus, Role } from "./model";
+import type { Actor, DashboardActivityItem, DashboardAmountByKey, DashboardMetrics, DashboardQueueItem, Expense, ExpenseShare, ItemLine, Money, Order, OrderAdminStatus, OrderPayment, OrderStatus, OrderType, PaymentStatus, Requisition, RequisitionStatus, Role } from "./model";
 import { DomainError } from "./model";
 
 export const ALL_ROLES: readonly Role[] = ["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"];
@@ -153,6 +153,27 @@ export function itemApproverId(line: ItemLine, headApproverId?: string): string 
 export function resolveCostCenter(requisition: { costCenterId?: string }, work?: { costCenterId?: string } | null): string | undefined {
   return requisition.costCenterId ?? work?.costCenterId ?? undefined;
 }
+/**
+ * RF-009 (adenda de pagos, A7): la EMPRESA FACTURADA es la sociedad a cuyo nombre viene el soporte —
+ * lo que contabiliza el contador — y no tiene por qué ser la del centro de costo (Claudia) ni la de la
+ * requisición: la factura de un gasto de Juliana puede venir a nombre de PROIM. Es LA función del
+ * default (la elegida en revisión si la hay; si no la sociedad del centro de costo; si no la de la obra;
+ * si no la propia de la requisición) y por eso vive aquí, hermana de `resolveCostCenter`. Un centro
+ * COMPARTIDO (sin sociedad) cae a la obra, y un centro sin obra (administrativo/personal) a la sociedad
+ * de la requisición. Tipado estructural a propósito, como `resolveCostCenter`.
+ */
+export function resolveBilledCompany(requisition: { billedCompanyId?: string; societyId?: string }, costCenter?: { societyId?: string | null } | null, work?: { societyId?: string } | null): string | undefined {
+  return requisition.billedCompanyId ?? costCenter?.societyId ?? work?.societyId ?? requisition.societyId ?? undefined;
+}
+/**
+ * RF-308 (adenda de pagos, A9): la auto-aprobación en un paso es solo para el usuario MAESTRO — quien
+ * reúne revisor Y aprobador (Daniel) — o admin_sixteam (que ya decide cualquier requisición, M-5). Un
+ * revisor a secas o un aprobador a secas no la tienen: cada uno hace su mitad del flujo.
+ */
+export function assertCanSelfApprove(actor: Actor): void {
+  if (actor.roles.includes("admin_sixteam") || (actor.roles.includes("revisor") && actor.roles.includes("aprobador"))) return;
+  throw new DomainError("FORBIDDEN", "Aprobar en un solo paso exige los roles de revisor y aprobador");
+}
 /** Ítems que ESTE actor tiene pendientes de decidir. Vacío no significa "no le toca": puede haberlos ya decidido. */
 export function pendingItemsFor(actorId: string, lines: readonly ItemLine[], headApproverId?: string): ItemLine[] {
   return lines.filter((line) => (line.status ?? "pendiente") === "pendiente" && itemApproverId(line, headApproverId) === actorId);
@@ -202,6 +223,27 @@ export function assertPaymentWithinOrder(total: Money, paid: Money, next: Money)
   assertCop(next, "Valor del pago");
   if (next <= 0) throw new DomainError("INVALID_MONEY", "El pago debe ser mayor a cero");
   if (paid + next > total) throw new DomainError("PAYMENT_EXCEEDS_ORDER", "El pago excede el saldo pendiente de la orden");
+}
+/**
+ * RF-510 (adenda de pagos): lo pagado de una orden es la suma de sus pagos VIGENTES — un pago anulado
+ * sigue en el historial pero no cuenta. Única definición de ese "no cuenta" del lado del dominio; la
+ * base aplica la misma regla en `validar_pago_no_excede_orden` (202609150001) y el adaptador Postgres
+ * en el `left join lateral` de `Order.paidAmount`.
+ */
+export function sumPaid(payments: readonly OrderPayment[]): Money { return payments.reduce((sum, payment) => sum + (payment.annulled ? 0 : payment.amount), 0); }
+/**
+ * RF-508: `estado_pago` derivado, nunca guardado. `total` es el valor del gasto de la orden; `paid` la
+ * suma de pagos vigentes (`sumPaid`). "pagada" es `paid >= total` (el trigger ya impide pasarse, así que
+ * en la práctica es la igualdad); un total en cero sin pagos es "pendiente", no "pagada".
+ */
+export function paymentStatus(total: Money, paid: Money): PaymentStatus {
+  if (paid <= 0) return "pendiente";
+  return paid < total ? "parcial" : "pagada";
+}
+/** RF-510: anular exige motivo y un pago todavía vigente — anular dos veces no es idempotente, es un error. */
+export function assertCanAnnulPayment(payment: Pick<OrderPayment, "annulled">, reason: string): void {
+  if (!reason?.trim()) throw new DomainError("ANNULMENT_REASON_REQUIRED", "Se requiere motivo para anular un pago");
+  if (payment.annulled) throw new DomainError("PAYMENT_ALREADY_ANNULLED", "El pago ya está anulado");
 }
 export function validateShares(total: Money, shares: readonly ExpenseShare[]): void {
   if (!Number.isInteger(total) || total <= 0 || shares.length === 0 || shares.some((share) => !share.expenseId || !share.workId || !Number.isInteger(share.amount) || share.amount <= 0)) throw new DomainError("INVALID_SHARE", "Reparto inválido");

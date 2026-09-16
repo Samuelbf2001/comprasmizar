@@ -181,6 +181,18 @@ describe("buildOrderPdf — variante de orden de pago (feat/solicitud-de-pago)",
     expect(text).not.toContain("DATOS BANCARIOS");
   });
 
+  // RF-601 (adenda de pagos): el beneficiario puede ser una persona — el PDF muestra tipo + identificación.
+  it("el PDF muestra tipo + identificación del beneficiario (CC para una persona, NIT para una empresa) y cae al nit legado sin identificación", async () => {
+    const persona = extractPdfText(await buildOrderPdf(paymentOrder({ supplier: { name: "Juan Camilo Topógrafo", identificationType: "CC", identification: "1.020.304.050" } })));
+    expect(persona).toContain("BENEFICIARIO");
+    expect(persona).toContain("CC: 1.020.304.050");
+    expect(persona).not.toContain("NIT:");
+    const empresa = extractPdfText(await buildOrderPdf(paymentOrder({ supplier: { name: "Sixteam SAS", nit: "901.555.666-1", identificationType: "NIT", identification: "901.555.666-1" } })));
+    expect(empresa).toContain("NIT: 901.555.666-1");
+    const legado = extractPdfText(await buildOrderPdf(paymentOrder({ supplier: { name: "Contratista legado", nit: "800.987.654-2" } })));
+    expect(legado).toContain("NIT: 800.987.654-2");
+  });
+
   it("una orden de compra (OC) sigue sin datos bancarios ni la etiqueta CONCEPTO, aunque el proveedor los tenga cargados", async () => {
     const text = extractPdfText(await buildOrderPdf(baseOrder({ supplier: { name: "Ferretería El Roble S.A.S.", bankDetails: { bankName: "Bancolombia" } } })));
     expect(text).not.toContain("DATOS BANCARIOS");

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { authenticatedJson, assertSameOrigin, parseJson } from "../../../lib/http/api";
+import { SUPPLIER_IDENTIFICATION_TYPE_VALUES } from "../../../lib/http/schemas";
 import { hasPermission } from "../../../lib/domain";
 import { sharedPostgres } from "../../../lib/infrastructure/postgres-repositories";
 import { runtimeEnv } from "../../../lib/security/env";
@@ -22,10 +23,14 @@ const active = z.boolean().optional();
 const roleLiteral = z.enum(["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"]);
 const phone = z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/);
 const nit = z.string().trim().min(3).max(32);
+// RF-601: mismos valores que `SupplierIdentificationType` / el CHECK de proveedores.tipo_identificacion.
+const identificationType = z.enum(SUPPLIER_IDENTIFICATION_TYPE_VALUES);
 // Centros de costo (2026-09-12): código opcional, más corto que el NIT (no es un identificador legal).
 const costCenterCode = z.string().trim().min(1).max(32);
 // Cajas (2026-09-12): EXACTAMENTE los valores de `public.tipo_caja` (202609120003_cajas_ingresos_cierres.sql).
 const cashBoxType = z.enum(["caja_menor", "administrativa", "banco", "personal"]);
+// Centros de costo (RF-007): EXACTAMENTE los valores del CHECK `centros_costo_tipo_check` (202609150003).
+const costCenterType = z.enum(["obra", "administrativo", "personal", "empresa"]);
 const tagCreateData = z.object({ name, approverId: uuid.optional(), active }).strict().superRefine((value, context) => { if (value.active !== false && !value.approverId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["approverId"], message: "Active tags require an approver" }); });
 const createCatalogSchema = z.discriminatedUnion("kind", [
   // costCenterId (2026-09-12): DEFAULT de la obra, opcional — una obra puede crearse sin centro
@@ -33,9 +38,11 @@ const createCatalogSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("works"), data: z.object({ name, societyId: uuid, costCenterId: uuid.optional(), active }).strict() }),
   z.object({ kind: z.literal("tags"), data: tagCreateData }),
   // societyId ausente/opcional = centro COMPARTIDO entre empresas (ver 202609120001_centros_costo.sql).
-  z.object({ kind: z.literal("costCenters"), data: z.object({ name, code: costCenterCode.optional(), societyId: uuid.optional(), active }).strict() }),
+  // type (RF-007, adenda de pagos): obra por defecto; administrativo/personal/empresa para los centros que no son una obra.
+  z.object({ kind: z.literal("costCenters"), data: z.object({ name, code: costCenterCode.optional(), societyId: uuid.optional(), type: costCenterType.optional(), active }).strict() }),
   z.object({ kind: z.literal("items"), data: z.object({ name, specification: z.string().trim().min(1).max(1_000).optional(), unit: z.string().trim().min(1).max(40), category: z.string().trim().min(1).max(100).optional(), active }).strict() }),
-  z.object({ kind: z.literal("suppliers"), data: z.object({ name, nit: nit.optional(), phone: phone.optional(), email: z.string().trim().email().max(254).optional(), address: z.string().trim().min(1).max(300).optional(), active }).strict() }),
+  // RF-601 (adenda de pagos): identificationType/identification (NIT o cédula) junto al `nit` legado.
+  z.object({ kind: z.literal("suppliers"), data: z.object({ name, nit: nit.optional(), identificationType: identificationType.optional(), identification: nit.optional(), pendingNormalization: z.boolean().optional(), phone: phone.optional(), email: z.string().trim().email().max(254).optional(), address: z.string().trim().min(1).max(300).optional(), active }).strict() }),
   z.object({ kind: z.literal("societies"), data: z.object({ name, nit: nit.optional(), active }).strict() }),
   // RF-004: el alta CREA la cuenta de acceso (2026-09-11). Recibe la contraseña inicial, nunca un id:
   // ese lo genera la base al insertar en auth.users, dentro de la misma transacción que `usuarios` y
@@ -58,9 +65,9 @@ const patchCatalogSchema = z.discriminatedUnion("kind", [
   // obra, no solo cambiarlo (mismo patrón que approverId en tags, justo abajo).
   z.object({ kind: z.literal("works"), id: uuid, data: z.object({ name: name.optional(), societyId: uuid.optional(), costCenterId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("tags"), id: uuid, data: z.object({ name: name.optional(), approverId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
-  z.object({ kind: z.literal("costCenters"), id: uuid, data: z.object({ name: name.optional(), code: costCenterCode.nullable().optional(), societyId: uuid.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  z.object({ kind: z.literal("costCenters"), id: uuid, data: z.object({ name: name.optional(), code: costCenterCode.nullable().optional(), societyId: uuid.nullable().optional(), type: costCenterType.optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("items"), id: uuid, data: z.object({ name: name.optional(), specification: z.string().trim().min(1).max(1_000).nullable().optional(), unit: z.string().trim().min(1).max(40).optional(), category: z.string().trim().min(1).max(100).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
-  z.object({ kind: z.literal("suppliers"), id: uuid, data: z.object({ name: name.optional(), nit: nit.nullable().optional(), phone: phone.nullable().optional(), email: z.string().trim().email().max(254).nullable().optional(), address: z.string().trim().min(1).max(300).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
+  z.object({ kind: z.literal("suppliers"), id: uuid, data: z.object({ name: name.optional(), nit: nit.nullable().optional(), identificationType: identificationType.optional(), identification: nit.nullable().optional(), pendingNormalization: z.boolean().optional(), phone: phone.nullable().optional(), email: z.string().trim().email().max(254).nullable().optional(), address: z.string().trim().min(1).max(300).nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   z.object({ kind: z.literal("societies"), id: uuid, data: z.object({ name: name.optional(), nit: nit.nullable().optional(), active }).strict().refine((value) => Object.keys(value).length > 0) }),
   // Sin "email": el correo se vincula a la cuenta de Auth y no se edita desde este catálogo.
   // "roles" es el conjunto final deseado (reemplaza, no incrementa) y puede quedar vacío.

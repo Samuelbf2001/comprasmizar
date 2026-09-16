@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Sql } from "postgres";
 import { DomainError, type Actor } from "../../lib/domain";
 import { PostgresPorts } from "../../lib/infrastructure/postgres-repositories";
+import type { CatalogCostCenter } from "../../lib/services";
 import { decodeCursor, encodeCursor } from "../../lib/services/list-query";
 
 /**
@@ -334,13 +335,106 @@ describe("PostgresPorts.saveOrder — proveedor_id persistido y sin huérfanos e
 // Reunión agosto 2026: pagos parciales de orden — `Order.paidAmount` resuelto en el MISMO select
 // (left join lateral sobre pagos_orden), y el repositorio dedicado de pagos_orden.
 describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrderPayment, listOrderPayments)", () => {
-  it("orderSelectColumns/orderFromJoins suman un left join lateral a pagos_orden y max(pago.pagado) as pagado_total", async () => {
+  // Adenda de pagos (N1): el lateral solo suma pagos VIGENTES (`not po.anulado`) y expone además el último
+  // pago, los medios usados y el total del gasto (para derivar paymentStatus en order(row)).
+  it("orderSelectColumns/orderFromJoins suman un left join lateral a pagos_orden (solo no anulados) y max(pago.pagado) as pagado_total", async () => {
     const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text) ? [] : []));
     const ports = new PostgresPorts(sql);
     await ports.getOrder("o1");
     const select = sql.calls.find((call) => /^select o\.\*/i.test(call.text))!;
-    expect(select.text).toMatch(/left join lateral \(select coalesce\(sum\(po\.valor\), 0\) as pagado from pagos_orden po where po\.orden_id = o\.id\) pago on true/);
-    expect(select.text).toMatch(/max\(pago\.pagado\) as pagado_total/);
+    expect(select.text).toMatch(/left join lateral \(select coalesce\(sum\(po\.valor\), 0\) as pagado, max\(po\.fecha\) as ultimo_pago, string_agg\(distinct po\.medio_pago::text, ','\) as medios from pagos_orden po where po\.orden_id = o\.id and not po\.anulado\) pago on true/);
+    expect(select.text).toMatch(/left join lateral \(select g\.valor_total from gastos g where g\.origen = 'requisicion' and g\.referencia_id = o\.id\) gasto on true/);
+    expect(select.text).toMatch(/max\(pago\.pagado\) as pagado_total, max\(pago\.ultimo_pago\) as ultimo_pago, max\(pago\.medios\) as medios_pago, max\(gasto\.valor_total\) as gasto_total/);
+  });
+  it("getOrder deriva paymentStatus/lastPaymentAt/paymentMethods de pagado_total, gasto_total, ultimo_pago y medios_pago", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada", pagado_total: "640000.00", gasto_total: "1285000.00", ultimo_pago: new Date("2026-09-05T00:00:00.000Z"), medios_pago: "efectivo,transferencia" }]
+      : []));
+    const order = await new PostgresPorts(sql).getOrder("o1");
+    expect(order).toMatchObject({ paidAmount: 640000, paymentStatus: "parcial", lastPaymentAt: "2026-09-05", paymentMethods: ["efectivo", "transferencia"] });
+  });
+  it("getOrder deja paymentStatus undefined sin gasto contra el que medir, y paymentMethods [] (no undefined) cuando el join corrió sin pagos", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada", pagado_total: "0", gasto_total: null, ultimo_pago: null, medios_pago: null }]
+      : []));
+    const order = await new PostgresPorts(sql).getOrder("o1");
+    expect(order?.paymentStatus).toBeUndefined();
+    expect(order?.paymentMethods).toEqual([]);
+    expect(order?.lastPaymentAt).toBeUndefined();
+  });
+  it("listVisibleOrders aplica los filtros RF-509 (costCenterId, paymentMethod, paymentStatus, paidFrom/paidTo) solo sobre pagos vigentes", async () => {
+    const sql = fakeSql(() => []);
+    await new PostgresPorts(sql).listVisibleOrders({ id: "daniel", roles: ["revisor"] }, { costCenterId: "cc-1", paymentMethod: "efectivo", paymentStatus: "parcial", paidFrom: "2026-09-01", paidTo: "2026-09-30", limit: 10 });
+    const select = sql.calls.find((call) => /^select o\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/and r\.centro_costo_id = \?/);
+    expect(select.text).toMatch(/and exists \(select 1 from pagos_orden pm where pm\.orden_id = o\.id and not pm\.anulado and pm\.medio_pago = \?\)/);
+    expect(select.text).toMatch(/and exists \(select 1 from pagos_orden pf where pf\.orden_id = o\.id and not pf\.anulado and pf\.fecha >= \?::date and pf\.fecha <= \?::date\)/);
+    expect(select.text).toMatch(/case when coalesce\(pago\.pagado, 0\) <= 0 then 'pendiente' when pago\.pagado < coalesce\(gasto\.valor_total, 0\) then 'parcial' else 'pagada' end\) = \?/);
+    expect(select.values).toEqual(expect.arrayContaining(["cc-1", "efectivo", "2026-09-01", "2026-09-30", "parcial"]));
+  });
+  it("annulOrderPayment es el único UPDATE de pagos_orden: marca anulado/motivo/quién/cuándo solo si seguía vigente y relee el pago con su comprobante", async () => {
+    const sql = fakeSql((call) => (/^update pagos_orden/i.test(call.text) ? [{ id: "pago-1" }] : /^select po\.\*/i.test(call.text) ? [{ id: "pago-1", orden_id: "orden-1", fecha: new Date("2026-09-05T00:00:00.000Z"), valor: "100.00", medio_pago: "efectivo", anulado: true, motivo_anulacion: "Duplicado", anulado_por: "daniel", anulado_en: new Date("2026-09-06T15:00:00.000Z"), comprobante_id: "adj-1" }] : []));
+    const annulled = await new PostgresPorts(sql).annulOrderPayment("orden-1", "pago-1", { reason: "Duplicado", actorId: "daniel", at: "2026-09-06T15:00:00.000Z" });
+    const update = sql.calls.find((call) => /^update pagos_orden/i.test(call.text))!;
+    expect(update.text).toMatch(/set anulado = true, motivo_anulacion = \?, anulado_por = \?, anulado_en = \?::timestamptz where id = \? and orden_id = \? and not anulado returning id/);
+    expect(update.values).toEqual(["Duplicado", "daniel", "2026-09-06T15:00:00.000Z", "pago-1", "orden-1"]);
+    expect(annulled).toMatchObject({ id: "pago-1", annulled: true, annulmentReason: "Duplicado", annulledBy: "daniel", annulledAt: "2026-09-06T15:00:00.000Z", attachmentId: "adj-1" });
+    const already = await new PostgresPorts(fakeSql(() => [])).annulOrderPayment("orden-1", "pago-1", { reason: "x", actorId: "d", at: "2026-09-06T15:00:00.000Z" });
+    expect(already).toBeNull();
+  });
+  it("listCashPayments fija medio_pago = 'efectivo' y not anulado, filtra por rango de fecha y centro de costo, y resuelve la orden por join", async () => {
+    const sql = fakeSql((call) => (/^select po\.\*/i.test(call.text)
+      ? [{ id: "pago-1", orden_id: "orden-1", fecha: new Date("2026-09-05T00:00:00.000Z"), valor: "50000.00", medio_pago: "efectivo", anulado: false, nota: "Peaje", orden_consecutivo: "OP-2026-0007", orden_tipo: "OP", orden_proveedor_id: "prov-1", requisicion_id: "req-1", requisicion_consecutivo: "REQ-2026-0009", requisicion_obra_id: "obra-1", requisicion_centro_costo_id: "cc-1" }]
+      : []));
+    const rows = await new PostgresPorts(sql).listCashPayments({ from: "2026-09-01", to: "2026-09-30", costCenterId: "cc-1" });
+    const select = sql.calls.find((call) => /^select po\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/where po\.medio_pago = 'efectivo' and not po\.anulado and po\.fecha >= \?::date and po\.fecha <= \?::date and r\.centro_costo_id = \? order by po\.fecha, po\.created_at/);
+    expect(rows).toEqual([expect.objectContaining({ id: "pago-1", amount: 50000, method: "efectivo", note: "Peaje", annulled: false, orderConsecutive: "OP-2026-0007", orderType: "OP", requisitionId: "req-1", requisitionConsecutive: "REQ-2026-0009", workId: "obra-1", costCenterId: "cc-1", supplierId: "prov-1" })]);
+  });
+  // RF-009 (adenda de pagos, N3): empresa facturada por el mismo join que el centro de costo; filtro
+  // `billedCompanyId` en órdenes/requisiciones (columna de la requisición) y gastos (instantánea propia).
+  it("orderSelectColumns suma r.empresa_facturada_id, getOrder lo mapea a Order.billedCompanyId y billedCompanyId filtra órdenes, requisiciones y gastos", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada", requisicion_empresa_facturada_id: "proim" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    expect((await ports.getOrder("o1"))?.billedCompanyId).toBe("proim");
+    expect(sql.calls.find((call) => /^select o\.\*/i.test(call.text))!.text).toMatch(/r\.empresa_facturada_id as requisicion_empresa_facturada_id/);
+    await ports.listVisibleOrders({ id: "daniel", roles: ["revisor"] }, { billedCompanyId: "proim", limit: 10 });
+    expect(sql.calls.at(-1)!.text).toMatch(/and r\.empresa_facturada_id = \?/);
+    await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { billedCompanyId: "proim", limit: 10 });
+    expect(sql.calls.at(-1)!.text).toMatch(/and r\.empresa_facturada_id = \?/);
+    await ports.listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { billedCompanyId: "proim", limit: 10 });
+    expect(sql.calls.at(-1)!.text).toMatch(/and g\.empresa_facturada_id = \?/);
+  });
+  it("saveRequisition/saveExpense escriben empresa_facturada_id (y la requisición la reenvía en el on conflict)", async () => {
+    const sql = fakeSql(() => []);
+    const ports = new PostgresPorts(sql);
+    await ports.saveRequisition({ id: "r1", consecutive: "REQ-2026-0001", type: "pago", societyId: "soc", channel: "web", status: "en_revision", billedCompanyId: "proim", items: [] });
+    const insert = sql.calls.find((call) => /^insert into requisiciones/i.test(call.text))!;
+    expect(insert.text).toMatch(/empresa_facturada_id/);
+    expect(insert.text).toMatch(/empresa_facturada_id = excluded\.empresa_facturada_id/);
+    expect(insert.values).toContain("proim");
+    await ports.saveExpense({ id: "g1", workId: "w", origin: "requisicion", referenceId: "o1", orderDate: "2026-09-15", base: 100, iva: 0, total: 100, costCenterId: "cc", billedCompanyId: "proim" });
+    const expenseInsert = sql.calls.find((call) => /^insert into gastos/i.test(call.text))!;
+    expect(expenseInsert.text).toMatch(/centro_costo_id, empresa_facturada_id\)/);
+    expect(expenseInsert.values.slice(-2)).toEqual(["cc", "proim"]);
+  });
+  it("costCenters: create/update escriben tipo (default obra) y el mapeador lo expone como type", async () => {
+    const sql = fakeSql((call) => (/^insert into centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", codigo: null, sociedad_id: null, tipo: "empresa", activo: true }] : /^update centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", tipo: "personal", activo: true }] : []));
+    const ports = new PostgresPorts(sql);
+    const input: Omit<CatalogCostCenter, "id"> = { name: "Gastos PROIM", type: "empresa", active: true };
+    const created = await ports.create("costCenters", input);
+    expect(created).toMatchObject({ type: "empresa" });
+    expect(sql.calls.find((call) => /^insert into centros_costo/i.test(call.text))!.values).toEqual(["Gastos PROIM", null, null, "empresa", true]);
+    expect(await ports.update("costCenters", "cc-1", { type: "personal" })).toMatchObject({ type: "personal" });
+    expect(sql.calls.find((call) => /^update centros_costo/i.test(call.text))!.text).toMatch(/tipo=coalesce\(\?, tipo\)/);
+  });
+  it("markExpensePaid(null) deshace la fecha de pago del gasto (anulación del pago que cerraba la orden)", async () => {
+    const sql = fakeSql((call) => (/^update gastos/i.test(call.text) ? [{ id: "g1" }] : []));
+    await expect(new PostgresPorts(sql).markExpensePaid("orden-1", null)).resolves.toBe(1);
+    const update = sql.calls.find((call) => /^update gastos/i.test(call.text))!;
+    expect(update.values).toEqual([null, "orden-1"]);
   });
   it("getOrder mapea pagado_total a Order.paidAmount (asNumber, no un string crudo del numeric)", async () => {
     const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
@@ -390,29 +484,32 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
     await ports.saveOrderPayment({ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "efectivo" });
     const insert = sql.calls.find((call) => /^insert into pagos_orden/i.test(call.text));
     expect(insert).toBeDefined();
-    expect(insert!.text).toMatch(/insert into pagos_orden \(id, orden_id, fecha, valor, medio_pago, referencia_externa, registrado_por\)/);
-    expect(insert!.values).toEqual(["pago-1", "orden-1", "2026-08-05", 100, "efectivo", null, null]);
+    expect(insert!.text).toMatch(/insert into pagos_orden \(id, orden_id, fecha, valor, medio_pago, referencia_externa, registrado_por, nota\)/);
+    expect(insert!.values).toEqual(["pago-1", "orden-1", "2026-08-05", 100, "efectivo", null, null, null]);
   });
   it("saveOrderPayment escribe referencia_externa/registrado_por cuando vienen informados", async () => {
     const sql = fakeSql();
     const ports = new PostgresPorts(sql);
-    await ports.saveOrderPayment({ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "transferencia", externalReference: "CONS-123", registeredBy: "daniel" });
+    await ports.saveOrderPayment({ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "transferencia", externalReference: "CONS-123", registeredBy: "daniel", note: "Corte semanal" });
     const insert = sql.calls.find((call) => /^insert into pagos_orden/i.test(call.text));
-    expect(insert!.values).toEqual(["pago-1", "orden-1", "2026-08-05", 100, "transferencia", "CONS-123", "daniel"]);
+    expect(insert!.values).toEqual(["pago-1", "orden-1", "2026-08-05", 100, "transferencia", "CONS-123", "daniel", "Corte semanal"]);
   });
   // Mismo criterio que el índice pagos_orden_orden_fecha_idx (202609120002_pagos_orden.sql): orden
   // cronológico, el que necesita la ficha de la pantalla y la "fecha del último pago" del servicio.
-  it("listOrderPayments filtra por orden_id y ordena por fecha, created_at", async () => {
-    const sql = fakeSql((call) => (/^select \* from pagos_orden/i.test(call.text)
-      ? [{ id: "pago-1", orden_id: "orden-1", fecha: "2026-08-05", valor: "100.00", medio_pago: "efectivo", referencia_externa: null, registrado_por: null }]
+  // Adenda de pagos: cada fila trae `comprobante_id` (adjunto pago_orden más reciente) por subconsulta;
+  // los anulados VIAJAN (tachados en la ficha), no se filtran aquí.
+  it("listOrderPayments filtra por orden_id, ordena por fecha, created_at y resuelve el comprobante", async () => {
+    const sql = fakeSql((call) => (/^select po\.\*/i.test(call.text)
+      ? [{ id: "pago-1", orden_id: "orden-1", fecha: "2026-08-05", valor: "100.00", medio_pago: "efectivo", referencia_externa: null, registrado_por: null, nota: null, anulado: false, comprobante_id: null }]
       : []));
     const ports = new PostgresPorts(sql);
     const rows = await ports.listOrderPayments("orden-1");
-    const select = sql.calls.find((call) => /^select \* from pagos_orden/i.test(call.text))!;
-    expect(select.text).toMatch(/where orden_id=\?/);
-    expect(select.text).toMatch(/order by fecha, created_at/);
-    expect(select.values).toEqual(["orden-1"]);
-    expect(rows).toEqual([{ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "efectivo", externalReference: undefined, registeredBy: undefined }]);
+    const select = sql.calls.find((call) => /^select po\.\*/i.test(call.text))!;
+    expect(select.text).toMatch(/\(select a\.id from adjuntos a where a\.entidad = 'pago_orden' and a\.entidad_id = po\.id and a\.storage_bucket = \? order by a\.fecha desc limit 1\) as comprobante_id/);
+    expect(select.text).toMatch(/where po\.orden_id=\?/);
+    expect(select.text).toMatch(/order by po\.fecha, po\.created_at/);
+    expect(select.values).toEqual(["requisicion-adjuntos", "orden-1"]);
+    expect(rows).toEqual([{ id: "pago-1", orderId: "orden-1", date: "2026-08-05", amount: 100, method: "efectivo", externalReference: undefined, note: undefined, registeredBy: undefined, annulled: false, annulmentReason: undefined, annulledBy: undefined, annulledAt: undefined, attachmentId: undefined }]);
   });
 });
 

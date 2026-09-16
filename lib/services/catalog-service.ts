@@ -31,14 +31,15 @@ function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
   // también tiene `societyId`, y sin este orden un centro se auditaría con la forma de una obra
   // (perdiendo `code`, su dato propio). `code` es el discriminador: ninguna otra forma de CatalogRecord
   // lo tiene.
-  if ("code" in value) { const costCenter = value as CatalogCostCenter; return { name: costCenter.name, code: costCenter.code ?? null, societyId: costCenter.societyId ?? null, active: costCenter.active }; }
+  if ("code" in value) { const costCenter = value as CatalogCostCenter; return { name: costCenter.name, code: costCenter.code ?? null, societyId: costCenter.societyId ?? null, type: costCenter.type ?? "obra", active: costCenter.active }; }
   // Cajas (2026-09-12): comprobado ANTES que el de "work" de abajo por la MISMA razón que costCenters
   // — "type" es el discriminador (ninguna otra forma de CatalogRecord lo tiene).
   if ("type" in value) { const cashBox = value as CatalogCashBox; return { name: cashBox.name, type: cashBox.type, societyId: cashBox.societyId ?? null, costCenterId: cashBox.costCenterId ?? null, active: cashBox.active }; }
   if ("societyId" in value) return { name: value.name, societyId: value.societyId, active: value.active };
   if ("approverId" in value) return { name: value.name, approverAssigned: Boolean(value.approverId), active: value.active };
   if ("unit" in value) return { name: value.name, unit: value.unit, category: value.category, active: value.active };
-  if ("phone" in value || "email" in value || "address" in value) { const supplier = value as CatalogSupplier; return { name: supplier.name, nitConfigured: Boolean(supplier.nit), contactConfigured: Boolean(supplier.phone || supplier.email || supplier.address), active: supplier.active }; }
+  // RF-601: tipo y "si hay identificación", nunca el número (la cédula de una persona es dato personal).
+  if ("phone" in value || "email" in value || "address" in value) { const supplier = value as CatalogSupplier; return { name: supplier.name, nitConfigured: Boolean(supplier.nit), identificationType: supplier.identificationType ?? "NIT", identificationConfigured: Boolean(supplier.identification ?? supplier.nit), pendingNormalization: supplier.pendingNormalization ?? false, contactConfigured: Boolean(supplier.phone || supplier.email || supplier.address), active: supplier.active }; }
   if ("nit" in value) { const society = value as CatalogSociety; return { name: society.name, nitConfigured: Boolean(society.nit), active: society.active }; }
   return { name: value.name, active: value.active };
 }

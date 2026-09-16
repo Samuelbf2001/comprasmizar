@@ -5,6 +5,7 @@ import { PrivateAttachmentService, type AttachmentParent, type PrivateAttachment
 const requisitionId = "11111111-1111-4111-8111-111111111111";
 const itemId = "22222222-2222-4222-8222-222222222222";
 const cashId = "33333333-3333-4333-8333-333333333333";
+const paymentId = "55555555-5555-4555-8555-555555555555";
 const attachmentId = "44444444-4444-4444-8444-444444444444";
 const requester = { id: "requester", roles: ["solicitante"] as const };
 const reviewer = { id: "reviewer", roles: ["revisor"] as const };
@@ -20,6 +21,7 @@ function fixture(options: { info?: { sizeBytes: number; mimeType: string } | nul
     [`requisicion:${requisitionId}`, { entity: "requisicion", id: requisitionId, requesterId: requester.id, requisitionStatus: options.status ?? "enviada", approverId: approver.id, itemApproverIds: [itemApprover.id] }],
     [`requisicion_item:${itemId}`, { entity: "requisicion_item", id: itemId, requesterId: requester.id, requisitionStatus: options.status ?? "enviada", approverId: approver.id, itemApproverIds: [itemApprover.id] }],
     [`caja_menor:${cashId}`, { entity: "caja_menor", id: cashId }],
+    [`pago_orden:${paymentId}`, { entity: "pago_orden", id: paymentId }],
   ]);
   const attachments = new Map<string, PrivateAttachment>(), audits: unknown[] = [], signedPaths: string[] = [];
   const repository = {
@@ -115,7 +117,25 @@ describe("PrivateAttachmentService", () => {
 
   // H2: listMany respalda /api/attachments/:entity?ids= para caja menor (el caso real de la pantalla de
   // gastos); requisicion/requisicion_item quedan fuera a propósito (ver comentario en el servicio).
-  it("listMany limita a caja_menor, exige 1-100 ids y aplica el mismo chequeo de rol que list()", async () => {
+  // Adenda de pagos (A5): el comprobante de un pago es un adjunto `pago_orden` — solo tipo soporte, ruta
+  // pagos-orden/<pago>/…, lo suben revisor/admin Y contabilidad (quien registra el pago), lo leen los
+  // mismos tres roles; un solicitante o un aprobador no lo ven ni lo suben.
+  it("pago_orden: comprobante de pago solo como soporte, lo sube quien registra pagos (incluida contabilidad) y lo lee compras/contabilidad", async () => {
+    const state = fixture();
+    await expect(state.service.prepare("pago_orden", paymentId, { ...upload, type: "foto", name: "recibo.png", mimeType: "image/png" }, reviewer)).rejects.toMatchObject({ code: "INVALID_DOCUMENT" });
+    await expect(state.service.prepare("pago_orden", paymentId, upload, requester)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.prepare("pago_orden", paymentId, upload, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.prepare("pago_orden", paymentId, { ...upload, name: "Recibo caja.pdf" }, accountant)).resolves.toMatchObject({ attachment: { type: "soporte", name: "recibo-caja.pdf" } });
+    expect(state.signedPaths).toEqual([`pagos-orden/${paymentId}/${attachmentId}/recibo-caja.pdf`]);
+    await state.service.complete("pago_orden", paymentId, attachmentId, { ...upload, name: "Recibo caja.pdf" }, accountant);
+    await expect(state.service.list("pago_orden", paymentId, reviewer)).resolves.toMatchObject({ attachments: [{ id: attachmentId }] });
+    await expect(state.service.download("pago_orden", paymentId, attachmentId, accountant)).resolves.toContain("token=private");
+    await expect(state.service.list("pago_orden", paymentId, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.listMany("pago_orden", [paymentId], reviewer)).resolves.toMatchObject({ attachments: [{ id: attachmentId, entity: "pago_orden", entityId: paymentId }] });
+    await expect(state.service.listMany("pago_orden", [paymentId], requester)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("listMany limita a caja_menor y pago_orden, exige 1-100 ids y aplica el mismo chequeo de rol que list()", async () => {
     const state = fixture();
     await state.service.complete("caja_menor", cashId, attachmentId, upload, reviewer);
     await expect(state.service.listMany("caja_menor", [cashId], accountant)).resolves.toMatchObject({ attachments: [{ id: attachmentId, entity: "caja_menor", entityId: cashId }] });

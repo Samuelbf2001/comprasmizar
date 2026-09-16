@@ -1,4 +1,4 @@
-import type { Actor, AuditEvent, CashBoxType, CashClose, CashCloseStatus, CostCenterMovement, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
+import type { Actor, AuditEvent, CashBoxType, CashClose, CashCloseStatus, CashPayment, CostCenterMovement, CostCenterType, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role, SupplierIdentificationType } from "../domain";
 import type { ListQuery, Page } from "./list-query";
 
 /** Persistence ports. Infrastructure adapters (e.g. Supabase) implement these; domain services do not depend on them. */
@@ -66,7 +66,9 @@ export interface OrderRepository {
  * actor que sus hermanos — clave "" representa gastos sin centro de costo asignado.
  */
 export interface ExpenseRepository {
-  get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string): Promise<number>;
+  /** `markPaid(..., null)` DESHACE la fecha de pago (adenda de pagos, N1): anular el pago que cerraba una
+   *  orden ya "pagada" devuelve su gasto a compromiso sin fecha. */
+  get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string | null): Promise<number>;
   deleteByReference(origin: Expense["origin"], referenceId: string): Promise<void>; saveShares(shares: ExpenseShare[]): Promise<void>; list(): Promise<Expense[]>;
   listVisibleTo(actor: Actor, query?: ListQuery): Promise<Expense[] | Page<Expense>>;
   listByReference(referenceId: string): Promise<Expense[]>;
@@ -110,7 +112,20 @@ export interface CashCloseRepository {
  * de la pantalla los muestra y en el que `ProcurementService` calcula "fecha del último pago" para
  * `updateOrderAdminStatus`.
  */
-export interface OrderPaymentRepository { save(payment: OrderPayment): Promise<void>; listByOrder(orderId: string): Promise<OrderPayment[]>; }
+/**
+ * Adenda de pagos (N1, 2026-09-15): `get` trae UN pago de la orden (con su comprobante resuelto);
+ * `annul` es el único UPDATE que admite la tabla — marca anulado/motivo/quién/cuándo y devuelve `null` si
+ * el pago no existe, no es de esa orden o ya estaba anulado (el servicio decide qué error dar); `listCash`
+ * es la consulta del cierre de caja (RF-708): pagos VIGENTES con medio `efectivo` en el rango de `fecha`
+ * (inclusive), opcionalmente acotados al centro de costo de la requisición dueña, de más antiguo a más
+ * reciente.
+ */
+export interface OrderPaymentRepository {
+  save(payment: OrderPayment): Promise<void>; listByOrder(orderId: string): Promise<OrderPayment[]>;
+  get(orderId: string, paymentId: string): Promise<OrderPayment | null>;
+  annul(orderId: string, paymentId: string, annulment: { reason: string; actorId: string; at: string }): Promise<OrderPayment | null>;
+  listCash(query: { from: string; to: string; costCenterId?: string }): Promise<CashPayment[]>;
+}
 export interface AuditRepository { append(event: AuditEvent): Promise<void>; list(entity: string, entityId: string): Promise<AuditEvent[]>; }
 export interface ConsecutiveRepository { take(prefix: "REQ" | "OC" | "OP", year: number): Promise<string>; }
 /** Verifies a public link and code without exposing storage or clear-text comparison to the service. */
@@ -142,7 +157,8 @@ export type CatalogKind = "works" | "tags" | "items" | "suppliers" | "societies"
 export interface CatalogWork { id: string; name: string; societyId: string; active: boolean; costCenterId?: string; }
 export interface CatalogTag { id: string; name: string; approverId?: string | null; active: boolean; }
 export interface CatalogItem { id: string; name: string; specification?: string | null; unit: string; category?: string | null; active: boolean; }
-export interface CatalogSupplier { id: string; name: string; nit?: string | null; phone?: string | null; email?: string | null; address?: string | null; active: boolean; }
+/** RF-601 (adenda de pagos): `identificationType`/`identification`/`pendingNormalization` — ver `Supplier` en lib/domain/model.ts. */
+export interface CatalogSupplier { id: string; name: string; nit?: string | null; identificationType?: SupplierIdentificationType; identification?: string | null; pendingNormalization?: boolean; phone?: string | null; email?: string | null; address?: string | null; active: boolean; }
 /** RF-002: entidad jurídica dueña de las obras. Alta/edición/activación exclusiva de admin_sixteam y admin_mizar. */
 export interface CatalogSociety { id: string; name: string; nit?: string | null; active: boolean; }
 /**
@@ -176,7 +192,8 @@ export interface CatalogRequester { id: string; name: string; phone: string; act
  * el centro solo es válido en requisiciones de esa sociedad (`validar_centro_costo_requisicion`,
  * trigger de la migración). `code` es opcional, como el NIT de sociedades/proveedores.
  */
-export interface CatalogCostCenter { id: string; name: string; code?: string | null; societyId?: string | null; active: boolean; }
+/** `type` (RF-007, 202609150003): obra (default) / administrativo / personal / empresa. Opcional en el tipo por los objetos legado; desde Postgres siempre viaja. */
+export interface CatalogCostCenter { id: string; name: string; code?: string | null; societyId?: string | null; type?: CostCenterType; active: boolean; }
 /**
  * DECISIÓN DEL DUEÑO (2026-09-12, migración 202609120003): catálogo nuevo de cajas — "dónde vive la
  * plata" (caja menor de obra, administrativa, banco o personal). `costCenterId`: centro DEFAULT de
@@ -189,7 +206,7 @@ export type CatalogRecord = CatalogWork | CatalogTag | CatalogItem | CatalogSupp
 export type CatalogCreateRecord = CatalogRecord extends infer T ? T extends CatalogUser ? CatalogUserCreate : T extends CatalogRecord ? Omit<T, "id"> : never : never;
 export type CatalogPatchRecord = CatalogRecord extends infer T ? T extends CatalogRecord ? Partial<Omit<T, "id">> : never : never;
 /** CRUD-only records; adapters must normalize duplicate comparisons and never delete rows. */
-export interface CatalogRepository { create(kind: CatalogKind, value: CatalogCreateRecord): Promise<CatalogRecord>; get(kind: CatalogKind, id: string): Promise<CatalogRecord | null>; update(kind: CatalogKind, id: string, value: CatalogPatchRecord): Promise<CatalogRecord>; findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null>; /** HUECO 1: compara con el MISMO criterio que `public.normalizar_telefono_co` (ver lib/infrastructure/phone.ts), para que "3001112233" y "+57 300 111 2233" choquen como el mismo solicitante antes de tocar la BD. */ findRequesterDuplicate(phone: string, exceptId?: string): Promise<string | null>; isEligibleApprover(id: string): Promise<boolean>;  /** GRAVE 3 (QA Postgres real): existe al menos una requisición (de cualquier estado) anclada a esta obra — usado para bloquear un cambio de sociedad que las dejaría inservibles. */ hasRequisitionsForWork(workId: string): Promise<boolean>; }
+export interface CatalogRepository { create(kind: CatalogKind, value: CatalogCreateRecord): Promise<CatalogRecord>; get(kind: CatalogKind, id: string): Promise<CatalogRecord | null>; update(kind: CatalogKind, id: string, value: CatalogPatchRecord): Promise<CatalogRecord>; findSupplierDuplicate(value: Pick<CatalogSupplier, "name" | "nit">, exceptId?: string): Promise<string | null>; /** RF-606: proveedor por (tipo, identificación normalizada — `normalizeIdentification`), activo o no; `null` si no existe. Lo usa `ProcurementService.create` para enlazar/crear el beneficiario de un pago externo. */ findSupplierByIdentification(type: SupplierIdentificationType, identification: string): Promise<CatalogSupplier | null>; /** HUECO 1: compara con el MISMO criterio que `public.normalizar_telefono_co` (ver lib/infrastructure/phone.ts), para que "3001112233" y "+57 300 111 2233" choquen como el mismo solicitante antes de tocar la BD. */ findRequesterDuplicate(phone: string, exceptId?: string): Promise<string | null>; isEligibleApprover(id: string): Promise<boolean>;  /** GRAVE 3 (QA Postgres real): existe al menos una requisición (de cualquier estado) anclada a esta obra — usado para bloquear un cambio de sociedad que las dejaría inservibles. */ hasRequisitionsForWork(workId: string): Promise<boolean>; }
 export interface NotificationRepository { enqueue(notification: { userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }): Promise<void>; }
 /** Repositories provided to the callback are pinned to the same database transaction/connection. */
 export interface TransactionRepositories { requisitions: RequisitionRepository; orders: OrderRepository; expenses: ExpenseRepository; orderPayments: OrderPaymentRepository; pettyCash: PettyCashRepository; incomes: IncomeRepository; cashCloses: CashCloseRepository; audit: AuditRepository; consecutives: ConsecutiveRepository; features: FeatureRepository; items: ItemCatalogRepository; catalogs: CatalogRepository; notifications: NotificationRepository; }

@@ -19,6 +19,9 @@ function fixture(options: { feature?: boolean; object?: { sizeBytes: number; mim
     get: async (id: string) => suppliers.has(id) ? structuredClone(suppliers.get(id)!) : null,
     create: async (value: Omit<Supplier, "id">) => { const normalizedNit = value.nit?.replace(/[^0-9A-Za-z]/g, "").toLowerCase(); if ([...suppliers.values()].some((entry) => entry.name === value.name || (normalizedNit && entry.nit?.replace(/[^0-9A-Za-z]/g, "").toLowerCase() === normalizedNit))) throw Object.assign(new Error("duplicate"), { code: "23505" }); const created = { ...value, id: `supplier-${suppliers.size + 1}` }; suppliers.set(created.id, structuredClone(created)); return created; },
     update: async (id: string, value: Partial<Omit<Supplier, "id">>) => { const before = suppliers.get(id); if (!before) return null; const after = { ...before, ...value }; suppliers.set(id, structuredClone(after)); return after; },
+    // RF-606: por (tipo, identificación normalizada) — mismo criterio que la columna generada real; el
+    // proveedor inicial no declara tipo, así que cuenta como NIT con su `nit` de espejo.
+    findByIdentification: async (type: string, identification: string) => { const wanted = identification.replace(/[^0-9A-Za-z]/g, ""); const found = [...suppliers.values()].find((entry) => (entry.identificationType ?? "NIT") === type && String(entry.identification ?? entry.nit ?? "").replace(/[^0-9A-Za-z]/g, "") === wanted); return found ? structuredClone(found) : null; },
     listOrders: async () => [{ id: "order-1", consecutive: "OC-2026-0001", type: "OC" as const, status: "generada" as const, generatedAt: "2026-08-24T00:00:00.000Z", total: 100 }],
     listDocuments: async (id: string) => [...documents.values()].filter((entry) => entry.supplierId === id).map((value) => structuredClone(value)),
     getDocument: async (id: string, docId: string) => { const found = documents.get(docId); return found?.supplierId === id ? structuredClone(found) : null; },
@@ -125,6 +128,68 @@ describe("SupplierService", () => {
     await state.service.completeDocument(supplierId, documentId, validUpload, reviewer);
     await expect(state.service.downloadDocument(supplierId, documentId, accounting)).resolves.toContain("token=private");
     await expect(state.service.downloadDocument(supplierId, documentId, { id: "requester", roles: ["solicitante"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});
+
+// Adenda de pagos (RF-601/RF-606): beneficiario persona o empresa — tipo + identificación con `nit`
+// como espejo legado, búsqueda por identificación y alta rápida pendiente de normalizar.
+describe("SupplierService — identificación NIT/CC y beneficiario (adenda de pagos)", () => {
+  it("crea una persona (CC) sin NIT y una empresa (NIT) cuyo nit espeja la identificación; el camino legado solo con nit sigue funcionando", async () => {
+    const state = fixture();
+    const persona = await state.service.create({ name: "Juan Camilo Topógrafo", identificationType: "CC", identification: "1.020.304.050" }, reviewer);
+    expect(persona).toMatchObject({ identificationType: "CC", identification: "1.020.304.050", nit: null, pendingNormalization: false });
+    const empresa = await state.service.create({ name: "Sixteam SAS", identificationType: "NIT", identification: "901.555.666-1" }, reviewer);
+    expect(empresa).toMatchObject({ identificationType: "NIT", identification: "901.555.666-1", nit: "901.555.666-1" });
+    const legado = await state.service.create({ name: "Ferretería Legado", nit: "800.111.222-3" }, reviewer);
+    expect(legado).toMatchObject({ identificationType: "NIT", identification: "800.111.222-3", nit: "800.111.222-3" });
+    await expect(state.service.create({ name: "Sin dígitos", identificationType: "CC", identification: "---" }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    // La auditoría dice tipo y si hay identificación, nunca el número (una cédula es dato personal).
+    const audit = JSON.stringify(state.audits);
+    expect(audit).toContain('"identificationType":"CC"');
+    expect(audit).not.toContain("1.020.304.050");
+    expect(audit).not.toContain("1020304050");
+  });
+
+  it("update mantiene coherentes tipo/identificación/nit: pasar a persona borra el nit, cambiar el nit legado arrastra la identificación", async () => {
+    const state = fixture();
+    await state.service.update(supplierId, { identificationType: "CE", identification: "E-556677" }, reviewer);
+    expect((await state.service.get(supplierId, reviewer)).supplier).toMatchObject({ identificationType: "CE", identification: "E-556677", nit: null });
+    await state.service.update(supplierId, { identificationType: "NIT" }, reviewer);
+    expect((await state.service.get(supplierId, reviewer)).supplier).toMatchObject({ identificationType: "NIT", identification: "E-556677", nit: "E-556677" });
+    await state.service.update(supplierId, { nit: "900.999" }, reviewer);
+    expect((await state.service.get(supplierId, reviewer)).supplier).toMatchObject({ identification: "900.999", nit: "900.999" });
+    await state.service.update(supplierId, { pendingNormalization: false, contact: { name: "Contacto" } }, reviewer);
+    expect((await state.service.get(supplierId, reviewer)).supplier).toMatchObject({ identification: "900.999", pendingNormalization: false });
+  });
+
+  it("findByIdentification busca por tipo + identificación normalizada (misma persona con otra puntuación) y exige permiso de lectura", async () => {
+    const state = fixture();
+    await expect(state.service.findByIdentification("NIT", "900-123", accounting)).resolves.toMatchObject({ id: supplierId, name: "Proveedor inicial" });
+    await expect(state.service.findByIdentification("CC", "900123", accounting)).resolves.toBeNull(); // mismos dígitos, otro tipo = otro tercero
+    await expect(state.service.findByIdentification("NIT", "  ", accounting)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(state.service.findByIdentification("NIT", "900123", { id: "requester", roles: ["solicitante"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("resolveOrCreateBeneficiary reutiliza por identificación (aunque el nombre difiera) y no crea nada", async () => {
+    const state = fixture();
+    const before = state.suppliers.size;
+    const resolved = await state.service.resolveOrCreateBeneficiary({ identificationType: "NIT", identification: "900.123", name: "Nombre escrito distinto" }, reviewer);
+    expect(resolved).toMatchObject({ created: false, supplier: { id: supplierId, name: "Proveedor inicial" } });
+    expect(state.suppliers.size).toBe(before);
+  });
+
+  it("resolveOrCreateBeneficiary crea pendiente_normalizacion con el teléfono como único contacto, y solo compras puede", async () => {
+    const state = fixture();
+    const resolved = await state.service.resolveOrCreateBeneficiary({ identificationType: "CC", identification: "71.555.666", name: "Maestro Pérez", phone: "+57 300 111 2233" }, reviewer);
+    expect(resolved.created).toBe(true);
+    expect(resolved.supplier).toMatchObject({ name: "Maestro Pérez", identificationType: "CC", identification: "71.555.666", nit: null, pendingNormalization: true, contact: { phone: "+57 300 111 2233" }, active: true });
+    expect(resolved.supplier).not.toHaveProperty("bankDetails");
+    // Segunda vez, misma cédula con otra puntuación: se enlaza, no se duplica.
+    await expect(state.service.resolveOrCreateBeneficiary({ identificationType: "CC", identification: "71555666", name: "Otro nombre" }, reviewer)).resolves.toMatchObject({ created: false, supplier: { id: resolved.supplier.id } });
+    expect(state.audits.filter((entry) => (entry as { event: string }).event === "creado")).toHaveLength(1);
+    expect(JSON.stringify(state.audits)).toContain('"source":"beneficiario"');
+    await expect(state.service.resolveOrCreateBeneficiary({ identificationType: "CC", identification: "1.234", name: "Bloqueado" }, accounting)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(state.service.resolveOrCreateBeneficiary({ identificationType: "CC", identification: "1.234", name: "   " }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
   });
 });
 

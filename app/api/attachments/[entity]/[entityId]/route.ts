@@ -4,7 +4,7 @@ import { createPrivateAttachmentServiceDependencies } from "../../../../../lib/i
 import { PrivateAttachmentService } from "../../../../../lib/services";
 
 export const runtime = "nodejs";
-export const attachmentParamsSchema = z.object({ entity: z.enum(["requisicion", "requisicion_item", "caja_menor"]), entityId: z.string().uuid() }).strict();
+export const attachmentParamsSchema = z.object({ entity: z.enum(["requisicion", "requisicion_item", "caja_menor", "pago_orden"]), entityId: z.string().uuid() }).strict();
 export const attachmentUploadSchema = z.object({ type: z.enum(["soporte", "cotizacion", "foto"]), name: z.string().trim().min(1).max(180), mimeType: z.enum(["application/pdf", "image/jpeg", "image/png", "image/webp"]), sizeBytes: z.number().int().positive().max(20 * 1024 * 1024) }).strict();
 function service() { return new PrivateAttachmentService(createPrivateAttachmentServiceDependencies()); }
 

@@ -9,8 +9,11 @@ export type OrderStatus = "generada" | "cumplida" | "no_cumplida" | "no_necesari
 export type ItemStatus = "pendiente" | "aprobado" | "declinado";
 /** Reunión 2026-08-31: eje administrativo/contable de una orden, independiente de OrderStatus (cumplimiento). */
 export type OrderAdminStatus = "pendiente" | "contabilizada" | "pagada";
-/** Reunión agosto 2026: "saber cuánto se ha pagado de cada orden" — medio con el que se hizo un pago parcial. */
+/** Reunión agosto 2026: "saber cuánto se ha pagado de cada orden" — medio con el que se hizo un pago parcial.
+ *  `efectivo` ES la caja menor (adenda de pagos, A1): la UI lo rotula "Caja (efectivo)", el enum no cambia. */
 export type PaymentMethod = "efectivo" | "transferencia" | "cheque" | "tarjeta" | "otro";
+/** RF-508: estado de pago DERIVADO de Σ pagos vigentes vs total de la orden (`paymentStatus()` en rules.ts). Nunca se guarda. */
+export type PaymentStatus = "pendiente" | "parcial" | "pagada";
 /**
  * Reunión con el cliente (Ernesto, 11-sep-2026): «TODOS los gastos (cajas, bancos, personales) quedan
  * en el sistema por centro de costo». `cajas` (migración 202609120003) generaliza la caja menor de obra
@@ -21,6 +24,8 @@ export type CashBoxType = "caja_menor" | "administrativa" | "banco" | "personal"
 /** Reunión 2026-09-12: un cierre mensual es, por caja, "abierto" (movimientos editables) o "cerrado"
  *  (el trigger `validar_periodo_caja_abierto` rechaza altas/ediciones de ese mes para esa caja). */
 export type CashCloseStatus = "abierto" | "cerrado";
+/** RF-007 (adenda de pagos): el catálogo de centros de costo crece más allá de las obras — gastos administrativos, personales de socios, de la empresa (PROIM). */
+export type CostCenterType = "obra" | "administrativo" | "personal" | "empresa";
 export type Money = number;
 
 export interface Actor { id: string; roles: readonly Role[]; }
@@ -61,6 +66,14 @@ export interface Requisition {
    * congelada de este valor al momento de generarse, no una referencia viva: ver `Expense.costCenterId`.
    */
   costCenterId?: string; status: RequisitionStatus;
+  /**
+   * RF-009 (adenda de pagos): sociedad a cuyo nombre viene el soporte — lo que contabiliza el contador —
+   * independiente del centro de costo (lo que ve Claudia). Default en dominio = sociedad del centro de
+   * costo, si no la de la obra, si no la de la requisición (`resolveBilledCompany`, lib/domain/rules.ts);
+   * el revisor puede cambiarla en `review()`. `gastos.empresa_facturada_id` es una copia congelada al
+   * generar la orden, igual que `Expense.costCenterId`. En la base es NOT NULL (default por trigger).
+   */
+  billedCompanyId?: string;
   /** Forma de pago capturada en la revisión, persistida en `requisiciones.forma_pago` y copiada a cada
    *  orden generada (`ordenes.forma_pago`). Ver procurement-service.ts. */
   paymentTerms?: string;
@@ -124,13 +137,31 @@ export interface Order {
    * hacen ese join).
    */
   costCenterId?: string;
+  /**
+   * RF-508/RF-509 (adenda de pagos, N1): estado de pago derivado, fecha del último pago vigente y medios
+   * usados, resueltos en el MISMO `left join lateral` que `paidAmount` (solo pagos NO anulados). Ausentes
+   * en los mismos caminos que `paidAmount`; `paymentStatus` además falta cuando la orden no tiene gasto
+   * contra el que medir (p. ej. `no_necesario` con el gasto ya anulado).
+   */
+  paymentStatus?: PaymentStatus; lastPaymentAt?: string; paymentMethods?: PaymentMethod[];
+  /** RF-009: empresa facturada de la requisición dueña, por el mismo join que `costCenterId` (misma ausencia en fakes). */
+  billedCompanyId?: string;
 }
 /**
  * Un pago parcial de una orden. `date`/`amount`/`method` son obligatorios; `externalReference`
- * (referencia de la transferencia/consignación) y `registeredBy` son opcionales — ver
- * `pagos_orden` (202609120002) y `ProcurementService.registerOrderPayment`.
+ * (referencia de la transferencia/consignación), `note` y `registeredBy` son opcionales — ver
+ * `pagos_orden` (202609120002 y 202609150001) y `ProcurementService.registerOrderPayment`.
+ * RF-510: un pago se ANULA, nunca se borra — `annulled` (ausente = vigente) con motivo/quién/cuándo; un
+ * pago anulado no cuenta para el saldo (`sumPaid`) pero sigue en el historial. `attachmentId` es el
+ * comprobante (adjunto con entidad `pago_orden`, el más reciente), resuelto en lectura: el comprobante se
+ * sube DESPUÉS de registrar el pago, contra su id, por la misma ruta de adjuntos que caja_menor.
  */
-export interface OrderPayment { id: string; orderId: string; date: string; amount: Money; method: PaymentMethod; externalReference?: string; registeredBy?: string; }
+export interface OrderPayment { id: string; orderId: string; date: string; amount: Money; method: PaymentMethod; externalReference?: string; note?: string; registeredBy?: string; annulled?: boolean; annulmentReason?: string; annulledBy?: string; annulledAt?: string; attachmentId?: string; }
+/**
+ * RF-708 (cierre de caja): un pago VIGENTE con medio `efectivo` en un rango de fechas, con los datos de
+ * su orden resueltos por join para la vista de cierre (`ProcurementService.listCashPayments`).
+ */
+export interface CashPayment extends OrderPayment { orderConsecutive: string; orderType: OrderType; requisitionId: string; requisitionConsecutive: string; workId?: string; costCenterId?: string; billedCompanyId?: string; supplierId?: string; }
 /**
  * Decisión del cliente (reunión 2026-09, literal): "que quede como fechas aparte cuándo se sube y
  * cuándo se paga; la del gasto es la del pago". `orderDate`: fecha en que nace el registro (generación
@@ -152,7 +183,8 @@ export interface OrderPayment { id: string; orderId: string; date: string; amoun
  * la fila de caja menor aparte. `closeId`: a qué cierre mensual quedó atado, si el movimiento de caja
  * que lo originó ya se cerró.
  */
-export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; cashBoxId?: string; concept?: string; paymentMethod?: PaymentMethod; registeredBy?: string; closeId?: string; }
+/** `billedCompanyId` (RF-009, 202609150003): INSTANTÁNEA de `Requisition.billedCompanyId` al generar la orden, misma regla que `costCenterId`. */
+export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; billedCompanyId?: string; cashBoxId?: string; concept?: string; paymentMethod?: PaymentMethod; registeredBy?: string; closeId?: string; }
 export interface ExpenseShare { expenseId: string; workId: string; amount: Money; }
 /**
  * `cashBoxId`/`paymentMethod`/`iva` (migración 202609120003): la caja menor ya no es exclusiva de la
@@ -206,14 +238,26 @@ export interface DashboardMetrics {
 /** Supplier records are deliberately separate from the generic catalogue shape: bank data must never leak through catalogue/bootstrap responses. */
 export interface SupplierContact { name?: string; phone?: string; email?: string; address?: string; }
 export interface SupplierBankDetails { bankName?: string; accountType?: "ahorros" | "corriente"; accountNumber?: string; accountHolder?: string; accountHolderNit?: string; }
-export interface Supplier { id: string; name: string; nit?: string | null; contact: SupplierContact; bankDetails: SupplierBankDetails; active: boolean; }
+/** RF-601 (adenda de pagos): NIT = empresa; CC/CE/PAS = persona natural (topógrafo, maestro de obra, un socio). */
+export type SupplierIdentificationType = "NIT" | "CC" | "CE" | "PAS";
+/**
+ * RF-601/RF-606: `identificationType` + `identification` son la identidad del tercero (unicidad por
+ * tipo + identificación normalizada, migración 202609150002); `nit` se conserva como espejo LEGADO de
+ * `identification` cuando el tipo es NIT (NULL para personas) — lo mantiene un trigger, no el código.
+ * `pendingNormalization`: creado al vuelo desde un canal externo con solo identificación + nombre; Daniel
+ * completa la ficha. Los tres son opcionales en el tipo por los objetos legado en memoria (fakes de
+ * test): desde Postgres siempre viajan (defaults NIT / false).
+ */
+export interface Supplier { id: string; name: string; nit?: string | null; identificationType?: SupplierIdentificationType; identification?: string | null; pendingNormalization?: boolean; contact: SupplierContact; bankDetails: SupplierBankDetails; active: boolean; }
+/** RF-606: lo mínimo con lo que un canal externo (portal, WhatsApp) o el alta rápida identifican a un beneficiario. */
+export interface BeneficiaryInput { identificationType: SupplierIdentificationType; identification: string; name: string; phone?: string; }
 export type SupplierDocumentType = "rut" | "camara_comercio" | "certificacion_bancaria" | "certificado_calidad";
 /** A document record only exists after its private Storage object passed server-side HEAD validation. */
 export interface SupplierDocument { id: string; supplierId: string; type: SupplierDocumentType; name: string; mimeType: string; sizeBytes: number; uploadedBy?: string; uploadedAt: string; storagePath: string; }
 export interface SupplierOrderHistory { id: string; consecutive: string; type: OrderType; status: OrderStatus; generatedAt: string; total: Money; }
 
 /** A generic private support always belongs to one allowed parent; Storage keys remain internal. */
-export type AttachmentEntity = "requisicion" | "requisicion_item" | "caja_menor";
+export type AttachmentEntity = "requisicion" | "requisicion_item" | "caja_menor" | "pago_orden";
 export interface PrivateAttachment { id: string; entity: AttachmentEntity; entityId: string; type: string; name: string; mimeType: string; sizeBytes: number; uploadedBy?: string; uploadedAt: string; storagePath: string; }
 
 export class DomainError extends Error {

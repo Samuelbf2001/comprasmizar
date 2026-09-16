@@ -5,7 +5,7 @@ import { createPrivateAttachmentServiceDependencies } from "../../../../lib/infr
 import { PrivateAttachmentService } from "../../../../lib/services";
 
 export const runtime = "nodejs";
-const entityParamsSchema = z.object({ entity: z.enum(["requisicion", "requisicion_item", "caja_menor"]) }).strict();
+const entityParamsSchema = z.object({ entity: z.enum(["requisicion", "requisicion_item", "caja_menor", "pago_orden"]) }).strict();
 const idsQuerySchema = z.array(z.string().uuid()).min(1).max(100);
 
 /**

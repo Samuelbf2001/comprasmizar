@@ -27,6 +27,17 @@ const createItemSchema = z.object({
   ivaRate: rateFraction.optional(),
 }).strict().refine((item) => Boolean(item.itemId || item.description), "itemId or description is required");
 
+// RF-601/RF-606 (adenda de pagos): MISMOS valores que `SupplierIdentificationType` (lib/domain/model.ts)
+// y que el CHECK de `proveedores.tipo_identificacion` (202609150002) — repetidos aquí por el mismo
+// motivo que ORDER_STATUS_VALUES.
+export const SUPPLIER_IDENTIFICATION_TYPE_VALUES = ["NIT", "CC", "CE", "PAS"] as const;
+export const beneficiarySchema = z.object({
+  identificationType: z.enum(SUPPLIER_IDENTIFICATION_TYPE_VALUES),
+  identification: z.string().trim().min(3).max(32),
+  name: z.string().trim().min(2).max(160),
+  phone: z.string().trim().regex(/^\+?[0-9 ()-]{7,20}$/).optional(),
+}).strict();
+
 export const createRequisitionSchema = z.object({
   type: z.enum(["compra", "pago"]),
   societyId: z.string().uuid(),
@@ -35,6 +46,9 @@ export const createRequisitionSchema = z.object({
   requiredDate: z.string().date().optional(),
   observations: z.string().trim().min(1).max(3_000).optional(),
   items: z.array(createItemSchema).min(1).max(100),
+  // RF-606: beneficiario por identificación en `type: "pago"` (alternativa a items[0].finalSupplierId);
+  // el servicio lo enlaza o lo crea pendiente de normalizar — ver ProcurementService.create.
+  beneficiary: beneficiarySchema.optional(),
 }).strict();
 
 // "unitIva" pasa a derivado: el servidor lo calcula desde ivaRate/unitBase, ya no lo captura el cliente.
@@ -83,8 +97,13 @@ export const requisitionActionSchema = z.discriminatedUnion("action", [
   // ver resolveCostCenter en lib/domain/rules.ts). Repetir aquí el olvido de approverId (ver el
   // comentario de reviewedItemSchema, arriba) tumbaría TODA la revisión en cuanto la pantalla mande este
   // campo — por eso se cruza con una prueba (tests/unit/http-api.test.ts).
-  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), workId: z.string().uuid().optional(), costCenterId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
+  // billedCompanyId (RF-009, adenda de pagos): MISMA forma de tres estados que costCenterId — uuid asigna,
+  // ""/null desasigna (y review() vuelve a derivar el default), ausente no toca.
+  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), workId: z.string().uuid().optional(), costCenterId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), billedCompanyId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
   z.object({ action: z.literal("send_for_approval") }).strict(),
+  // RF-308 (adenda de pagos, A9): enviar a aprobación Y aprobar en un solo paso — solo usuario maestro
+  // (revisor+aprobador) o admin_sixteam; deja DOS eventos de auditoría (ProcurementService.sendAndApproveAsMaster).
+  z.object({ action: z.literal("send_and_approve") }).strict(),
   // "approve" pierde multiSupplier: aprobar ya no genera órdenes (eso es generate_orders, un paso propio).
   z.object({ action: z.literal("approve") }).strict(),
   z.object({ action: z.literal("return"), comment: z.string().trim().min(1).max(2_000) }).strict(),
@@ -115,12 +134,22 @@ export const expenseSharesSchema = z.object({ total: z.number().int().positive()
 // asume peso colombiano entero, ver lib/domain/model.ts). `method` son EXACTAMENTE los valores de
 // `public.medio_pago` (202609120002_pagos_orden.sql) — lista aparte a propósito, mismo criterio que
 // ORDER_STATUS_VALUES más abajo: zod no puede derivar un enum desde un `type` de TypeScript.
+// PAYMENT_METHOD_VALUES/PAYMENT_STATUS_VALUES (adenda de pagos, RF-509): mismas listas que
+// `PaymentMethod`/`PaymentStatus` en lib/domain/model.ts, repetidas aquí por el mismo motivo que
+// ORDER_STATUS_VALUES (zod no deriva enums de un `type`) — las consume parseListQuery (lib/http/api.ts).
+export const PAYMENT_METHOD_VALUES = ["efectivo", "transferencia", "cheque", "tarjeta", "otro"] as const;
+export const PAYMENT_STATUS_VALUES = ["pendiente", "parcial", "pagada"] as const;
 export const orderPaymentSchema = z.object({
   date: z.string().date(),
   amount: z.number().int().positive(),
-  method: z.enum(["efectivo", "transferencia", "cheque", "tarjeta", "otro"]),
+  method: z.enum(PAYMENT_METHOD_VALUES),
   externalReference: z.string().trim().min(1).max(240).optional(),
+  // RF-507: nota libre del pago. El comprobante no viaja aquí (se sube después contra el id del pago).
+  note: z.string().trim().min(1).max(2_000).optional(),
 }).strict();
+// RF-510: anular un pago (PATCH /api/orders/[id]/payments/[paymentId]) exige motivo, igual que
+// devolver/declinar una requisición. `action` discriminante por si la ruta gana otro gesto algún día.
+export const orderPaymentAnnulSchema = z.object({ action: z.literal("annul"), reason: z.string().trim().min(1).max(2_000) }).strict();
 // Cajas (2026-09-12, migración 202609120003): registerPettyCash es también el camino del "gasto
 // directo" de la pestaña Gastos y caja — cashBoxId/paymentMethod pasan a obligatorios (todo movimiento
 // vive bajo una caja con un medio de pago); costCenterId es el mismo patrón "hereda-o-elige" que
