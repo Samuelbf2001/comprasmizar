@@ -12,7 +12,9 @@ La adenda de **Órdenes de Pago y caja menor** está **implementada e integrada 
 
 El módulo «Gastos y caja» del 12-sep quedó **retirado de la UI y del API** (el gasto directo sin requisición, la pestaña Ingresos, el cierre mensual por caja): sus tablas no se borraron, quedan dormidas para la fase 2 financiera. En su lugar, cualquier gasto —incluida la caja menor— nace de una requisición normal y se paga con medio `caja/transferencia/tarjeta/otro`, con comprobante y anulación con motivo; un «Cierre de caja» filtra esos pagos por rango de fechas.
 
-Falta antes de considerar esto "en producción": **`git push`** (nada llegó a GitHub ni al VPS todavía), **QA en navegador** de los recorridos nuevos, publicar en Meta el Flow de pago y el v4 del Flow de captura, y que Daniel/Claudia/el contador cierren las preguntas abiertas de la adenda (P8–P12, ver `PRD-pagos-y-caja-menor.md` §8).
+**QA adversarial hecho** (16-sep, madrugada; [`docs/qa/QA-pagos-y-caja.md`](qa/QA-pagos-y-caja.md)): 14 hallazgos, de los cuales **13 quedaron resueltos** esa misma mañana en dos paquetes verificados e integrados (§7 del informe). El restante (H10) es una decisión con el contador, no un defecto. Estado final de `main` local: lint 0, typecheck 0, 94 archivos / 1169 pruebas, 23 migraciones con sus arneses contra Postgres real, E2E 51 verdes y 0 rojos (15 omitidos por requerir backend real).
+
+Falta antes de considerar esto "en producción": **`git push`** (nada llegó a GitHub ni al VPS todavía), el despliegue, publicar en Meta el Flow de pago y el v4 del Flow de captura, y que Daniel/Claudia/el contador cierren las preguntas abiertas de la adenda (P8–P12, ver `PRD-pagos-y-caja-menor.md` §8).
 
 ---
 
@@ -78,6 +80,7 @@ Falta antes de considerar esto "en producción": **`git push`** (nada llegó a G
 - `202609150003_centro_costo_tipo_empresa_facturada.sql` — `centros_costo.tipo` y `empresa_facturada_id` en `requisiciones` y `gastos`, con backfill desde la sociedad.
 - `202609150004_obra_opcional_centros_no_obra.sql` — `gastos.obra_id` admite NULL cuando el centro de costo no es de tipo obra.
 - `202609150005_proveedores_homonimos.sql` — el índice único de razón social pasa a exigir unicidad solo entre proveedores con NIT.
+- `202609150006_telefono_externo_opcional.sql` — la restricción de `requisiciones` exige solo el nombre del solicitante externo: el portal perdía con un 503 toda solicitud sin teléfono, aunque el teléfono es opcional desde el 11-sep (QA H2).
 
 ---
 
@@ -138,22 +141,23 @@ Falta antes de considerar esto "en producción": **`git push`** (nada llegó a G
 
 ## 5. Riesgos abiertos (mayor a menor impacto)
 
-1. El bug crítico de `PUBLIC_ACCESS_DENIED` en el portal por empresa quedó corregido recién (`ba591ac`) y **sin QA en navegador todavía**: era el fallo más grave detectado en esta ejecución (radicaciones perdidas en silencio desde el 11-sep). (S3 Portal / coordinador)
-2. `paymentStatus` está duplicado en SQL (filtro de la consulta de órdenes) y en TypeScript (`paymentStatus()` de dominio): si cambia la regla en un lado y no en el otro, estado mostrado y filtrado divergen. (núcleo N1)
-3. `Expense.workId` sigue tipado `string` y un gasto sin obra viaja como `""` (sentinel temporal) hasta que el coordinador ajuste `app/api/reports/expenses-report.ts` y `lib/reports/types.ts` para aceptar `workId` opcional. (núcleo N4, parche pendiente)
-4. `gastos.empresa_facturada_id` es NULLABLE; si el módulo de gasto directo retirado se reactivara sin ajustar su trigger, volvería a nacer sin empresa facturada. (núcleo N2/N3)
-5. La lista de órdenes filtrada por el servidor (S1) no se invalida por mutaciones hechas en otras pantallas (a diferencia de la caché de ruta); el desfase dura como mucho hasta la próxima visita a `/ordenes`. (S1 Órdenes)
-6. La validación remota de Meta del Flow de pago no se ha corrido (sin credenciales en esta ejecución): falta confirmar `validation_errors: []` antes de publicar. (S4 WhatsApp)
-7. Un rechazo del Flow de pago (monto inválido, número no autorizado) responde 200 a Kapso y no le dice nada a la persona; el formulario «se pierde» desde su punto de vista, igual que en captura; queda registrado en `whatsapp_eventos`. (S4 WhatsApp)
-8. `razon_social` ahora es única solo entre NIT; el `lower()` de la base depende del locale de producción para nombres con tildes en mayúsculas — verificar el locale del Postgres del VPS antes de confiar en la deduplicación. (núcleo N4.2)
-9. `nit` e `identificacion` conviven espejadas por trigger; el importador `scripts/import-master-data.ts` sigue escribiendo solo `nit` y funciona por ese espejo, pero solo para tipo NIT. (núcleo N2)
-10. Hasta publicar el v4 de captura, `WHATSAPP_FLOW_ID` sigue apuntando al v3, cuyo JSON ya no coincide con `requisicion-captura.flow.json` del repo. (S4 WhatsApp)
-11. `lookupSupplierByIdentification` descarga todo el directorio de proveedores en cada búsqueda (aceptable hoy, no con un catálogo grande). (S2 Captura)
-12. `tests/e2e/suppliers.spec.ts` y `tests/e2e/authorization-and-backend.spec.ts:46` no se corrieron contra el nuevo comportamiento (Playwright, requiere servidor); el segundo espera `[202,503]` y con el parche del portal debería ser `[400,503]`. (S2/S3, coordinador)
-13. `AttachmentPicker` limita a 10 MB mientras `attachmentUploadSchema` admite 20 MB (discrepancia previa a esta ejecución, no se tocó). (S1 Órdenes)
-14. `ExpenseBundle` (en `shared.tsx`) sigue declarando `pettyCash`/`pettyAttachments`/`incomes` sin uso; `lib/http/schemas.ts` sigue exportando `pettyCashSchema`/`incomeSchema`/`cashCloseSchema` sin uso. (S5 Reportes)
-15. `tests/visual/routes.spec.ts` captura `/gastos` como "gastos-caja-menor": la línea base visual cambia con la pantalla nueva de Cierre de caja. (S5 Reportes)
-16. Riesgos menores registrados por los agentes: la tabla de órdenes pasa de 12 a 13 columnas; el progreso del portal usa `style` inline porque el CSS de esa etapa no estaba en la lista exclusiva de S3; un revisor+aprobador que no figura en `catalogs.approvers` ve el error de servidor al usar «Aprobar yo mismo» (sin estado inconsistente); durante la verificación de S3 había ~200 procesos `node` colgados en la máquina, ajenos a esta adenda.
+1. **Descarga de adjuntos en producción.** Respondía 500 para todos en el backend autoalojado desde el 10-sep (comprobantes, fotos del portal, documentos de proveedor); se corrigió armando el 302 con `Location` absoluta resuelta contra `request.url` (QA H1, `7c4afe7`), probado contra el storage local real pero **no detrás de Caddy en el VPS**. Tras el despliegue, descargar un comprobante y un documento de proveedor para confirmarlo. (QA / paquete A)
+2. **Arreglos de UI sin recorrer en navegador contra backend real:** «Aprobar yo mismo» y las acciones del maestro asignado (H3) y la marca de beneficiario pendiente (H5) solo están cubiertos por pruebas unitarias. (QA / paquete B)
+3. `paymentStatus` está duplicado en SQL (filtro de la consulta de órdenes) y en TypeScript (`paymentStatus()` de dominio): si cambia la regla en un lado y no en el otro, estado mostrado y filtrado divergen. (núcleo N1)
+4. `Expense.workId` sigue tipado `string` y un gasto sin obra viaja como `""` (sentinel temporal) hasta que el coordinador ajuste `app/api/reports/expenses-report.ts` y `lib/reports/types.ts` para aceptar `workId` opcional. (núcleo N4, parche pendiente)
+5. `gastos.empresa_facturada_id` es NULLABLE; si el módulo de gasto directo retirado se reactivara sin ajustar su trigger, volvería a nacer sin empresa facturada. (núcleo N2/N3)
+6. La lista de órdenes filtrada por el servidor (S1) no se invalida por mutaciones hechas en otras pantallas (a diferencia de la caché de ruta); el desfase dura como mucho hasta la próxima visita a `/ordenes`. (S1 Órdenes)
+7. La validación remota de Meta del Flow de pago no se ha corrido (sin credenciales en esta ejecución): falta confirmar `validation_errors: []` antes de publicar. (S4 WhatsApp)
+8. Un rechazo del Flow de pago (monto inválido, número no autorizado) responde 200 a Kapso y no le dice nada a la persona; el formulario «se pierde» desde su punto de vista, igual que en captura; queda registrado en `whatsapp_eventos`. (S4 WhatsApp)
+9. `razon_social` ahora es única solo entre NIT; el `lower()` de la base depende del locale de producción para nombres con tildes en mayúsculas — verificar el locale del Postgres del VPS antes de confiar en la deduplicación. (núcleo N4.2)
+10. `nit` e `identificacion` conviven espejadas por trigger; el importador `scripts/import-master-data.ts` sigue escribiendo solo `nit` y funciona por ese espejo, pero solo para tipo NIT. (núcleo N2)
+11. Hasta publicar el v4 de captura, `WHATSAPP_FLOW_ID` sigue apuntando al v3, cuyo JSON ya no coincide con `requisicion-captura.flow.json` del repo. (S4 WhatsApp)
+12. `lookupSupplierByIdentification` descarga todo el directorio de proveedores en cada búsqueda (aceptable hoy, no con un catálogo grande). (S2 Captura)
+13. `scripts/dev-db.ts` sobre un cluster local creado antes del 15-sep: el seed ya re-siembra identidades por correo, pero no migra ids en cascada a tablas con `on delete restrict`; con datos reales bajo ids viejos sigue haciendo falta `--reset`. Solo afecta el entorno local. (QA H8)
+14. `AttachmentPicker` limita a 10 MB mientras `attachmentUploadSchema` admite 20 MB (discrepancia previa a esta ejecución, no se tocó). (S1 Órdenes)
+15. `ExpenseBundle` (en `shared.tsx`) sigue declarando `pettyCash`/`pettyAttachments`/`incomes` sin uso; `lib/http/schemas.ts` sigue exportando `pettyCashSchema`/`incomeSchema`/`cashCloseSchema` sin uso. (S5 Reportes)
+16. `tests/visual/routes.spec.ts` captura `/gastos` como "gastos-caja-menor": la línea base visual cambia con la pantalla nueva de Cierre de caja. (S5 Reportes)
+17. Riesgos menores registrados por los agentes: la tabla de órdenes pasa de 12 a 13 columnas; el progreso del portal usa `style` inline porque el CSS de esa etapa no estaba en la lista exclusiva de S3; un revisor+aprobador que no figura en `catalogs.approvers` ve el error de servidor al usar «Aprobar yo mismo» (sin estado inconsistente); durante la verificación de S3 había ~200 procesos `node` colgados en la máquina, ajenos a esta adenda.
 
 ---
 
@@ -162,7 +166,8 @@ Falta antes de considerar esto "en producción": **`git push`** (nada llegó a G
 - **Publicar en Meta el Flow de pago**: `npx tsx --env-file=.env.local scripts/publish-whatsapp-flow.ts pago` → confirmar `validation_errors: []`, cargar `WHATSAPP_FLOW_PAGO_ID` en el entorno de producción y quitar `WHATSAPP_FLOW_PAGO_MODE=draft` al publicar (detalle en `integrations/whatsapp-flow/README.md` y en la sección S4 del `ESTADO.md` integrado).
 - **Publicar el v4 del Flow de captura**: mismo procedimiento sin el argumento `pago`; al publicar, actualizar `WHATSAPP_FLOW_ID` al nuevo id. Mientras tanto el v3 sigue en producción y su opción «pago» responde un rechazo neutro, no un 503.
 - `git push` de `main` — nada de esta ejecución llegó todavía a GitHub ni al VPS.
-- QA en navegador de los recorridos E2E #2 (OP por cuenta de cobro), #5 (gasto por caja, atajo maestro), #6 (pagos parciales) y #7 (OP por WhatsApp Flow de pago) de `PRD-pagos-y-caja-menor.md` §10.
+- Tras desplegar: descargar un comprobante de pago y un documento de proveedor en producción (riesgo 1), y recorrer en la web «Aprobar yo mismo» con Daniel y la marca de beneficiario pendiente (riesgo 2). Los recorridos #2, #6 y #7 ya pasaron en el QA; el #5 pasaba solo por API y su arreglo de UI está integrado.
+- Decidir con el contador qué sociedad encabeza la OP cuando la empresa facturada difiere de la sociedad de la requisición (QA H10, ligado a P8).
 - Revisar la lista de proveedores de materiales que Daniel envió por WhatsApp el 15-sep (D12).
 - Recibir de Daniel la lista expandida de centros de costo (obras + administrativo + personales + PROIM).
 

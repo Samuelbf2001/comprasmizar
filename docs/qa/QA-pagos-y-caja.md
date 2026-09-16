@@ -103,6 +103,31 @@ Evidencia = ruta bajo `test-results/qa/` salvo que se indique otra cosa; `log.js
 
 ---
 
+## 7. Resolución (16-sep-2026, mañana)
+
+Dos paquetes en paralelo, cada uno verificado por el coordinador (suite completa) antes de integrarse en `main`: **A — núcleo, API y datos** (`fix/qa-nucleo`, integrado en `c602e98`) y **B — UI, detalle y portal** (`fix/qa-ui`, integrado en `de56f30`).
+
+| Id | Sev. | Estado | Commit | Nota |
+|---|---|---|---|---|
+| H1 | Crítica | **Resuelto** | `7c4afe7` | Eran **dos** causas: la URL relativa del storage local y, aun corrigiéndola, `Response.redirect()` devuelve headers inmutables y el `.set(Cache-Control/Referrer-Policy)` posterior también lanzaba. Las rutas de descarga arman el 302 a mano con `Location` absoluta. Prueba `tests/integration/attachment-download-route.test.ts` contra el storage local real. |
+| H2 | Crítica | **Resuelto** | `9347b16` | Migración `202609150006_telefono_externo_opcional.sql`: la restricción exige solo el nombre del solicitante externo. |
+| H3 | Crítica | **Resuelto** | `57b9144` | `data.ts` conserva `viewerId`/`viewerRoles`. Las acciones de aprobación dependen de figurar como aprobador (cabecera o ítem), no de la lente. «Ver como Aprobador» del admin en algo no asignado queda en solo lectura: es la simulación fiel; el bypass M-5 sigue con la lente propia. |
+| H4 | Alta | **Resuelto** | `86913d6` | `sendAndApproveAsMaster` valida cabecera **e ítems** antes de mover estado; si hay otro aprobador, error y nada cambia. |
+| H5 | Media | **Resuelto** | `670be26` | Marca «Beneficiario pendiente de completar» en bandeja y detalle, con enlace a la ficha. |
+| H6 | Media | **Resuelto** | `d5d240e` | Localizador único en `suppliers.spec.ts`; 6/6 contra el servidor demo. |
+| H7 | Media | **Resuelto** | `a02738b` | La clave del dashboard incluye la acción. |
+| H8 | Media | **Parcial** | `d37e866` | El seed re-siembra identidades por correo. **Límite:** no migra ids en cascada a tablas con `on delete restrict`; un cluster local con datos reales bajo ids viejos sigue necesitando `--reset`. Solo afecta el entorno local. |
+| H9 | Baja | **Resuelto** | `7789964` | Portal y WhatsApp fijan la fecha del gasto a hoy (America/Bogota) si no llega. |
+| H10 | Baja | **Abierto** | — | No es defecto de código: decidir con el contador qué sociedad encabeza la OP cuando la empresa facturada difiere (ver P8 de la adenda). |
+| H11 | Baja | **Resuelto** | `85335e2` | `admin_mizar` recibe `supplier:manage` (autoservicio RF-605). |
+| H12 | Baja | **Resuelto** | `4bb8b79` | «Administración» nace `tipo='administrativo'` en la demo. |
+| H13 | Baja | **Ya resuelto** | `8775ca2` | La aserción ya estaba en `[400, 503]` desde el parche del acceso público por empresa. |
+| H14 | Baja | **Resuelto** | `8186dd7`, `6b24a77` | La cabecera del portal nombra la empresa; se acotaron 4 aserciones E2E que la veían duplicada. |
+
+**Pendiente de comprobar en navegador contra el backend real:** H3 y H5 (cubiertos por pruebas unitarias, no recorridos en la UI). Las observaciones (a)–(d) de §3 siguen siendo decisiones a confirmar, no defectos.
+
+---
+
 ## Anexo — cómo reproducir el entorno
 
 ```powershell
