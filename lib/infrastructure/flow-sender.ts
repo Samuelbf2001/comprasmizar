@@ -250,7 +250,7 @@ function flowSendConfig(): FlowSendConfig | null {
   const flowCta = process.env.WHATSAPP_FLOW_CTA?.trim() || "Solicitar";
   // `body.text` es obligatorio para Meta (ver comentario en FlowMessagePayload) — configurable
   // por si el copy comercial cambia, con un valor por defecto que ya describe la acción.
-  const bodyText = process.env.WHATSAPP_FLOW_BODY?.trim() || "Solicita materiales o pagos para tu obra directamente desde WhatsApp.";
+  const bodyText = process.env.WHATSAPP_FLOW_BODY?.trim() || "Solicita materiales para tu obra directamente desde WhatsApp.";
   // El Flow real (ver README) hoy es un BORRADOR: Meta exige `mode: "draft"` explícito para
   // poder probarlo, porque el valor por defecto de la Graph API es "published"
   // (flows/guides/sendingaflow.md, tabla de parámetros de `interactive.action.parameters`).
@@ -306,7 +306,10 @@ export async function sendRequisitionFlow(to: string, deps: FlowSenderDeps = {})
     sociedades,
     catalogo,
   });
+  return postFlowMessage(config, payload, fetchImpl);
+}
 
+async function postFlowMessage(config: FlowSendConfig, payload: FlowMessagePayload | PaymentFlowMessagePayload, fetchImpl: typeof fetch): Promise<{ messageId: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
@@ -324,4 +327,121 @@ export async function sendRequisitionFlow(to: string, deps: FlowSenderDeps = {})
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Flow de SOLICITUD DE PAGO (RF-908): `integrations/whatsapp-flow/solicitud-pago.flow.json`
+// ---------------------------------------------------------------------------------------------
+//
+// Tercer Flow, con su propio id en Meta (`WHATSAPP_FLOW_PAGO_ID`). Comparte con el de captura el
+// contrato de `flow_token` (`issueFlowToken`: teléfono + timestamp) y el transporte, porque desde
+// el punto de vista de la plataforma es lo mismo: un solicitante autorizado por su número crea una
+// requisición nueva. Lo que cambia es la pantalla de entrada y que solo necesita `sociedades` (no
+// hay catálogo de artículos: una solicitud de pago es un concepto libre con un valor).
+
+/** Pantalla de entrada del Flow de pago; debe coincidir con `PANTALLA_ENTRADA_PAGO` del generador. */
+export const PAYMENT_FLOW_ENTRY_SCREEN = "BENEFICIARIO";
+
+export interface PaymentFlowMessagePayload {
+  messaging_product: "whatsapp";
+  recipient_type: "individual";
+  to: string;
+  type: "interactive";
+  interactive: {
+    type: "flow";
+    body: { text: string };
+    action: {
+      name: "flow";
+      parameters: {
+        flow_message_version: "3";
+        flow_id: string;
+        flow_cta: string;
+        flow_action: "navigate";
+        flow_token: string;
+        mode?: "draft" | "published";
+        flow_action_payload: { screen: typeof PAYMENT_FLOW_ENTRY_SCREEN; data: { sociedades: FlowOption[] } };
+      };
+    };
+  };
+}
+
+/** Pura, sin I/O: el shape exacto que se manda al proxy de Kapso para abrir el Flow de pago. */
+export function buildPaymentFlowSendPayload(input: {
+  to: string;
+  flowId: string;
+  flowCta: string;
+  flowToken: string;
+  mode?: "draft" | "published";
+  bodyText: string;
+  sociedades: FlowOption[];
+}): PaymentFlowMessagePayload {
+  return {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: input.to,
+    type: "interactive",
+    interactive: {
+      type: "flow",
+      body: { text: input.bodyText },
+      action: {
+        name: "flow",
+        parameters: {
+          flow_message_version: "3",
+          flow_id: input.flowId,
+          flow_cta: input.flowCta,
+          flow_action: "navigate",
+          flow_token: input.flowToken,
+          ...(input.mode ? { mode: input.mode } : {}),
+          flow_action_payload: { screen: PAYMENT_FLOW_ENTRY_SCREEN, data: { sociedades: input.sociedades } },
+        },
+      },
+    },
+  };
+}
+
+/** Mismo criterio que `flowSendConfig`; solo cambian las variables propias del Flow de pago. */
+function paymentFlowSendConfig(): FlowSendConfig | null {
+  const apiKey = process.env.KAPSO_API_KEY?.trim();
+  const flowId = process.env.WHATSAPP_FLOW_PAGO_ID?.trim();
+  const phoneNumberId = process.env.KAPSO_PHONE_NUMBER_ID?.trim();
+  const tokenSecret = process.env.KAPSO_WEBHOOK_SECRET?.trim();
+  if (!apiKey || !flowId || !phoneNumberId || !tokenSecret) return null;
+  const baseUrl = (process.env.KAPSO_META_PROXY_URL?.trim() || "https://api.kapso.ai/meta/whatsapp/v24.0").replace(/\/+$/, "");
+  const flowCta = process.env.WHATSAPP_FLOW_PAGO_CTA?.trim() || "Solicitar pago";
+  const bodyText = process.env.WHATSAPP_FLOW_PAGO_BODY?.trim() || "Pide un pago para ti o para un tercero: identificación, empresa que paga y monto.";
+  const modeRaw = process.env.WHATSAPP_FLOW_PAGO_MODE?.trim().toLowerCase();
+  const mode = modeRaw === "draft" || modeRaw === "published" ? modeRaw : undefined;
+  const timeoutMs = Number(process.env.KAPSO_SEND_TIMEOUT_MS) || 8_000;
+  return { apiKey, baseUrl, phoneNumberId, flowId, flowCta, bodyText, mode, tokenSecret, timeoutMs };
+}
+
+/** Permite decidir antes de enviar si el canal de pago está activo (sin `WHATSAPP_FLOW_PAGO_ID` no lo está). */
+export function isPaymentFlowConfigured(): boolean { return paymentFlowSendConfig() !== null; }
+
+/**
+ * Envía el Flow de solicitud de pago al `to` dado. Mismas garantías que `sendRequisitionFlow`:
+ * falla cerrado con `PAYMENT_FLOW_NOT_CONFIGURED` antes de tocar la BD, normaliza el destino con
+ * `destinatarioWhatsApp` y nunca interpola el teléfono en un error. Solo consulta sociedades: este
+ * Flow no tiene dropdown de catálogo.
+ */
+export async function sendPaymentFlow(to: string, deps: FlowSenderDeps = {}): Promise<{ messageId: string }> {
+  const config = paymentFlowSendConfig();
+  if (!config) throw new Error("PAYMENT_FLOW_NOT_CONFIGURED");
+  const normalizedPhone = destinatarioWhatsApp(to);
+  if (!normalizedPhone) throw new Error("FLOW_SEND_INVALID_PHONE");
+
+  const catalogSource = deps.catalogSource ?? createPostgresFlowCatalogSource();
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const now = deps.now ?? (() => new Date());
+  const sociedades = await catalogSource.listActiveSocieties(MAX_DROPDOWN_OPTIONS);
+  const payload = buildPaymentFlowSendPayload({
+    to: normalizedPhone,
+    flowId: config.flowId,
+    flowCta: config.flowCta,
+    flowToken: issueFlowToken(normalizedPhone, config.tokenSecret, now()),
+    mode: config.mode,
+    bodyText: config.bodyText,
+    sociedades,
+  });
+  return postFlowMessage(config, payload, fetchImpl);
 }

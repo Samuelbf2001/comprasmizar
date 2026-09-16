@@ -87,9 +87,9 @@ const UNIDADES = [
 ].map(([id, title]) => ({ id, title }));
 
 /** Declaración `data` de un texto que la pantalla recibe y puede pintar. */
-const textoRecibido = (ejemplo: string) => ({ type: "string", __example__: ejemplo });
+export const textoRecibido = (ejemplo: string) => ({ type: "string", __example__: ejemplo });
 /** Declaración `data` de una lista para un Dropdown. */
-const listaRecibida = () => ({
+export const listaRecibida = () => ({
   type: "array",
   items: { type: "object", properties: { id: { type: "string" }, title: { type: "string" } } },
   __example__: [{ id: "ejemplo", title: "Ejemplo" }],
@@ -99,8 +99,7 @@ const listaRecibida = () => ({
 function cabeceraData() {
   return {
     catalogo: listaRecibida(),
-    tipo_solicitud: textoRecibido("compra"),
-    empresa: textoRecibido("20000000-0000-4000-8000-000000000001"),
+    empresa: textoRecibido("Mizar"),
   };
 }
 
@@ -115,7 +114,7 @@ function itemsData(n: number) {
 
 /** Reenvío de lo ya recibido: se lee de `data`, no de `form`, porque no es de esta pantalla. */
 function reenvioCabecera() {
-  return { catalogo: "${data.catalogo}", tipo_solicitud: "${data.tipo_solicitud}", empresa: "${data.empresa}" };
+  return { catalogo: "${data.catalogo}", empresa: "${data.empresa}" };
 }
 function reenvioItems(n: number) {
   const payload: Record<string, string> = {};
@@ -159,11 +158,10 @@ function pantallaTipoYEmpresa() {
       type: "SingleColumnLayout",
       children: [
         { type: "TextHeading", text: "¿Qué necesitas?" },
-        { type: "TextBody", text: "Elige el tipo de solicitud y la empresa. La obra la asigna Compras." },
-        {
-          type: "RadioButtonsGroup", name: "tipo_solicitud", label: "Tipo de solicitud", required: true,
-          "data-source": [{ id: "compra", title: "Compra de material" }, { id: "pago", title: "Solicitud de pago" }],
-        },
+        // Ya no se elige tipo: la solicitud de pago tiene Flow propio (scripts/build-flow-pago.ts).
+        // Aquí la opción "pago" existía pero no funcionaba: el payload no traía beneficiario ni
+        // valor y la plataforma la rechazaba en silencio.
+        { type: "TextBody", text: "Elige la empresa para la que compras. La obra la asigna Compras." },
         { type: "Dropdown", name: "empresa", label: "Empresa", required: true, "data-source": "${data.sociedades}" },
         {
           type: "Footer", label: "Continuar",
@@ -173,7 +171,7 @@ function pantallaTipoYEmpresa() {
             // pantalla solo ve lo que le entregan. El v1 lo referenciaba como
             // `${screen.TIPO_Y_EMPRESA.data.catalogo}` desde las pantallas de artículo, que es la
             // misma sintaxis entre pantallas que fallaba en el resumen.
-            payload: { catalogo: "${data.catalogo}", tipo_solicitud: "${form.tipo_solicitud}", empresa: "${form.empresa}" },
+            payload: { catalogo: "${data.catalogo}", empresa: "${form.empresa}" },
           },
         },
       ],
@@ -245,7 +243,7 @@ function pantallaResumen() {
   const data = { ...cabeceraData(), ...itemsData(MAX_ITEMS), fecha_requerida: textoRecibido(""), observaciones: textoRecibido("") };
   // El `complete` se arma con `${data.*}`, no con referencias entre pantallas: llega aquí ya
   // encadenado, así que no hace falta —ni conviene— volver a mirar hacia atrás.
-  const payload: Record<string, string> = { type: "${data.tipo_solicitud}", societyId: "${data.empresa}", requiredDate: "${data.fecha_requerida}", observations: "${data.observaciones}" };
+  const payload: Record<string, string> = { type: "compra", societyId: "${data.empresa}", requiredDate: "${data.fecha_requerida}", observations: "${data.observaciones}" };
   // LA FOTO ES LA ÚNICA EXCEPCIÓN AL ENCADENADO, y no por elección: Meta lo prohíbe.
   //
   //   "The value of PhotoPicker component is not allowed in the payload of navigate action."
@@ -273,8 +271,6 @@ function pantallaResumen() {
     { type: "TextHeading", text: "Revisa antes de enviar" },
     { type: "TextCaption", text: "Empresa" },
     { type: "TextBody", text: "${data.empresa}" },
-    { type: "TextCaption", text: "Tipo de solicitud" },
-    { type: "TextBody", text: "${data.tipo_solicitud}" },
     { type: "TextCaption", text: "Fecha requerida" },
     { type: "TextBody", text: "${data.fecha_requerida}" },
   ];

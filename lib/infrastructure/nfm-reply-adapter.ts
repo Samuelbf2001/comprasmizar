@@ -215,11 +215,14 @@ function compactItems(fields: Record<string, unknown>): { ok: true; items: Compa
 // campo puede traer un uuid (envíos viejos o Flows ya en curso) O un nombre. Resolverlo a un uuid
 // real necesita I/O (consultar el catálogo de sociedades), así que esta función sigue siendo pura y
 // solo pasa el valor crudo hacia adelante; `adaptNfmReply` es quien lo resuelve.
-interface TopLevelFields { type: "compra" | "pago"; societyIdRaw: string; workId?: string; requiredDate?: string; observations?: string; }
+interface TopLevelFields { type: "compra"; societyIdRaw: string; workId?: string; requiredDate?: string; observations?: string; }
 
 function extractTopLevelFields(fields: Record<string, unknown>): { ok: true; value: TopLevelFields } | { ok: false; reason: "invalid_fields" } {
   const type = asString(fields.type);
-  if (type !== "compra" && type !== "pago") return { ok: false, reason: "invalid_fields" };
+  // Solo compra. La solicitud de pago tiene Flow y adaptador propios (payment-reply-adapter.ts):
+  // un `type: "pago"` aquí viene del Flow de captura viejo, cuyo payload no trae beneficiario ni
+  // valor y moría en `create()` con PAYMENT_BENEFICIARY_REQUIRED (503 → reintentos de Kapso).
+  if (type !== "compra") return { ok: false, reason: "invalid_fields" };
   const societyIdRaw = asString(fields.societyId);
   if (societyIdRaw === "") return { ok: false, reason: "invalid_fields" };
   // requiredDate opcional en los tres canales (reunión 2026-08-31): la validación de FORMATO solo
