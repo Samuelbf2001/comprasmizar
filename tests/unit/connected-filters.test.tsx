@@ -186,6 +186,21 @@ describe("RF-506: filtros en el panel de órdenes", () => {
 });
 
 describe("RF-703: filtros de gastos por obra y periodo", () => {
+  // A10: la pantalla abre en "Cierre de caja" (consulta /api/reports/cash-close); el libro de gastos
+  // vive en la segunda pestaña y ya no lista movimientos de caja menor aparte.
+  const openLedger = () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ from: "2026-09-14", to: "2026-09-18", rows: [], total: 0 }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(
+      <ConnectedExpenses
+        data={expenseData}
+        role="Contabilidad"
+        refresh={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Libro de gastos" }));
+  };
   const expenseData = {
     expenses: [
       {
@@ -211,58 +226,34 @@ describe("RF-703: filtros de gastos por obra y periodo", () => {
       },
     ],
     catalogs,
-    pettyCash: [
-      {
-        id: "petty-1",
-        workId: "work-2",
-        date: "2026-08-20",
-        concept: "Compra menor",
-        tagId: "tag-1",
-        amount: 20000,
-      },
-    ],
+    pettyCash: [],
     pettyAttachments: {},
   };
 
-  it("filtra por obra ocultando filas de gastos y de caja menor de otras obras", () => {
-    render(
-      <ConnectedExpenses
-        data={expenseData}
-        role="Contabilidad"
-        refresh={vi.fn()}
-      />,
-    );
+  it("filtra por obra ocultando filas de gastos de otras obras, con estado vacío si nada queda", () => {
+    openLedger();
     expect(screen.getByText("2026-07-15")).toBeInTheDocument();
     expect(screen.getByText("2026-08-15")).toBeInTheDocument();
-    expect(screen.getByText("Compra menor")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Filtrar por obra"), {
       target: { value: "work-1" },
     });
-
     expect(screen.getByText("2026-07-15")).toBeInTheDocument();
     expect(screen.queryByText("2026-08-15")).toBeNull();
-    // La caja menor de work-2 desaparece y queda un estado vacío por filtros.
-    expect(screen.queryByText("Compra menor")).toBeNull();
-    expect(
-      screen.getAllByText("Sin resultados para estos filtros").length,
-    ).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText("Periodo"), {
+      target: { value: "2026-08" },
+    });
+    expect(screen.queryByText("2026-07-15")).toBeNull();
+    expect(screen.getByText("Sin resultados para estos filtros")).toBeInTheDocument();
   });
 
   it("filtra por periodo (corte mensual)", () => {
-    render(
-      <ConnectedExpenses
-        data={expenseData}
-        role="Contabilidad"
-        refresh={vi.fn()}
-      />,
-    );
+    openLedger();
     fireEvent.change(screen.getByLabelText("Periodo"), {
       target: { value: "2026-08" },
     });
     expect(screen.queryByText("2026-07-15")).toBeNull();
     expect(screen.getByText("2026-08-15")).toBeInTheDocument();
-    // La caja menor del 2026-08-20 también cae en el periodo 2026-08.
-    expect(screen.getByText("Compra menor")).toBeInTheDocument();
   });
 });

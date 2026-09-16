@@ -4,7 +4,6 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ConnectedExpenses,
   ConnectedNewRequisition,
   ConnectedRequisitionDetail,
   DemoRequisitionScreen,
@@ -123,47 +122,6 @@ describe("superficies demo de adjuntos operativos", () => {
     expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/requisitions")).toHaveLength(1);
     expect(screen.getByRole("button", { name: /Crear requisición/ })).toBeDisabled();
   });
-
-  it("no duplica caja menor si falla el recibo y deja actualizar la lista", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      if (String(input) === "/api/petty-cash") {
-        return new Response(
-          JSON.stringify({ entry: { id: "petty-1", workId: "work-1", tagId: "tag-1", date: "2026-08-24", concept: "Caja", amount: 1000 } }),
-          { status: 201 },
-        );
-      }
-      return new Response(JSON.stringify({ message: "prepare rechazado" }), { status: 500 });
-    });
-    const refresh = vi.fn();
-    render(
-      <ConnectedExpenses
-        role="Revisor"
-        refresh={refresh}
-        data={{
-          expenses: [],
-          pettyCash: [],
-          pettyAttachments: {},
-          catalogs: {
-            works: [{ id: "work-1", name: "Torre Norte" }],
-            tags: [{ id: "tag-1", name: "Operación" }],
-            // Cajas (2026-09-12): registerPettyCash exige ahora cashBoxId — sin al menos una caja
-            // activa en el catálogo, el formulario nunca tendría una preseleccionada.
-            cashBoxes: [{ id: "cash-1", name: "Caja Menor", type: "caja_menor" }],
-            suppliers: [], items: [], features: {},
-          },
-        }}
-      />,
-    );
-    fireEvent.change(screen.getByLabelText("Concepto"), { target: { value: "Caja" } });
-    fireEvent.change(screen.getByLabelText("Valor base COP"), { target: { value: "1000" } });
-    fireEvent.change(screen.getByLabelText("Recibo o soporte (opcional)"), {
-      target: { files: [new File(["pdf"], "recibo.pdf", { type: "application/pdf" })] },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Registrar gasto" }));
-    // "El gasto" (masculino) — antes era "la caja menor" (femenino), ver el mensaje en expenses.tsx.
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("sí fue creado"));
-    expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/petty-cash")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Actualizar lista" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Registrar gasto" })).toBeDisabled();
-  });
+  // A10 (adenda de pagos): el "gasto directo" de caja con recibo se retiró de ConnectedExpenses (la caja
+  // es un pago con comprobante sobre la orden), así que su prueba de no-duplicación se fue con él.
 });
