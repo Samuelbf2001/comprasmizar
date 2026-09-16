@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { DomainError, type Requisition } from "../../../../lib/domain";
+import { colombiaDateParts, DomainError, type Requisition } from "../../../../lib/domain";
 import { ProcurementService } from "../../../../lib/services";
 import { SUPPLIER_IDENTIFICATION_TYPE_VALUES } from "../../../../lib/http/schemas";
 import { createPostgresDependencies } from "../../../../lib/infrastructure/postgres-repositories";
@@ -212,9 +212,11 @@ export async function POST(request: Request) {
     requisition = parsed.data.type === "pago"
       // RF-108: una sola línea de concepto (cantidad 1, valor = monto), como arma el formulario interno
       // (`unit: "servicio"`), y el beneficiario por identificación: `create` lo enlaza al proveedor
-      // existente o lo crea `pendingNormalization` en la misma transacción (RF-606).
+      // existente o lo crea `pendingNormalization` en la misma transacción (RF-606). El portal no pide
+      // la fecha del gasto: es real y por defecto hoy en Colombia (PRD D6), no la del reloj del servidor.
       ? await service.create({
         type: "pago", ...destination, ...common,
+        requiredDate: colombiaDateParts(new Date()).day,
         externalRequester: { name: parsed.data.beneficiary.name, ...(phone ? { phone } : {}) },
         beneficiary: { ...parsed.data.beneficiary, ...(phone ? { phone } : {}) },
         items: [{ id: randomUUID(), description: parsed.data.concept, quantity: 1, unit: "servicio", unitBase: parsed.data.amount, unitIva: 0 }],

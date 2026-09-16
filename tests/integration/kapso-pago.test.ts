@@ -172,11 +172,18 @@ describe("payment-reply-adapter — traducción pura (sin HTTP, sin Postgres)", 
       eventId: fixture.message.id,
       phone: "+573001234567",
       societyId: SOCIEDAD_MIZAR,
+      requiredDate: "2026-08-24",
       type: "pago",
       requesterName: "Maestro de obra",
       beneficiary: { identificationType: "CC", identification: "1020304050", name: "Juan Camilo Topógrafo", phone: "+573001234567" },
       items: [{ quantity: 1, unit: "unidad", proposedDescription: "Levantamiento topográfico lote 4", unitBase: 1500000 }],
     });
+  });
+
+  it("la fecha del gasto es la del envío en Colombia, no en UTC (QA H9)", async () => {
+    // 22:00 del 24 en Bogotá ya es el 25 en UTC: con toISOString() el gasto caería al día siguiente.
+    const result = await adaptPaymentReply(fixture, { ...config, now: new Date("2026-08-25T03:00:00.000Z") });
+    expect(result.ok && result.event.submission?.requiredDate).toBe("2026-08-24");
   });
 
   it("sin monto: invalid_amount (también vacío, cero, negativo, letras o decimales)", async () => {
@@ -239,7 +246,7 @@ describe("POST /api/kapso — nfm_reply del Flow de solicitud de pago", () => {
 
     expect(requisitionMap.size).toBe(1);
     const [requisition] = [...requisitionMap.values()];
-    expect(requisition).toMatchObject({ type: "pago", channel: "whatsapp", societyId: SOCIEDAD_MIZAR, kapsoEventId: fixture.message.id, status: "enviada" });
+    expect(requisition).toMatchObject({ type: "pago", channel: "whatsapp", societyId: SOCIEDAD_MIZAR, kapsoEventId: fixture.message.id, status: "enviada", requiredDate: "2026-08-24" });
     expect(requisition.externalRequester).toEqual({ name: "Maestro de obra", phone: "+573001234567" });
     expect(requisition.items).toHaveLength(1);
     expect(requisition.items[0]).toMatchObject({ description: "Levantamiento topográfico lote 4", quantity: 1, unit: "unidad", unitBase: 1500000, itemId: undefined });
