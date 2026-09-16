@@ -667,6 +667,186 @@ describe("portal público guiado — enlace inválido", () => {
   });
 });
 
+// RF-108 (adenda de pagos, A12 del plan): «Solicitud de pago» abre un camino de TRES pasos —¿Quién
+// cobra?, El pago, Resumen— en vez del de compra. Quien radica es el beneficiario (no hay "Tus
+// datos"), la empresa se pide junto al monto (es a la que se cobra) y no hay artículos: el concepto y
+// el monto son la única línea. El endpoint recibe `type: "pago"` con `beneficiary`, `amount` (número
+// entero) y `concept`, sin `items` ni `name`. Antes el paso 1 ofrecía "Solicitud de pago" y los pasos
+// siguientes eran los de compra: la solicitud llegaba sin monto y el 202 neutro la perdía en silencio.
+describe("portal público guiado — solicitud de pago (RF-108)", () => {
+  beforeEach(() => {
+    setHash({ token });
+    stubFetch({ [EMPRESAS]: { status: 200, body: { companies: [{ id: societyId, name: "Constructora Mizar S.A.S." }] } } });
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ""; });
+
+  const radioPago = () => document.querySelector('input[name="type"][value="pago"]') as HTMLInputElement;
+
+  /** Compuerta, lista de empresas cargada y «Solicitud de pago» elegido; se queda en "¿Qué vas a solicitar?". */
+  async function elegirPago() {
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    await screen.findByRole("option", { name: "Constructora Mizar S.A.S." });
+    fireEvent.click(radioPago());
+  }
+  async function llegarAQuienCobra() {
+    await elegirPago();
+    fireEvent.click(screen.getByRole("button", { name: /^Continuar$/i }));
+    await screen.findByRole("heading", { name: /¿Quién cobra\?/i });
+  }
+  function llenarBeneficiario({ identificacion = "1020304050", nombre = "Ana Topógrafa", telefono = "3001234567" }: { identificacion?: string; nombre?: string; telefono?: string } = {}) {
+    fireEvent.change(campo("identificationType"), { target: { value: "CC" } });
+    fireEvent.change(campo("identification"), { target: { value: identificacion } });
+    fireEvent.change(campo("beneficiaryName"), { target: { value: nombre } });
+    if (telefono) fireEvent.change(campo("phone"), { target: { value: telefono } });
+    fireEvent.click(screen.getByRole("button", { name: /Continuar al pago/i }));
+  }
+  async function llegarAlPago() {
+    await llegarAQuienCobra();
+    llenarBeneficiario();
+    await screen.findByRole("heading", { name: /^El pago$/i });
+  }
+  function llenarPago({ empresa = societyId, monto = "1250000", concepto = "Levantamiento topográfico lote 3" }: { empresa?: string; monto?: string; concepto?: string } = {}) {
+    if (empresa) fireEvent.change(document.querySelector('select[name="company"]') as HTMLSelectElement, { target: { value: empresa } });
+    if (monto) fireEvent.change(campo("amount"), { target: { value: monto } });
+    if (concepto) fireEvent.change(campo("concept"), { target: { value: concepto } });
+    fireEvent.click(screen.getByRole("button", { name: /Ver resumen/i }));
+  }
+  async function llegarAlResumenDePago() {
+    await llegarAlPago();
+    llenarPago();
+    await screen.findByRole("heading", { name: /^Resumen$/i });
+  }
+
+  it("elegir «Solicitud de pago» quita la empresa del primer paso y lleva a «¿Quién cobra?», no a «Tus datos»", async () => {
+    await elegirPago();
+    expect(radioPago()).toBeChecked();
+    // La empresa se pide después, junto al monto: es a la que se cobra (A12).
+    expect(document.querySelector('select[name="company"]')).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Continuar$/i }));
+
+    expect(await screen.findByRole("heading", { name: /¿Quién cobra\?/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Tus datos$/i })).toBeNull();
+    // Cuatro etapas en el indicador, no cinco: es otro camino.
+    expect(within(screen.getByRole("list", { name: /Avance de la requisición/i })).getAllByRole("listitem")).toHaveLength(4);
+  });
+
+  it("no deja pasar sin identificación ni nombre, y una identificación con puntos se limpia al teclear", async () => {
+    await llegarAQuienCobra();
+    fireEvent.click(screen.getByRole("button", { name: /Continuar al pago/i }));
+
+    expect(await screen.findByText(/Escribe el número de identificación/i)).toBeInTheDocument();
+    expect(screen.getByText(/Escribe el nombre completo o la razón social/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^El pago$/i })).toBeNull();
+
+    // "1.020.304.050" no enlazaría con "1020304050" en el catálogo: los puntos se van al teclear.
+    fireEvent.change(campo("identification"), { target: { value: "1.020.304.050" } });
+    expect(campo("identification")).toHaveValue("1020304050");
+  });
+
+  it("un teléfono a medias también se rechaza en «¿Quién cobra?»", async () => {
+    await llegarAQuienCobra();
+    llenarBeneficiario({ telefono: "300" });
+    expect(await screen.findByText(/teléfono está incompleto/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^El pago$/i })).toBeNull();
+  });
+
+  it("recorre los tres pasos y envía type=pago con beneficiario, monto numérico y concepto — sin items ni name", async () => {
+    await llegarAlPago();
+    // La empresa se elige AQUÍ, con el mismo selector que la compra.
+    expect(screen.getByRole("option", { name: "Constructora Mizar S.A.S." })).toBeInTheDocument();
+    llenarPago();
+    await screen.findByRole("heading", { name: /^Resumen$/i });
+
+    expect(screen.getByText("Ana Topógrafa")).toBeInTheDocument();
+    expect(screen.getByText(/CC 1020304050/)).toBeInTheDocument();
+    expect(screen.getByText(/1\.250\.000/)).toBeInTheDocument();
+    expect(screen.getByText("Levantamiento topográfico lote 3")).toBeInTheDocument();
+    expect(screen.getByText("Constructora Mizar S.A.S.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const [, init] = llamadasA(RADICACION)[0];
+    expect((init?.headers as Record<string, string>)["content-type"]).toBe("application/json");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      societyId, code: "clave-1234", type: "pago", phone: "3001234567",
+      beneficiary: { identificationType: "CC", identification: "1020304050", name: "Ana Topógrafa" },
+      amount: 1250000, concept: "Levantamiento topográfico lote 3",
+    });
+    await screen.findByText(/La estamos validando/i);
+  });
+
+  it("sin monto no pasa al resumen; el concepto se corta a 120 caracteres en el propio campo", async () => {
+    await llegarAlPago();
+    expect(campo("concept")).toHaveAttribute("maxlength", "120");
+    llenarPago({ monto: "" });
+
+    expect(await screen.findByText(/Indica el monto a cobrar/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Resumen$/i })).toBeNull();
+  });
+
+  it("el monto solo admite dígitos y muestra el valor en pesos mientras se escribe", async () => {
+    await llegarAlPago();
+    fireEvent.change(campo("amount"), { target: { value: "1.250.000 COP" } });
+    expect(campo("amount")).toHaveValue("1250000");
+    expect(screen.getByText(/Se solicita .*1\.250\.000/)).toBeInTheDocument();
+  });
+
+  it("la foto de la factura viaja como foto_0 en FormData, con el JSON de pago intacto en 'payload'", async () => {
+    await llegarAlPago();
+    const archivo = new File([new Uint8Array(10)], "factura.jpg", { type: "image/jpeg" });
+    fireEvent.change(campo("photo-0"), { target: { files: [archivo] } });
+    await screen.findByText("factura.jpg");
+    llenarPago();
+    await screen.findByRole("heading", { name: /^Resumen$/i });
+    expect(document.querySelector("img")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
+    await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
+    const [, init] = llamadasA(RADICACION)[0];
+    expect(init?.body).toBeInstanceOf(FormData);
+    const body = init!.body as FormData;
+    const payload = JSON.parse(String(body.get("payload")));
+    expect(payload).toMatchObject({ type: "pago", amount: 1250000, concept: "Levantamiento topográfico lote 3" });
+    expect(body.get("foto_0")).toBeInstanceOf(File);
+    expect((body.get("foto_0") as File).name).toBe("factura.jpg");
+  });
+
+  it("un rechazo con mensaje del servidor se muestra tal cual, sin fingir éxito", async () => {
+    // Desde S3 el endpoint dice por qué rechaza (p. ej. 409 por un homónimo con otra identificación).
+    stubFetch({
+      [EMPRESAS]: { status: 200, body: { companies: [{ id: societyId, name: "Constructora Mizar S.A.S." }] } },
+      [RADICACION]: { status: 409, body: { error: "conflict", message: "Ya existe un proveedor con ese nombre y otra identificación" } },
+    });
+    await llegarAlResumenDePago();
+    fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
+
+    expect(await screen.findByText(/Ya existe un proveedor con ese nombre/i)).toBeInTheDocument();
+    expect(screen.queryByText(/La estamos validando/i)).not.toBeInTheDocument();
+  });
+
+  it("«Atrás» desde el resumen vuelve a «El pago», y de ahí a «¿Quién cobra?», sin perder lo escrito", async () => {
+    await llegarAlResumenDePago();
+    fireEvent.click(screen.getByRole("button", { name: /Atrás/i }));
+    await screen.findByRole("heading", { name: /^El pago$/i });
+    expect(campo("amount")).toHaveValue("1250000");
+    fireEvent.click(screen.getByRole("button", { name: /Atrás/i }));
+    await screen.findByRole("heading", { name: /¿Quién cobra\?/i });
+    expect(campo("identification")).toHaveValue("1020304050");
+    expect(campo("beneficiaryName")).toHaveValue("Ana Topógrafa");
+  });
+
+  it("el camino de compra sigue intacto: «Compra de material» pide la empresa en el primer paso y va a «Tus datos»", async () => {
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    await screen.findByRole("option", { name: "Constructora Mizar S.A.S." });
+    expect(document.querySelector('select[name="company"]')).not.toBeNull();
+    pasarTipoYEmpresa({ company: societyId });
+    await screen.findByRole("heading", { name: /^Tus datos$/i });
+    expect(within(screen.getByRole("list", { name: /Avance de la requisición/i })).getAllByRole("listitem")).toHaveLength(5);
+  });
+});
+
 describe("ruta heredada /requisiciones/publica-movil", () => {
   afterEach(() => { cleanup(); window.location.hash = ""; });
 

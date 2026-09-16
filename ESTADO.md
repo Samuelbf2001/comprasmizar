@@ -172,3 +172,43 @@ Riesgos:
 - `lookupSupplierByIdentification` descarga todo el directorio en cada búsqueda; aceptable para el tamaño actual del catálogo, ver parche opcional.
 - En `detail.tsx`, si el visor es Administrador Sixteam pero NO está en `catalogs.approvers` (no elegible), `review` con `approverId = actor` fallaría en el servidor (isEligibleApprover); el mensaje de error se muestra en pantalla, no hay estado inconsistente (la revisión no se envía).
 - `catalog-admin.tsx` deja de mandar `nit` en proveedores: el servicio lo espeja desde `identification` cuando el tipo es NIT (N2). Un proveedor persona (CC) queda con `nit = NULL` a propósito.
+
+
+---
+
+# ESTADO — feat/portal-pago
+Rama y base: feat/portal-pago desde feat/pagos-nucleo @ 35aae5f (ola 1 verificada; esa rama nace de origin/main @ f9a7e00)
+Último commit: (este commit) — «Portal público: «Solicitud de pago» abre un camino de tres pasos —quién cobra, el pago, resumen— y el formulario muestra el motivo cuando el servidor rechaza»; anterior: a7ec196 (endpoint: unión por `type`, 400 con motivo, 202 neutro solo para contraseña/enlace/límites).
+Hecho:
+- S3 (docs/TASKS-pagos-y-caja.md §4, RF-108 / A12). Archivos: `app/api/public/requisitions/route.ts`, `components/screens/public-request.tsx`, `tests/unit/public-portal-hardening.test.ts`, `tests/unit/public-request-portal.test.tsx`, `tests/integration/public-payment.test.ts` (nuevo), `tests/integration/public-photos.test.ts` (413), `tests/e2e/public-portal.spec.ts`.
+- API: `publicRequisitionSchema` es `z.discriminatedUnion("type", [compra, pago])` + refine «workId o societyId, exactamente uno». Rama `pago`: `beneficiary {identificationType NIT|CC|CE|PAS, identification 3..32, name 2..160}`, `amount` entero > 0 (≤ `MAX_PUBLIC_PAYMENT_AMOUNT` = 1e12, cabe en `numeric(16,2)`), `concept` 1..`MAX_PUBLIC_PAYMENT_CONCEPT_LENGTH` (120), `phone?`, `observations?`; sin `items` ni `name` (quien radica ES el beneficiario). Crea vía `create({ type: "pago", beneficiary: {…, phone normalizado}, externalRequester: { name: beneficiary.name, phone }, items: [{ description: concept, quantity: 1, unit: "servicio", unitBase: amount, unitIva: 0 }] })`.
+- API, respuestas: 400 `invalid_input` (+`issues[{path,code}]`, mismo contrato que `apiError`), 400 `invalid_json`/`invalid_multipart`, 413 `payload_too_large`, `DomainError` tras verificar → 409 CONFLICT / 403 FORBIDDEN / 413 / 422 resto con `{error, message}`, 503 `service_unavailable` para infraestructura (deps, verify que revienta, `create` que revienta) y para `PUBLIC_ACCESS_DENIED` lanzado por el servicio (inconsistencia interna, ver Riesgos). 202 neutro SOLO: `publicFormRateLimiter`, limitadores por destino, `verify`/`verifySociety` falsos. La foto se guarda en un try propio: nunca convierte una radicación válida en error (evita el reenvío duplicado).
+- UI: fases nuevas `beneficiario` y `pago`; `ETAPAS_PAGO` (Solicitud → Quién cobra → El pago → Resumen) vs `ETAPAS_COMPRA` (5); `Progress` recibe las etapas y fija las columnas en línea (el módulo CSS trae 5 fijas). Paso 1 con «Solicitud de pago»: sin selector de empresa (va al paso «El pago», A12) y una pista de qué se va a pedir. «¿Quién cobra?»: tipo (select, default CC), número (quita puntos/espacios al teclear; `^[0-9A-Za-z-]{3,32}$`), nombre completo/razón social, teléfono opcional (misma regla que compra). «El pago»: `SelectorEmpresa` rotulado «Empresa a la que cobras», monto (solo dígitos, ≤ 12, pista «Se solicita $ 1.250.000» con `Intl es-CO`), concepto (`maxLength` 120 + contador), `CampoFoto` reutilizado como «Foto de la factura o cuenta de cobro» (`aria-label` «Factura o cuenta de cobro (opcional)»), viaja como `foto_0`. Resumen de pago (tipo, empresa, beneficiario, identificación, teléfono, monto, concepto, miniatura). `handleEnviar` arma el payload de pago; ante 4xx muestra `message` del servidor si viene, 413 y 503 con texto propio. Compra intacta.
+- Pruebas: hardening 23 (11 de pago: sin monto → 400 y no toca la base; entero > 0; concepto ≤ 120; estricto por tipo; forma exacta del `create`; sin teléfono; contraseña incorrecta → 202 neutro también en pago; 409/422 con mensaje; PUBLIC_ACCESS_DENIED del servicio → 503; compra sigue 202). Portal 46 (11 de pago: bifurcación, 4 etapas, validaciones, payload exacto, foto_0, mensaje del servidor, atrás sin perder datos, compra intacta). Integración `public-payment` 6 (beneficiario nuevo pendiente + auditoría, enlace por identificación, foto ligada a la línea, 400 sin monto, contraseña mala neutra, `it.fails` ruta por empresa). E2E +2 casos de pago (recorrido completo y validaciones), en desktop y mobile.
+- Verificación visual en navegador (demo, 375 y 1024 px): sin desbordamiento (0 px) en los tres pasos y el resumen.
+A medias:
+- Nada del alcance de S3.
+Próximos pasos:
+- Aplicar el «Parche para el coordinador» (abajo) y cambiar `it.fails` → `it` en `tests/integration/public-payment.test.ts`.
+- Ola 3: QA del E2E #7 de la adenda con datos reales (beneficiario existente vs nuevo).
+Cómo verificar:
+- `npm run typecheck` → 0 errores · `npm run lint` → 0 problemas
+- `npm run test -- tests/unit/public tests/integration/public` → 8 archivos, 106 pruebas verdes (incluye `public-request-portal` y `public-portal-hardening`)
+- `npm run test:e2e -- public-portal` → 31 verdes, 1 omitida (la de tamaños táctiles solo corre en `mobile`)
+Decisiones pendientes del usuario:
+- Empresa en el paso «El pago» y no en el paso 1 (A12 literal): al elegir «Solicitud de pago» el selector desaparece del paso 1. Alternativa: dejarla en el paso 1 para los dos tipos.
+- Adjunto del pago = FOTO (JPG/PNG/WebP ≤ 5 MB), no PDF: `lib/infrastructure/public-photos.ts` solo acepta imágenes por firma binaria y es `lib/**`. Si Sixteam sube facturas en PDF, hay que ampliar ese módulo (parche 3).
+- Tope del monto: 1e12 en el esquema y 12 dígitos en el campo. Tope del concepto: 120.
+- Errores de dominio visibles tras la contraseña correcta (409 homónimo, 422 inactivo): no abre oráculo nuevo (`POST /api/public/access` ya dice si la contraseña es correcta), pero es un cambio de postura respecto al «todo 202».
+- Estados HTTP: 400 solo para forma (esquema/JSON/multipart); dominio va en 409/422 como `apiError`, y no en 400 como decía el plan literalmente.
+Riesgos:
+- BUG PREEXISTENTE (lib, fuera de S3): `ProcurementService.create` (procurement-service.ts:96) exige `workId` y llama `verify(workId, …)`; nunca `verifySociety`. Por la ruta general por empresa (desde 2026-09-11) lanza `PUBLIC_ACCESS_DENIED` para compra Y pago: con `main` el 202 neutro lo tapaba (requisición perdida en silencio); con S3 responde 503 «no disponible» (visible, pero sigue sin radicar hasta el parche 1). Por eso la integración de pago usa el enlace por obra y la ruta por empresa está en `it.fails`.
+- `tests/e2e/authorization-and-backend.spec.ts:46` espera `[202, 503]` al `POST {}`; con S3 sería 400. Solo corre con `E2E_REAL_BACKEND=1`. No es archivo de S3 (parche 2).
+- `it.fails` de la ruta por empresa se pone rojo en cuanto entre el parche 1: es a propósito (tripwire), hay que cambiarlo a `it`.
+- Se cambió la expectativa de tres pruebas previas de hardening que dependían del `catch → 202`: infra tras verificar → 503; obra+empresa / sin destino → 400. Dos pruebas de orden de verificación ahora mockean `create` resuelto (`creacionCorrecta`).
+- El progreso usa `style={{ gridTemplateColumns }}` en línea porque `public-request.module.css` fija 5 columnas y el CSS no está en la lista exclusiva de S3; si se prefiere, regla `.progress[data-steps="4"]` en el módulo.
+- Durante la verificación había ~200 procesos `node` colgados en la máquina (arrancados entre 15:57 y 21:25 del 15-sep; parecen workers de vitest/Playwright de otras sesiones). No es de S3, pero consume RAM y puede ralentizar las suites.
+Parche para el coordinador:
+1. `lib/services/procurement-service.ts` `create()`, canal `publico`: `if (input.workId) ok = verify(workId, token, code); else if (input.societyId) ok = verifySociety(societyId, token, code); else deny` (hoy solo la primera rama). Después: `it.fails` → `it` en `tests/integration/public-payment.test.ts`, y si se quiere, `PUBLIC_ACCESS_DENIED` del servicio podría volver a tratarse como neutro en la ruta (hoy 503 a propósito para no perder solicitudes en silencio).
+2. `tests/e2e/authorization-and-backend.spec.ts:46`: `expect([202, 503])` → `expect([400, 503])`.
+3. (RF-108 «adjunto», opcional) aceptar PDF en `lib/infrastructure/public-photos.ts` (`safePhoto` + `IMAGE_MIME_TYPES`) y en `CampoFoto`/`validateAttachmentFile` del portal si Sixteam sube facturas PDF; hoy el portal solo ofrece foto.
