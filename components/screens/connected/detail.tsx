@@ -25,8 +25,10 @@ import {
   eventLabel,
   formatIsoDate,
   money,
+  pendingBeneficiaryId,
   resolveUserName,
   summarizeLines,
+  supplierFichaPath,
   uploadOperationalAttachment,
   type DetailBundle,
   type NamedOption,
@@ -808,6 +810,7 @@ export function ConnectedRequisitionDetail({
   })();
   const billedCompanyName = (id: string | undefined) =>
     id ? ((catalogs.societies ?? []).find((society) => society.id === id)?.name ?? "—") : "Sin empresa facturada";
+  const beneficiaryId = pendingBeneficiaryId(requisition);
   return (
     <>
       <SectionTitle
@@ -1524,6 +1527,25 @@ export function ConnectedRequisitionDetail({
                 <dd>{requisition.observations || "—"}</dd>
               </div>
             </dl>
+            {/* QA H5: llega así del portal o de WhatsApp (solo identificación y nombre); sin esta marca
+                el revisor solo se enteraba entrando a Proveedores. */}
+            {requisition.beneficiaryPendingNormalization && (
+              <p data-testid="beneficiary-pending">
+                <Tone tone="warning" dot>Beneficiario pendiente de completar</Tone>{" "}
+                {isReviewer && beneficiaryId && (
+                  <a
+                    className="text-link"
+                    href={supplierFichaPath(beneficiaryId)}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      go(supplierFichaPath(beneficiaryId));
+                    }}
+                  >
+                    Completar ficha
+                  </a>
+                )}
+              </p>
+            )}
             {/* Cabecera editable: ya no hay toggle "Editar cabecera"/Cancelar/Guardar cambios —
                 los campos son inline y se autoguardan solos (PATCH /api/requisitions/:id). */}
             {headerEditable && (

@@ -455,6 +455,18 @@ export function SuppliersScreen({ role: _role, demoMode }: { role: Role; demoMod
     }
   };
 
+  // QA H5: la bandeja y el detalle de revisión enlazan a `?proveedor=<id>` para completar la ficha del
+  // beneficiario pendiente; la ficha se pide por id, sin esperar al directorio. El ref evita pedirla dos
+  // veces cuando React repite el efecto en desarrollo.
+  const deepLinkedSupplier = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (demoMode || deepLinkedSupplier.current !== undefined) return;
+    deepLinkedSupplier.current = new URLSearchParams(window.location.search).get("proveedor");
+    const id = deepLinkedSupplier.current;
+    if (id) queueMicrotask(() => void openDetail(id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demoMode]);
+
   const openCreate = () => {
     setFeedback("");
     setStatusMessage("");

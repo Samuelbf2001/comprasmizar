@@ -214,6 +214,35 @@ describe("Aprobar yo mismo (RF-308)", () => {
   });
 });
 
+// QA H5 (adenda de pagos): un pago que llega del portal o de WhatsApp trae el beneficiario pendiente de
+// normalizar; sin marca en el detalle, Daniel solo se enteraba entrando a Proveedores.
+describe("beneficiario pendiente de completar (QA H5)", () => {
+  afterEach(() => cleanup());
+
+  it("el revisor ve la marca y «Completar ficha» lo lleva a la ficha del beneficiario", () => {
+    const go = vi.fn();
+    const data = {
+      requisition: paymentRequisition({ beneficiaryPendingNormalization: true }),
+      catalogs, orders: [], expenses: [], history: [], attachments: [],
+    } as DetailBundle;
+    render(<ConnectedRequisitionDetail data={data} role="Revisor" go={go} refresh={vi.fn()} />);
+    expect(screen.getByTestId("beneficiary-pending")).toHaveTextContent("Beneficiario pendiente de completar");
+    const enlace = screen.getByRole("link", { name: "Completar ficha" });
+    expect(enlace).toHaveAttribute("href", "/proveedores?proveedor=sup-1");
+    fireEvent.click(enlace);
+    expect(go).toHaveBeenCalledWith("/proveedores?proveedor=sup-1");
+  });
+
+  it("quien no completa fichas ve la marca sin enlace, y sin la marca no aparece nada", () => {
+    renderDetail({ status: "en_aprobacion", beneficiaryPendingNormalization: true }, "Contabilidad");
+    expect(screen.getByTestId("beneficiary-pending")).toHaveTextContent("Beneficiario pendiente de completar");
+    expect(screen.queryByRole("link", { name: "Completar ficha" })).toBeNull();
+    cleanup();
+    renderDetail();
+    expect(screen.queryByTestId("beneficiary-pending")).toBeNull();
+  });
+});
+
 // QA H3 (adenda de pagos): la lente de sesión del maestro (revisor + aprobador) es «Revisor», y el
 // detalle solo ofrecía aprobar a la lente «Aprobador». Lo que decide ahora es si quien mira figura como
 // aprobador de la requisición — de la cabecera o de algún ítem —, la misma pregunta que approve().

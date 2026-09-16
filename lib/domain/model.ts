@@ -85,6 +85,10 @@ export interface Requisition {
    *  como columna "fecha" y como base del filtro de periodo/mes — la misma columna que `from`/`to` ya
    *  filtraban en `listVisibleRequisitions` sin necesidad de exponerla hasta ahora. */
   createdAt?: string;
+  /** QA H5 (adenda de pagos): en un pago, el beneficiario sigue `pendiente_normalizacion` (llegó del
+   *  portal o de WhatsApp solo con identificación y nombre). Proyección de lectura para la bandeja y el
+   *  detalle: la pueblan la lista paginada del adaptador Postgres y la ruta del detalle; nunca se escribe. */
+  beneficiaryPendingNormalization?: boolean;
 }
 export interface Order {
   id: string; consecutive: string; type: OrderType; requisitionId: string; supplierId?: string; itemIds: string[]; status: OrderStatus;

@@ -124,7 +124,17 @@ export type RequisitionRow = {
   // (Requisition.updatedAt en lib/domain/model.ts); solo faltaba declararlo aquí para usarlo como
   // proxy de antigüedad en la bandeja. No hay `createdAt` expuesto por la API.
   updatedAt?: string;
+  /** QA H5: el beneficiario de este pago sigue pendiente de completar (ver Requisition en lib/domain/model.ts). */
+  beneficiaryPendingNormalization?: boolean;
 };
+/** QA H5: beneficiario de un pago pendiente de completar — el proveedor de su línea — o `undefined`. */
+export function pendingBeneficiaryId(row: RequisitionRow): string | undefined {
+  return row.beneficiaryPendingNormalization ? row.items.find((line) => line.finalSupplierId)?.finalSupplierId : undefined;
+}
+/** Ficha del proveedor abierta en Proveedores (components/screens/suppliers.tsx lee `?proveedor=`). */
+export function supplierFichaPath(supplierId: string): string {
+  return `/proveedores?proveedor=${encodeURIComponent(supplierId)}`;
+}
 // Reunión 2026-08-31: eje administrativo/contable (pendiente → contabilizada → pagada), independiente
 // del `status` de cumplimiento que ya existía.
 export type OrderAdminStatus = "pendiente" | "contabilizada" | "pagada";

@@ -70,6 +70,22 @@ describe("SuppliersScreen", () => {
     expect(trigger).toHaveFocus();
   });
 
+  // QA H5: la marca «Beneficiario pendiente de completar» de la bandeja y del detalle enlaza aquí.
+  it("opens the supplier file named in ?proveedor= without waiting for a click", async () => {
+    window.history.replaceState(null, "", `/proveedores?proveedor=${supplierId}`);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => (String(input) === "/api/suppliers" ? list() : detail()));
+    try {
+      render(<SuppliersScreen role="Revisor" demoMode={false} />);
+      expect(await screen.findByRole("dialog", { name: /Acabados del Norte/i })).toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalledWith(`/api/suppliers/${supplierId}`, expect.anything());
+      expect(fetchMock.mock.calls.filter(([input]) => String(input) === `/api/suppliers/${supplierId}`)).toHaveLength(1);
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
   it("hides bank details and editing controls when the API gates Admin Mizar", async () => {
     render(<SuppliersScreen role="Administrador Mizar" demoMode />);
     expect(await screen.findByText("Cementos del Oriente SAS")).toBeInTheDocument();
