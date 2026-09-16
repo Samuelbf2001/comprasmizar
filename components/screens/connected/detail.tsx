@@ -11,18 +11,12 @@
 // tiene UNA acción primaria (barra pegajosa al pie del panel de ítems), las secundarias viven en
 // un menú «Más ⋯», el formulario se autoguarda y el motivo de una acción irreversible se escribe
 // DENTRO de su diálogo de confirmación en vez de en una `<textarea>` siempre visible.
-import {
-  Fragment,
-  useEffect,
-  useRef,
-  useState,
-  type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Check, RotateCw, X } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
 import { ActionMenu, SectionTitle, Tone, useConfirmDialog } from "../screen-primitives";
 import { AttachmentPicker } from "../attachment-upload";
+import { SupplierQuickCreate, type QuickSupplier } from "../supplier-quick-create";
 import { friendlyErrorText } from "../../../lib/http/friendly-error";
 import {
   emptyCatalogs,
@@ -186,6 +180,14 @@ function AutosaveIndicator({ autosave, blockedReason }: { autosave: Autosave; bl
 
 type MissingField = "tag" | "work" | "approver" | "price" | null;
 
+// Campos que la ola 1 añadió al servidor (N3) y que shared.tsx (fuera de este paquete) todavía no
+// declara: `billedCompanyId` en la requisición, `societyId` en cada centro de costo del bootstrap
+// (GET /api/catalogs ya lo trae) y los roles reales del visor (pendiente de exponer en la ruta del
+// detalle). Se leen como opcionales para no depender de ese parche.
+type BilledCompanyAware = { billedCompanyId?: string };
+type CostCenterOption = NamedOption & { societyId?: string };
+type ViewerRolesAware = { viewerRoles?: string[] };
+
 export function ConnectedRequisitionDetail({
   data,
   role,
@@ -220,6 +222,17 @@ export function ConnectedRequisitionDetail({
     // (ver el onChange de "Obra", abajo) SOLO si el revisor aún no había elegido uno, el mismo
     // criterio de "sugerencia, no imposición" que ya usa etiqueta -> aprobador.
     [costCenterId, setCostCenterId] = useState(requisition.costCenterId ?? ""),
+    // RF-009: empresa facturada = sociedad a cuyo nombre viene el soporte. Valor inicial = el que ya
+    // guardó el servidor; si no lo hay (payload viejo), la misma derivación del dominio
+    // (resolveBilledCompany: sociedad del centro de costo, si no la de la obra, si no la de la
+    // requisición). Editable; viaja en review() como `billedCompanyId`.
+    [billedCompanyId, setBilledCompanyId] = useState(() => {
+      const saved = (requisition as BilledCompanyAware).billedCompanyId;
+      if (saved) return saved;
+      const costCenter = ((catalogs.costCenters ?? []) as CostCenterOption[]).find((option) => option.id === requisition.costCenterId);
+      if (costCenter?.societyId) return costCenter.societyId;
+      return catalogs.works.find((work) => work.id === requisition.workId)?.societyId ?? requisition.societyId ?? "";
+    }),
     [paymentTerms, setPaymentTerms] = useState(requisition.paymentTerms ?? "ANTICIPADO"),
     // Cabecera: fecha requerida/observaciones ya NO tienen toggle "Editar cabecera" — son campos
     // inline que se autoguardan (ver `headerAutosave`, abajo). El motivo del cambio es el mismo de
@@ -235,13 +248,11 @@ export function ConnectedRequisitionDetail({
     // estado cambiara — y como `refresh()` no se esperaba, ni eso llegaba a tiempo.
     [success, setSuccess] = useState(""),
     [supplierStatus, setSupplierStatus] = useState(""),
+    // Alta rápida de proveedor: el formulario vive en components/screens/supplier-quick-create.tsx
+    // (compartido con la captura y el directorio); aquí solo queda A QUÉ ítem se asigna.
     [quickSupplierItemId, setQuickSupplierItemId] = useState<string | null>(
       null,
     ),
-    [quickSupplierName, setQuickSupplierName] = useState(""),
-    [quickSupplierNit, setQuickSupplierNit] = useState(""),
-    [quickSupplierError, setQuickSupplierError] = useState(""),
-    [quickSupplierBusy, setQuickSupplierBusy] = useState(false),
     // Cotización del comprador: adjunto propio, distinto del soporte del solicitante. Ya no hay
     // botón "Subir cotización": se sube en cuanto se elige el archivo en `AttachmentPicker`.
     [quoteFile, setQuoteFile] = useState<File | null>(null),
@@ -257,13 +268,9 @@ export function ConnectedRequisitionDetail({
     // Qué campo falta al pulsar la primaria sin completar el formulario (obra/etiqueta/aprobador/
     // valor > 0): se enfoca y se marca ESE campo en vez de solo deshabilitar el botón.
     [missingField, setMissingField] = useState<MissingField>(null);
-  const quickSupplierNameRef = useRef<HTMLInputElement | null>(null),
-    quickSupplierDialogRef = useRef<HTMLFormElement | null>(null),
-    // Amplía a HTMLElement (no solo botón): el disparador ahora también puede ser el <select> de
-    // proveedor de una fila ("+ Crear proveedor…" como última opción, ver la tabla más abajo).
-    quickSupplierTriggerRef = useRef<HTMLElement | null>(null),
-    quickSupplierWasOpen = useRef(false),
-    quickSupplierSubmitting = useRef(false),
+  // Amplía a HTMLElement (no solo botón): el disparador ahora también puede ser el <select> de
+  // proveedor de una fila ("+ Crear proveedor…" como última opción, ver la tabla más abajo).
+  const quickSupplierTriggerRef = useRef<HTMLElement | null>(null),
     reassignTriggerRef = useRef<HTMLElement | null>(null),
     tagSelectRef = useRef<HTMLSelectElement | null>(null),
     workSelectRef = useRef<HTMLSelectElement | null>(null),
@@ -277,6 +284,14 @@ export function ConnectedRequisitionDetail({
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const isReviewer = role === "Revisor" || role === "Administrador Sixteam",
     isApprover = role === "Aprobador" || role === "Administrador Sixteam";
+  // RF-308 (A9): "Aprobar yo mismo" solo para quien de verdad tiene revisor + aprobador (o es admin
+  // Sixteam): `role` es la lente de sesión, no el conjunto de roles, así que se leen los del visor
+  // que manda el servidor. Sin ese dato (ruta sin parche) el botón no aparece: nunca se ofrece una
+  // acción que el servicio va a rechazar con FORBIDDEN.
+  const viewerRoles = (data as ViewerRolesAware).viewerRoles ?? [];
+  const canSelfApprove =
+    Boolean(data.viewerId) &&
+    (role === "Administrador Sixteam" || (viewerRoles.includes("revisor") && viewerRoles.includes("aprobador")));
   /**
    * Las líneas que decide QUIEN ESTÁ MIRANDO. La herencia es la misma del dominio (itemApproverId):
    * sin aprobador propio, manda el de la cabecera.
@@ -369,14 +384,15 @@ export function ConnectedRequisitionDetail({
    * autoguardado manden exactamente lo mismo: si se construyera dos veces, volverían a poder
    * divergir, que es de donde venía el REVIEW_INCOMPLETE con el formulario lleno.
    */
-  const reviewBody = () => ({
+  const reviewBody = (overrides: { approverId?: string } = {}) => ({
     action: "review",
     tagId,
-    ...(approverId ? { approverId } : {}),
+    ...((overrides.approverId ?? approverId) ? { approverId: overrides.approverId ?? approverId } : {}),
     ...(workId ? { workId } : {}),
     // Centros de costo: igual que workId/approverId arriba, "" omite la clave (el servidor hereda el
     // de la obra vía resolveCostCenter, lib/domain/rules.ts) en vez de mandar un vacío explícito.
     ...(costCenterId ? { costCenterId } : {}),
+    ...(billedCompanyId ? { billedCompanyId } : {}),
     ...(paymentTerms.trim() ? { paymentTerms: paymentTerms.trim() } : {}),
     items: lines.map(({ id, itemId, description, quantity, unit, possibleSupplier, productLink, finalSupplierId, unitBase, status, declineReason, ivaRate, discountRate, approverId }) => ({
       id,
@@ -480,45 +496,7 @@ export function ConnectedRequisitionDetail({
   const closeQuickSupplier = () => {
     const trigger = quickSupplierTriggerRef.current;
     setQuickSupplierItemId(null);
-    setQuickSupplierName("");
-    setQuickSupplierNit("");
-    setQuickSupplierError("");
     queueMicrotask(() => trigger?.focus());
-  };
-  useEffect(() => {
-    if (!quickSupplierItemId) {
-      if (quickSupplierWasOpen.current) {
-        quickSupplierWasOpen.current = false;
-        quickSupplierTriggerRef.current?.focus();
-      }
-      return;
-    }
-    quickSupplierWasOpen.current = true;
-    quickSupplierNameRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !quickSupplierBusy) closeQuickSupplier();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [quickSupplierBusy, quickSupplierItemId]);
-  const trapQuickSupplierFocus = (event: ReactKeyboardEvent<HTMLFormElement>) => {
-    if (event.key !== "Tab") return;
-    const dialog = event.currentTarget;
-    const focusable = Array.from(
-      dialog.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
-      ),
-    );
-    if (!focusable.length) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
   };
   // Guardas del autoguardado (cliente, nunca un toast rojo por estar tecleando): sin etiqueta no
   // hay nada que guardar todavía (review() la exige); una línea vigente con cantidad ≤ 0, precio
@@ -572,7 +550,7 @@ export function ConnectedRequisitionDetail({
     // Deliberado: NO se listan `reviewAutosave`/`reviewBody` (objetos/funciones nuevas cada
     // render) — solo los valores de formulario cuyo cambio debe programar un guardado.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tagId, approverId, workId, costCenterId, paymentTerms, JSON.stringify(lines)]);
+  }, [tagId, approverId, workId, costCenterId, billedCompanyId, paymentTerms, JSON.stringify(lines)]);
 
   const decisionsGuard = decisionsGuardMessage();
   const decisionsAutosave = useAutosave({
@@ -624,52 +602,19 @@ export function ConnectedRequisitionDetail({
   ) => {
     quickSupplierTriggerRef.current = trigger;
     setSupplierStatus("");
-    setQuickSupplierError("");
-    setQuickSupplierName("");
-    setQuickSupplierNit("");
     setQuickSupplierItemId(itemId);
   };
-  const createQuickSupplier = async (event: FormEvent) => {
-    event.preventDefault();
-    if (quickSupplierSubmitting.current) return;
-    const name = quickSupplierName.trim();
-    if (!name) {
-      setQuickSupplierError("Escribe la razón social del proveedor.");
-      return;
+  const assignQuickSupplier = (created: QuickSupplier) => {
+    setSupplierOptions((current) =>
+      current.some((supplier) => supplier.id === created.id)
+        ? current
+        : [...current, { id: created.id, name: created.name }],
+    );
+    if (quickSupplierItemId) {
+      updateLine(quickSupplierItemId, { finalSupplierId: created.id });
     }
-    quickSupplierSubmitting.current = true;
-    setQuickSupplierBusy(true);
-    setQuickSupplierError("");
-    try {
-      const created = (await mutate("/api/suppliers", "POST", {
-        name,
-        ...(quickSupplierNit.trim()
-          ? { nit: quickSupplierNit.trim() }
-          : {}),
-      })) as { id?: string; name?: string };
-      if (!created.id || !created.name) {
-        throw new Error("El servicio no devolvió el proveedor creado.");
-      }
-      setSupplierOptions((current) =>
-        current.some((supplier) => supplier.id === created.id)
-          ? current
-          : [...current, { id: created.id as string, name: created.name as string }],
-      );
-      if (quickSupplierItemId) {
-        updateLine(quickSupplierItemId, { finalSupplierId: created.id });
-      }
-      setSupplierStatus(`${created.name} quedó asignado al ítem.`);
-      closeQuickSupplier();
-    } catch (error) {
-      setQuickSupplierError(
-        error instanceof Error
-          ? error.message
-          : "No fue posible crear el proveedor.",
-      );
-    } finally {
-      quickSupplierSubmitting.current = false;
-      setQuickSupplierBusy(false);
-    }
+    setSupplierStatus(`${created.name} quedó asignado al ítem.`);
+    closeQuickSupplier();
   };
   const supplierGroups = [
     ...new Set(
@@ -711,34 +656,58 @@ export function ConnectedRequisitionDetail({
   /** Al pulsar la primaria con algo faltante, se enfoca y marca el primer campo faltante en vez de
    *  solo deshabilitar el botón — el mensaje de al lado ya explicaba QUÉ faltaba; esto además lleva
    *  el foco A donde falta. */
-  const validateReviewComplete = (): MissingField => {
+  const validateReviewComplete = (effectiveApproverId = approverId): MissingField => {
     if (!tagId) return "tag";
     if (!workId) return "work";
-    if (!approverId) return "approver";
+    if (!effectiveApproverId) return "approver";
     if (lines.some((line) => line.status !== "declinado" && estimateLineTotal(line) <= 0)) return "price";
     return null;
   };
-  const handleSendForApproval = () => {
-    if (busy) return;
-    const missing = validateReviewComplete();
+  /** Marca y enfoca lo que falta; devuelve true si había algo que enfocar (y no se debe continuar). */
+  const focusMissingField = (missing: MissingField): boolean => {
     setMissingField(missing);
-    if (missing === "tag") { tagSelectRef.current?.focus(); return; }
-    if (missing === "work") { workSelectRef.current?.focus(); return; }
-    if (missing === "approver") { approverSelectRef.current?.focus(); return; }
+    if (missing === "tag") { tagSelectRef.current?.focus(); return true; }
+    if (missing === "work") { workSelectRef.current?.focus(); return true; }
+    if (missing === "approver") { approverSelectRef.current?.focus(); return true; }
     if (missing === "price") {
       const invalidLine = lines.find((line) => line.status !== "declinado" && estimateLineTotal(line) <= 0);
       if (invalidLine) priceInputRefs.current[invalidLine.id]?.focus();
-      return;
+      return true;
     }
-    // Estado `enviada`: si el usuario pulsa la primaria ANTES de que el debounce del autoguardado
-    // dispare, la secuencia completa (`start_review` + `review` + `send_for_approval`) va en un
-    // solo `run()` — ver el comentario de `run`, arriba, sobre por qué no puede saltarse el orden.
+    return false;
+  };
+  // Estado `enviada`: si el usuario pulsa la primaria ANTES de que el debounce del autoguardado
+  // dispare, la secuencia completa (`start_review` + `review` + acción) va en un solo `run()` — ver
+  // el comentario de `run`, arriba, sobre por qué no puede saltarse el orden.
+  const reviewThen = (body: Record<string, unknown>, action: string) => {
     const actions =
       requisition.status === "enviada" && !startReviewDone.current
-        ? [{ action: "start_review" }, reviewBody(), { action: "send_for_approval" }]
-        : [reviewBody(), { action: "send_for_approval" }];
+        ? [{ action: "start_review" }, body, { action }]
+        : [body, { action }];
     startReviewDone.current = true;
-    void run(actions, "Requisición enviada a aprobación.");
+    return actions;
+  };
+  const handleSendForApproval = () => {
+    if (busy) return;
+    if (focusMissingField(validateReviewComplete())) return;
+    void run(reviewThen(reviewBody(), "send_for_approval"), "Requisición enviada a aprobación.");
+  };
+  /**
+   * RF-308 (A9): enviar a aprobación Y aprobar en un solo paso. `sendAndApproveAsMaster` exige que el
+   * actor figure como aprobador asignado, así que la revisión se guarda PRIMERO con `approverId` =
+   * quien está mirando (sin tocar el <select>: si la secuencia falla, la pantalla queda como estaba)
+   * y solo después se llama `send_and_approve`. Quedan dos eventos en la trazabilidad.
+   */
+  const handleSelfApprove = async () => {
+    if (busy || !data.viewerId) return;
+    if (focusMissingField(validateReviewComplete(data.viewerId))) return;
+    const result = await confirm({
+      title: "Aprobar yo mismo",
+      description: `La requisición ${requisition.consecutive} se enviará a aprobación y quedará aprobada en un solo paso, contigo como aprobador. Quedarán dos eventos en la trazabilidad y no se podrá regresar a revisión.`,
+      confirmLabel: "Aprobar yo mismo",
+    });
+    if (!result.ok) return;
+    void run(reviewThen(reviewBody({ approverId: data.viewerId }), "send_and_approve"), "Requisición aprobada en un solo paso.");
   };
   const handleDeclineWhole = async () => {
     const result = await confirm({
@@ -808,6 +777,18 @@ export function ConnectedRequisitionDetail({
     void run(actions, "Órdenes generadas.");
   };
   const reviewLineTotals = summarizeLines(lines);
+  // RF-307/D5 ("el maestro puso 100 millones"): en un pago el valor original es el que pidió el
+  // solicitante — el `montoAntes` de la PRIMERA `revisada` que cambió el valor (sobrevive a recargas)
+  // o, si nadie lo ha tocado aún, el total tal como llegó del servidor.
+  const originalPaymentTotal = (() => {
+    if (requisition.type !== "pago") return null;
+    const firstChange = history
+      .filter((entry) => entry.event === "revisada" && typeof entry.data?.montoAntes === "number")
+      .sort((a, b) => a.at.localeCompare(b.at))[0];
+    return typeof firstChange?.data?.montoAntes === "number" ? firstChange.data.montoAntes : summarizeLines(requisition.items).total;
+  })();
+  const billedCompanyName = (id: string | undefined) =>
+    id ? ((catalogs.societies ?? []).find((society) => society.id === id)?.name ?? "—") : "Sin empresa facturada";
   return (
     <>
       <SectionTitle
@@ -973,6 +954,25 @@ export function ConnectedRequisitionDetail({
                 </select>
               </label>
               <label className="field">
+                {/* RF-009: la sociedad a cuyo nombre viene el soporte (lo que contabiliza el contador),
+                    independiente del centro de costo. Solo sociedades activas (GET /api/catalogs). */}
+                <span>Empresa facturada</span>
+                <select
+                  value={billedCompanyId}
+                  disabled={(catalogs.societies ?? []).length === 0}
+                  onChange={(event) => setBilledCompanyId(event.target.value)}
+                >
+                  <option value="">
+                    {(catalogs.societies ?? []).length === 0 ? "Sin empresas registradas" : "Selecciona la empresa facturada"}
+                  </option>
+                  {(catalogs.societies ?? []).map((society) => (
+                    <option key={society.id} value={society.id}>
+                      {society.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
                 <span>Forma de pago</span>
                 <input
                   maxLength={240}
@@ -995,7 +995,7 @@ export function ConnectedRequisitionDetail({
                       <th scope="col">Ítem</th>
                       <th scope="col" className="align-right">Cant.</th>
                       <th scope="col">Und.</th>
-                      <th scope="col" className="align-right">Precio unit.</th>
+                      <th scope="col" className="align-right">{requisition.type === "pago" ? "Valor" : "Precio unit."}</th>
                       <th scope="col">
                         <span className="th-with-menu">
                           <span>IVA %</span>
@@ -1229,6 +1229,9 @@ export function ConnectedRequisitionDetail({
                   <span>Subtotal <b className="money">{money.format(reviewLineTotals.base)}</b></span>
                   <span>IVA <b className="money">{money.format(reviewLineTotals.iva)}</b></span>
                   <span className="connected-line-summary-total">Total <b className="money">{money.format(reviewLineTotals.total)}</b></span>
+                  {originalPaymentTotal !== null && originalPaymentTotal !== reviewLineTotals.total && (
+                    <span data-testid="original-amount">Valor original <b className="money">{money.format(originalPaymentTotal)}</b></span>
+                  )}
                 </div>
                 <AutosaveIndicator autosave={reviewAutosave} blockedReason={reviewGuard} />
                 <ActionMenu
@@ -1236,6 +1239,16 @@ export function ConnectedRequisitionDetail({
                     { label: "Declinar toda la requisición", tone: "danger", onSelect: () => void handleDeclineWhole() },
                   ]}
                 />
+                {canSelfApprove && (
+                  <button
+                    className="button button-secondary"
+                    disabled={busy}
+                    type="button"
+                    onClick={() => void handleSelfApprove()}
+                  >
+                    Aprobar yo mismo
+                  </button>
+                )}
                 <button
                   className="button button-dark"
                   disabled={busy}
@@ -1475,7 +1488,19 @@ export function ConnectedRequisitionDetail({
                 </dd>
               </div>
               <div>
-                <dt>Fecha requerida</dt>
+                <dt>Empresa facturada</dt>
+                <dd data-testid="requisition-billed-company">
+                  {billedCompanyName((requisition as BilledCompanyAware).billedCompanyId)}
+                </dd>
+              </div>
+              {originalPaymentTotal !== null && originalPaymentTotal !== summarizeLines(requisition.items).total && (
+                <div>
+                  <dt>Valor original</dt>
+                  <dd data-testid="requisition-original-amount">{money.format(originalPaymentTotal)}</dd>
+                </div>
+              )}
+              <div>
+                <dt>{requisition.type === "pago" ? "Fecha del gasto" : "Fecha requerida"}</dt>
                 <dd>{requisition.requiredDate ? formatIsoDate(requisition.requiredDate) : "—"}</dd>
               </div>
               <div>
@@ -1488,7 +1513,7 @@ export function ConnectedRequisitionDetail({
             {headerEditable && (
               <div className="connected-header-edit" onBlur={headerAutosave.onBlurCapture}>
                 <label className="field">
-                  <span>Fecha requerida</span>
+                  <span>{requisition.type === "pago" ? "Fecha del gasto" : "Fecha requerida"}</span>
                   <input
                     type="date"
                     value={headerForm.requiredDate}
@@ -1726,87 +1751,14 @@ export function ConnectedRequisitionDetail({
           </section>
         </aside>
       </div>
-      {isReviewer && quickSupplierItemId && (
-        <div
-          className="quick-supplier-overlay"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !quickSupplierBusy) {
-              closeQuickSupplier();
-            }
-          }}
-        >
-          <form
-            ref={quickSupplierDialogRef}
-            className="panel quick-supplier-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="quick-supplier-title"
-            onKeyDown={trapQuickSupplierFocus}
-            onSubmit={createQuickSupplier}
-          >
-            <div className="panel-head">
-              <div>
-                <div className="eyebrow">Alta rápida</div>
-                <h2 id="quick-supplier-title">Nuevo proveedor</h2>
-                <p className="panel-sub">
-                  Se asignará a {quickSupplierItem?.description || "este ítem"}.
-                </p>
-              </div>
-              <button
-                className="icon-button"
-                type="button"
-                aria-label="Cerrar alta de proveedor"
-                onClick={closeQuickSupplier}
-                disabled={quickSupplierBusy}
-              >
-                <X aria-hidden="true" size={16} />
-              </button>
-            </div>
-            <div className="quick-supplier-body">
-              <label className="field">
-                <span>Razón social *</span>
-                <input
-                  ref={quickSupplierNameRef}
-                  required
-                  maxLength={160}
-                  value={quickSupplierName}
-                  onChange={(event) => setQuickSupplierName(event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>NIT (opcional)</span>
-                <input
-                  maxLength={32}
-                  value={quickSupplierNit}
-                  onChange={(event) => setQuickSupplierNit(event.target.value)}
-                />
-              </label>
-              {quickSupplierError && (
-                <p className="field-error" role="alert">
-                  {quickSupplierError}
-                </p>
-              )}
-            </div>
-            <div className="form-footer">
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={closeQuickSupplier}
-                disabled={quickSupplierBusy}
-              >
-                Cancelar
-              </button>
-              <button
-                className="button button-dark"
-                type="submit"
-                disabled={quickSupplierBusy || !quickSupplierName.trim()}
-              >
-                {quickSupplierBusy ? "Creando…" : "Crear y asignar"}
-              </button>
-            </div>
-          </form>
-        </div>
+      {isReviewer && (
+        <SupplierQuickCreate
+          open={Boolean(quickSupplierItemId)}
+          description={`Se asignará a ${quickSupplierItem?.description || "este ítem"}.`}
+          submitLabel="Crear y asignar"
+          onClose={closeQuickSupplier}
+          onCreated={assignQuickSupplier}
+        />
       )}
       {/* en_aprobacion · revisor: "Reasignar aprobador" detrás de «Más ⋯» — mismo patrón de
           diálogo que la alta rápida de proveedor, con el <select> dentro. Reutiliza

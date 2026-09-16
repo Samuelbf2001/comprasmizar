@@ -593,6 +593,157 @@ describe("ConnectedCatalogAdmin", () => {
     });
   });
 
+  // Adenda de pagos (S2): tipo en centros de costo (RF-007) e identificación persona/empresa en
+  // proveedores (RF-601), con la marca "Pendiente de completar" editable.
+  describe("RF-007: tipo en la pestaña de Centros de costo", () => {
+    const costCenterId = "44444444-4444-4444-8444-444444444444";
+
+    it("crea un centro de costo con tipo (obra por defecto, editable)", async () => {
+      const fetchMock = mockFetch(
+        new Response(
+          JSON.stringify({ id: costCenterId, name: "Oficina central", type: "administrativo", active: true }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/centros-costo"
+          role="Administrador Sixteam"
+          initialData={catalogData({ access: { costCenters: true }, costCenterRecords: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      expect(screen.getByRole("combobox", { name: /^Tipo/ })).toHaveValue("obra");
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), { target: { value: "Oficina central" } });
+      fireEvent.change(screen.getByRole("combobox", { name: /^Tipo/ }), { target: { value: "administrativo" } });
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+
+      await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+      expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ kind: "costCenters", data: { name: "Oficina central", type: "administrativo" } }),
+        }),
+      );
+      expect(await screen.findByRole("status")).toHaveTextContent("Registro creado correctamente");
+      expect(screen.getByRole("cell", { name: "Administrativo" })).toBeInTheDocument();
+    });
+
+    it("muestra el tipo de cada centro en la tabla", () => {
+      mockFetch();
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/catalogos/centros-costo"
+          role="Administrador Sixteam"
+          initialData={catalogData({
+            access: { costCenters: true },
+            costCenterRecords: [
+              { id: costCenterId, name: "Nómina", type: "personal", active: true },
+              { id: "55555555-5555-4555-8555-555555555555", name: "Torre Norte", active: true },
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByRole("columnheader", { name: "Tipo" })).toBeInTheDocument();
+      expect(screen.getByRole("cell", { name: "Personal" })).toBeInTheDocument();
+      // Sin tipo en el payload (fila anterior a la migración) se lee como obra, igual que el default de la base.
+      expect(screen.getByRole("cell", { name: "Obra" })).toBeInTheDocument();
+    });
+  });
+
+  describe("RF-601: identificación en la pestaña de Proveedores", () => {
+    const supplierId = "66666666-6666-4666-8666-666666666666";
+
+    it("crea un proveedor con tipo de identificación e identificación en vez de NIT", async () => {
+      const fetchMock = mockFetch(
+        new Response(
+          JSON.stringify({ id: supplierId, name: "Pedro Pérez", identificationType: "CC", identification: "1234567", pendingNormalization: false, active: true }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/proveedores"
+          role="Administrador Sixteam"
+          initialData={catalogData({ suppliers: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      expect(screen.queryByRole("textbox", { name: /^NIT/i })).toBeNull();
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), { target: { value: "Pedro Pérez" } });
+      fireEvent.change(screen.getByRole("combobox", { name: "Tipo de identificación" }), { target: { value: "CC" } });
+      fireEvent.change(screen.getByRole("textbox", { name: /^Identificación/ }), { target: { value: "1234567" } });
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+
+      await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+      expect(catalogsCalls(fetchMock)[0]?.[1]).toEqual(
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            kind: "suppliers",
+            data: { name: "Pedro Pérez", identificationType: "CC", identification: "1234567", pendingNormalization: false },
+          }),
+        }),
+      );
+      expect(await screen.findByRole("cell", { name: "CC 1234567" })).toBeInTheDocument();
+    });
+
+    it("rechaza una identificación fuera de 3–32 caracteres sin llamar al servicio", () => {
+      const fetchMock = mockFetch();
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/proveedores"
+          role="Administrador Sixteam"
+          initialData={catalogData({ suppliers: [] })}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Nuevo registro/i }));
+      fireEvent.change(screen.getByRole("textbox", { name: /^Nombre/ }), { target: { value: "Pedro Pérez" } });
+      fireEvent.change(screen.getByRole("textbox", { name: /^Identificación/ }), { target: { value: "12" } });
+      fireEvent.click(screen.getByRole("button", { name: "Crear registro" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("entre 3 y 32");
+      expect(catalogsCalls(fetchMock)).toHaveLength(0);
+    });
+
+    it("marca Pendiente de completar en la tabla y permite quitarla al editar", async () => {
+      const fetchMock = mockFetch(
+        new Response(
+          JSON.stringify({ id: supplierId, name: "Pedro Pérez", identificationType: "CC", identification: "1234567", pendingNormalization: false, active: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      render(
+        <ConnectedCatalogAdmin
+          pathname="/proveedores"
+          role="Administrador Sixteam"
+          initialData={catalogData({
+            suppliers: [
+              { id: supplierId, name: "Pedro Pérez", identificationType: "CC", identification: "1234567", pendingNormalization: true, active: true },
+            ],
+          })}
+        />,
+      );
+      expect(screen.getByText("Pendiente de completar")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Editar Pedro Pérez" }));
+      const pending = screen.getByRole("checkbox", { name: "Pendiente de completar" });
+      expect(pending).toBeChecked();
+      expect(screen.getByRole("combobox", { name: "Tipo de identificación" })).toHaveValue("CC");
+      expect(screen.getByRole("textbox", { name: /^Identificación/ })).toHaveValue("1234567");
+      fireEvent.click(pending);
+      fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }));
+
+      await waitFor(() => expect(catalogsCalls(fetchMock)).toHaveLength(1));
+      const body = JSON.parse(String((catalogsCalls(fetchMock)[0]?.[1] as RequestInit).body));
+      expect(body).toMatchObject({
+        kind: "suppliers",
+        id: supplierId,
+        data: { name: "Pedro Pérez", identificationType: "CC", identification: "1234567", pendingNormalization: false },
+      });
+      expect(body.data).not.toHaveProperty("nit");
+      await waitFor(() => expect(screen.queryByText("Pendiente de completar")).toBeNull());
+    });
+  });
+
   describe("Acceso público — portal cerrado (GRAVE, QA Postgres real)", () => {
     it("muestra un role=\"alert\" prominente cuando no hay contraseña configurada", async () => {
       mockFetch(undefined, false);

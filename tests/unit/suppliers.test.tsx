@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SuppliersScreen } from "../../components/screens/suppliers";
 
@@ -97,7 +97,10 @@ describe("SuppliersScreen", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.getByRole("dialog", { name: /Acabados del Norte/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Editar" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "NIT" }), { target: { value: "" } });
+    // RF-601: el NIT legado se edita como identificación (tipo + número); vaciarla manda null.
+    expect(screen.getByRole("combobox", { name: "Tipo de identificación" })).toHaveValue("NIT");
+    expect(screen.getByRole("textbox", { name: "Identificación" })).toHaveValue("901234567-1");
+    fireEvent.change(screen.getByRole("textbox", { name: "Identificación" }), { target: { value: "" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Nombre de contacto" }), { target: { value: "" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Teléfono" }), { target: { value: "" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Banco" }), { target: { value: "" } });
@@ -111,7 +114,7 @@ describe("SuppliersScreen", () => {
     expect(fetchMock.mock.calls[2]?.[1]).toEqual(
       expect.objectContaining({
         method: "PATCH",
-        body: JSON.stringify({ name: supplier.name, nit: null, contact: {}, bankDetails: {}, active: true }),
+        body: JSON.stringify({ name: supplier.name, identificationType: "NIT", identification: null, pendingNormalization: false, contact: {}, bankDetails: {}, active: true }),
       }),
     );
     expect(await screen.findByRole("status")).toHaveTextContent("Proveedor actualizado correctamente");
@@ -162,30 +165,27 @@ describe("SuppliersScreen", () => {
     expect(document.body.textContent).not.toContain("signed-token");
   });
 
-  it("stages a document on the create form and uploads it right after the supplier is saved", async () => {
+  // Adenda de pagos (S2): el alta pasa por el diálogo unificado (identidad + contacto) y abre la
+  // ficha recién creada; datos bancarios y documentos se completan desde "Editar".
+  it("creates a supplier through the unified quick dialog and opens its ficha", async () => {
     const newId = "33333333-3333-4333-8333-333333333333";
-    const createdSupplier = { id: newId, name: "Proveedor Nuevo SAS", nit: null, contact: {}, active: true };
-    const fixtureDocument = {
-      id: "44444444-4444-4444-8444-444444444444",
-      type: "rut",
-      name: "rut-nuevo.pdf",
-      mimeType: "application/pdf",
-      sizeBytes: 3,
-      uploadedAt: "2026-08-27T10:00:00.000Z",
-    } as const;
-    const signedUrl = "https://storage.invalid/private/signed-token-create";
+    const createdSupplier = {
+      id: newId,
+      name: "Pedro Pérez",
+      nit: null,
+      identificationType: "CC",
+      identification: "1234567",
+      pendingNormalization: true,
+      contact: { phone: "3001112233" },
+      active: true,
+    };
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(list())
       .mockResolvedValueOnce(new Response(JSON.stringify(createdSupplier), { status: 201 }))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ document: fixtureDocument, upload: { url: signedUrl, method: "PUT", multipart: { cacheControl: "3600", fileField: "" } } }), { status: 201 }),
-      )
-      .mockResolvedValueOnce(new Response(null, { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ document: fixtureDocument }), { status: 200 }))
-      .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ supplier: createdSupplier, access: { canManage: true, canReadBank: true }, orders: [], documents: [fixtureDocument] }),
+          JSON.stringify({ supplier: createdSupplier, access: { canManage: true, canReadBank: true }, orders: [], documents: [] }),
           { status: 200 },
         ),
       );
@@ -193,30 +193,52 @@ describe("SuppliersScreen", () => {
     render(<SuppliersScreen role="Revisor" demoMode={false} />);
     await screen.findByText("Acabados del Norte SAS");
     fireEvent.click(screen.getByRole("button", { name: "Nuevo proveedor" }));
-    await screen.findByRole("dialog", { name: "Nuevo proveedor" });
-    fireEvent.change(screen.getByRole("textbox", { name: /Razón social/i }), { target: { value: "Proveedor Nuevo SAS" } });
-    const file = new File(["RUT"], "rut-nuevo.pdf", { type: "application/pdf" });
-    fireEvent.change(screen.getByLabelText("Adjuntar documento"), { target: { files: [file] } });
-    expect(await screen.findByText(/rut-nuevo\.pdf/)).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Nuevo proveedor" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /Razón social/i }), { target: { value: "Pedro Pérez" } });
+    fireEvent.change(within(dialog).getByRole("combobox", { name: "Tipo de identificación" }), { target: { value: "CC" } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /^Identificación/ }), { target: { value: "1234567" } });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: /^Teléfono/ }), { target: { value: "3001112233" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Crear proveedor" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Crear proveedor" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/suppliers");
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ name: "Pedro Pérez", identificationType: "CC", identification: "1234567", pendingNormalization: true, contact: { phone: "3001112233" } }),
+      }),
+    );
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(`/api/suppliers/${newId}`);
 
-    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "POST" }));
-    const metadata = { type: "rut", name: "rut-nuevo.pdf", mimeType: "application/pdf", sizeBytes: file.size };
-    expect(fetchMock.mock.calls[2]).toEqual([
-      `/api/suppliers/${newId}/documents`,
-      expect.objectContaining({ method: "POST", body: JSON.stringify(metadata) }),
-    ]);
-    expect(fetchMock.mock.calls[3]?.[0]).toBe(signedUrl);
-    expect(fetchMock.mock.calls[4]).toEqual([
-      `/api/suppliers/${newId}/documents/${fixtureDocument.id}/complete`,
-      expect.objectContaining({ method: "POST", body: JSON.stringify(metadata) }),
-    ]);
-    expect(fetchMock.mock.calls[5]?.[0]).toBe(`/api/suppliers/${newId}`);
+    const ficha = await screen.findByRole("dialog", { name: /Pedro Pérez/i });
+    expect(within(ficha).getByText("CC 1234567")).toBeInTheDocument();
+    expect(within(ficha).getByText("Pendiente de completar")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Proveedor creado correctamente"));
+    expect(screen.queryByRole("dialog", { name: "Nuevo proveedor" })).toBeNull();
+  });
 
-    expect(await screen.findByRole("dialog", { name: /Proveedor Nuevo SAS/i })).toBeInTheDocument();
-    expect(screen.getByText(/rut-nuevo\.pdf/)).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Proveedor creado correctamente");
+  it("shows identification (type + number) and the pending mark in the directory", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          suppliers: [
+            { ...supplier, identificationType: "NIT", identification: "901234567-1" },
+            { id: "22222222-2222-4222-8222-222222222222", name: "Pedro Pérez", identificationType: "CC", identification: "1098765", pendingNormalization: true, contact: {}, active: true },
+          ],
+          access: { canManage: true, canReadBank: true },
+        }),
+        { status: 200 },
+      ),
+    );
+    render(<SuppliersScreen role="Revisor" demoMode={false} />);
+    await screen.findByText("Pedro Pérez");
+    expect(screen.getByRole("columnheader", { name: "Identificación" })).toBeInTheDocument();
+    expect(screen.getByText("NIT 901234567-1")).toBeInTheDocument();
+    expect(screen.getByText("CC 1098765")).toBeInTheDocument();
+    expect(screen.getAllByText("Pendiente de completar")).toHaveLength(1);
+    // La búsqueda también encuentra por identificación.
+    fireEvent.change(screen.getByRole("textbox", { name: "Buscar proveedores" }), { target: { value: "1098765" } });
+    expect(screen.queryByText("Acabados del Norte SAS")).toBeNull();
+    expect(screen.getByText("Pedro Pérez")).toBeInTheDocument();
   });
 });

@@ -7,9 +7,19 @@
 // detail.tsx (cotización del comprador) y expenses.tsx (soportes de caja menor) también los
 // usan.
 import { useState, type FormEvent } from "react";
-import { ArrowRight, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Plus, Search, Trash2 } from "lucide-react";
+import type { SupplierIdentificationType } from "../../../lib/domain/model";
+import { normalizeIdentification } from "../../../lib/domain/normalization";
+import { friendlyErrorText } from "../../../lib/http/friendly-error";
 import { SectionTitle } from "../screen-primitives";
 import { AttachmentPicker, IMAGE_MIME_TYPES } from "../attachment-upload";
+import {
+  SUPPLIER_IDENTIFICATION_TYPE_OPTIONS,
+  SupplierQuickCreate,
+  identificationLabel,
+  lookupSupplierByIdentification,
+  type QuickSupplier,
+} from "../supplier-quick-create";
 import {
   emptyCatalogs,
   localTodayISO,
@@ -81,48 +91,51 @@ export function ConnectedNewRequisition({
     [paymentBase, setPaymentBase] = useState(""),
     [paymentIvaRate, setPaymentIvaRate] = useState("0.19"),
     [supplierOptions, setSupplierOptions] = useState<NamedOption[]>(catalogs.suppliers ?? []),
-    [creatingSupplier, setCreatingSupplier] = useState(false),
-    [newSupplierName, setNewSupplierName] = useState(""),
-    [newSupplierNit, setNewSupplierNit] = useState(""),
-    [supplierBusy, setSupplierBusy] = useState(false),
-    [supplierError, setSupplierError] = useState("");
+    // RF-606: el beneficiario se busca por identificación; si existe se enlaza y si no se abre el
+    // alta rápida (components/screens/supplier-quick-create.tsx) ya prellenada con esa identificación.
+    [beneficiaryIdType, setBeneficiaryIdType] = useState<SupplierIdentificationType>("NIT"),
+    [beneficiaryIdentification, setBeneficiaryIdentification] = useState(""),
+    [beneficiaryBusy, setBeneficiaryBusy] = useState(false),
+    [beneficiaryStatus, setBeneficiaryStatus] = useState(""),
+    [beneficiaryError, setBeneficiaryError] = useState(""),
+    [quickSupplierOpen, setQuickSupplierOpen] = useState(false);
   const paymentBaseValue = Math.round(Number(paymentBase) || 0),
     paymentIvaValue = Math.round(paymentBaseValue * Number(paymentIvaRate));
-  // RF-603 (mismo patrón que el atajo de proveedor en la revisión, components/screens/connected/detail.tsx):
-  // un beneficiario nuevo se puede dar de alta con solo la razón social, sin bloquear la captura por
-  // no tener el NIT a mano todavía.
-  const createSupplier = async () => {
-    const name = newSupplierName.trim();
-    if (!name) {
-      setSupplierError("Escribe la razón social del proveedor.");
+  const selectBeneficiary = (supplier: QuickSupplier) => {
+    setSupplierOptions((current) =>
+      current.some((option) => option.id === supplier.id)
+        ? current
+        : [...current, { id: supplier.id, name: supplier.name }],
+    );
+    setPaymentSupplierId(supplier.id);
+  };
+  const searchBeneficiary = async () => {
+    const identification = beneficiaryIdentification.trim();
+    if (!normalizeIdentification(identification)) {
+      setBeneficiaryError("Escribe la identificación (NIT o cédula) para buscar al beneficiario.");
       return;
     }
-    setSupplierBusy(true);
-    setSupplierError("");
+    setBeneficiaryBusy(true);
+    setBeneficiaryError("");
+    setBeneficiaryStatus("");
     try {
-      const created = (await mutate("/api/suppliers", "POST", {
-        name,
-        ...(newSupplierNit.trim() ? { nit: newSupplierNit.trim() } : {}),
-      })) as { id?: string; name?: string };
-      if (!created.id || !created.name) {
-        throw new Error("El servicio no devolvió el proveedor creado.");
+      const found = await lookupSupplierByIdentification(beneficiaryIdType, identification);
+      if (found) {
+        selectBeneficiary(found);
+        setBeneficiaryStatus(`Beneficiario enlazado: ${found.name} (${identificationLabel(found)}).`);
+      } else {
+        setQuickSupplierOpen(true);
       }
-      setSupplierOptions((current) =>
-        current.some((supplier) => supplier.id === created.id)
-          ? current
-          : [...current, { id: created.id as string, name: created.name as string }],
-      );
-      setPaymentSupplierId(created.id);
-      setCreatingSupplier(false);
-      setNewSupplierName("");
-      setNewSupplierNit("");
     } catch (error) {
-      setSupplierError(
-        error instanceof Error ? error.message : "No fue posible crear el proveedor.",
-      );
+      setBeneficiaryError(friendlyErrorText(error, "No fue posible buscar el beneficiario."));
     } finally {
-      setSupplierBusy(false);
+      setBeneficiaryBusy(false);
     }
+  };
+  const changeType = (next: "compra" | "pago") => {
+    setType(next);
+    // RF-107: en un pago la fecha es la del gasto real, y casi siempre es hoy.
+    if (next === "pago" && !requiredDate) setRequiredDate(localTodayISO());
   };
   const updateLine = (key: string, patch: Partial<DraftLine>) =>
     setLines((current) =>
@@ -298,7 +311,7 @@ export function ConnectedNewRequisition({
                   type="button"
                   className={`view-switch${type === "compra" ? " is-active" : ""}`}
                   aria-pressed={type === "compra"}
-                  onClick={() => setType("compra")}
+                  onClick={() => changeType("compra")}
                 >
                   Compra de materiales
                 </button>
@@ -306,7 +319,7 @@ export function ConnectedNewRequisition({
                   type="button"
                   className={`view-switch${type === "pago" ? " is-active" : ""}`}
                   aria-pressed={type === "pago"}
-                  onClick={() => setType("pago")}
+                  onClick={() => changeType("pago")}
                 >
                   Solicitud de pago
                 </button>
@@ -344,8 +357,10 @@ export function ConnectedNewRequisition({
               )}
             </label>
             <label className="field">
-              {/* RF reunión 2026-08-31: fecha opcional, sin default de hoy ni bloqueo por fecha pasada. */}
-              <span>Fecha requerida (opcional)</span>
+              {/* RF reunión 2026-08-31: fecha opcional, sin default de hoy ni bloqueo por fecha pasada.
+                  RF-107 (A2): en un pago es el MISMO campo (fecha_requerida) rotulado "Fecha del gasto",
+                  con hoy por defecto. */}
+              <span>{type === "pago" ? "Fecha del gasto" : "Fecha requerida (opcional)"}</span>
               <input
                 type="date"
                 value={requiredDate}
@@ -364,7 +379,7 @@ export function ConnectedNewRequisition({
             </label>
             <AttachmentPicker
               id="requisition-support"
-              label="Soporte general (opcional)"
+              label={type === "pago" ? "Factura o cuenta de cobro (opcional)" : "Soporte general (opcional)"}
               help="PDF, JPG, PNG o WebP · máximo 10 MB"
               file={supportFile}
               onFile={setSupportFile}
@@ -559,46 +574,54 @@ export function ConnectedNewRequisition({
                 ))}
               </select>
             </label>
+            <label className="field">
+              <span>Tipo de identificación</span>
+              <select
+                value={beneficiaryIdType}
+                onChange={(event) => setBeneficiaryIdType(event.target.value as SupplierIdentificationType)}
+              >
+                {SUPPLIER_IDENTIFICATION_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Identificación del beneficiario</span>
+              <input
+                maxLength={32}
+                placeholder="Ej. 900123456-7"
+                value={beneficiaryIdentification}
+                aria-invalid={Boolean(beneficiaryError)}
+                aria-describedby={beneficiaryError ? "beneficiary-search-error" : undefined}
+                onChange={(event) => setBeneficiaryIdentification(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void searchBeneficiary();
+                  }
+                }}
+              />
+            </label>
             <button
               className="button button-secondary quick-supplier-trigger"
               type="button"
-              onClick={() => setCreatingSupplier((current) => !current)}
+              disabled={beneficiaryBusy}
+              onClick={() => void searchBeneficiary()}
             >
-              <Plus aria-hidden="true" size={14} />{" "}
-              {creatingSupplier ? "Cancelar nuevo proveedor" : "Nuevo proveedor"}
+              <Search aria-hidden="true" size={14} />{" "}
+              {beneficiaryBusy ? "Buscando…" : "Buscar beneficiario"}
             </button>
-            {creatingSupplier && (
-              <div className="field-grid" role="group" aria-label="Crear proveedor">
-                <label className="field">
-                  <span>Razón social</span>
-                  <input
-                    maxLength={160}
-                    value={newSupplierName}
-                    onChange={(event) => setNewSupplierName(event.target.value)}
-                  />
-                </label>
-                <label className="field">
-                  <span>NIT (opcional)</span>
-                  <input
-                    maxLength={32}
-                    value={newSupplierNit}
-                    onChange={(event) => setNewSupplierNit(event.target.value)}
-                  />
-                </label>
-                {supplierError && (
-                  <p className="field-error" role="alert">
-                    {supplierError}
-                  </p>
-                )}
-                <button
-                  className="button button-dark"
-                  type="button"
-                  disabled={supplierBusy}
-                  onClick={() => void createSupplier()}
-                >
-                  {supplierBusy ? "Creando…" : "Crear proveedor"}
-                </button>
-              </div>
+            {beneficiaryError && (
+              <p className="field-error" role="alert" id="beneficiary-search-error">
+                {beneficiaryError}
+              </p>
+            )}
+            {beneficiaryStatus && (
+              <p className="field-success" role="status">
+                {beneficiaryStatus}
+              </p>
             )}
             <label className="field field-wide">
               <span>Concepto</span>
@@ -674,7 +697,7 @@ export function ConnectedNewRequisition({
             <span>
               {type === "compra"
                 ? "Los valores cotizados se completan durante la revisión."
-                : "El valor y el beneficiario quedan listos desde esta captura."}
+                : "El valor y el beneficiario quedan listos desde esta captura; el centro de costo y la empresa facturada se asignan en la revisión."}
             </span>
           )}
           {createdId && (
@@ -695,6 +718,19 @@ export function ConnectedNewRequisition({
           </button>
         </div>
       </form>
+      <SupplierQuickCreate
+        open={quickSupplierOpen}
+        description="No hay ningún beneficiario con esa identificación: se crea y queda seleccionado."
+        submitLabel="Crear y seleccionar"
+        initialIdentificationType={beneficiaryIdType}
+        initialIdentification={beneficiaryIdentification.trim()}
+        onClose={() => setQuickSupplierOpen(false)}
+        onCreated={(supplier) => {
+          selectBeneficiary(supplier);
+          setBeneficiaryStatus(`Beneficiario creado y seleccionado: ${supplier.name}.`);
+          setQuickSupplierOpen(false);
+        }}
+      />
     </>
   );
 }
