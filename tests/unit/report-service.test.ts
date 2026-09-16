@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { DomainError, type Actor, type ItemLine, type Requisition } from "../../lib/domain";
-import { ReportService, monthRange, type ReportFilters } from "../../lib/services/report-service";
+import { DomainError, type Actor, type CashPayment, type ItemLine, type Requisition } from "../../lib/domain";
+import { ReportService, monthRange, toCashCloseReport, type ReportCatalogNames, type ReportFilters } from "../../lib/services/report-service";
 import type { ListQuery, Page, ServiceDependencies } from "../../lib/services";
 
 const item = (overrides: Partial<ItemLine> = {}): ItemLine => ({
@@ -157,6 +157,30 @@ describe("ReportService.listReport — RF-1301", () => {
     expect(() => service.assertCanExport(actor(["contabilidad"]))).not.toThrow();
     expect(() => service.assertCanExport(actor(["aprobador"]))).not.toThrow();
     expect(() => service.assertCanExport(actor(["revisor"]))).toThrow(DomainError);
+  });
+});
+
+describe("toCashCloseReport — RF-708 (cierre de caja)", () => {
+  const names: ReportCatalogNames = {
+    works: new Map([["work-1", "Altos de La Pradera"]]), tags: new Map(), societies: new Map([["soc-1", "Constructora Mizar S.A.S."]]),
+    users: new Map(), suppliers: new Map([["sup-1", "Pedro Topógrafo"]]), costCenters: new Map([["cc-1", "Administración"]]),
+  };
+  const payment = (overrides: Partial<CashPayment> = {}): CashPayment => ({
+    id: "pay-1", orderId: "ord-1", date: "2026-09-14", amount: 640_000, method: "efectivo", orderConsecutive: "OP-2026-0007", orderType: "OP",
+    requisitionId: "req-1", requisitionConsecutive: "REQ-2026-0041", workId: "work-1", costCenterId: "cc-1", billedCompanyId: "soc-1", supplierId: "sup-1", ...overrides,
+  });
+
+  it("resuelve beneficiario, obra, centro de costo y empresa facturada a nombre, y suma el total", () => {
+    const report = toCashCloseReport([payment(), payment({ id: "pay-2", amount: 80_000 })], names, { from: "2026-09-14", to: "2026-09-18", costCenterId: "cc-1" });
+    expect(report).toMatchObject({ from: "2026-09-14", to: "2026-09-18", costCenterId: "cc-1", total: 720_000 });
+    expect(report.rows[0]).toMatchObject({ supplierName: "Pedro Topógrafo", workName: "Altos de La Pradera", costCenterName: "Administración", billedCompanyName: "Constructora Mizar S.A.S." });
+  });
+
+  it("un pago de una orden sin obra (N4: workId vacío) sale con '—', nunca con el id crudo ni vacío", () => {
+    const report = toCashCloseReport([payment({ workId: "" }), payment({ id: "pay-2", workId: undefined, supplierId: "desconocido" })], names, { from: "2026-09-14", to: "2026-09-18" });
+    expect(report.rows.map((row) => row.workName)).toEqual(["—", "—"]);
+    expect(report.rows[1].supplierName).toBe("—");
+    expect(report.costCenterId).toBeUndefined();
   });
 });
 

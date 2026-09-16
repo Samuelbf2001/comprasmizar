@@ -33,11 +33,10 @@ export const navigation: Array<{
   { label: 'Revisión de Daniel', genericLabel: 'Revisión', href: '/revision', icon: 'Inbox', badge: '12' },
   { label: 'Aprobaciones', href: '/aprobaciones', icon: 'CheckCircle2', badge: '4' },
   { label: 'Órdenes', href: '/ordenes', icon: 'FileCheck2' },
-  // Reunión con el cliente (11-sep-2026): "TODOS los gastos (cajas, bancos, personales) quedan en el
-  // sistema por centro de costo; Daniel cierra la caja administrativa e ingresa esos gastos para el
-  // reporte" — ya no es un módulo aparte que el cliente pidió ocultar (ver commit anterior), ahora es
-  // la pantalla que hace posible ese cierre. Deja de estar `hidden`.
-  { label: 'Gastos y caja', href: '/gastos', icon: 'Receipt' },
+  // Adenda de pagos (A10, 15-sep-2026): la caja menor es un pago con medio "Caja (efectivo)" sobre una
+  // orden; esta ruta pasa de "Gastos y caja" (gasto directo, ingresos, cierre mensual) a "Cierre de caja"
+  // sobre esos pagos (RF-708). Mismo href: los enlaces repartidos siguen funcionando.
+  { label: 'Cierre de caja', href: '/gastos', icon: 'Receipt' },
   { label: 'Catálogos', href: '/catalogos', icon: 'Database' },
   { label: 'Proveedores', href: '/proveedores', icon: 'Truck' },
   { label: 'Mensajes de WhatsApp', href: '/mensajes', icon: 'MessageSquare' },

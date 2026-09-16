@@ -1,6 +1,7 @@
-import { assertPermission, approvedLines, calculateLineAmounts, sumLineAmounts, type Actor, type Requisition } from "../domain";
+import { assertPermission, approvedLines, calculateLineAmounts, sumLineAmounts, type Actor, type CashPayment, type OrderType, type Requisition } from "../domain";
 import type { RequestContext, ServiceDependencies } from "./contracts";
 import type { Page } from "./list-query";
+import type { CashPaymentsQuery } from "./procurement-service";
 
 /**
  * RF-1301 (Reportes, reunión 2026-09-11): filtros del reporte de requisiciones. `workId`/`period` ya
@@ -121,6 +122,38 @@ function toReportRow(requisition: Requisition): ReportRow {
  */
 export interface ReportCatalogNames { works: ReadonlyMap<string, string>; tags: ReadonlyMap<string, string>; societies: ReadonlyMap<string, string>; users: ReadonlyMap<string, string>; suppliers: ReadonlyMap<string, string>; costCenters: ReadonlyMap<string, string>; }
 export interface ReportCatalogSource { load(): Promise<ReportCatalogNames>; }
+
+/**
+ * RF-708 (cierre de caja, adenda A10): una fila del cierre = un pago VIGENTE con medio `efectivo` (Caja)
+ * dentro del rango, con los nombres YA resueltos en el servidor. A diferencia de `ReportRow`, aquí sí se
+ * resuelven: la pantalla de cierre no parte de un bundle con catálogos (consulta el rango bajo demanda,
+ * ver components/screens/connected/expenses.tsx) y el Excel del cierre tampoco tiene quién los traduzca
+ * después — resolverlos una vez sirve a ambos. `attachmentId` es el comprobante (adjunto `pago_orden`).
+ */
+export interface CashCloseReportRow {
+  id: string; date: string; amount: number; externalReference?: string; note?: string; attachmentId?: string; registeredBy?: string;
+  orderId: string; orderConsecutive: string; orderType: OrderType; requisitionId: string; requisitionConsecutive: string;
+  workId?: string; workName: string; costCenterId?: string; costCenterName: string; billedCompanyId?: string; billedCompanyName: string;
+  supplierId?: string; supplierName: string;
+}
+export interface CashCloseReport { from: string; to: string; costCenterId?: string; rows: CashCloseReportRow[]; total: number; }
+
+const nameOf = (map: ReadonlyMap<string, string>, id: string | undefined): string => (id ? (map.get(id) ?? "—") : "—");
+
+/** Pura (sin permisos ni I/O): la autorización y la consulta viven en `ProcurementService.listCashPayments`. */
+export function toCashCloseReport(payments: readonly CashPayment[], names: ReportCatalogNames, query: CashPaymentsQuery): CashCloseReport {
+  const rows: CashCloseReportRow[] = payments.map((payment) => ({
+    id: payment.id, date: payment.date, amount: payment.amount, externalReference: payment.externalReference, note: payment.note,
+    attachmentId: payment.attachmentId, registeredBy: payment.registeredBy,
+    orderId: payment.orderId, orderConsecutive: payment.orderConsecutive, orderType: payment.orderType,
+    requisitionId: payment.requisitionId, requisitionConsecutive: payment.requisitionConsecutive,
+    workId: payment.workId, workName: nameOf(names.works, payment.workId),
+    costCenterId: payment.costCenterId, costCenterName: nameOf(names.costCenters, payment.costCenterId),
+    billedCompanyId: payment.billedCompanyId, billedCompanyName: nameOf(names.societies, payment.billedCompanyId),
+    supplierId: payment.supplierId, supplierName: nameOf(names.suppliers, payment.supplierId),
+  }));
+  return { from: query.from, to: query.to, costCenterId: query.costCenterId || undefined, rows, total: rows.reduce((sum, row) => sum + row.amount, 0) };
+}
 
 export class ReportService {
   constructor(private readonly deps: ServiceDependencies) {}
