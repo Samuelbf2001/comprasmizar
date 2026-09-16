@@ -1376,6 +1376,34 @@ describe("empresa facturada, monto auditado y auto-aprobación (adenda de pagos)
     await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const } })).resolves.toMatchObject({ status: "aprobada" });
     await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const }, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" }); // nunca por MCP
   });
+  // H4 (docs/qa/QA-pagos-y-caja.md): con reparto por ítem, un ítem puede tener un aprobador DISTINTO
+  // de quien radica. Antes, sendAndApproveAsMaster solo miraba la cabecera: enviaba a aprobación
+  // (sin avisar, notifyApprovers:false) y RECIÉN ahí approve() rechazaba con APPROVAL_PENDING_OTHERS —
+  // la requisición quedaba huérfana en en_aprobacion y sonia nunca se enteraba.
+  it("send_and_approve con reparto por ítem: un aprobador de ítem distinto del maestro rechaza ANTES de mover nada", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(r.id, dual);
+    // l1 → sonia (otro aprobador elegible), l2 sin approverId propio: hereda la cabecera (dual-role).
+    await service.review(r.id, { tagId: "tag", approverId: "dual-role", items: [{ ...items[0], approverId: "sonia" }, items[1]] }, dual);
+    await expect(service.sendAndApproveAsMaster(r.id, dual)).rejects.toMatchObject({ code: "APPROVAL_PENDING_OTHERS" });
+    expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); // no quedó a medias en en_aprobacion
+    expect(deps.audits.filter((a) => a.entityId === r.id && ["enviada_aprobacion", "aprobada"].includes(a.event))).toHaveLength(0);
+    expect(deps.notificationData).toHaveLength(0); // tampoco se avisó a sonia a medias
+  });
+  it("send_and_approve con reparto por ítem: si cabecera Y todos los ítems son el maestro, aprueba con dos eventos", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(r.id, dual);
+    await service.review(r.id, { tagId: "tag", approverId: "dual-role", items: [{ ...items[0], approverId: "dual-role" }, items[1]] }, dual);
+    const approved = await service.sendAndApproveAsMaster(r.id, dual);
+    expect(approved.status).toBe("aprobada");
+    const eventos = deps.audits.filter((a) => a.entityId === r.id && ["enviada_aprobacion", "aprobada"].includes(a.event));
+    expect(eventos.map((a) => a.event)).toEqual(["enviada_aprobacion", "aprobada"]);
+    expect(eventos.every((a) => a.actorId === "dual-role")).toBe(true);
+  });
 });
 // RF-008 (N4): «un CC de tipo administrativo o personal no requiere obra» — la obra deja de ser
 // obligatoria solo bajo un centro que no es de tipo obra; el gasto nace sin obra y su empresa facturada
