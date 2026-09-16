@@ -187,12 +187,15 @@ describe("foto opcional por artículo del portal público — camino real de pun
     expect(hoisted.inserts).toHaveLength(0);
   });
 
-  it("un Content-Length declarado por encima del tope multipart (~60 MB) se rechaza sin leer el cuerpo", async () => {
+  it("un Content-Length declarado por encima del tope multipart (~60 MB) se rechaza sin leer el cuerpo, y se dice (413)", async () => {
+    // Adenda de pagos (S3): el 202 neutro se reserva para contraseña/enlace; un cuerpo demasiado
+    // grande se rechaza ANTES de cualquier verificación, así que decirlo no filtra nada y el portal
+    // puede pedir una foto más liviana en vez de fingir que se radicó.
     const { dependencies, requisitionMap } = fakeServiceDependencies();
     hoisted.setDependencies(dependencies);
     const request = multipartRequest(basePayload(), { foto_0: { name: "foto.png", type: "image/png", bytes: PNG_BYTES } }, { "content-length": String(61 * 1024 * 1024) });
     const response = await POST(request);
-    expect(response.status).toBe(202);
+    expect(response.status).toBe(413);
     expect(requisitionMap.size).toBe(0);
     expect(hoisted.uploads).toHaveLength(0);
   });
