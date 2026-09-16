@@ -175,6 +175,16 @@ describe("ProcurementService", () => {
   // no nada específico de pago. Con la corrección del ítem 1 del encargo, "pago" ya NO materializa
   // catálogo (ver la prueba siguiente); usar aquí "pago" habría probado exactamente el defecto que
   // se corrigió, en vez del camino feliz de una compra.
+  it("requisición pública por empresa (sin obra) crea en vez de PUBLIC_ACCESS_DENIED, para compra y para pago", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const porEmpresa = { societyId: "society", channel: "publico" as const, publicCode: "1234", externalRequester: { name: "Maestro" } };
+    await expect(service.create({ type: "compra", ...porEmpresa, requiredDate: "2026-08-30", items }, {})).resolves.toMatchObject({ status: "enviada", societyId: "society", workId: undefined });
+    await expect(service.create({ type: "pago", ...porEmpresa, beneficiary: { identificationType: "CC", identification: "1.020.304.050", name: "Juan Camilo" }, items: [{ ...items[0], itemId: undefined, description: "Levantamiento", finalSupplierId: undefined }] }, {})).resolves.toMatchObject({ type: "pago", status: "enviada", societyId: "society", workId: undefined });
+    // Misma puerta que la ruta: contraseña incorrecta, o un token por obra intentando autorizar una sociedad, se niegan.
+    await expect(service.create({ type: "compra", ...porEmpresa, publicCode: "0000", items }, {})).rejects.toMatchObject({ code: "PUBLIC_ACCESS_DENIED" });
+    await expect(service.create({ type: "compra", ...porEmpresa, publicLinkToken: "link", items }, {})).rejects.toMatchObject({ code: "PUBLIC_ACCESS_DENIED" });
+    await expect(service.create({ type: "compra", channel: "publico", publicCode: "1234", externalRequester: { name: "Maestro" }, items }, {})).rejects.toMatchObject({ code: "PUBLIC_ACCESS_DENIED" });
+  });
   it("uses a verifier for public access, materializes proposals and normalizes the external phone", async () => { const deps = fakeDeps(), service = new ProcurementService(deps); const created = await service.create({ type: "compra", workId: "work", requiredDate: "2026-08-30", channel: "publico", publicCode: "1234", publicLinkToken: "link", externalRequester: { name: "Maestro", phone: "+57 300 123 4567" }, items: [{ ...items[0], itemId: undefined, description: "Tubería especial" }] }, {}); expect(created).toMatchObject({ status: "enviada", externalRequester: { phone: "+573001234567" }, items: [{ itemId: expect.stringMatching(/^catalog-/) }] }); expect(deps.audits.map((entry) => entry.event)).toContain("propuesto"); });
   // BLOQUEANTE (feat/solicitud-de-pago, ítem 1 del encargo): antes de este arreglo,
   // materializeProposals() creaba un ítem de CATÁLOGO a partir de cualquier descripción libre sin
