@@ -31,7 +31,9 @@ test.describe("catálogo de proveedores", () => {
     await page.getByRole("textbox", { name: "Razón social" }).fill(razonSocial);
     await page.getByRole("button", { name: "Crear proveedor" }).click();
     await expect(page.getByRole("status")).toContainText("Proveedor creado correctamente");
-    await expect(page.getByText(razonSocial)).toBeVisible();
+    // Crear abre la ficha, así que el nombre sale en la tabla, el título y los datos de la ficha:
+    // `getByText` resolvía varios elementos y el modo estricto la tumbaba (QA H6).
+    await expect(page.getByRole("dialog", { name: razonSocial })).toBeVisible();
 
     if (testInfo.project.name === "mobile") {
       const documentOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
