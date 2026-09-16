@@ -308,6 +308,22 @@ describe("solicitud de pago por el portal (RF-108) — forma, creación y qué s
     expect(typeof input.items[0].id).toBe("string");
   });
 
+  it("la fecha del gasto llega con el día de hoy en Colombia aunque en UTC ya sea mañana (QA H9)", async () => {
+    const verify = vi.fn().mockResolvedValue(true);
+    const create = vi.fn().mockResolvedValue({ id: "req-1", items: [{ id: "item-1" }] });
+    mocks.createPostgresDependencies.mockReturnValue({ publicAccess: { verify } });
+    vi.spyOn(ProcurementService.prototype, "create").mockImplementation(create);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-16T03:30:00.000Z")); // 22:30 del 15 en Bogotá
+    try {
+      const response = await POST(pagoFor("token-valido"));
+      expect(response.status).toBe(202);
+      expect(create.mock.calls[0][0].requiredDate).toBe("2026-09-15");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sin teléfono, ni el solicitante ni el beneficiario lo llevan", async () => {
     const verify = vi.fn().mockResolvedValue(true);
     const create = vi.fn().mockResolvedValue({ id: "req-1", items: [{ id: "item-1" }] });

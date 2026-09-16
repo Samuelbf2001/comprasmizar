@@ -155,7 +155,8 @@ export function ConnectedDashboard({
           ) : (
             queue.map((item) => (
               <button
-                key={`${item.kind}-${item.id}`}
+                // La misma orden puede esperar dos acciones (confirmar cumplimiento y contabilizar).
+                key={`${item.kind}-${item.id}-${item.action}`}
                 className="alert-item"
                 type="button"
                 onClick={() => go(queueDestination(item))}

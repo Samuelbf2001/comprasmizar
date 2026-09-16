@@ -301,9 +301,21 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const itemRows = ids.length ? await this.sql<DbRow[]>`select * from requisicion_items where requisicion_id = any(${ids}::uuid[]) order by created_at` : [];
     const porRequisicion = new Map<string, ItemLine[]>();
     for (const row of itemRows) { const clave = String(row.requisicion_id); const lista = porRequisicion.get(clave); if (lista) lista.push(item(row)); else porRequisicion.set(clave, [item(row)]); }
+    // QA H5: la bandeja marca el beneficiario de un pago que sigue pendiente de normalizar. Una consulta
+    // por página (solo los beneficiarios de los pagos de ESTA página), no una por fila.
+    const pagoIds = new Set(pageRows.filter((row) => row.tipo === "pago").map((row) => String(row.id)));
+    const beneficiaryIds = [...new Set(itemRows.filter((row) => pagoIds.has(String(row.requisicion_id)) && row.proveedor_final_id).map((row) => String(row.proveedor_final_id)))];
+    const pendingBeneficiaries = new Set(beneficiaryIds.length ? (await this.sql<{ id: string }[]>`select id from proveedores where id = any(${beneficiaryIds}::uuid[]) and pendiente_normalizacion`).map((row) => String(row.id)) : []);
     const last = pageRows.at(-1);
     const nextCursor = hasMore && last ? encodeCursor(toIsoInstant(last.created_at), String(last.id)) : null;
-    return { rows: pageRows.map((row) => requisition(row, porRequisicion.get(String(row.id)) ?? [])), nextCursor };
+    return {
+      rows: pageRows.map((row) => {
+        const value = requisition(row, porRequisicion.get(String(row.id)) ?? []);
+        if (value.type === "pago" && value.items.some((line) => line.finalSupplierId && pendingBeneficiaries.has(line.finalSupplierId))) value.beneficiaryPendingNormalization = true;
+        return value;
+      }),
+      nextCursor,
+    };
   }
   // H3: cabeceras SIN ítems para el dashboard (RF-1102) — buildAttentionQueue/buildRecentActivity nunca
   // los usan (lib/domain/rules.ts), así que cargarlos aquí sería trabajo desperdiciado. `orderBy` por

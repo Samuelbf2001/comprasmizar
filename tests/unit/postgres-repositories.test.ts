@@ -680,6 +680,31 @@ describe("PostgresPorts.listVisibleRequisitions con query — filtros y paginaci
     expect(select.text).toMatch(/r\.centro_costo_id = \?/);
     expect(select.values).toContain("cc-1");
   });
+
+  // QA H5 (adenda de pagos): la bandeja marca el pago cuyo beneficiario sigue pendiente de normalizar.
+  it("marca beneficiaryPendingNormalization solo en el pago cuyo beneficiario está pendiente, con una consulta por página", async () => {
+    const itemRow = (requisicion: number, proveedor: string) => ({ id: uuid(100 + requisicion), requisicion_id: uuid(requisicion), cantidad: 1, unidad: "servicio", valor_base: 1000, iva: 0, proveedor_final_id: proveedor });
+    const sql = fakeSql((call) => {
+      if (/^select r\.\* from requisiciones/i.test(call.text)) return [row(1, { tipo: "pago" }), row(2, { tipo: "pago" }), row(3)];
+      if (/^select \* from requisicion_items/i.test(call.text)) return [itemRow(1, "sup-pendiente"), itemRow(2, "sup-completo"), itemRow(3, "sup-compra")];
+      if (/^select id from proveedores/i.test(call.text)) return [{ id: "sup-pendiente" }];
+      return [];
+    });
+    const result = await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    if (Array.isArray(result)) throw new Error("se esperaba una Page");
+    expect(result.rows.map((r) => r.beneficiaryPendingNormalization)).toEqual([true, undefined, undefined]);
+    const consultas = sql.calls.filter((call) => /^select id from proveedores/i.test(call.text));
+    expect(consultas).toHaveLength(1);
+    expect(consultas[0].text).toMatch(/pendiente_normalizacion/);
+    // Solo los beneficiarios de los pagos: el proveedor de la compra no se consulta.
+    expect(consultas[0].values).toEqual([["sup-pendiente", "sup-completo"]]);
+  });
+
+  it("una página sin pagos no consulta proveedores", async () => {
+    const sql = fakeSql((call) => (/^select r\.\* from requisiciones/i.test(call.text) ? [row(1)] : []));
+    await new PostgresPorts(sql).listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    expect(sql.calls.some((call) => /from proveedores/i.test(call.text))).toBe(false);
+  });
 });
 
 describe("PostgresPorts.listVisibleOrders con query — filtros, join a requisiciones y paginación (H3)", () => {

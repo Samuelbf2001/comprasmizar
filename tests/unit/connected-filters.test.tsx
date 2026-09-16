@@ -28,6 +28,39 @@ const catalogs = {
   features: {},
 };
 
+// QA H5 (adenda de pagos): el pago que llega del portal o de WhatsApp con beneficiario nuevo no se
+// distinguía en la bandeja de uno normal; ahora la fila lo marca y el revisor va directo a su ficha.
+describe("QA H5: beneficiario pendiente de completar en la bandeja", () => {
+  const pago = {
+    id: "req-9",
+    consecutive: "REQ-2026-0011",
+    type: "pago" as const,
+    channel: "publico",
+    status: "enviada",
+    beneficiaryPendingNormalization: true,
+    items: [{ id: "item-9", description: "Levantamiento topográfico", quantity: 1, unit: "servicio", unitBase: 1_250_000, finalSupplierId: "supplier-9" }],
+  };
+  const compra = { id: "req-8", consecutive: "REQ-2026-0010", type: "compra" as const, channel: "web", status: "enviada", items: [] };
+
+  it("marca solo la fila del pago pendiente y enlaza a la ficha del beneficiario para el revisor", () => {
+    const go = vi.fn();
+    render(<ConnectedRequisitions data={{ rows: [pago, compra], catalogs }} pathname="/revision" go={go} role="Revisor" />);
+    const marcas = screen.getAllByTestId("beneficiary-pending");
+    expect(marcas).toHaveLength(1);
+    expect(marcas[0]).toHaveTextContent("Beneficiario pendiente de completar");
+    const enlace = screen.getByRole("link", { name: "Completar la ficha del beneficiario de REQ-2026-0011" });
+    expect(enlace).toHaveAttribute("href", "/proveedores?proveedor=supplier-9");
+    fireEvent.click(enlace);
+    expect(go).toHaveBeenCalledWith("/proveedores?proveedor=supplier-9");
+  });
+
+  it("un aprobador ve la marca pero no el enlace: no tiene acceso a Proveedores", () => {
+    render(<ConnectedRequisitions data={{ rows: [{ ...pago, status: "en_aprobacion" }], catalogs }} pathname="/aprobaciones" go={vi.fn()} role="Aprobador" />);
+    expect(screen.getByTestId("beneficiary-pending")).toHaveTextContent("Beneficiario pendiente de completar");
+    expect(screen.queryByRole("link", { name: /Completar la ficha/ })).toBeNull();
+  });
+});
+
 describe("RF-302: filtros en la bandeja de revisión", () => {
   const rows = [
     {

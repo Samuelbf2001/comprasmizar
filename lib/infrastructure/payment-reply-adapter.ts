@@ -1,4 +1,4 @@
-import type { SupplierIdentificationType } from "../domain";
+import { colombiaDateParts, type SupplierIdentificationType } from "../domain";
 import type { KapsoWebhookEvent } from "../services";
 import { isNfmReplyWebhookPayload, normalizePhoneForToken, validateFlowToken, type FlowTokenRejectionReason, type RawKapsoWebhookPayload } from "./nfm-reply-adapter";
 
@@ -131,6 +131,8 @@ export async function adaptPaymentReply(payload: RawKapsoWebhookPayload, config:
       eventId: wamid,
       phone,
       societyId,
+      // El Flow no pide fecha: la del gasto es la del envío, en Colombia (PRD D6).
+      requiredDate: colombiaDateParts(now).day,
       type: "pago",
       requesterName: requester.name,
       beneficiary: { identificationType, identification, name, phone },

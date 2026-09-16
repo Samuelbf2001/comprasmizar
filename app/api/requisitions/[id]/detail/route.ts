@@ -2,7 +2,7 @@ import { z } from "zod";
 import { authenticatedJson, parsePathParams } from "../../../../../lib/http/api";
 import { createPostgresDependencies } from "../../../../../lib/infrastructure/postgres-repositories";
 import { createPrivateAttachmentServiceDependencies } from "../../../../../lib/infrastructure/attachment-repositories";
-import { PrivateAttachmentService, ProcurementService } from "../../../../../lib/services";
+import { PrivateAttachmentService, ProcurementService, type CatalogSupplier } from "../../../../../lib/services";
 
 export const runtime = "nodejs";
 const paramsSchema = z.object({ id: z.string().uuid() }).strict();
@@ -18,10 +18,20 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   return authenticatedJson(async (actor) => {
     const { id } = await parsePathParams(context.params, paramsSchema);
     const requestContext = { actor };
+    const dependencies = createPostgresDependencies();
     const [detail, attachments] = await Promise.all([
-      new ProcurementService(createPostgresDependencies()).getRequisitionDetail(id, requestContext),
+      new ProcurementService(dependencies).getRequisitionDetail(id, requestContext),
       new PrivateAttachmentService(createPrivateAttachmentServiceDependencies()).listForRequisition(id, actor),
     ]);
-    return { ...detail, attachments: attachments.attachments, viewerId: actor.id, viewerRoles: actor.roles };
+    // QA H5: después de autorizar la lectura, se marca el beneficiario de un pago que sigue pendiente de
+    // normalizar, para que el revisor lo complete antes de aprobar. Solo viaja el booleano.
+    const beneficiaryIds = detail.requisition.type === "pago"
+      ? [...new Set(detail.requisition.items.map((line) => line.finalSupplierId).filter((supplierId): supplierId is string => Boolean(supplierId)))]
+      : [];
+    const beneficiaries = await Promise.all(beneficiaryIds.map((supplierId) => dependencies.catalogs.get("suppliers", supplierId)));
+    const requisition = beneficiaries.some((supplier) => (supplier as CatalogSupplier | null)?.pendingNormalization === true)
+      ? { ...detail.requisition, beneficiaryPendingNormalization: true }
+      : detail.requisition;
+    return { ...detail, requisition, attachments: attachments.attachments, viewerId: actor.id, viewerRoles: actor.roles };
   });
 }

@@ -193,6 +193,7 @@ describe("portal público guiado — enlace por obra", () => {
     render(<PublicRequestScreen demoMode={false} publicConfigured />);
     await pasarCompuerta();
     expect(document.querySelector('select[name="company"]')).toBeNull();
+    expect(screen.getByText(/Acceso para:/)).toHaveTextContent("obra autorizada");
   });
 
   it("el teléfono es OPCIONAL: sin él se radica igual y no viaja en el envío", async () => {
@@ -620,13 +621,25 @@ describe("portal público guiado — ruta general, se elige EMPRESA", () => {
     await llegarAlResumen();
 
     // La empresa se muestra por NOMBRE en el resumen, no por su id.
-    expect(screen.getByText("Constructora Mizar S.A.S.")).toBeInTheDocument();
+    expect(screen.getByText("Empresa").closest("div")).toHaveTextContent("Constructora Mizar S.A.S.");
 
     fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));
     const body = JSON.parse(String(llamadasA(RADICACION)[0][1]?.body));
     expect(body.societyId).toBe(societyId);
     expect(body).not.toHaveProperty("workId");
+  });
+
+  it("la cabecera no dice «obra autorizada» sin obra: nombra la empresa elegida (QA H14)", async () => {
+    render(<PublicRequestScreen demoMode={false} publicConfigured />);
+    await pasarCompuerta();
+    await screen.findByRole("option", { name: "Constructora Mizar S.A.S." });
+    const acceso = screen.getByText(/Acceso para:/);
+    expect(acceso).not.toHaveTextContent("obra autorizada");
+    expect(acceso).toHaveTextContent("la empresa que elijas");
+
+    fireEvent.change(document.querySelector('select[name="company"]') as HTMLSelectElement, { target: { value: societyId } });
+    expect(screen.getByText(/Acceso para:/)).toHaveTextContent("Acceso para: Constructora Mizar S.A.S.");
   });
 });
 
@@ -762,7 +775,7 @@ describe("portal público guiado — solicitud de pago (RF-108)", () => {
     expect(screen.getByText(/CC 1020304050/)).toBeInTheDocument();
     expect(screen.getByText(/1\.250\.000/)).toBeInTheDocument();
     expect(screen.getByText("Levantamiento topográfico lote 3")).toBeInTheDocument();
-    expect(screen.getByText("Constructora Mizar S.A.S.")).toBeInTheDocument();
+    expect(screen.getByText("Empresa").closest("div")).toHaveTextContent("Constructora Mizar S.A.S.");
 
     fireEvent.click(screen.getByRole("button", { name: /Enviar solicitud/i }));
     await waitFor(() => expect(llamadasA(RADICACION)).toHaveLength(1));

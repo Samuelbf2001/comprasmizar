@@ -47,7 +47,7 @@ function paymentRequisition(overrides: Record<string, unknown> = {}) {
 
 function renderDetail(
   requisitionOverrides: Record<string, unknown> = {},
-  role: "Revisor" | "Contabilidad" | "Administrador Sixteam" = "Revisor",
+  role: "Revisor" | "Aprobador" | "Contabilidad" | "Administrador Sixteam" = "Revisor",
   bundleOverrides: Record<string, unknown> = {},
 ) {
   const data = {
@@ -206,5 +206,106 @@ describe("Aprobar yo mismo (RF-308)", () => {
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(bodiesOf(fetchMock).map((body) => body.action)).toEqual(["start_review", "review", "send_and_approve"]);
+  });
+
+  it("un aprobador a secas no lo ve, ni con su propia lente", () => {
+    renderDetail({}, "Aprobador", { viewerId: "approver-1", viewerRoles: ["aprobador"] });
+    expect(screen.queryByRole("button", { name: "Aprobar yo mismo" })).toBeNull();
+  });
+});
+
+// QA H5 (adenda de pagos): un pago que llega del portal o de WhatsApp trae el beneficiario pendiente de
+// normalizar; sin marca en el detalle, Daniel solo se enteraba entrando a Proveedores.
+describe("beneficiario pendiente de completar (QA H5)", () => {
+  afterEach(() => cleanup());
+
+  it("el revisor ve la marca y «Completar ficha» lo lleva a la ficha del beneficiario", () => {
+    const go = vi.fn();
+    const data = {
+      requisition: paymentRequisition({ beneficiaryPendingNormalization: true }),
+      catalogs, orders: [], expenses: [], history: [], attachments: [],
+    } as DetailBundle;
+    render(<ConnectedRequisitionDetail data={data} role="Revisor" go={go} refresh={vi.fn()} />);
+    expect(screen.getByTestId("beneficiary-pending")).toHaveTextContent("Beneficiario pendiente de completar");
+    const enlace = screen.getByRole("link", { name: "Completar ficha" });
+    expect(enlace).toHaveAttribute("href", "/proveedores?proveedor=sup-1");
+    fireEvent.click(enlace);
+    expect(go).toHaveBeenCalledWith("/proveedores?proveedor=sup-1");
+  });
+
+  it("quien no completa fichas ve la marca sin enlace, y sin la marca no aparece nada", () => {
+    renderDetail({ status: "en_aprobacion", beneficiaryPendingNormalization: true }, "Contabilidad");
+    expect(screen.getByTestId("beneficiary-pending")).toHaveTextContent("Beneficiario pendiente de completar");
+    expect(screen.queryByRole("link", { name: "Completar ficha" })).toBeNull();
+    cleanup();
+    renderDetail();
+    expect(screen.queryByTestId("beneficiary-pending")).toBeNull();
+  });
+});
+
+// QA H3 (adenda de pagos): la lente de sesión del maestro (revisor + aprobador) es «Revisor», y el
+// detalle solo ofrecía aprobar a la lente «Aprobador». Lo que decide ahora es si quien mira figura como
+// aprobador de la requisición — de la cabecera o de algún ítem —, la misma pregunta que approve().
+describe("acciones de aprobación del maestro en en_aprobacion (QA H3)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const maestro = { viewerId: "master-1", viewerRoles: ["revisor", "aprobador"] };
+
+  it("con lente Revisor y asignado en la cabecera ve «Aprobar requisición», «Devolver a revisión» y conserva «Reasignar aprobador»", () => {
+    renderDetail({ status: "en_aprobacion", approverId: "master-1" }, "Revisor", maestro);
+    expect(screen.getByTestId("approval-decisions")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aprobar requisición" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Más" }));
+    expect(screen.getByRole("menuitem", { name: "Devolver a revisión" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Reasignar aprobador" })).toBeInTheDocument();
+  });
+
+  it("aprobar manda decide_items y approve con sus líneas", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(okResponse());
+    renderDetail({ status: "en_aprobacion", approverId: "master-1" }, "Revisor", maestro);
+    fireEvent.click(screen.getByRole("button", { name: "Aprobar requisición" }));
+    fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [decisiones, aprobar] = bodiesOf(fetchMock);
+    expect(decisiones).toMatchObject({ action: "decide_items", decisions: [{ itemId: "item-1", status: "aprobado" }] });
+    expect(aprobar).toEqual({ action: "approve" });
+  });
+
+  it("si el aprobador asignado es otro, el maestro no ve acciones de aprobación: solo la ficha y «Reasignar aprobador»", () => {
+    renderDetail({ status: "en_aprobacion", approverId: "approver-1" }, "Revisor", maestro);
+    expect(screen.queryByTestId("approval-decisions")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Aprobar/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Más" }));
+    expect(screen.queryByRole("menuitem", { name: "Devolver a revisión" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Reasignar aprobador" })).toBeInTheDocument();
+  });
+
+  it("un aprobador que no figura en la requisición tampoco ve acciones, aunque su lente sea «Aprobador»", () => {
+    renderDetail({ status: "en_aprobacion", approverId: "master-1" }, "Aprobador", { viewerId: "approver-1", viewerRoles: ["aprobador"] });
+    expect(screen.queryByTestId("approval-decisions")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Aprobar/ })).toBeNull();
+  });
+
+  it("con reparto por ítem, el maestro asignado solo en un ítem ve y decide esa línea", () => {
+    renderDetail(
+      {
+        status: "en_aprobacion",
+        approverId: "approver-1",
+        items: [
+          { id: "item-1", description: "Pago acta 3", quantity: 1, unit: "servicio", finalSupplierId: "sup-1", unitBase: 100_000, ivaRate: 0 },
+          { id: "item-2", description: "Pago acta 4", quantity: 1, unit: "servicio", finalSupplierId: "sup-1", unitBase: 50_000, ivaRate: 0, approverId: "master-1" },
+        ],
+      },
+      "Revisor",
+      maestro,
+    );
+    expect(screen.getByText(/Ves 1 de 2 ítems/)).toBeInTheDocument();
+    expect(screen.getByText("Pago acta 4")).toBeInTheDocument();
+    expect(screen.queryByText("Pago acta 3")).toBeNull();
+    expect(screen.getByRole("button", { name: /Aprobar mis ítems \(1\)/ })).toBeInTheDocument();
   });
 });

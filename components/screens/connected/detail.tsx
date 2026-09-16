@@ -25,8 +25,10 @@ import {
   eventLabel,
   formatIsoDate,
   money,
+  pendingBeneficiaryId,
   resolveUserName,
   summarizeLines,
+  supplierFichaPath,
   uploadOperationalAttachment,
   type DetailBundle,
   type NamedOption,
@@ -181,12 +183,10 @@ function AutosaveIndicator({ autosave, blockedReason }: { autosave: Autosave; bl
 type MissingField = "tag" | "work" | "approver" | "price" | null;
 
 // Campos que la ola 1 añadió al servidor (N3) y que shared.tsx (fuera de este paquete) todavía no
-// declara: `billedCompanyId` en la requisición, `societyId` en cada centro de costo del bootstrap
-// (GET /api/catalogs ya lo trae) y los roles reales del visor (pendiente de exponer en la ruta del
-// detalle). Se leen como opcionales para no depender de ese parche.
+// declara: `billedCompanyId` en la requisición y `societyId` en cada centro de costo del bootstrap
+// (GET /api/catalogs ya lo trae). Se leen como opcionales para no depender de ese parche.
 type BilledCompanyAware = { billedCompanyId?: string };
 type CostCenterOption = NamedOption & { societyId?: string };
-type ViewerRolesAware = { viewerRoles?: string[] };
 
 export function ConnectedRequisitionDetail({
   data,
@@ -282,13 +282,27 @@ export function ConnectedRequisitionDetail({
     // es `INVALID_TRANSITION` en el servidor.
     startReviewDone = useRef(requisition.status !== "enviada");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  // RF-308 (A9): `role` es la lente de sesión (auth-guard elige UN rol por prioridad, y al maestro
+  // revisor+aprobador le toca «Revisor»), no el conjunto de roles: se leen los del visor que manda el
+  // servidor. Sin ese dato no se ofrece nada que dependa de ellos.
+  const viewerRoles: string[] = data.viewerRoles ?? [];
+  /**
+   * QA H3: el maestro con lente «Revisor» no veía «Aprobar»/«Devolver» en lo que tiene asignado. Lo que
+   * decide es la misma pregunta que se hace approve(): ¿figura como aprobador de la cabecera o de algún
+   * ítem? Con quién mira conocido, un aprobador NO asignado tampoco ve acciones (el servidor se las
+   * rechazaría); sin él, la lente «Aprobador» se comporta como siempre.
+   */
+  const esAprobadorAsignado =
+    Boolean(data.viewerId) &&
+    (requisition.approverId === data.viewerId || (requisition.items ?? []).some((item) => item.approverId === data.viewerId));
   const isReviewer = role === "Revisor" || role === "Administrador Sixteam",
-    isApprover = role === "Aprobador" || role === "Administrador Sixteam";
-  // RF-308 (A9): "Aprobar yo mismo" solo para quien de verdad tiene revisor + aprobador (o es admin
-  // Sixteam): `role` es la lente de sesión, no el conjunto de roles, así que se leen los del visor
-  // que manda el servidor. Sin ese dato (ruta sin parche) el botón no aparece: nunca se ofrece una
-  // acción que el servicio va a rechazar con FORBIDDEN.
-  const viewerRoles = (data as ViewerRolesAware).viewerRoles ?? [];
+    isApprover =
+      role === "Administrador Sixteam" ||
+      (data.viewerId
+        ? esAprobadorAsignado && (role === "Aprobador" || viewerRoles.includes("aprobador"))
+        : role === "Aprobador");
+  // "Aprobar yo mismo" solo para quien de verdad tiene revisor + aprobador (o es admin Sixteam): nunca
+  // se ofrece una acción que el servicio va a rechazar con FORBIDDEN.
   const canSelfApprove =
     Boolean(data.viewerId) &&
     (role === "Administrador Sixteam" || (viewerRoles.includes("revisor") && viewerRoles.includes("aprobador")));
@@ -754,6 +768,13 @@ export function ConnectedRequisitionDetail({
     setReassignOpen(false);
     queueMicrotask(() => reassignTriggerRef.current?.focus());
   };
+  const reassignMenuItem = {
+    label: "Reasignar aprobador",
+    onSelect: () => {
+      reassignTriggerRef.current = document.activeElement as HTMLElement | null;
+      setReassignOpen(true);
+    },
+  };
   const handleGenerateOrders = async () => {
     if (busy) return;
     const stillMissing = missingSupplierItems.filter((item) => !assignSupplierChoice[item.id]);
@@ -789,6 +810,7 @@ export function ConnectedRequisitionDetail({
   })();
   const billedCompanyName = (id: string | undefined) =>
     id ? ((catalogs.societies ?? []).find((society) => society.id === id)?.name ?? "—") : "Sin empresa facturada";
+  const beneficiaryId = pendingBeneficiaryId(requisition);
   return (
     <>
       <SectionTitle
@@ -1348,7 +1370,14 @@ export function ConnectedRequisitionDetail({
                   <span className="connected-line-summary-total">Total <b className="money">{money.format(reviewLineTotals.total)}</b></span>
                 </div>
                 <AutosaveIndicator autosave={decisionsAutosave} blockedReason={decisionsGuard} />
-                <ActionMenu items={[{ label: "Devolver a revisión", onSelect: () => void handleReturn() }]} />
+                {/* El maestro asignado sigue siendo revisor: que ver sus acciones de aprobación no le
+                    quite «Reasignar aprobador», que tenía desde la vista de solo lectura. */}
+                <ActionMenu
+                  items={[
+                    { label: "Devolver a revisión", onSelect: () => void handleReturn() },
+                    ...(isReviewer ? [reassignMenuItem] : []),
+                  ]}
+                />
                 <button
                   className="button button-dark"
                   disabled={busy || lines.some((line) => line.status === "declinado" && !line.declineReason?.trim())}
@@ -1407,17 +1436,7 @@ export function ConnectedRequisitionDetail({
                   desaparece de la vista. */}
               {isReviewer && requisition.status === "en_aprobacion" && (
                 <div className="connected-actions connected-actions-menu-only">
-                  <ActionMenu
-                    items={[
-                      {
-                        label: "Reasignar aprobador",
-                        onSelect: () => {
-                          reassignTriggerRef.current = document.activeElement as HTMLElement | null;
-                          setReassignOpen(true);
-                        },
-                      },
-                    ]}
-                  />
+                  <ActionMenu items={[reassignMenuItem]} />
                 </div>
               )}
               {/* aprobada sin órdenes · revisor: la primaria "Generar órdenes (K)" vive aquí,
@@ -1508,6 +1527,25 @@ export function ConnectedRequisitionDetail({
                 <dd>{requisition.observations || "—"}</dd>
               </div>
             </dl>
+            {/* QA H5: llega así del portal o de WhatsApp (solo identificación y nombre); sin esta marca
+                el revisor solo se enteraba entrando a Proveedores. */}
+            {requisition.beneficiaryPendingNormalization && (
+              <p data-testid="beneficiary-pending">
+                <Tone tone="warning" dot>Beneficiario pendiente de completar</Tone>{" "}
+                {isReviewer && beneficiaryId && (
+                  <a
+                    className="text-link"
+                    href={supplierFichaPath(beneficiaryId)}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      go(supplierFichaPath(beneficiaryId));
+                    }}
+                  >
+                    Completar ficha
+                  </a>
+                )}
+              </p>
+            )}
             {/* Cabecera editable: ya no hay toggle "Editar cabecera"/Cancelar/Guardar cambios —
                 los campos son inline y se autoguardan solos (PATCH /api/requisitions/:id). */}
             {headerEditable && (

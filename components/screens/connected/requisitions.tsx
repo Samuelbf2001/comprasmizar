@@ -12,9 +12,11 @@ import {
   emptyCatalogs,
   estadoLabel,
   money,
+  pendingBeneficiaryId,
   relativeAge,
   requisitionTone,
   resolveUserName,
+  supplierFichaPath,
   type CatalogData,
   type RequisitionRow,
   type RequisitionsBundle,
@@ -56,11 +58,14 @@ function RequisitionQueueRows({
   go,
   markActive,
   approverActions,
+  canOpenSupplier = false,
 }: {
   rows: RequisitionRow[];
   catalogs: CatalogData;
   go: (path: string) => void;
   markActive?: boolean;
+  /** QA H5: quien puede completar la ficha (revisor/admin Sixteam) recibe el enlace; el resto, solo la marca. */
+  canOpenSupplier?: boolean;
   /** Columnas de "Aprobar desde la lista" — ausente en /revision (nunca hay fila `en_aprobacion`
    *  ahí) y en el grupo "Listas para generar orden" (ya `aprobada`), así que esas tablas quedan
    *  exactamente igual que antes. */
@@ -105,6 +110,7 @@ function RequisitionQueueRows({
             // unitarios sueltos. Antes de la revisión los ítems no traen precio: "Sin cotizar"
             // es más honesto que un "$ 0" que Daniel podría leer como el valor real.
             const total = sumLines(row.items);
+            const beneficiaryId = pendingBeneficiaryId(row);
             return (
               <tr key={row.id} data-testid={markActive ? "active-requisition" : "requisition-queue-row"}>
                 {approverActions && (
@@ -143,6 +149,24 @@ function RequisitionQueueRows({
                 <td>{relativeAge(row.updatedAt)}</td>
                 <td>
                   <Tone tone={requisitionTone(row.status)} dot>{estadoLabel(row.status)}</Tone>
+                  {row.beneficiaryPendingNormalization && (
+                    <span className="table-sub" data-testid="beneficiary-pending">
+                      <Tone tone="warning">Beneficiario pendiente de completar</Tone>{" "}
+                      {canOpenSupplier && beneficiaryId && (
+                        <a
+                          className="text-link"
+                          href={supplierFichaPath(beneficiaryId)}
+                          aria-label={`Completar la ficha del beneficiario de ${row.consecutive}`}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            go(supplierFichaPath(beneficiaryId));
+                          }}
+                        >
+                          Completar ficha
+                        </a>
+                      )}
+                    </span>
+                  )}
                 </td>
                 {approverActions && (
                   <td data-testid="approver-row-actions">
@@ -205,6 +229,7 @@ export function ConnectedRequisitions({
   const isRevision = pathname.startsWith("/revision");
   const isApprovalInbox = pathname.startsWith("/aprobaciones");
   const isAdminSixteam = role === "Administrador Sixteam";
+  const canOpenSupplier = role === "Revisor" || isAdminSixteam;
   // H3 (docs/plan-rendimiento.md): `data.rows` es ahora UNA página (100 filas server-side); el
   // estado local guarda las páginas ya cargadas con "Cargar más" y se reinicia cuando `data`
   // cambia (nueva ruta o revalidación con una página fresca) para no arrastrar páginas viejas.
@@ -582,7 +607,7 @@ export function ConnectedRequisitions({
             </div>
             <Tone tone="success" dot>{readyForOrderRows.length} lista{readyForOrderRows.length === 1 ? "" : "s"}</Tone>
           </div>
-          <RequisitionQueueRows rows={readyForOrderRows} catalogs={catalogs} go={go} />
+          <RequisitionQueueRows rows={readyForOrderRows} catalogs={catalogs} go={go} canOpenSupplier={canOpenSupplier} />
         </section>
       )}
       {/* «Aprobar desde la lista»: barra de selección múltiple — solo en /aprobaciones y solo
@@ -673,6 +698,7 @@ export function ConnectedRequisitions({
             go={go}
             markActive={isRevision}
             approverActions={approverActions}
+            canOpenSupplier={canOpenSupplier}
           />
         )}
         {/* H3 (docs/plan-rendimiento.md): "Cargar más" pide la página siguiente con el mismo
