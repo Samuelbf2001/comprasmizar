@@ -1,4 +1,4 @@
-import { DomainError } from "../domain";
+import { DomainError, type PaymentMethod, type PaymentStatus } from "../domain";
 
 /**
  * H3 (docs/plan-rendimiento.md, Fase 3): filtros y paginación por cursor compartidos por requisiciones,
@@ -14,10 +14,24 @@ export interface ListQuery {
   status?: string[];
   workId?: string;
   /** Centros de costo (2026-09-12): filtro adicional sobre la columna `centro_costo_id` — lo consumen
-   *  `listVisibleExpenses` (gastos) y, desde la UI de reportes (2026-09-12), `listVisibleRequisitions`
-   *  (columna propia `requisiciones.centro_costo_id`, el centro EFECTIVO de la requisición); el resto de
-   *  entidades lo ignora, igual que `status` no aplica a gastos/caja menor. */
+   *  `listVisibleExpenses` (gastos), `listVisibleRequisitions` (columna propia
+   *  `requisiciones.centro_costo_id`, el centro EFECTIVO de la requisición) y, desde la adenda de pagos
+   *  (RF-509, 2026-09-15), `listVisibleOrders` (el centro de la requisición dueña, el mismo que
+   *  `Order.costCenterId`); caja menor lo ignora, igual que `status` no aplica a gastos/caja menor. */
   costCenterId?: string;
+  /**
+   * RF-509 (adenda de pagos, 2026-09-15): filtros del panel de órdenes — solo los consume
+   * `listVisibleOrders`; el resto de entidades los ignora (mismo patrón aditivo que `approverId`).
+   * `paymentMethod`: la orden tiene AL MENOS un pago vigente con ese medio (`efectivo` = caja).
+   * `paymentStatus`: estado derivado (`paymentStatus()` en lib/domain/rules.ts, replicado en SQL).
+   * `paidFrom`/`paidTo`: la orden tiene al menos un pago vigente con `fecha` en ese rango (inclusive) —
+   * distinto de `from`/`to`, que en órdenes siguen filtrando por `fecha_generacion`. Medio = efectivo +
+   * rango de fecha de pago es el cierre de caja (PRD §4.3).
+   */
+  paymentMethod?: PaymentMethod;
+  paymentStatus?: PaymentStatus;
+  paidFrom?: string;
+  paidTo?: string;
   /** Cajas (2026-09-12): filtro adicional por `caja_id` — aplica a gastos, caja menor e ingresos;
    *  el resto de entidades lo ignora, mismo patrón aditivo que `costCenterId`. */
   cashBoxId?: string;

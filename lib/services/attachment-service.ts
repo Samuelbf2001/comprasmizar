@@ -8,7 +8,11 @@ const MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image
  *  `lib/infrastructure/public-photos.ts` (foto opcional por artículo del portal público) para no
  *  redefinir qué cuenta como imagen en dos sitios distintos. */
 export const IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const PREFIX: Record<AttachmentEntity, string> = { requisicion: "requisiciones", requisicion_item: "requisicion-items", caja_menor: "caja-menor" };
+// `pago_orden` (adenda de pagos, A5): el comprobante de un pago es un adjunto más, bajo pagos-orden/<pago>/…
+// — mismo bucket, misma ruta canónica y mismo contrato prepare/complete que caja_menor (202609150001).
+const PREFIX: Record<AttachmentEntity, string> = { requisicion: "requisiciones", requisicion_item: "requisicion-items", caja_menor: "caja-menor", pago_orden: "pagos-orden" };
+/** Entidades cuya lectura es SOLO por rol (sin dueño por fila): las únicas que admite `listMany`. */
+const ROLE_ONLY_ENTITIES: readonly AttachmentEntity[] = ["caja_menor", "pago_orden"];
 /**
  * Extensiones válidas para un MIME dado — la MISMA lista que usaba `validate()` a pelo, ahora
  * exportada para que `public-photos.ts` (foto del portal público) compruebe la extensión con el
@@ -70,6 +74,8 @@ export class PrivateAttachmentService {
   private async assertWrite(parent: AttachmentParent, actor: Actor): Promise<void> {
     if (actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam")) return;
     if ((parent.entity === "requisicion" || parent.entity === "requisicion_item") && actor.roles.includes("solicitante") && parent.requesterId === actor.id && parent.requisitionStatus === "enviada") return;
+    // Contabilidad registra pagos (`payment:register`, lib/domain/rules.ts): quien registra el pago sube su comprobante.
+    if (parent.entity === "pago_orden" && actor.roles.includes("contabilidad")) return;
     throw new DomainError("FORBIDDEN", "No puede cargar soportes para esta entidad");
   }
   private validate(entity: AttachmentEntity, input: PrivateAttachmentUpload): { type: PrivateAttachmentUpload["type"]; name: string; mimeType: string; sizeBytes: number } {
@@ -77,6 +83,7 @@ export class PrivateAttachmentService {
     if (!PRIVATE_ATTACHMENT_TYPES.includes(input.type)) throw new DomainError("INVALID_DOCUMENT", "Tipo de soporte no permitido");
     if (entity === "requisicion_item" && input.type !== "foto") throw new DomainError("INVALID_DOCUMENT", "Los soportes de ítem deben ser fotos");
     if (entity === "caja_menor" && input.type !== "soporte") throw new DomainError("INVALID_DOCUMENT", "Caja menor sólo admite soportes");
+    if (entity === "pago_orden" && input.type !== "soporte") throw new DomainError("INVALID_DOCUMENT", "El comprobante de un pago sólo admite soportes");
     if (!MIME_TYPES.has(mimeType)) throw new DomainError("INVALID_DOCUMENT", "MIME de soporte no permitido");
     if (input.type === "foto" && !mimeType.startsWith("image/")) throw new DomainError("INVALID_DOCUMENT", "Las fotos deben usar un MIME de imagen");
     const extension = name.slice(name.lastIndexOf(".") + 1), expected = expectedAttachmentExtensions(mimeType);
@@ -105,23 +112,24 @@ export class PrivateAttachmentService {
     });
   }
   /**
-   * H2: respalda `GET /api/attachments/:entity?ids=` — DELIBERADAMENTE restringido a "caja_menor".
-   * `assertRead` para requisicion/requisicion_item depende del padre de CADA fila (requesterId/
-   * approverId/estado, ver getParent); comprobarlo id por id reintroduciría el mismo N+1 que este lote
-   * existe para eliminar. El caso real que dispara este endpoint (gastos con M filas de caja menor, ver
-   * H2 en docs/plan-rendimiento.md) siempre es caja_menor, cuyo acceso de lectura es solo por rol
-   * (revisor/admin_sixteam/contabilidad — ver assertRead), sin dueño por fila: un único chequeo basta.
-   * Si algún día se necesita batching real de requisicion/requisicion_item, ese caso ya lo cubre
-   * `listForRequisition` (agrupado por requisición padre, sin N+1).
+   * H2: respalda `GET /api/attachments/:entity?ids=` — DELIBERADAMENTE restringido a las entidades de
+   * lectura SOLO por rol (`caja_menor` y, desde la adenda de pagos, `pago_orden`: los comprobantes de
+   * los pagos de una orden o del cierre de caja en una sola consulta). `assertRead` para
+   * requisicion/requisicion_item depende del padre de CADA fila (requesterId/approverId/estado, ver
+   * getParent); comprobarlo id por id reintroduciría el mismo N+1 que este lote existe para eliminar.
+   * Para las entidades admitidas el acceso de lectura es solo por rol (revisor/admin_sixteam/contabilidad
+   * — ver assertRead), sin dueño por fila: un único chequeo basta. Si algún día se necesita batching
+   * real de requisicion/requisicion_item, ese caso ya lo cubre `listForRequisition` (agrupado por
+   * requisición padre, sin N+1).
    */
   async listMany(entity: AttachmentEntity, entityIds: string[], actor: Actor): Promise<{ attachments: AttachmentBatchView[] }> {
     if (!entityIds.length || entityIds.length > MAX_BATCH_IDS) throw new DomainError("INVALID_INPUT", `Se admiten entre 1 y ${MAX_BATCH_IDS} ids`);
-    if (entity !== "caja_menor") throw new DomainError("FORBIDDEN", "La consulta por lote solo admite caja_menor");
+    if (!ROLE_ONLY_ENTITIES.includes(entity)) throw new DomainError("FORBIDDEN", "La consulta por lote solo admite caja_menor y pago_orden");
     // entityIds[0] solo ancla la transacción (mismo mecanismo que usa el resto del servicio, ver
-    // PrivateAttachmentTransactionManager): assertRead("caja_menor", ...) no depende de una fila
-    // concreta, así que no hace falta bloquear cada id — es una lectura, no una escritura.
+    // PrivateAttachmentTransactionManager): assertRead(entity, ...) no depende de una fila concreta,
+    // así que no hace falta bloquear cada id — es una lectura, no una escritura.
     return this.deps.transactions.transaction(entity, entityIds[0], async (tx) => {
-      await this.assertRead({ entity: "caja_menor", id: entityIds[0] }, actor);
+      await this.assertRead({ entity, id: entityIds[0] }, actor);
       const rows = await tx.attachments.listMany(entity, entityIds);
       return { attachments: rows.map((entry) => ({ ...publicView(entry), entity: entry.entity, entityId: entry.entityId })) };
     });

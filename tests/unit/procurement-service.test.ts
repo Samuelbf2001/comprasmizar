@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, calculateDashboard, groupExpenseByCostCenter, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, sumApprovedLines, sumLines, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
+import { DomainError, calculateDashboard, groupExpenseByCostCenter, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, paymentStatus, sumApprovedLines, sumLines, sumPaid, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
 import { ProcurementService, type ServiceDependencies } from "../../lib/services";
 
 const ZERO_BY_STATUS: Record<RequisitionStatus, number> = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
@@ -21,7 +21,13 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // sum(valor) de pagos_orden, resuelto aquí para que `orders.get()` (el único método que
   // registerOrderPayment/updateOrderAdminStatus usan para leer y devolver la orden) refleje pagos
   // recién registrados en la MISMA transacción, igual que el SELECT real.
-  const withPayments = (o: Order): Order => ({ ...o, paidAmount: paymentsData.filter((p) => p.orderId === o.id).reduce((sum, p) => sum + p.amount, 0) });
+  // Adenda de pagos (N1): solo pagos VIGENTES (sumPaid), más estado derivado (paymentStatus contra el
+  // total del gasto), último pago y medios — las mismas tres columnas que el lateral real expone.
+  const withPayments = (o: Order): Order => {
+    const own = paymentsData.filter((p) => p.orderId === o.id), active = own.filter((p) => !p.annulled), paid = sumPaid(own);
+    const expense = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === o.id);
+    return { ...o, paidAmount: paid, paymentStatus: expense ? paymentStatus(expense.total, paid) : undefined, lastPaymentAt: active.reduce<string | undefined>((latest, p) => (!latest || p.date > latest ? p.date : latest), undefined), paymentMethods: [...new Set(active.map((p) => p.method))] };
+  };
   const requisitions = {
     get: async (id: string) => req.get(id) ? structuredClone(req.get(id)!) : null, save: async (r: Requisition) => void req.set(r.id, structuredClone(r)), list: async () => [...req.values()].map((value) => structuredClone(value)),
     listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`req:${actor.id}`); return visibleRequisitions(actor.id).map((value) => structuredClone(value)); },
@@ -52,7 +58,7 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   const visibleExpenses = (actorId: string) => actorId === "daniel" ? expensesData : [];
   const expenses = {
     get: async (id: string) => expensesData.find((entry) => entry.id === id) ?? null, save: async (e: Expense) => void expensesData.push(e),
-    markPaid: async (referenceId: string, date: string) => { const entry = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === referenceId); if (!entry) return 0; entry.date = date; entry.period = date.slice(0, 7); return 1; },
+    markPaid: async (referenceId: string, date: string | null) => { const entry = expensesData.find((e) => e.origin === "requisicion" && e.referenceId === referenceId); if (!entry) return 0; entry.date = date ?? undefined; entry.period = date?.slice(0, 7); return 1; },
     deleteByReference: async (origin: Expense["origin"], referenceId: string) => { const toDelete = expensesData.filter((e) => e.origin === origin && e.referenceId === referenceId); for (const entry of toDelete) { for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === entry.id) shares.splice(index, 1); const i = expensesData.indexOf(entry); if (i >= 0) expensesData.splice(i, 1); } },
     saveShares: async (s: ExpenseShare[]) => { const id = s[0]?.expenseId; if (id) for (let index = shares.length - 1; index >= 0; index--) if (shares[index].expenseId === id) shares.splice(index, 1); shares.push(...s); },
     list: async () => expensesData, listVisibleTo: async (actor: { id: string }) => { visibleActors.push(`expense:${actor.id}`); return visibleExpenses(actor.id); },
@@ -76,9 +82,14 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
   // Reunión agosto 2026: pagos parciales de orden — `save` es INSERT puro (igual que el adaptador
   // Postgres real, ver saveOrderPayment en postgres-repositories.ts), `listByOrder` ordena por fecha
   // (mismo criterio que el índice `pagos_orden_orden_fecha_idx`).
+  // Adenda de pagos (N1): `get`/`annul` (el único UPDATE: 0 filas → null si ya estaba anulado) y
+  // `listCash` (efectivo vigente en el rango, con la orden resuelta) reproducen el adaptador real.
   const orderPayments = {
     save: async (p: OrderPayment) => void paymentsData.push(p),
-    listByOrder: async (orderId: string) => paymentsData.filter((p) => p.orderId === orderId).sort((a, b) => a.date.localeCompare(b.date)),
+    listByOrder: async (orderId: string) => paymentsData.filter((p) => p.orderId === orderId).sort((a, b) => a.date.localeCompare(b.date)).map((p) => structuredClone(p)),
+    get: async (orderId: string, paymentId: string) => { const found = paymentsData.find((p) => p.id === paymentId && p.orderId === orderId); return found ? structuredClone(found) : null; },
+    annul: async (orderId: string, paymentId: string, annulment: { reason: string; actorId: string; at: string }) => { const found = paymentsData.find((p) => p.id === paymentId && p.orderId === orderId); if (!found || found.annulled) return null; found.annulled = true; found.annulmentReason = annulment.reason; found.annulledBy = annulment.actorId; found.annulledAt = annulment.at; return structuredClone(found); },
+    listCash: async (query: { from: string; to: string; costCenterId?: string }) => paymentsData.filter((p) => p.method === "efectivo" && !p.annulled && p.date >= query.from && p.date <= query.to).map((p) => { const o = ordersData.find((x) => x.id === p.orderId)!, owner = req.get(o.requisitionId); return { ...structuredClone(p), orderConsecutive: o.consecutive, orderType: o.type, requisitionId: o.requisitionId, requisitionConsecutive: owner?.consecutive ?? "", workId: owner?.workId, costCenterId: owner?.costCenterId, supplierId: o.supplierId }; }).filter((row) => !query.costCenterId || row.costCenterId === query.costCenterId).sort((a, b) => a.date.localeCompare(b.date)),
   };
   const proposed = new Map<string, string>(), notificationData: Array<{ userId?: string; phone?: string; channel: "whatsapp" | "interno"; template: string; payload: Record<string, unknown> }> = [], audit = { append: async (a: AuditEvent) => void audits.push(a), list: async (entity: string, entityId: string) => audits.filter((entry) => entry.entity === entity && entry.entityId === entityId) }, consecutives = { take: async (p: "REQ" | "OC" | "OP", y: number) => `${p}-${y}-${String(++seq).padStart(4, "0")}` }, features = { isEnabled: async (name: string) => name === "ordenes_multi_proveedor" }, itemCatalog = { propose: async (description: string) => { const key = description.toLocaleLowerCase(); const existing = proposed.get(key); if (existing) return { id: existing, created: false }; const id = `catalog-${++seq}`; proposed.set(key, id); return { id, created: true }; } }, notifications = { enqueue: async (notification: (typeof notificationData)[number]) => { notificationData.push(notification); } };
   // Reunión 2026-09: caja menor nace pagada — orderDate y date coinciden siempre con la fecha del movimiento.
@@ -421,6 +432,8 @@ describe("ProcurementService", () => {
     const accounted = await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
     expect(accounted).toMatchObject({ status: "generada", adminStatus: "contabilizada" }); // contabilizar no altera el cumplimiento
     await expect(service.updateOrderAdminStatus(orderB.id, "pagada", reviewer)).rejects.toMatchObject({ code: "INVALID_ADMIN_TRANSITION" }); // pagada exige contabilizada antes
+    // Adenda de pagos (A3): "pagada" ya no inventa el pago — exige saldo cero, así que primero se paga el total (238).
+    await service.registerOrderPayment(orderA.id, { date: "2026-08-20", amount: 238, method: "transferencia" }, reviewer);
     const paid = await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
     const fulfilled = await service.updateOrderStatus(orderA.id, "cumplida", reviewer);
     expect(fulfilled.adminStatus).toBe("pagada"); // marcar cumplida no altera el eje administrativo
@@ -429,16 +442,17 @@ describe("ProcurementService", () => {
     await expect(service.updateOrderAdminStatus(orderB.id, "contabilizada", { actor: { id: "cont2", roles: ["contabilidad"] } })).rejects.toMatchObject({ code: "ORDER_NOT_NEEDED" });
   });
   // Reunión 2026-09: "la fecha del gasto es la del pago" — marcar una orden "pagada" fija `date`
-  // (y por tanto `period`) del gasto que esa orden generó, en hora de Colombia. Reloj congelado en
-  // 2026-09-01T03:30:00Z (== 2026-08-31T22:30:00-05:00): la fecha de pago debe caer en agosto, no en
-  // septiembre — mismo criterio de zona horaria que generateOrders (colombiaDateParts).
-  it("marcar una orden pagada fija la fecha de pago del gasto en hora de Colombia (frontera 2026-09-01T03:30:00Z -> 2026-08-31)", async () => {
+  // (y por tanto `period`) del gasto que esa orden generó con la fecha del ÚLTIMO pago vigente, no con
+  // la del reloj (adenda de pagos, A3: ya no hay pago automático "de hoy"). Reloj congelado en
+  // septiembre a propósito: la fecha que manda es la del pago registrado en agosto.
+  it("marcar una orden pagada fija la fecha de pago del gasto con la del último pago vigente, no con la del reloj", async () => {
     const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
     await service.approve(r.id, approver);
     const [orderA] = await service.generateOrders(r.id, reviewer);
     let expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
     expect(expense.date).toBeUndefined(); expect(expense.period).toBeUndefined(); // compromiso, aún sin pagar
     await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+    await service.registerOrderPayment(orderA.id, { date: "2026-08-31", amount: 238, method: "efectivo" }, reviewer);
     deps.clock.now = () => new Date("2026-09-01T03:30:00.000Z");
     await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
     expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
@@ -826,6 +840,7 @@ describe("ProcurementService", () => {
     await service.approve(r.id, approver);
     const [orderA] = await service.generateOrders(r.id, reviewer);
     await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+    await service.registerOrderPayment(orderA.id, { date: "2026-08-20", amount: 238, method: "transferencia" }, reviewer);
     await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
     await expect(service.updateOrderStatus(orderA.id, "no_necesario", reviewer)).rejects.toMatchObject({ code: "ORDER_ALREADY_PAID" });
     expect(deps.expensesData.some((e) => e.referenceId === orderA.id)).toBe(true); // el gasto sigue intacto
@@ -901,13 +916,22 @@ describe("ProcurementService", () => {
       deps.expensesData.splice(index, 1); // simula el estado inconsistente: el gasto ya no existe
       await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, reviewer)).rejects.toMatchObject({ code: "ORDER_EXPENSE_MISSING" });
     });
-    it("una orden ya pagada no admite más pagos (ORDER_ALREADY_PAID) — no existe flujo de devolución", async () => {
+    it("una orden ya pagada no admite más pagos (ORDER_ALREADY_PAID) — la reversa es anular un pago, no registrar otro", async () => {
       const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
       await service.approve(r.id, approver);
       const [orderA] = await service.generateOrders(r.id, reviewer);
       await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 238, method: "transferencia" }, reviewer);
       await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
       await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 10, method: "efectivo" }, reviewer)).rejects.toMatchObject({ code: "ORDER_ALREADY_PAID" });
+    });
+    it("acepta una nota libre y la conserva en el historial (RF-507)", async () => {
+      const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      const { payment } = await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 100, method: "efectivo", note: "  Anticipo topógrafo  " }, reviewer);
+      expect(payment.note).toBe("Anticipo topógrafo");
+      expect((await service.listOrderPayments(orderA.id, reviewer))[0]).toMatchObject({ note: "Anticipo topógrafo" });
     });
     it("listOrderPayments respeta la MISMA visibilidad que listOrders: NOT_FOUND si el actor no ve la orden", async () => {
       const service = new ProcurementService(fakeDeps()), r = await reviewed(service);
@@ -919,34 +943,30 @@ describe("ProcurementService", () => {
     });
   });
 
-  // Reunión agosto 2026 (compatibilidad clave del pedido): updateOrderAdminStatus(...,'pagada') se
-  // CONSERVA y ahora paga el SALDO PENDIENTE internamente, en vez de solo cambiar un estado.
-  describe("updateOrderAdminStatus('pagada') — compatibilidad con pagos parciales", () => {
-    it("sin pagos previos: registra internamente un pago por el saldo TOTAL, con la fecha de hoy", async () => {
+  // Adenda de pagos (A3, RF-508): updateOrderAdminStatus(...,'pagada') DEJA de inventar un pago `otro`
+  // por el saldo — cada peso entra por registerOrderPayment con su medio real (la caja menor es
+  // `efectivo`). "pagada" exige saldo cero; con saldo, SALDO_PENDIENTE y la pantalla ofrece "Pagar saldo".
+  describe("updateOrderAdminStatus('pagada') — exige saldo cero, nunca inventa un pago", () => {
+    it("pagada exige saldo 0: sin pagos previos rechaza con SALDO_PENDIENTE y no registra ningún pago automático", async () => {
       const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
       await service.approve(r.id, approver);
       const [orderA] = await service.generateOrders(r.id, reviewer);
       await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
-      const paid = await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
-      expect(paid.paidAmount).toBe(238);
-      const history = deps.paymentsData.filter((p) => p.orderId === orderA.id);
-      expect(history).toHaveLength(1);
-      expect(history[0]).toMatchObject({ amount: 238, method: "otro", registeredBy: "daniel" });
-      expect(deps.audits.some((a) => a.entity === "orden" && a.entityId === orderA.id && a.event === "pago_registrado" && a.data?.auto === true && a.data?.amount === 238)).toBe(true);
+      await expect(service.updateOrderAdminStatus(orderA.id, "pagada", reviewer)).rejects.toMatchObject({ code: "SALDO_PENDIENTE" });
+      expect(deps.paymentsData.filter((p) => p.orderId === orderA.id)).toHaveLength(0);
+      expect(deps.audits.some((a) => a.event === "pago_registrado" && a.data?.method === "otro")).toBe(false);
+      expect((await deps.orders.get(orderA.id))?.adminStatus).toBe("contabilizada");
     });
-    it("con un pago parcial previo: paga solo lo que falta, no el total otra vez", async () => {
+    it("con un pago parcial previo también rechaza: el saldo restante se paga desde el diálogo, no aquí", async () => {
       const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
       await service.approve(r.id, approver);
       const [orderA] = await service.generateOrders(r.id, reviewer);
       await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
       await service.registerOrderPayment(orderA.id, { date: "2026-08-10", amount: 100, method: "efectivo" }, reviewer);
-      const paid = await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
-      expect(paid.paidAmount).toBe(238);
-      const history = deps.paymentsData.filter((p) => p.orderId === orderA.id);
-      expect(history).toHaveLength(2);
-      expect(history[1].amount).toBe(138); // saldo exacto restante
+      await expect(service.updateOrderAdminStatus(orderA.id, "pagada", reviewer)).rejects.toMatchObject({ code: "SALDO_PENDIENTE" });
+      expect(deps.paymentsData.filter((p) => p.orderId === orderA.id)).toHaveLength(1);
     });
-    it("cuando el saldo ya está cubierto por pagos parciales: no inventa un pago de $0 y usa la fecha del ÚLTIMO pago real", async () => {
+    it("con el saldo cubierto por pagos parciales pasa a pagada y fija la fecha del ÚLTIMO pago vigente en el gasto", async () => {
       const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
       await service.approve(r.id, approver);
       const [orderA] = await service.generateOrders(r.id, reviewer);
@@ -955,10 +975,96 @@ describe("ProcurementService", () => {
       await service.registerOrderPayment(orderA.id, { date: "2026-08-15", amount: 138, method: "transferencia" }, reviewer);
       const paid = await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
       expect(paid.paidAmount).toBe(238);
-      const history = deps.paymentsData.filter((p) => p.orderId === orderA.id);
-      expect(history).toHaveLength(2); // no se agregó un tercer pago de saldo $0
+      expect(paid.adminStatus).toBe("pagada");
+      expect(deps.paymentsData.filter((p) => p.orderId === orderA.id)).toHaveLength(2); // ningún pago de saldo $0
       const expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
       expect(expense.date).toBe("2026-08-15"); // fecha del ÚLTIMO pago, no la de "hoy" (reloj congelado en 2026-08-24)
+    });
+    it("un pago anulado no cuenta como saldo cubierto", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+      const { payment } = await service.registerOrderPayment(orderA.id, { date: "2026-08-10", amount: 238, method: "transferencia" }, reviewer);
+      await service.annulOrderPayment(orderA.id, payment.id, "Transferencia rebotó", reviewer);
+      await expect(service.updateOrderAdminStatus(orderA.id, "pagada", reviewer)).rejects.toMatchObject({ code: "SALDO_PENDIENTE" });
+    });
+  });
+
+  // RF-510 (anular ≠ borrar), RF-508 (estado derivado) y RF-708 (cierre de caja = efectivo en un rango).
+  describe("annulOrderPayment / paymentStatus / listCashPayments — adenda de pagos", () => {
+    async function paidOrder(deps: ReturnType<typeof fakeDeps>, service: ProcurementService) {
+      const r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      return orderA;
+    }
+    it("anular pago excluye del pagado: el pago sigue en el historial (tachado, con motivo) y libera saldo para el reemplazo", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), orderA = await paidOrder(deps, service);
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 100, method: "efectivo" }, reviewer);
+      const { payment: second } = await service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 138, method: "transferencia" }, reviewer);
+      const { payment: annulled, order } = await service.annulOrderPayment(orderA.id, second.id, "Transferencia rebotó", reviewer);
+      expect(annulled).toMatchObject({ id: second.id, annulled: true, annulmentReason: "Transferencia rebotó", annulledBy: "daniel", annulledAt: "2026-08-24T12:00:00.000Z" });
+      expect(order.paidAmount).toBe(100);
+      const history = await service.listOrderPayments(orderA.id, reviewer);
+      expect(history).toHaveLength(2); // nunca se borra
+      expect(history.find((p) => p.id === second.id)?.annulled).toBe(true);
+      // El saldo liberado admite el reemplazo exacto; un peso más, no.
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-07", amount: 139, method: "transferencia" }, reviewer)).rejects.toMatchObject({ code: "PAYMENT_EXCEEDS_ORDER" });
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-07", amount: 138, method: "transferencia" }, reviewer)).resolves.toMatchObject({ order: { paidAmount: 238 } });
+      expect(deps.audits.some((a) => a.entity === "orden" && a.entityId === orderA.id && a.event === "pago_anulado" && a.data?.paymentId === second.id && a.data?.reason === "Transferencia rebotó")).toBe(true);
+    });
+    it("no se puede anular sin motivo, dos veces, un pago de otra orden, ni sin permiso payment:register", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), orderA = await paidOrder(deps, service);
+      const { payment } = await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 100, method: "efectivo" }, reviewer);
+      await expect(service.annulOrderPayment(orderA.id, payment.id, "   ", reviewer)).rejects.toMatchObject({ code: "ANNULMENT_REASON_REQUIRED" });
+      await expect(service.annulOrderPayment(orderA.id, payment.id, "motivo", approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(service.annulOrderPayment(orderA.id, "no-existe", "motivo", reviewer)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(service.annulOrderPayment("otra-orden", payment.id, "motivo", reviewer)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await service.annulOrderPayment(orderA.id, payment.id, "Duplicado", { actor: { id: "cont", roles: ["contabilidad"] } });
+      await expect(service.annulOrderPayment(orderA.id, payment.id, "otra vez", reviewer)).rejects.toMatchObject({ code: "PAYMENT_ALREADY_ANNULLED" });
+      expect(deps.paymentsData.find((p) => p.id === payment.id)).toMatchObject({ annulled: true, annulmentReason: "Duplicado" });
+    });
+    it("estado_pago pendiente/parcial/pagada se deriva de los pagos vigentes y vuelve a parcial al anular (E2E #6 del PRD)", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), orderA = await paidOrder(deps, service);
+      expect((await deps.orders.get(orderA.id))).toMatchObject({ paymentStatus: "pendiente", paidAmount: 0, paymentMethods: [] });
+      const { order: partial } = await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 100, method: "efectivo" }, reviewer);
+      expect(partial).toMatchObject({ paymentStatus: "parcial", lastPaymentAt: "2026-08-05", paymentMethods: ["efectivo"] });
+      const { payment: second, order: full } = await service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 138, method: "transferencia" }, reviewer);
+      expect(full).toMatchObject({ paymentStatus: "pagada", lastPaymentAt: "2026-08-06", paymentMethods: ["efectivo", "transferencia"] });
+      const { order: reverted } = await service.annulOrderPayment(orderA.id, second.id, "Se pagó de más", reviewer);
+      expect(reverted).toMatchObject({ paymentStatus: "parcial", paidAmount: 100, lastPaymentAt: "2026-08-05", paymentMethods: ["efectivo"] });
+      expect(reverted.status).toBe("generada"); // el eje de cumplimiento no se toca
+    });
+    it("anular el pago que cerraba una orden ya 'pagada' la devuelve a contabilizada y quita la fecha de pago del gasto", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), orderA = await paidOrder(deps, service);
+      await service.updateOrderAdminStatus(orderA.id, "contabilizada", { actor: { id: "cont", roles: ["contabilidad"] } });
+      const { payment } = await service.registerOrderPayment(orderA.id, { date: "2026-08-10", amount: 238, method: "transferencia" }, reviewer);
+      await service.updateOrderAdminStatus(orderA.id, "pagada", reviewer);
+      expect(deps.expensesData.find((e) => e.referenceId === orderA.id)?.date).toBe("2026-08-10");
+      const { order } = await service.annulOrderPayment(orderA.id, payment.id, "Transferencia rebotó", reviewer);
+      expect(order).toMatchObject({ adminStatus: "contabilizada", paymentStatus: "pendiente", paidAmount: 0 });
+      expect(order.paidAt).toBeUndefined();
+      const expense = deps.expensesData.find((e) => e.referenceId === orderA.id)!;
+      expect(expense.date).toBeUndefined(); expect(expense.period).toBeUndefined();
+      expect(deps.audits.filter((a) => a.entityId === orderA.id && a.event === "estado_administrativo_actualizado").at(-1)?.data).toMatchObject({ status: "contabilizada", reason: "pago_anulado", paymentId: payment.id });
+      // Y vuelve a admitir el pago corregido.
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-11", amount: 238, method: "efectivo" }, reviewer)).resolves.toMatchObject({ order: { paymentStatus: "pagada" } });
+    });
+    it("listCashPayments solo devuelve efectivo no anulado en el rango, con su orden resuelta, y exige expense:read", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), orderA = await paidOrder(deps, service);
+      const { payment: cashInRange } = await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo", note: "Peaje" }, reviewer);
+      const { payment: cashAnnulled } = await service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 50, method: "efectivo" }, reviewer);
+      await service.annulOrderPayment(orderA.id, cashAnnulled.id, "Duplicado", reviewer);
+      await service.registerOrderPayment(orderA.id, { date: "2026-08-07", amount: 50, method: "transferencia" }, reviewer);
+      await service.registerOrderPayment(orderA.id, { date: "2026-09-02", amount: 50, method: "efectivo" }, reviewer);
+      const rows = await service.listCashPayments({ from: "2026-08-01", to: "2026-08-31" }, reviewer);
+      expect(rows.map((row) => row.id)).toEqual([cashInRange.id]);
+      expect(rows[0]).toMatchObject({ method: "efectivo", note: "Peaje", orderConsecutive: orderA.consecutive, orderType: "OC", requisitionId: orderA.requisitionId, workId: "work", costCenterId: "cc-work", supplierId: "p1" });
+      await expect(service.listCashPayments({ from: "2026-08-01", to: "2026-08-31", costCenterId: "cc-work" }, { actor: { id: "cont", roles: ["contabilidad"] } })).resolves.toHaveLength(1);
+      await expect(service.listCashPayments({ from: "2026-08-01", to: "2026-08-31", costCenterId: "cc-alterno" }, reviewer)).resolves.toHaveLength(0);
+      await expect(service.listCashPayments({ from: "2026-08-31", to: "2026-08-01" }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(service.listCashPayments({ from: "2026-08-01", to: "2026-08-31" }, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
     });
   });
 

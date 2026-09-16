@@ -11,5 +11,6 @@ describe("private attachment authorization locks", () => {
   it("uses a narrow row lock for the other supported parent entities", () => {
     expect(attachmentLockStatement("requisicion")).toBe("select id from requisiciones where id = $1 for update");
     expect(attachmentLockStatement("caja_menor")).toBe("select id from caja_menor where id = $1 for update");
+    expect(attachmentLockStatement("pago_orden")).toBe("select id from pagos_orden where id = $1 for update");
   });
 });

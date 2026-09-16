@@ -86,6 +86,9 @@ const HARNESSES = [
   // ingresos como tabla aparte (nunca un gasto negativo), el trigger que bloquea movimientos de un
   // periodo ya cerrado, y el cruce ingresos/gastos por centro de costo.
   path.join(ROOT, "supabase", "tests", "cajas_ingresos_cierres_verification.sql"),
+  // Órdenes de pago y caja menor, N1 (2026-09-15): anulación de pagos (el trigger anti-sobrepago ignora
+  // anulados), auditoría de pagos_orden por trigger y comprobante como adjunto `pago_orden`.
+  path.join(ROOT, "supabase", "tests", "pagos_anulacion_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

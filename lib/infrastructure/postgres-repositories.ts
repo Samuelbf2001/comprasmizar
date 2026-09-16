@@ -1,6 +1,7 @@
 import postgres, { type Sql } from "postgres";
-import { DomainError, normalizeItemName, type Actor, type AuditEvent, type CashClose, type CashCloseStatus, type CostCenterMovement, type DashboardAmountByKey, type Expense, type ExpenseShare, type Income, type ItemLine, type Order, type OrderAdminStatus, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
+import { DomainError, normalizeItemName, paymentStatus, type Actor, type AuditEvent, type CashClose, type CashCloseStatus, type CashPayment, type CostCenterMovement, type DashboardAmountByKey, type Expense, type ExpenseShare, type Income, type ItemLine, type Order, type OrderAdminStatus, type OrderPayment, type PaymentMethod, type PettyCash, type Requisition, type RequisitionStatus, type Role } from "../domain";
 import type { AuditRepository, CatalogCashBox, CatalogCostCenter, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogItem, CatalogUser, CatalogUserCreate, ConsecutiveRepository, IdGenerator, ListQuery, Page, PublicAccessVerifier, ReportCatalogSource, ServiceDependencies, TransactionManager, TransactionRepositories } from "../services";
+import { PRIVATE_ATTACHMENT_BUCKET } from "../services/attachment-service";
 import { decodeCursor, encodeCursor, pageLimit } from "../services/list-query";
 import { generalLinkToken, verifyPublicLinkToken } from "../security/public-link";
 import { safeEqual } from "../security/crypto";
@@ -98,6 +99,12 @@ function order(row: DbRow): Order {
     // Centros de costo (UI, 2026-09-12): mismo criterio de ausencia que requisitionConsecutive/workId
     // de arriba — undefined (no "—") cuando el SELECT no hizo el join, nunca un "sin centro" falso.
     costCenterId: row.requisicion_centro_costo_id != null ? String(row.requisicion_centro_costo_id) : undefined,
+    // RF-508 (adenda de pagos): derivado con la MISMA función de dominio que el servicio (paymentStatus,
+    // lib/domain/rules.ts) a partir de pagado_total (solo vigentes) y gasto_total (valor_total del gasto
+    // de la orden). Sin gasto no hay contra qué medir: queda undefined, no un "pendiente" inventado.
+    paymentStatus: row.pagado_total != null && row.gasto_total != null ? paymentStatus(asNumber(row.gasto_total), asNumber(row.pagado_total)) : undefined,
+    lastPaymentAt: asIsoDate(row.ultimo_pago),
+    paymentMethods: row.pagado_total == null ? undefined : typeof row.medios_pago === "string" && row.medios_pago ? (row.medios_pago.split(",") as PaymentMethod[]) : [],
   };
 }
 // Reunión 2026-09: `fecha` (fecha de pago) y `periodo` (mes de `fecha`) son NULL en la BD mientras la
@@ -131,10 +138,25 @@ function cashClose(row: DbRow): CashClose {
  *  criterio que `orderDate`/`date` de Expense arriba); `valor` viaja como string desde `numeric(16,2)`
  *  (el driver `postgres` no lo convierte solo), de ahí `asNumber`. */
 function orderPayment(row: DbRow): OrderPayment {
+  const annulled = row.anulado === true;
   return {
     id: String(row.id), orderId: String(row.orden_id), date: asIsoDate(row.fecha) as string, amount: asNumber(row.valor),
     method: row.medio_pago as OrderPayment["method"], externalReference: row.referencia_externa ? String(row.referencia_externa) : undefined,
-    registeredBy: row.registrado_por ? String(row.registrado_por) : undefined,
+    note: row.nota ? String(row.nota) : undefined, registeredBy: row.registrado_por ? String(row.registrado_por) : undefined,
+    // RF-510: anulado/motivo/quién/cuándo (202609150001); comprobante = adjunto `pago_orden` más reciente,
+    // resuelto por la subconsulta `comprobante_id` de paymentSelectColumns().
+    annulled, annulmentReason: annulled && row.motivo_anulacion ? String(row.motivo_anulacion) : undefined,
+    annulledBy: annulled && row.anulado_por ? String(row.anulado_por) : undefined, annulledAt: annulled && row.anulado_en ? toIsoInstant(row.anulado_en) : undefined,
+    attachmentId: row.comprobante_id ? String(row.comprobante_id) : undefined,
+  };
+}
+/** RF-708: fila del cierre de caja — un pago vigente en efectivo con su orden/requisición resueltas por join. */
+function cashPayment(row: DbRow): CashPayment {
+  return {
+    ...orderPayment(row), orderConsecutive: String(row.orden_consecutivo), orderType: row.orden_tipo as CashPayment["orderType"],
+    requisitionId: String(row.requisicion_id), requisitionConsecutive: String(row.requisicion_consecutivo),
+    workId: row.requisicion_obra_id ? String(row.requisicion_obra_id) : undefined, costCenterId: row.requisicion_centro_costo_id ? String(row.requisicion_centro_costo_id) : undefined,
+    supplierId: row.orden_proveedor_id ? String(row.orden_proveedor_id) : undefined,
   };
 }
 // `periodo` es una columna `date` (generada, ver migración core_compras): la librería `postgres` la
@@ -336,7 +358,11 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     // (ver el comentario largo de `Order.costCenterId` en lib/domain/model.ts) — mismo alias por la
     // misma razón que `requisicion_consecutivo`/`requisicion_obra_id` (evitar pisar una columna propia
     // de `ordenes`, aunque hoy no exista una `centro_costo_id` en esa tabla: mantiene la convención).
-    return this.sql`o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.fecha_requerida as requisicion_fecha_requerida, r.centro_costo_id as requisicion_centro_costo_id, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids, coalesce(json_agg(json_build_object('id', ri.id, 'item_id', ri.item_id, 'descripcion_libre', ri.descripcion_libre, 'cantidad', ri.cantidad, 'unidad', ri.unidad, 'posible_proveedor_texto', ri.posible_proveedor_texto, 'link_producto', ri.link_producto, 'proveedor_final_id', ri.proveedor_final_id, 'valor_base', ri.valor_base, 'iva', ri.iva, 'estado', ri.estado, 'motivo_declinacion', ri.motivo_declinacion, 'iva_tasa', ri.iva_tasa, 'descuento_tasa', ri.descuento_tasa) order by ri.created_at) filter (where ri.id is not null), '[]') as lines, max(pago.pagado) as pagado_total`;
+    // RF-508 (adenda de pagos): `ultimo_pago`/`medios_pago` salen del mismo lateral que `pagado` (solo
+    // pagos VIGENTES) y `gasto_total` del gasto de la orden — con los dos, `order(row)` deriva
+    // `paymentStatus` con la función de dominio. Todos pasan por `max(...)` por la misma razón que
+    // `pagado_total` (laterales sin PK declarada frente al GROUP BY).
+    return this.sql`o.*, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.fecha_requerida as requisicion_fecha_requerida, r.centro_costo_id as requisicion_centro_costo_id, array_agg(oi.requisicion_item_id) filter (where oi.requisicion_item_id is not null) item_ids, coalesce(json_agg(json_build_object('id', ri.id, 'item_id', ri.item_id, 'descripcion_libre', ri.descripcion_libre, 'cantidad', ri.cantidad, 'unidad', ri.unidad, 'posible_proveedor_texto', ri.posible_proveedor_texto, 'link_producto', ri.link_producto, 'proveedor_final_id', ri.proveedor_final_id, 'valor_base', ri.valor_base, 'iva', ri.iva, 'estado', ri.estado, 'motivo_declinacion', ri.motivo_declinacion, 'iva_tasa', ri.iva_tasa, 'descuento_tasa', ri.descuento_tasa) order by ri.created_at) filter (where ri.id is not null), '[]') as lines, max(pago.pagado) as pagado_total, max(pago.ultimo_pago) as ultimo_pago, max(pago.medios) as medios_pago, max(gasto.valor_total) as gasto_total`;
   }
   // `ri` cuelga del mismo `left join orden_items oi` que ya resolvía `item_ids`: si algún día ambos joins
   // dejan de compartir la misma fila, `lines` y `item_ids` dejarían de corresponder al mismo conjunto de
@@ -344,9 +370,12 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // `pago`: reunión agosto 2026, `Order.paidAmount` resuelto en el MISMO select (nunca una consulta
   // por orden) — `coalesce(sum(...), 0)` deja `pagado = 0` (no NULL) para una orden sin ningún pago,
   // y `left join lateral ... on true` (no un `left join` normal) porque la subconsulta no correlaciona
-  // con ninguna columna de `pagos_orden` en el ON, solo en el WHERE interno.
+  // con ninguna columna de `pagos_orden` en el ON, solo en el WHERE interno. RF-510: `not po.anulado`
+  // — un pago anulado no cuenta (misma regla que sumPaid en el dominio y el trigger en la base).
+  // `gasto`: 0..1 filas por `gastos_origen_referencia_unico`; su valor_total es el total contra el que
+  // se mide el estado de pago (y el filtro `paymentStatus`).
   private orderFromJoins() {
-    return this.sql`from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id left join requisicion_items ri on ri.id=oi.requisicion_item_id left join lateral (select coalesce(sum(po.valor), 0) as pagado from pagos_orden po where po.orden_id = o.id) pago on true`;
+    return this.sql`from ordenes o join requisiciones r on r.id=o.requisicion_id left join orden_items oi on oi.orden_id=o.id left join requisicion_items ri on ri.id=oi.requisicion_item_id left join lateral (select coalesce(sum(po.valor), 0) as pagado, max(po.fecha) as ultimo_pago, string_agg(distinct po.medio_pago::text, ',') as medios from pagos_orden po where po.orden_id = o.id and not po.anulado) pago on true left join lateral (select g.valor_total from gastos g where g.origen = 'requisicion' and g.referencia_id = o.id) gasto on true`;
   }
   async listOrders(): Promise<Order[]> { const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} group by o.id, r.id`; return rows.map(order); }
   async listVisibleOrders(actor: Actor, query?: ListQuery): Promise<Order[] | Page<Order>> {
@@ -364,9 +393,19 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const workFilter = query.workId ? this.sql`and r.obra_id = ${query.workId}` : this.sql``;
     const fromFilter = query.from ? this.sql`and o.fecha_generacion >= ${query.from}::date` : this.sql``;
     const toFilter = query.to ? this.sql`and o.fecha_generacion < (${query.to}::date + 1)` : this.sql``;
+    // RF-509 (adenda de pagos): centro de costo de la requisición dueña (el mismo que Order.costCenterId);
+    // medio y rango de fecha de pago miran los pagos VIGENTES de la orden (`exists`, no el lateral, para
+    // que un solo pago que cumpla baste); el estado de pago replica en SQL EXACTAMENTE `paymentStatus()`
+    // (lib/domain/rules.ts) sobre las mismas dos cifras del lateral — si esa función cambia, cambia esto.
+    const costCenterFilter = query.costCenterId ? this.sql`and r.centro_costo_id = ${query.costCenterId}` : this.sql``;
+    const paymentMethodFilter = query.paymentMethod ? this.sql`and exists (select 1 from pagos_orden pm where pm.orden_id = o.id and not pm.anulado and pm.medio_pago = ${query.paymentMethod})` : this.sql``;
+    const paidFromFilter = query.paidFrom ? this.sql`and pf.fecha >= ${query.paidFrom}::date` : this.sql``;
+    const paidToFilter = query.paidTo ? this.sql`and pf.fecha <= ${query.paidTo}::date` : this.sql``;
+    const paidRangeFilter = query.paidFrom || query.paidTo ? this.sql`and exists (select 1 from pagos_orden pf where pf.orden_id = o.id and not pf.anulado ${paidFromFilter} ${paidToFilter})` : this.sql``;
+    const paymentStatusFilter = query.paymentStatus ? this.sql`and (case when coalesce(pago.pagado, 0) <= 0 then 'pendiente' when pago.pagado < coalesce(gasto.valor_total, 0) then 'parcial' else 'pagada' end) = ${query.paymentStatus}` : this.sql``;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const cursorFilter = cursor ? this.sql`and (o.fecha_generacion, o.id) < (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : this.sql``;
-    const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} where true ${visibility} ${statusFilter} ${workFilter} ${fromFilter} ${toFilter} ${cursorFilter} group by o.id, r.id order by o.fecha_generacion desc, o.id desc limit ${limit + 1}`;
+    const rows = await this.sql<DbRow[]>`select ${this.orderSelectColumns()} ${this.orderFromJoins()} where true ${visibility} ${statusFilter} ${workFilter} ${costCenterFilter} ${paymentMethodFilter} ${paidRangeFilter} ${paymentStatusFilter} ${fromFilter} ${toFilter} ${cursorFilter} group by o.id, r.id order by o.fecha_generacion desc, o.id desc limit ${limit + 1}`;
     const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
     const nextCursor = hasMore && last ? encodeCursor(toIsoInstant(last.fecha_generacion), String(last.id)) : null;
     return { rows: pageRows.map(order), nextCursor };
@@ -416,7 +455,8 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // GRAVE (QA reasignación): `returning id` + `.length` es la única forma de saber si el UPDATE tocó
   // algo — sin esto, marcar "pagada" una orden sin gasto propio (estado inconsistente que no debería
   // existir, pero contabilizada/pagada son ejes independientes del cumplimiento) quedaba en silencio.
-  async markExpensePaid(referenceId: string, date: string): Promise<number> { const rows = await this.sql<{ id: string }[]>`update gastos set fecha = ${date} where origen = 'requisicion' and referencia_id = ${referenceId} returning id`; return rows.length; }
+  // `date: null` (adenda de pagos, N1) deshace la fecha: anular el pago que cerraba una orden "pagada".
+  async markExpensePaid(referenceId: string, date: string | null): Promise<number> { const rows = await this.sql<{ id: string }[]>`update gastos set fecha = ${date}::date where origen = 'requisicion' and referencia_id = ${referenceId} returning id`; return rows.length; }
   // GRAVE 2 (QA reasignación): una orden `contabilizada` que pasa a `no_necesario` debe poder anular su
   // gasto (aún sin pagar) por completo, no dejarlo huérfano sin fecha para siempre. El reparto
   // (`gastos_reparto`, FK `on delete restrict` hacia `gastos`) se borra PRIMERO — si no, el DELETE de
@@ -469,10 +509,32 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // `validar_pago_no_excede_orden` de esa misma migración es quien de verdad impide sobre-pasar el
   // total, ASÍ QUE `assertPaymentWithinOrder` (lib/domain/rules.ts) en el servicio es la primera
   // línea de defensa (un DomainError legible en vez del 23514 crudo de la base), no la única.
-  async saveOrderPayment(value: OrderPayment): Promise<void> { await this.sql`insert into pagos_orden (id, orden_id, fecha, valor, medio_pago, referencia_externa, registrado_por) values (${value.id}, ${value.orderId}, ${value.date}, ${value.amount}, ${value.method}, ${value.externalReference ?? null}, ${value.registeredBy ?? null})`; }
+  async saveOrderPayment(value: OrderPayment): Promise<void> { await this.sql`insert into pagos_orden (id, orden_id, fecha, valor, medio_pago, referencia_externa, registrado_por, nota) values (${value.id}, ${value.orderId}, ${value.date}, ${value.amount}, ${value.method}, ${value.externalReference ?? null}, ${value.registeredBy ?? null}, ${value.note ?? null})`; }
+  // RF-510/A5: cada pago viaja con su comprobante (el adjunto `pago_orden` más reciente, o ninguno) —
+  // una subconsulta correlacionada, no un join, para que un pago sin comprobante siga siendo una fila.
+  private paymentSelectColumns() {
+    return this.sql`po.*, (select a.id from adjuntos a where a.entidad = 'pago_orden' and a.entidad_id = po.id and a.storage_bucket = ${PRIVATE_ATTACHMENT_BUCKET} order by a.fecha desc limit 1) as comprobante_id`;
+  }
   // Orden cronológico (mismo criterio que el índice `pagos_orden_orden_fecha_idx`): es el orden en
   // que la ficha de la pantalla los lista y en el que el servicio calcula la "fecha del último pago".
-  async listOrderPayments(orderId: string): Promise<OrderPayment[]> { return (await this.sql<DbRow[]>`select * from pagos_orden where orden_id=${orderId} order by fecha, created_at`).map(orderPayment); }
+  // Los anulados VIAJAN (tachados en la ficha, RF-510): quien no los quiera, filtra por `annulled`.
+  async listOrderPayments(orderId: string): Promise<OrderPayment[]> { return (await this.sql<DbRow[]>`select ${this.paymentSelectColumns()} from pagos_orden po where po.orden_id=${orderId} order by po.fecha, po.created_at`).map(orderPayment); }
+  async getOrderPayment(orderId: string, paymentId: string): Promise<OrderPayment | null> { const rows = await this.sql<DbRow[]>`select ${this.paymentSelectColumns()} from pagos_orden po where po.id=${paymentId} and po.orden_id=${orderId}`; return rows[0] ? orderPayment(rows[0]) : null; }
+  // Único UPDATE de la tabla: `and not anulado` hace la anulación idempotente a nivel de fila (0 filas =
+  // ya estaba anulado o no es de esa orden → null, el servicio decide el error). El trigger
+  // `pagos_orden_no_excede` no interviene (anular nunca excede) y `pagos_orden_auditoria` deja la fila.
+  async annulOrderPayment(orderId: string, paymentId: string, annulment: { reason: string; actorId: string; at: string }): Promise<OrderPayment | null> {
+    const rows = await this.sql<{ id: string }[]>`update pagos_orden set anulado = true, motivo_anulacion = ${annulment.reason}, anulado_por = ${annulment.actorId}, anulado_en = ${annulment.at}::timestamptz where id = ${paymentId} and orden_id = ${orderId} and not anulado returning id`;
+    return rows[0] ? this.getOrderPayment(orderId, paymentId) : null;
+  }
+  // RF-708: cierre de caja = pagos VIGENTES en efectivo fechados en el rango, con su orden resuelta.
+  // `medio_pago = 'efectivo'` fijo a propósito (A1: la caja menor ES ese medio); el índice parcial
+  // `pagos_orden_medio_fecha_idx` (202609150001) cubre exactamente este predicado.
+  async listCashPayments(query: { from: string; to: string; costCenterId?: string }): Promise<CashPayment[]> {
+    const costCenterFilter = query.costCenterId ? this.sql`and r.centro_costo_id = ${query.costCenterId}` : this.sql``;
+    const rows = await this.sql<DbRow[]>`select ${this.paymentSelectColumns()}, o.consecutivo as orden_consecutivo, o.tipo as orden_tipo, o.proveedor_id as orden_proveedor_id, r.id as requisicion_id, r.consecutivo as requisicion_consecutivo, r.obra_id as requisicion_obra_id, r.centro_costo_id as requisicion_centro_costo_id from pagos_orden po join ordenes o on o.id = po.orden_id join requisiciones r on r.id = o.requisicion_id where po.medio_pago = 'efectivo' and not po.anulado and po.fecha >= ${query.from}::date and po.fecha <= ${query.to}::date ${costCenterFilter} order by po.fecha, po.created_at`;
+    return rows.map(cashPayment);
+  }
   // H3: agregados en SQL que reproducen exactamente calculateDashboard/groupExpenseByWork/
   // groupExpenseByTag/groupExpenseByPeriod (lib/domain/rules.ts) sobre la MISMA visibilidad por actor
   // que listVisibleExpenses (join a ordenes/requisiciones para aprobador/solicitante; sin filtro para
@@ -751,7 +813,7 @@ function transactionRepositories(ports: PostgresPorts): TransactionRepositories 
     requisitions: { get: ports.getRequisition.bind(ports), save: ports.saveRequisition.bind(ports), list: ports.listRequisitions.bind(ports), listVisibleTo: ports.listVisibleRequisitions.bind(ports), listVisibleHeaders: ports.listVisibleHeaders.bind(ports), dashboardByStatus: ports.dashboardByStatus.bind(ports) },
     orders: { save: ports.saveOrder.bind(ports), list: ports.listOrders.bind(ports), listVisibleTo: ports.listVisibleOrders.bind(ports), listByRequisition: ports.listByRequisition.bind(ports), get: ports.getOrder.bind(ports), listAttentionCandidates: ports.listAttentionCandidates.bind(ports), listRecentlyUpdated: ports.listOrdersRecentlyUpdated.bind(ports), dashboardPendingCount: ports.dashboardPendingCount.bind(ports) },
     expenses: { get: ports.getExpense.bind(ports), save: ports.saveExpense.bind(ports), markPaid: ports.markExpensePaid.bind(ports), deleteByReference: ports.deleteExpenseByReference.bind(ports), saveShares: ports.saveShares.bind(ports), list: ports.listExpenses.bind(ports), listVisibleTo: ports.listVisibleExpenses.bind(ports), listByReference: ports.listByReference.bind(ports), dashboardAggregates: ports.dashboardAggregates.bind(ports), listRecentlyUpdated: ports.listExpensesRecentlyUpdated.bind(ports) },
-    orderPayments: { save: ports.saveOrderPayment.bind(ports), listByOrder: ports.listOrderPayments.bind(ports) },
+    orderPayments: { save: ports.saveOrderPayment.bind(ports), listByOrder: ports.listOrderPayments.bind(ports), get: ports.getOrderPayment.bind(ports), annul: ports.annulOrderPayment.bind(ports), listCash: ports.listCashPayments.bind(ports) },
     pettyCash: { save: ports.savePettyCash.bind(ports), list: ports.listPettyCash.bind(ports) },
     incomes: { save: ports.saveIncome.bind(ports), list: ports.listIncomes.bind(ports) },
     cashCloses: {

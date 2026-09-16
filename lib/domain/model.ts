@@ -9,8 +9,11 @@ export type OrderStatus = "generada" | "cumplida" | "no_cumplida" | "no_necesari
 export type ItemStatus = "pendiente" | "aprobado" | "declinado";
 /** Reunión 2026-08-31: eje administrativo/contable de una orden, independiente de OrderStatus (cumplimiento). */
 export type OrderAdminStatus = "pendiente" | "contabilizada" | "pagada";
-/** Reunión agosto 2026: "saber cuánto se ha pagado de cada orden" — medio con el que se hizo un pago parcial. */
+/** Reunión agosto 2026: "saber cuánto se ha pagado de cada orden" — medio con el que se hizo un pago parcial.
+ *  `efectivo` ES la caja menor (adenda de pagos, A1): la UI lo rotula "Caja (efectivo)", el enum no cambia. */
 export type PaymentMethod = "efectivo" | "transferencia" | "cheque" | "tarjeta" | "otro";
+/** RF-508: estado de pago DERIVADO de Σ pagos vigentes vs total de la orden (`paymentStatus()` en rules.ts). Nunca se guarda. */
+export type PaymentStatus = "pendiente" | "parcial" | "pagada";
 /**
  * Reunión con el cliente (Ernesto, 11-sep-2026): «TODOS los gastos (cajas, bancos, personales) quedan
  * en el sistema por centro de costo». `cajas` (migración 202609120003) generaliza la caja menor de obra
@@ -124,13 +127,29 @@ export interface Order {
    * hacen ese join).
    */
   costCenterId?: string;
+  /**
+   * RF-508/RF-509 (adenda de pagos, N1): estado de pago derivado, fecha del último pago vigente y medios
+   * usados, resueltos en el MISMO `left join lateral` que `paidAmount` (solo pagos NO anulados). Ausentes
+   * en los mismos caminos que `paidAmount`; `paymentStatus` además falta cuando la orden no tiene gasto
+   * contra el que medir (p. ej. `no_necesario` con el gasto ya anulado).
+   */
+  paymentStatus?: PaymentStatus; lastPaymentAt?: string; paymentMethods?: PaymentMethod[];
 }
 /**
  * Un pago parcial de una orden. `date`/`amount`/`method` son obligatorios; `externalReference`
- * (referencia de la transferencia/consignación) y `registeredBy` son opcionales — ver
- * `pagos_orden` (202609120002) y `ProcurementService.registerOrderPayment`.
+ * (referencia de la transferencia/consignación), `note` y `registeredBy` son opcionales — ver
+ * `pagos_orden` (202609120002 y 202609150001) y `ProcurementService.registerOrderPayment`.
+ * RF-510: un pago se ANULA, nunca se borra — `annulled` (ausente = vigente) con motivo/quién/cuándo; un
+ * pago anulado no cuenta para el saldo (`sumPaid`) pero sigue en el historial. `attachmentId` es el
+ * comprobante (adjunto con entidad `pago_orden`, el más reciente), resuelto en lectura: el comprobante se
+ * sube DESPUÉS de registrar el pago, contra su id, por la misma ruta de adjuntos que caja_menor.
  */
-export interface OrderPayment { id: string; orderId: string; date: string; amount: Money; method: PaymentMethod; externalReference?: string; registeredBy?: string; }
+export interface OrderPayment { id: string; orderId: string; date: string; amount: Money; method: PaymentMethod; externalReference?: string; note?: string; registeredBy?: string; annulled?: boolean; annulmentReason?: string; annulledBy?: string; annulledAt?: string; attachmentId?: string; }
+/**
+ * RF-708 (cierre de caja): un pago VIGENTE con medio `efectivo` en un rango de fechas, con los datos de
+ * su orden resueltos por join para la vista de cierre (`ProcurementService.listCashPayments`).
+ */
+export interface CashPayment extends OrderPayment { orderConsecutive: string; orderType: OrderType; requisitionId: string; requisitionConsecutive: string; workId?: string; costCenterId?: string; supplierId?: string; }
 /**
  * Decisión del cliente (reunión 2026-09, literal): "que quede como fechas aparte cuándo se sube y
  * cuándo se paga; la del gasto es la del pago". `orderDate`: fecha en que nace el registro (generación
@@ -213,7 +232,7 @@ export interface SupplierDocument { id: string; supplierId: string; type: Suppli
 export interface SupplierOrderHistory { id: string; consecutive: string; type: OrderType; status: OrderStatus; generatedAt: string; total: Money; }
 
 /** A generic private support always belongs to one allowed parent; Storage keys remain internal. */
-export type AttachmentEntity = "requisicion" | "requisicion_item" | "caja_menor";
+export type AttachmentEntity = "requisicion" | "requisicion_item" | "caja_menor" | "pago_orden";
 export interface PrivateAttachment { id: string; entity: AttachmentEntity; entityId: string; type: string; name: string; mimeType: string; sizeBytes: number; uploadedBy?: string; uploadedAt: string; storagePath: string; }
 
 export class DomainError extends Error {

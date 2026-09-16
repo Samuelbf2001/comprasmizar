@@ -115,12 +115,22 @@ export const expenseSharesSchema = z.object({ total: z.number().int().positive()
 // asume peso colombiano entero, ver lib/domain/model.ts). `method` son EXACTAMENTE los valores de
 // `public.medio_pago` (202609120002_pagos_orden.sql) — lista aparte a propósito, mismo criterio que
 // ORDER_STATUS_VALUES más abajo: zod no puede derivar un enum desde un `type` de TypeScript.
+// PAYMENT_METHOD_VALUES/PAYMENT_STATUS_VALUES (adenda de pagos, RF-509): mismas listas que
+// `PaymentMethod`/`PaymentStatus` en lib/domain/model.ts, repetidas aquí por el mismo motivo que
+// ORDER_STATUS_VALUES (zod no deriva enums de un `type`) — las consume parseListQuery (lib/http/api.ts).
+export const PAYMENT_METHOD_VALUES = ["efectivo", "transferencia", "cheque", "tarjeta", "otro"] as const;
+export const PAYMENT_STATUS_VALUES = ["pendiente", "parcial", "pagada"] as const;
 export const orderPaymentSchema = z.object({
   date: z.string().date(),
   amount: z.number().int().positive(),
-  method: z.enum(["efectivo", "transferencia", "cheque", "tarjeta", "otro"]),
+  method: z.enum(PAYMENT_METHOD_VALUES),
   externalReference: z.string().trim().min(1).max(240).optional(),
+  // RF-507: nota libre del pago. El comprobante no viaja aquí (se sube después contra el id del pago).
+  note: z.string().trim().min(1).max(2_000).optional(),
 }).strict();
+// RF-510: anular un pago (PATCH /api/orders/[id]/payments/[paymentId]) exige motivo, igual que
+// devolver/declinar una requisición. `action` discriminante por si la ruta gana otro gesto algún día.
+export const orderPaymentAnnulSchema = z.object({ action: z.literal("annul"), reason: z.string().trim().min(1).max(2_000) }).strict();
 // Cajas (2026-09-12, migración 202609120003): registerPettyCash es también el camino del "gasto
 // directo" de la pestaña Gastos y caja — cashBoxId/paymentMethod pasan a obligatorios (todo movimiento
 // vive bajo una caja con un medio de pago); costCenterId es el mismo patrón "hereda-o-elige" que

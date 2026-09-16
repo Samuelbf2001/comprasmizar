@@ -1,4 +1,4 @@
-import type { Actor, DashboardActivityItem, DashboardAmountByKey, DashboardMetrics, DashboardQueueItem, Expense, ExpenseShare, ItemLine, Money, Order, OrderAdminStatus, OrderStatus, OrderType, Requisition, RequisitionStatus, Role } from "./model";
+import type { Actor, DashboardActivityItem, DashboardAmountByKey, DashboardMetrics, DashboardQueueItem, Expense, ExpenseShare, ItemLine, Money, Order, OrderAdminStatus, OrderPayment, OrderStatus, OrderType, PaymentStatus, Requisition, RequisitionStatus, Role } from "./model";
 import { DomainError } from "./model";
 
 export const ALL_ROLES: readonly Role[] = ["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"];
@@ -202,6 +202,27 @@ export function assertPaymentWithinOrder(total: Money, paid: Money, next: Money)
   assertCop(next, "Valor del pago");
   if (next <= 0) throw new DomainError("INVALID_MONEY", "El pago debe ser mayor a cero");
   if (paid + next > total) throw new DomainError("PAYMENT_EXCEEDS_ORDER", "El pago excede el saldo pendiente de la orden");
+}
+/**
+ * RF-510 (adenda de pagos): lo pagado de una orden es la suma de sus pagos VIGENTES — un pago anulado
+ * sigue en el historial pero no cuenta. Única definición de ese "no cuenta" del lado del dominio; la
+ * base aplica la misma regla en `validar_pago_no_excede_orden` (202609150001) y el adaptador Postgres
+ * en el `left join lateral` de `Order.paidAmount`.
+ */
+export function sumPaid(payments: readonly OrderPayment[]): Money { return payments.reduce((sum, payment) => sum + (payment.annulled ? 0 : payment.amount), 0); }
+/**
+ * RF-508: `estado_pago` derivado, nunca guardado. `total` es el valor del gasto de la orden; `paid` la
+ * suma de pagos vigentes (`sumPaid`). "pagada" es `paid >= total` (el trigger ya impide pasarse, así que
+ * en la práctica es la igualdad); un total en cero sin pagos es "pendiente", no "pagada".
+ */
+export function paymentStatus(total: Money, paid: Money): PaymentStatus {
+  if (paid <= 0) return "pendiente";
+  return paid < total ? "parcial" : "pagada";
+}
+/** RF-510: anular exige motivo y un pago todavía vigente — anular dos veces no es idempotente, es un error. */
+export function assertCanAnnulPayment(payment: Pick<OrderPayment, "annulled">, reason: string): void {
+  if (!reason?.trim()) throw new DomainError("ANNULMENT_REASON_REQUIRED", "Se requiere motivo para anular un pago");
+  if (payment.annulled) throw new DomainError("PAYMENT_ALREADY_ANNULLED", "El pago ya está anulado");
 }
 export function validateShares(total: Money, shares: readonly ExpenseShare[]): void {
   if (!Number.isInteger(total) || total <= 0 || shares.length === 0 || shares.some((share) => !share.expenseId || !share.workId || !Number.isInteger(share.amount) || share.amount <= 0)) throw new DomainError("INVALID_SHARE", "Reparto inválido");

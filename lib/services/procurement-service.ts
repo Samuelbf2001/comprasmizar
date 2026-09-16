@@ -1,4 +1,4 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, resolveCostCenter, sumLines, validateShares, type Actor, type AuditEvent, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeItemName, orderTypeFor, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogCostCenter, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
@@ -43,8 +43,12 @@ export interface ReviewInput { tagId: string; approverId?: string | null; workId
  * nunca llevaba IVA); informado, es el "gasto directo" de la pestaña Gastos y caja.
  */
 export interface PettyCashInput { workId: string; date: string; concept: string; tagId: string; amount: number; attachmentUrl?: string; cashBoxId: string; paymentMethod: PaymentMethod; costCenterId?: string; iva?: number; }
-/** Reunión agosto 2026: entrada de `registerOrderPayment` — `date`/`amount`/`method` obligatorios, igual que `OrderPayment` en lib/domain/model.ts. */
-export interface OrderPaymentInput { date: string; amount: number; method: PaymentMethod; externalReference?: string; }
+/** Reunión agosto 2026: entrada de `registerOrderPayment` — `date`/`amount`/`method` obligatorios, igual que `OrderPayment` en lib/domain/model.ts.
+ *  `note` (RF-507, adenda de pagos): nota libre del pago. El comprobante NO viaja aquí: se sube después
+ *  contra el id del pago recién creado (adjunto con entidad `pago_orden`), ver OrderPayment.attachmentId. */
+export interface OrderPaymentInput { date: string; amount: number; method: PaymentMethod; externalReference?: string; note?: string; }
+/** RF-708: rango del cierre de caja (`listCashPayments`), fechas `YYYY-MM-DD` inclusive; `costCenterId` acota al centro de la requisición dueña. */
+export interface CashPaymentsQuery { from: string; to: string; costCenterId?: string; }
 /** Reunión 2026-08-31: decisión por ítem del aprobador. No cambia el estado de la requisición. */
 export interface ItemDecision { itemId: string; status: ItemStatus; declineReason?: string; quantity?: number; }
 /** Bloqueante de atasco (reunión 2026-08-31): shape deliberadamente acotado a {itemId, supplierId} — nada de cantidad/precio/tasas/estado cabe aquí, así que assignSuppliers no puede tocarlos aunque quisiera. */
@@ -521,39 +525,27 @@ export class ProcurementService {
       order.adminStatus = status;
       if (status === "contabilizada") { order.accountedAt = this.now().toISOString(); }
       else {
-        order.paidAt = this.now().toISOString();
         /**
-         * Reunión agosto 2026 (pagos parciales, compatibilidad clave): "Marcar pagada" NO desaparece
-         * ni se sustituye por el panel de pagos — sigue siendo el botón de siempre, y ahora significa
-         * "pagar el saldo pendiente". Si a la orden le queda saldo (el caso de SIEMPRE, una orden que
-         * nunca tuvo un abono parcial propio, `paid = 0`), se registra aquí mismo un pago interno de
-         * `pagos_orden` por ese saldo EXACTO — mismo camino, mismo trigger de la base
-         * (`validar_pago_no_excede_orden`) que `registerOrderPayment`, así que nunca puede excederlo.
-         * Si el saldo ya es 0 (alguien ya cubrió el total a punta de pagos parciales desde el panel
-         * nuevo antes de pulsar este botón), NO se inventa un pago de $0 — `assertPaymentWithinOrder`
-         * y el `check (valor > 0)` de la base lo rechazarían — y se usa la fecha del último pago real.
+         * Adenda de pagos (A3, RF-508): "pagada" ya NO inventa un pago interno con medio `otro` por el
+         * saldo — cada peso pagado tiene que entrar por `registerOrderPayment` con su medio real (la
+         * caja menor ES el medio `efectivo`; un pago "otro" automático la volvía invisible en el cierre
+         * de caja). Cerrar el eje administrativo exige saldo cero: si queda saldo se rechaza con
+         * SALDO_PENDIENTE y la pantalla ofrece "Pagar saldo" (el diálogo de pago prellenado). La fecha
+         * de pago del gasto es la del ÚLTIMO pago vigente ("la fecha del gasto es la del pago",
+         * reunión 2026-09), no la de hoy.
          */
         const [expense] = await tx.expenses.listByReference(orderId);
         // GRAVE 3 (QA reasignación), preservado: una orden "pagada" sin gasto es un estado
         // inconsistente (contabilizada/pagada son un eje independiente del cumplimiento, así que nada
-        // más lo garantiza) que antes quedaba en silencio. Ahora se detecta ANTES de tocar
-        // `pagos_orden`, con el mismo código de error que ya usa `registerOrderPayment`.
+        // más lo garantiza) que antes quedaba en silencio. Se detecta con el mismo código de error
+        // que ya usa `registerOrderPayment`.
         if (!expense) throw new DomainError("ORDER_EXPENSE_MISSING", "La orden no tiene un gasto asociado; no se puede marcar como pagada");
-        const payments = await tx.orderPayments.listByOrder(orderId);
-        const paid = payments.reduce((sum, payment) => sum + payment.amount, 0);
-        const balance = expense.total - paid;
+        const payments = (await tx.orderPayments.listByOrder(orderId)).filter((payment) => !payment.annulled);
+        const balance = expense.total - sumPaid(payments);
+        if (balance > 0) throw new DomainError("SALDO_PENDIENTE", `La orden tiene un saldo pendiente de ${balance}; registre el pago del saldo antes de marcarla pagada`);
         const { day: today } = colombiaDateParts(this.now());
-        // "la fecha del gasto es la del pago" (reunión 2026-09) sigue siendo el criterio, pero ahora
-        // puede haber pagos parciales anteriores: la fecha que se fija es la del ÚLTIMO pago, no
-        // necesariamente HOY (si el saldo ya estaba en 0, hoy no se registró ningún pago nuevo).
-        let lastPaymentDate = payments.reduce<string | undefined>((latest, payment) => (!latest || payment.date > latest ? payment.date : latest), undefined);
-        if (balance > 0) {
-          assertPaymentWithinOrder(expense.total, paid, balance);
-          const payment: OrderPayment = { id: this.deps.ids.next(), orderId, date: today, amount: balance, method: "otro", registeredBy: actor.id };
-          await tx.orderPayments.save(payment);
-          await this.audit("orden", orderId, "pago_registrado", actor, { amount: balance, method: "otro", auto: true }, this.origin(context), tx.audit);
-          lastPaymentDate = today;
-        }
+        const lastPaymentDate = payments.reduce<string | undefined>((latest, payment) => (!latest || payment.date > latest ? payment.date : latest), undefined);
+        order.paidAt = this.now().toISOString();
         // saveExpense no sirve para fijar esta fecha: su `on conflict do nothing` nunca actualiza un
         // gasto ya guardado (ver markPaid en contracts.ts). El chequeo de 0 filas se conserva: no
         // debería dispararse nunca (ya se comprobó arriba que el gasto existe), pero sigue siendo la
@@ -563,8 +555,6 @@ export class ProcurementService {
       }
       await tx.orders.save(order);
       await this.audit("orden", order.id, "estado_administrativo_actualizado", actor, { status }, this.origin(context), tx.audit);
-      // Refresca `paidAmount` (derivado de `pagos_orden`, ver order(row) en postgres-repositories.ts):
-      // el `order` de arriba puede llevar el de ANTES del pago interno que se acaba de registrar.
       return (await tx.orders.get(order.id)) ?? order;
     });
   }
@@ -585,14 +575,53 @@ export class ProcurementService {
       if (order.adminStatus === "pagada") throw new DomainError("ORDER_ALREADY_PAID", "La orden ya está pagada; no admite más pagos");
       const [expense] = await tx.expenses.listByReference(orderId);
       if (!expense) throw new DomainError("ORDER_EXPENSE_MISSING", "La orden no tiene un gasto asociado; no se puede registrar el pago");
-      const payments = await tx.orderPayments.listByOrder(orderId);
-      const paid = payments.reduce((sum, payment) => sum + payment.amount, 0);
+      // RF-510: los anulados no cuentan (sumPaid) — anular un pago libera su saldo para el reemplazo.
+      const paid = sumPaid(await tx.orderPayments.listByOrder(orderId));
       assertPaymentWithinOrder(expense.total, paid, input.amount);
-      const payment: OrderPayment = { id: this.deps.ids.next(), orderId, date: input.date, amount: input.amount, method: input.method, externalReference: input.externalReference, registeredBy: actor.id };
+      const payment: OrderPayment = { id: this.deps.ids.next(), orderId, date: input.date, amount: input.amount, method: input.method, externalReference: input.externalReference, note: input.note?.trim() || undefined, registeredBy: actor.id };
       await tx.orderPayments.save(payment);
-      await this.audit("orden", orderId, "pago_registrado", actor, { amount: input.amount, method: input.method }, this.origin(context), tx.audit);
+      await this.audit("orden", orderId, "pago_registrado", actor, { paymentId: payment.id, amount: input.amount, method: input.method, date: input.date }, this.origin(context), tx.audit);
       return { payment, order: (await tx.orders.get(orderId)) ?? order };
     });
+  }
+  /**
+   * RF-510 (adenda de pagos): anular ≠ borrar. El pago queda en el historial, tachado, con motivo/quién/
+   * cuándo, y deja de contar para el saldo (`sumPaid`, trigger de la base, `Order.paidAmount`). Mismo
+   * permiso que registrar. Si la orden ya había cerrado su eje administrativo como "pagada" con ese pago,
+   * anularlo la DEVUELVE a "contabilizada" y borra la fecha de pago del gasto: es la única reversa
+   * admitida de `assertAdminTransition` (pagada es terminal para cualquier otro gesto), porque una orden
+   * con saldo abierto no puede seguir diciendo que está pagada — ese es justamente el error que se está
+   * corrigiendo (E2E #6 del PRD: "anular el pago 2 con motivo → vuelve a parcial").
+   */
+  async annulOrderPayment(orderId: string, paymentId: string, reason: string, context: RequestContext): Promise<{ payment: OrderPayment; order: Order }> {
+    const actor = this.actor(context); assertPermission(actor.roles, "payment:register", this.authOrigin(context));
+    return this.transaction(`order:${orderId}`, async (tx) => {
+      const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
+      const payment = await tx.orderPayments.get(orderId, paymentId); if (!payment) throw new DomainError("NOT_FOUND", "Pago no encontrado");
+      assertCanAnnulPayment(payment, reason);
+      const annulled = await tx.orderPayments.annul(orderId, paymentId, { reason: reason.trim(), actorId: actor.id, at: this.now().toISOString() });
+      if (!annulled) throw new DomainError("PAYMENT_ALREADY_ANNULLED", "El pago ya está anulado");
+      await this.audit("orden", orderId, "pago_anulado", actor, { paymentId, amount: payment.amount, method: payment.method, date: payment.date, reason: reason.trim() }, this.origin(context), tx.audit);
+      if (order.adminStatus === "pagada") {
+        order.adminStatus = "contabilizada"; order.paidAt = undefined;
+        await tx.expenses.markPaid(orderId, null);
+        await tx.orders.save(order);
+        await this.audit("orden", orderId, "estado_administrativo_actualizado", actor, { status: "contabilizada", reason: "pago_anulado", paymentId }, this.origin(context), tx.audit);
+      }
+      return { payment: annulled, order: (await tx.orders.get(orderId)) ?? order };
+    });
+  }
+  /**
+   * RF-708 (cierre de caja): "filtro medio de pago = caja + rango de fechas ES el cierre de caja"
+   * (PRD §4.3). Devuelve los pagos VIGENTES con medio `efectivo` (la caja menor, A1) fechados en el rango,
+   * con su orden resuelta, para la vista de cierre y su Excel. Permiso `expense:read` (revisor,
+   * contabilidad, admin Mizar/Sixteam: los mismos que ven el gasto), sin visibilidad por fila — todos
+   * esos roles son elevados en `listVisibleOrders`.
+   */
+  async listCashPayments(query: CashPaymentsQuery, context: RequestContext): Promise<CashPayment[]> {
+    const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(query.from) || !/^\d{4}-\d{2}-\d{2}$/.test(query.to) || query.from > query.to) throw new DomainError("INVALID_INPUT", "El rango del cierre debe ser dos fechas YYYY-MM-DD, desde ≤ hasta");
+    return this.deps.orderPayments.listCash({ from: query.from, to: query.to, costCenterId: query.costCenterId || undefined });
   }
   /** Visibilidad de UNA orden reutilizando `listOrders` (permiso order:read + visibilidad por fila ya
    *  resuelta ahí) en vez de duplicar el criterio isElevated/aprobador/solicitante — mismo patrón que

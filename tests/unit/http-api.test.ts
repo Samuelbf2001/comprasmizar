@@ -134,6 +134,19 @@ describe("parseListQuery / hasListFilters — H3", () => {
     expect(() => parseListQuery(url("?to=2026-13-40"))).toThrow();
   });
 
+  // RF-509 (adenda de pagos): filtros del panel de órdenes — medio/estado de pago validados contra sus
+  // enums, paidFrom/paidTo con el mismo criterio de fecha que from/to, y cuentan como filtro para que
+  // el modo sin paginar NO caiga en el camino sin `query` (que los ignoraría en silencio).
+  it("paymentMethod/paymentStatus/paidFrom/paidTo se parsean, se validan y cuentan como filtros", () => {
+    const { query } = parseListQuery(url("?paymentMethod=efectivo&paymentStatus=parcial&paidFrom=2026-09-01&paidTo=2026-09-30"));
+    expect(query).toEqual({ paymentMethod: "efectivo", paymentStatus: "parcial", paidFrom: "2026-09-01", paidTo: "2026-09-30" });
+    expect(hasListFilters(query)).toBe(true);
+    expect(hasListFilters(parseListQuery(url("?paymentMethod=efectivo")).query)).toBe(true);
+    expect(() => parseListQuery(url("?paymentMethod=caja"))).toThrow();
+    expect(() => parseListQuery(url("?paymentStatus=pagado"))).toThrow();
+    expect(() => parseListQuery(url("?paidFrom=01-09-2026"))).toThrow();
+  });
+
   it("limit exige un entero entre 1 y 200; fuera de rango se rechaza", () => {
     expect(parseListQuery(url("?limit=50")).query.limit).toBe(50);
     expect(() => parseListQuery(url("?limit=0"))).toThrow();

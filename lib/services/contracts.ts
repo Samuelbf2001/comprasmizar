@@ -1,4 +1,4 @@
-import type { Actor, AuditEvent, CashBoxType, CashClose, CashCloseStatus, CostCenterMovement, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
+import type { Actor, AuditEvent, CashBoxType, CashClose, CashCloseStatus, CashPayment, CostCenterMovement, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role } from "../domain";
 import type { ListQuery, Page } from "./list-query";
 
 /** Persistence ports. Infrastructure adapters (e.g. Supabase) implement these; domain services do not depend on them. */
@@ -66,7 +66,9 @@ export interface OrderRepository {
  * actor que sus hermanos — clave "" representa gastos sin centro de costo asignado.
  */
 export interface ExpenseRepository {
-  get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string): Promise<number>;
+  /** `markPaid(..., null)` DESHACE la fecha de pago (adenda de pagos, N1): anular el pago que cerraba una
+   *  orden ya "pagada" devuelve su gasto a compromiso sin fecha. */
+  get(id: string): Promise<Expense | null>; save(expense: Expense): Promise<void>; markPaid(referenceId: string, date: string | null): Promise<number>;
   deleteByReference(origin: Expense["origin"], referenceId: string): Promise<void>; saveShares(shares: ExpenseShare[]): Promise<void>; list(): Promise<Expense[]>;
   listVisibleTo(actor: Actor, query?: ListQuery): Promise<Expense[] | Page<Expense>>;
   listByReference(referenceId: string): Promise<Expense[]>;
@@ -110,7 +112,20 @@ export interface CashCloseRepository {
  * de la pantalla los muestra y en el que `ProcurementService` calcula "fecha del último pago" para
  * `updateOrderAdminStatus`.
  */
-export interface OrderPaymentRepository { save(payment: OrderPayment): Promise<void>; listByOrder(orderId: string): Promise<OrderPayment[]>; }
+/**
+ * Adenda de pagos (N1, 2026-09-15): `get` trae UN pago de la orden (con su comprobante resuelto);
+ * `annul` es el único UPDATE que admite la tabla — marca anulado/motivo/quién/cuándo y devuelve `null` si
+ * el pago no existe, no es de esa orden o ya estaba anulado (el servicio decide qué error dar); `listCash`
+ * es la consulta del cierre de caja (RF-708): pagos VIGENTES con medio `efectivo` en el rango de `fecha`
+ * (inclusive), opcionalmente acotados al centro de costo de la requisición dueña, de más antiguo a más
+ * reciente.
+ */
+export interface OrderPaymentRepository {
+  save(payment: OrderPayment): Promise<void>; listByOrder(orderId: string): Promise<OrderPayment[]>;
+  get(orderId: string, paymentId: string): Promise<OrderPayment | null>;
+  annul(orderId: string, paymentId: string, annulment: { reason: string; actorId: string; at: string }): Promise<OrderPayment | null>;
+  listCash(query: { from: string; to: string; costCenterId?: string }): Promise<CashPayment[]>;
+}
 export interface AuditRepository { append(event: AuditEvent): Promise<void>; list(entity: string, entityId: string): Promise<AuditEvent[]>; }
 export interface ConsecutiveRepository { take(prefix: "REQ" | "OC" | "OP", year: number): Promise<string>; }
 /** Verifies a public link and code without exposing storage or clear-text comparison to the service. */
