@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { assertPermission, type Actor } from "../../../lib/domain";
+import { assertPermission, type Actor, type Expense } from "../../../lib/domain";
 import { sharedPostgres } from "../../../lib/infrastructure/postgres-repositories";
 import { buildPartnersExpensePdf, buildProvisionalHelisaXlsx, type ReportExpense } from "../../../lib/reports";
-import { ProcurementService, type ServiceDependencies } from "../../../lib/services";
+import { ProcurementService, ReportService, type ServiceDependencies } from "../../../lib/services";
 
 /**
  * Caso de uso compartido del reporte de gastos: lo consumen tanto la ruta HTTP
@@ -43,15 +43,32 @@ export interface BuildExpensesReportOptions { origin?: "web" | "mcp"; societyInd
 export async function buildExpensesReport(dependencies: ServiceDependencies, actor: Actor, filters: ExpensesReportFilters, options: BuildExpensesReportOptions = {}): Promise<ExpensesReportFile> {
   const origin = options.origin ?? "web";
   assertPermission(actor.roles, "report:export", origin);
-  const visible = await new ProcurementService(dependencies).listExpenses({ actor, origin });
+  // RF-707: lo pagado y el estado de pago de cada gasto salen de su orden (Σ pagos vigentes); el
+  // reporte de órdenes exige "report:read", que todo rol con "report:export" ya tiene.
+  const [visible, orders] = await Promise.all([
+    new ProcurementService(dependencies).listExpenses({ actor, origin }),
+    new ReportService(dependencies).listOrderReport({}, { actor, origin }),
+  ]);
+  const orderById = new Map(orders.map((order) => [order.id, order]));
   const workIdsForSociety = filters.societyId
     ? new Set(await (options.societyIndex ?? postgresWorkSocietyIndex()).workIdsForSociety(filters.societyId))
     : null;
+  // Un gasto SIN obra (centro de costo administrativo/personal/empresa: `workId` vacío) no puede
+  // resolverse por obra → el filtro por sociedad lo conserva por su empresa facturada.
+  const inSociety = (expense: Expense) => !workIdsForSociety || workIdsForSociety.has(expense.workId) || (!expense.workId && expense.billedCompanyId === filters.societyId);
   const expenses = visible.filter((expense) =>
     (!filters.period || expense.period === filters.period) &&
     (!filters.workId || expense.workId === filters.workId) &&
-    (!workIdsForSociety || workIdsForSociety.has(expense.workId)));
-  const mapped: ReportExpense[] = expenses.map((expense) => ({ orderDate: expense.orderDate, date: expense.date, work: expense.workId, tag: expense.tagId, supplier: expense.supplierId, origin: expense.origin, base: expense.base, iva: expense.iva, total: expense.total }));
+    inSociety(expense));
+  const mapped: ReportExpense[] = expenses.map((expense) => {
+    const order = expense.origin === "requisicion" ? orderById.get(expense.referenceId) : undefined;
+    return {
+      orderDate: expense.orderDate, date: expense.date, work: expense.workId || "—", tag: expense.tagId, supplier: expense.supplierId, origin: expense.origin,
+      base: expense.base, iva: expense.iva, total: expense.total, billedCompany: expense.billedCompanyId,
+      // Un movimiento de caja menor histórico nació pagado en el acto.
+      paymentStatus: expense.origin === "caja_menor" ? "pagada" : order?.paymentStatus, paid: expense.origin === "caja_menor" ? expense.total : order?.paidAmount,
+    };
+  });
   if (filters.format === "pdf") {
     return { bytes: await buildPartnersExpensePdf("Gastos por socios", mapped), mimeType: "application/pdf", filename: "gastos-socios-provisional-v0.1.pdf", rows: expenses.length };
   }

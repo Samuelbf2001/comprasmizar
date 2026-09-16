@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { DomainError, type Actor, type CashPayment, type ItemLine, type Requisition } from "../../lib/domain";
-import { ReportService, monthRange, toCashCloseReport, type ReportCatalogNames, type ReportFilters } from "../../lib/services/report-service";
+import { DomainError, type Actor, type CashPayment, type ItemLine, type Order, type Requisition } from "../../lib/domain";
+import { ReportService, monthRange, toCashCloseReport, type OrderReportFilters, type ReportCatalogNames, type ReportFilters } from "../../lib/services/report-service";
 import type { ListQuery, Page, ServiceDependencies } from "../../lib/services";
 
 const item = (overrides: Partial<ItemLine> = {}): ItemLine => ({
@@ -83,6 +83,14 @@ describe("ReportService.listReport — RF-1301", () => {
     expect(calls[0]?.query).toMatchObject({ costCenterId: "cc-1" });
   });
 
+  // RF-707: empresa facturada — mismo contrato aditivo que costCenterId, y la fila la expone.
+  it("propaga billedCompanyId al filtro y toReportRow expone la empresa facturada", async () => {
+    const { promise, calls } = listReport([requisition({ billedCompanyId: "soc-2" })], { billedCompanyId: "soc-2" });
+    const report = await promise;
+    expect(calls[0]?.query).toMatchObject({ billedCompanyId: "soc-2" });
+    expect(report[0].billedCompanyId).toBe("soc-2");
+  });
+
   it("toReportRow expone el costCenterId EFECTIVO de la requisición", async () => {
     const rows = [requisition({ costCenterId: "cc-1" }), requisition({ id: "req-sin-centro" })];
     const report = await listReport(rows, {}).promise;
@@ -157,6 +165,66 @@ describe("ReportService.listReport — RF-1301", () => {
     expect(() => service.assertCanExport(actor(["contabilidad"]))).not.toThrow();
     expect(() => service.assertCanExport(actor(["aprobador"]))).not.toThrow();
     expect(() => service.assertCanExport(actor(["revisor"]))).toThrow(DomainError);
+  });
+});
+
+describe("ReportService.listOrderReport — RF-707 (comprometido vs pagado)", () => {
+  const order = (overrides: Partial<Order> = {}): Order => ({
+    id: "ord-1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "req-1", itemIds: ["a"], status: "generada", adminStatus: "pendiente",
+    generatedAt: "2026-09-10T12:00:00.000Z", workId: "work-1", costCenterId: "cc-1", billedCompanyId: "soc-1",
+    lines: [item({ quantity: 2, unitBase: 1000, unitIva: 190 })], paidAmount: 500, paymentStatus: "parcial", paymentMethods: ["efectivo"], ...overrides,
+  });
+  type ListOrders = ServiceDependencies["orders"]["listVisibleTo"];
+  function fakeOrders(rows: Order[]) {
+    const calls: Array<{ actor: Actor; query?: ListQuery }> = [];
+    const fn: ListOrders = async (actor, query) => { calls.push({ actor, query }); return { rows, nextCursor: null }; };
+    return { deps: { orders: { listVisibleTo: fn } } as unknown as ServiceDependencies, calls };
+  }
+  const listOrders = (rows: Order[], filters: OrderReportFilters = {}, roles: Actor["roles"] = ["contabilidad"]) => {
+    const { deps, calls } = fakeOrders(rows);
+    return { promise: new ReportService(deps).listOrderReport(filters, { actor: actor(roles) }), calls };
+  };
+
+  it("exige 'report:read' (un solicitante no puede) y no exige 'order:read' (admin_mizar sí puede)", async () => {
+    await expect(listOrders([order()], {}, ["solicitante"]).promise).rejects.toThrow(DomainError);
+    await expect(listOrders([order()], {}, ["admin_mizar"]).promise).resolves.toHaveLength(1);
+  });
+
+  it("total = Σ líneas de la orden (calculateLineTotal), pagado y estado de pago del adaptador, periodo = mes de generación", async () => {
+    const [row] = await listOrders([order()]).promise;
+    expect(row).toMatchObject({ id: "ord-1", total: 2380, paidAmount: 500, paymentStatus: "parcial", paymentMethods: ["efectivo"], period: "2026-09", costCenterId: "cc-1", billedCompanyId: "soc-1" });
+  });
+
+  it("sin paidAmount/paymentStatus del adaptador (fakes, lecturas sin join) deriva el estado con paymentStatus() y trata la obra vacía (N4) como ausente", async () => {
+    const rows = await listOrders([
+      order({ id: "sin-pagos", paidAmount: undefined, paymentStatus: undefined, paymentMethods: undefined, workId: "" }),
+      order({ id: "cubierta", paidAmount: 2380, paymentStatus: undefined }),
+      order({ id: "sin-lineas", lines: undefined, paidAmount: undefined, paymentStatus: undefined }),
+    ]).promise;
+    expect(rows.map((row) => [row.id, row.total, row.paidAmount, row.paymentStatus])).toEqual([
+      ["sin-pagos", 2380, 0, "pendiente"], ["cubierta", 2380, 2380, "pagada"], ["sin-lineas", 0, 0, "pendiente"],
+    ]);
+    expect(rows[0].workId).toBeUndefined();
+    expect(rows[0].paymentMethods).toEqual([]);
+  });
+
+  it("traduce los filtros a ListQuery: solo órdenes que siguen siendo compromiso, mes → rango de fecha_generacion, medio/estado/empresa", async () => {
+    const { promise, calls } = listOrders([order()], { period: "2026-09", workId: "work-1", costCenterId: "cc-1", billedCompanyId: "soc-1", paymentMethod: "efectivo", paymentStatus: "parcial" });
+    await promise;
+    expect(calls[0]?.query).toMatchObject({
+      status: ["generada", "cumplida", "no_cumplida"], from: "2026-09-01", to: "2026-09-30", workId: "work-1", costCenterId: "cc-1", billedCompanyId: "soc-1", paymentMethod: "efectivo", paymentStatus: "parcial",
+    });
+    expect(calls[0]?.actor.roles).toEqual(["contabilidad"]);
+  });
+
+  it("pagina hasta agotar el cursor", async () => {
+    const fn = vi.fn()
+      .mockResolvedValueOnce({ rows: [order({ id: "p1" })], nextCursor: "cursor-1" })
+      .mockResolvedValueOnce({ rows: [order({ id: "p2" })], nextCursor: null });
+    const service = new ReportService({ orders: { listVisibleTo: fn } } as unknown as ServiceDependencies);
+    const rows = await service.listOrderReport({}, { actor: actor() });
+    expect(rows.map((row) => row.id)).toEqual(["p1", "p2"]);
+    expect(fn.mock.calls[1]?.[1]?.cursor).toBe("cursor-1");
   });
 });
 

@@ -28,7 +28,7 @@ vi.mock("../../lib/infrastructure/postgres-repositories", () => ({
     load: async () => ({
       works: new Map([["work-1", "Altos de La Pradera"], ["work-2", "Bodega Industrial Norte"]]),
       tags: new Map([["tag-1", "Materiales"]]),
-      societies: new Map([["soc-1", "Constructora Mizar S.A.S."]]),
+      societies: new Map([["soc-1", "Constructora Mizar S.A.S."], ["soc-2", "PROIM S.A.S."]]),
       users: new Map([["juliana", "Juliana Rojas"], ["nelson", "Nelson Ríos"]]),
       suppliers: new Map([["prov-1", "Cementos del Oriente SAS"]]),
       // Centros de costo (UI, 2026-09-12).
@@ -44,7 +44,7 @@ const item = (overrides: Partial<Requisition["items"][number]> = {}) => ({
 });
 const requisition = (overrides: Partial<Requisition> = {}): Requisition => ({
   id: "req-1", consecutive: "REQ-2026-0001", type: "compra", channel: "web", status: "aprobada",
-  societyId: "soc-1", workId: "work-1", tagId: "tag-1", approverId: "juliana", costCenterId: "cc-1",
+  societyId: "soc-1", workId: "work-1", tagId: "tag-1", approverId: "juliana", costCenterId: "cc-1", billedCompanyId: "soc-2",
   items: [item({ finalSupplierId: "prov-1" })], createdAt: "2026-09-10T12:00:00.000Z", ...overrides,
 });
 
@@ -90,9 +90,10 @@ describe("GET /api/reports/export — RF-1301", () => {
     const response = await GET(requestFor("?period=2026-09"));
     const workbook = await loadWorkbookFromResponse(response);
     const summary = workbook.getWorksheet("Reporte")!;
-    expect(summary.getRow(1).values).toEqual(expect.arrayContaining(["Consecutivo", "Empresa", "Centro de costo", "Aprobador(es)", "Proveedor(es)"]));
+    expect(summary.getRow(1).values).toEqual(expect.arrayContaining(["Consecutivo", "Empresa", "Centro de costo", "Empresa facturada", "Aprobador(es)", "Proveedor(es)"]));
     const dataRow = summary.getRow(2).values as unknown[];
-    expect(dataRow).toEqual(expect.arrayContaining(["REQ-2026-0001", "Constructora Mizar S.A.S.", "Altos de La Pradera", "Administrativo", "Materiales", "Juliana Rojas", "aprobada", "Cementos del Oriente SAS"]));
+    // RF-707: "Empresa" (sociedad de la requisición) y "Empresa facturada" (a quién viene el soporte) son columnas distintas.
+    expect(dataRow).toEqual(expect.arrayContaining(["REQ-2026-0001", "Constructora Mizar S.A.S.", "Altos de La Pradera", "Administrativo", "PROIM S.A.S.", "Materiales", "Juliana Rojas", "aprobada", "Cementos del Oriente SAS"]));
     const items = workbook.getWorksheet("Ítems")!;
     expect(items.rowCount).toBe(2); // encabezado + 1 ítem
   });

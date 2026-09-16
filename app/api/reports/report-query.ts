@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PAYMENT_METHOD_VALUES, PAYMENT_STATUS_VALUES } from "../../../lib/http/schemas";
 
 /**
  * RF-1301 (Reportes, reunión 2026-09-11): filtros por obra, periodo (mes completo), aprobador y
@@ -10,6 +11,9 @@ import { z } from "zod";
  * `expensesReportFiltersSchema` vive en `app/api/reports/expenses-report.ts`: un único punto de verdad
  * para la validación evita que las dos rutas acepten combinaciones ligeramente distintas de filtros.
  */
+const uuid = (label: string) => z.string().uuid(`${label} inválido`);
+const period = z.string().regex(/^\d{4}-\d{2}$/, "Periodo inválido (use AAAA-MM)");
+
 export const reportFiltersSchema = z
   .object({
     workId: z.string().uuid("Obra inválida").optional(),
@@ -17,8 +21,23 @@ export const reportFiltersSchema = z
     approverId: z.string().uuid("Aprobador inválido").optional(),
     // Centros de costo (UI, 2026-09-12): mismo criterio que workId/tagId/approverId — filtra por el
     // centro de costo EFECTIVO de la requisición (ver ReportFilters en lib/services/report-service.ts).
-    costCenterId: z.string().uuid("Centro de costo inválido").optional(),
-    period: z.string().regex(/^\d{4}-\d{2}$/, "Periodo inválido (use AAAA-MM)").optional(),
+    costCenterId: uuid("Centro de costo").optional(),
+    // RF-707 (adenda de pagos): empresa facturada de la requisición.
+    billedCompanyId: uuid("Empresa facturada").optional(),
+    period: period.optional(),
   })
   .strict();
 export type ReportQueryFilters = z.infer<typeof reportFiltersSchema>;
+
+/** RF-707: filtros de `GET /api/reports/orders` (comprometido vs pagado). Sin aprobador ni etiqueta. */
+export const orderReportFiltersSchema = z
+  .object({
+    workId: z.string().uuid("Obra inválida").optional(),
+    costCenterId: uuid("Centro de costo").optional(),
+    billedCompanyId: uuid("Empresa facturada").optional(),
+    period: period.optional(),
+    paymentMethod: z.enum(PAYMENT_METHOD_VALUES, "Medio de pago inválido").optional(),
+    paymentStatus: z.enum(PAYMENT_STATUS_VALUES, "Estado de pago inválido").optional(),
+  })
+  .strict();
+export type OrderReportQueryFilters = z.infer<typeof orderReportFiltersSchema>;

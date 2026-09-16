@@ -67,6 +67,13 @@ describe("GET /api/reports — RF-1301", () => {
     expect(mocks.queries[0]).toMatchObject({ costCenterId: "00000000-0000-4000-8000-000000000004" });
   });
 
+  // RF-707 (adenda de pagos): empresa facturada, mismo contrato aditivo.
+  it("traduce billedCompanyId a los filtros del servicio y rechaza un uuid inválido", async () => {
+    await GET(requestFor("?billedCompanyId=00000000-0000-4000-8000-000000000005"));
+    expect(mocks.queries[0]).toMatchObject({ billedCompanyId: "00000000-0000-4000-8000-000000000005" });
+    expect((await GET(requestFor("?billedCompanyId=no-es-un-uuid"))).status).toBe(422);
+  });
+
   it("un uuid inválido en costCenterId se rechaza con 422", async () => {
     const response = await GET(requestFor("?costCenterId=no-es-un-uuid"));
     expect(response.status).toBe(422);
