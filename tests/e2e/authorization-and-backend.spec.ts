@@ -43,7 +43,7 @@ test.describe("autorización visible y límites del backend", () => {
     expect(await mcp.text()).not.toMatch(/service_role|supabase.*key|password/i);
 
     const publicWrite = await request.post("/api/public/requisitions", { data: {} });
-    expect([202, 503]).toContain(publicWrite.status());
+    expect([400, 503]).toContain(publicWrite.status());
     expect(await publicWrite.text()).not.toMatch(/service_role|supabase.*key|password/i);
   });
 

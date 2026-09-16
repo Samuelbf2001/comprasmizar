@@ -212,13 +212,7 @@ describe("solicitud de pago del portal público — camino real de punta a punta
     expect(createdSuppliers).toHaveLength(0);
   });
 
-  // PARCHE PENDIENTE (lib/services/procurement-service.ts, fuera del alcance de S3):
-  // `ProcurementService.create` verifica el canal público SOLO por obra (`verify(workId, …)`) y nunca
-  // llama a `verifySociety`, así que por la ruta general (empresa) lanza PUBLIC_ACCESS_DENIED y la
-  // ruta responde 503 en vez de radicar. Este caso describe el comportamiento CORRECTO y está marcado
-  // como fallo esperado a propósito: cuando el servicio verifique por empresa, vitest lo marcará en
-  // rojo ("expected test to fail") y hay que cambiar `it.fails` por `it`.
-  it.fails("por EMPRESA (ruta general) el pago debería radicarse igual — hoy el servicio verifica solo por obra", async () => {
+  it("por EMPRESA (ruta general) el pago se radica igual: el servicio verifica la sociedad, no la obra", async () => {
     const { dependencies, requisitionMap } = fakeServiceDependencies();
     hoisted.setDependencies(dependencies);
 

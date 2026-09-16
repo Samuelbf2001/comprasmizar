@@ -104,10 +104,7 @@ const unavailable = () => Response.json({ error: "service_unavailable" }, { stat
  *
  * `PUBLIC_ACCESS_DENIED` lanzado por el SERVICIO no es un intento fallido de acceso (ese ya se
  * respondió neutro arriba) sino una inconsistencia interna —la ruta autorizó y el servicio no—, así
- * que se trata como infraestructura: 503 en vez de un 202 que fingiría que se radicó. Hoy pasa en la
- * ruta general por empresa: `ProcurementService.create` verifica solo por obra (`verify(workId)`) y
- * nunca llama a `verifySociety`; hasta que el servicio lo corrija, quien radica por empresa ve
- * "no disponible" en vez de perder la solicitud en silencio.
+ * que se trata como infraestructura: 503 en vez de un 202 que fingiría que se radicó.
  */
 function failure(error: unknown): Response {
   if (error instanceof DomainError) {

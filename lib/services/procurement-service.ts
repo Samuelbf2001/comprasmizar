@@ -93,12 +93,20 @@ export class ProcurementService {
     const isExternalChannel = input.channel === "publico" || input.channel === "whatsapp";
     // `publicLinkToken` dejó de ser obligatorio (2026-09-11): la ruta del portal es pública y la
     // contraseña es la llave. `publicCode` sí sigue siéndolo — sin él no hay nada que verificar.
-    if (input.channel === "publico") { if (!input.workId || !input.publicCode || !(await this.deps.publicAccess.verify(input.workId, input.publicLinkToken ?? null, input.publicCode))) throw new DomainError("PUBLIC_ACCESS_DENIED", "Enlace o código público inválido"); }
+    // Dos caminos, como en la ruta: el enlace POR OBRA verifica la obra (`verify`); la ruta general POR
+    // EMPRESA (desde 2026-09-11 el solicitante elige empresa y la obra la asigna el revisor) verifica la
+    // sociedad (`verifySociety`). Sin ninguna de las dos no hay nada que verificar.
+    if (input.channel === "publico") {
+      const authorized = Boolean(input.publicCode) && (input.workId
+        ? await this.deps.publicAccess.verify(input.workId, input.publicLinkToken ?? null, input.publicCode!)
+        : Boolean(input.societyId) && await this.deps.publicAccess.verifySociety(input.societyId!, input.publicLinkToken ?? null, input.publicCode!));
+      if (!authorized) throw new DomainError("PUBLIC_ACCESS_DENIED", "Enlace o código público inválido");
+    }
     else if (input.channel === "whatsapp") { if (origin !== "kapso" || !input.kapsoEventId?.trim()) throw new DomainError("FORBIDDEN", "WhatsApp solo acepta eventos Kapso verificados"); }
     else assertPermission(this.actor(context).roles, "requisition:create", this.authOrigin(context));
     // Reunión 2026-08-31: el solicitante elige empresa, no obra (la asigna el revisor). El Flow de
     // WhatsApp ya NO pide obra: manda empresa, igual que web. El único canal que puede omitir empresa
-    // es el público, anclado a la obra, cuya sociedad deriva el trigger `requisiciones_0_derivar_sociedad`
+    // es el público POR OBRA, cuya sociedad deriva el trigger `requisiciones_0_derivar_sociedad`
     // (Fase 1) a partir de obra_id — nunca se le pide al público directamente. Antes este método exigía
     // `input.workId` también para whatsapp (arriba); eso moría en producción en cuanto el Flow dejara de
     // mandarlo — se quitó esa exigencia y se dejó UNA sola fuente de verdad: el chequeo de abajo, común a
