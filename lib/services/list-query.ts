@@ -32,6 +32,10 @@ export interface ListQuery {
   paymentStatus?: PaymentStatus;
   paidFrom?: string;
   paidTo?: string;
+  /** RF-509/RF-707 (adenda de pagos, N3): empresa facturada — `requisiciones.empresa_facturada_id` en
+   *  requisiciones y órdenes (la de la requisición dueña), `gastos.empresa_facturada_id` (instantánea)
+   *  en gastos; caja menor lo ignora. */
+  billedCompanyId?: string;
   /** Cajas (2026-09-12): filtro adicional por `caja_id` — aplica a gastos, caja menor e ingresos;
    *  el resto de entidades lo ignora, mismo patrón aditivo que `costCenterId`. */
   cashBoxId?: string;

@@ -92,6 +92,9 @@ const HARNESSES = [
   // N2 (2026-09-15): beneficiario persona o empresa — tipo/identificación con espejo hacia `nit`,
   // unicidad por (tipo, identificación normalizada) y redacción de la identificación en auditoría.
   path.join(ROOT, "supabase", "tests", "proveedores_identificacion_verification.sql"),
+  // N3 (2026-09-15): centro de costo con tipo, empresa facturada en requisiciones (default por trigger,
+  // NOT NULL) y su instantánea en gastos.
+  path.join(ROOT, "supabase", "tests", "centro_costo_tipo_empresa_facturada_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

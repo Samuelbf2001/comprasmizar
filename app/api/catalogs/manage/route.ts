@@ -47,7 +47,7 @@ export function GET() {
       // COMPLETO (incluye inactivos) para la pestaña de administración propia — mismo patrón por el que
       // "societies"/"societyRecords" son dos claves distintas (ver CatalogData en catalog-admin.tsx).
       access.works ? sql<Array<{ id: string; name: string }>>`select id, nombre as name from centros_costo where activo=true order by nombre` : Promise.resolve([]),
-      access.costCenters ? sql<Array<{ id: string; name: string; code: string | null; societyId: string | null; active: boolean }>>`select id, nombre as name, codigo as code, sociedad_id as "societyId", activo as active from centros_costo order by nombre` : Promise.resolve([]),
+      access.costCenters ? sql<Array<{ id: string; name: string; code: string | null; societyId: string | null; type: string; active: boolean }>>`select id, nombre as name, codigo as code, sociedad_id as "societyId", tipo as type, activo as active from centros_costo order by nombre` : Promise.resolve([]),
       // Cajas (2026-09-12): listado COMPLETO (incluye inactivas) para la pestaña de administración —
       // mismo patrón que costCenters/costCenterRecords arriba.
       access.cashBoxes ? sql<Array<{ id: string; name: string; type: string; societyId: string | null; costCenterId: string | null; active: boolean }>>`select id, nombre as name, tipo as type, sociedad_id as "societyId", centro_costo_id as "costCenterId", activo as active from cajas order by nombre` : Promise.resolve([]),

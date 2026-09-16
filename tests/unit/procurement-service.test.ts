@@ -137,6 +137,11 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
     // valida antes de guardar (ver procurement-service.ts).
     : kind === "cashBoxes" && id === "caja-menor" ? { id: "caja-menor", name: "Caja Menor", type: "caja_menor", active: true }
     : kind === "cashBoxes" && id === "caja-inactiva" ? { id: "caja-inactiva", name: "Caja Inactiva", type: "caja_menor", active: false }
+    // Empresa facturada (RF-009): "soc" es la sociedad de los fixtures; "proim" otra sociedad activa (la
+    // factura de un gasto de Juliana puede venir a nombre de PROIM); "soc-inactiva" para el rechazo.
+    : kind === "societies" && id === "soc" ? { id: "soc", name: "Mizar", active: true }
+    : kind === "societies" && id === "proim" ? { id: "proim", name: "Proim", active: true }
+    : kind === "societies" && id === "soc-inactiva" ? { id: "soc-inactiva", name: "Cerrada", active: false }
     : null
   ), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null,
     findSupplierByIdentification: async (type: string, identification: string) => {
@@ -1268,6 +1273,96 @@ describe("aprobador por ítem", () => {
 // (supabase/tests/centros_costo_verification.sql) cubre el trigger de coherencia de sociedad/actividad
 // contra Postgres real; aquí va la regla de negocio (herencia, override, exigencia en sendForApproval,
 // copia congelada en el gasto), que es dominio puro y no debe esperar a un Postgres real para probarse.
+// Adenda de pagos, N3: empresa facturada (RF-009), monto auditado (RF-307/RF-1003) y auto-aprobación (RF-308).
+describe("empresa facturada, monto auditado y auto-aprobación (adenda de pagos)", () => {
+  const paymentLine = { ...items[0], itemId: undefined, description: "Levantamiento topográfico", unitBase: 100, unitIva: 19, unitTotal: 119 };
+  it("empresa facturada por defecto = sociedad del CC (vía obra), se guarda en la revisión y en el evento revisada", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "compra", societyId: "soc", channel: "web", items }, requester);
+    await service.startReview(r.id, reviewer);
+    const reviewedR = await service.review(r.id, { tagId: "tag", approverId: "nelson", workId: "work", items }, reviewer);
+    expect(reviewedR).toMatchObject({ costCenterId: "cc-work", billedCompanyId: "soc" });
+    expect(deps.audits.filter((a) => a.event === "revisada").at(-1)?.data).toMatchObject({ billedCompanyId: "soc", costCenterId: "cc-work" });
+    // Un centro compartido (sin sociedad) cae a la sociedad de la obra.
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", costCenterId: "cc-compartido", billedCompanyId: null, items }, reviewer);
+    expect((await deps.requisitions.get(r.id))?.billedCompanyId).toBe("soc");
+  });
+  it("la empresa facturada elegida en revisión puede ser OTRA sociedad (activa); una inactiva se rechaza; null vuelve al default", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [items[0]] }, requester);
+    await service.startReview(r.id, reviewer);
+    await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", billedCompanyId: "proim", items: [items[0]] }, reviewer)).resolves.toMatchObject({ billedCompanyId: "proim" });
+    await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", billedCompanyId: "soc-inactiva", items: [items[0]] }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", billedCompanyId: "no-existe", items: [items[0]] }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    // Ausente = no tocar: sigue en PROIM. Vacío = desasignar y volver a derivar.
+    await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", items: [items[0]] }, reviewer)).resolves.toMatchObject({ billedCompanyId: "proim" });
+    await expect(service.review(r.id, { tagId: "tag", approverId: "nelson", billedCompanyId: "", items: [items[0]] }, reviewer)).resolves.toMatchObject({ billedCompanyId: "soc" });
+  });
+  it("sendForApproval exige empresa facturada en tipo=pago (no en compra) y generateOrders la copia congelada al gasto", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [items[0]] }, requester);
+    await service.startReview(r.id, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", billedCompanyId: "proim", items: [items[0]] }, reviewer);
+    const stored = deps.req.get(r.id)!; stored.billedCompanyId = undefined; deps.req.set(r.id, stored); // simula una revisión previa a la columna
+    await expect(service.sendForApproval(r.id, reviewer)).rejects.toMatchObject({ code: "REVIEW_INCOMPLETE" });
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", billedCompanyId: "proim", items: [items[0]] }, reviewer);
+    await service.sendForApproval(r.id, reviewer);
+    await service.approve(r.id, approver);
+    const [orderA] = await service.generateOrders(r.id, reviewer);
+    expect(deps.expensesData.find((e) => e.referenceId === orderA.id)).toMatchObject({ billedCompanyId: "proim", costCenterId: "cc-work" });
+    // Una compra sin empresa facturada explícita sigue pasando (la deriva review(); aquí se limpia a propósito).
+    const c = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(c.id, reviewer); await service.review(c.id, { tagId: "tag", approverId: "nelson", items }, reviewer);
+    const storedC = deps.req.get(c.id)!; storedC.billedCompanyId = undefined; deps.req.set(c.id, storedC);
+    await expect(service.sendForApproval(c.id, reviewer)).resolves.toMatchObject({ status: "en_aprobacion" });
+  });
+  it("revisada guarda monto antes/después cuando cambia el valor de una solicitud de pago (y no en una compra ni sin cambio)", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const r = await service.create({ type: "pago", societyId: "soc", workId: "work", channel: "web", items: [paymentLine] }, requester);
+    await service.startReview(r.id, reviewer);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...paymentLine, unitBase: 300_000, ivaRate: 0 }] }, reviewer);
+    expect(deps.audits.filter((a) => a.entityId === r.id && a.event === "revisada").at(-1)?.data).toMatchObject({ montoAntes: 238, montoDespues: 600_000 });
+    // Misma revisión otra vez (nada cambia): ni evento nuevo ni montos.
+    const eventos = deps.audits.filter((a) => a.event === "revisada").length;
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...paymentLine, unitBase: 300_000, ivaRate: 0 }] }, reviewer);
+    expect(deps.audits.filter((a) => a.event === "revisada")).toHaveLength(eventos);
+    // Cambia la etiqueta pero no el valor: el evento no lleva montos.
+    await service.review(r.id, { tagId: "otra-etiqueta", approverId: "nelson", items: [{ ...paymentLine, unitBase: 300_000, ivaRate: 0 }] }, reviewer);
+    expect(deps.audits.filter((a) => a.event === "revisada").at(-1)?.data).not.toHaveProperty("montoAntes");
+    // Una compra edita líneas: no lleva montoAntes/montoDespues aunque cambie el total.
+    const c = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(c.id, reviewer);
+    await service.review(c.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], unitBase: 999, unitTotal: 1018 }, items[1]] }, reviewer);
+    expect(deps.audits.filter((a) => a.entityId === c.id && a.event === "revisada").at(-1)?.data).not.toHaveProperty("montoAntes");
+  });
+  it("send_and_approve deja dos eventos (enviada_aprobacion y aprobada) del mismo actor, sin avisar por WhatsApp al aprobador, y exige roles", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(r.id, dual);
+    await service.review(r.id, { tagId: "tag", approverId: "dual-role", items }, dual);
+    const approved = await service.sendAndApproveAsMaster(r.id, dual);
+    expect(approved.status).toBe("aprobada");
+    const eventos = deps.audits.filter((a) => a.entityId === r.id && ["enviada_aprobacion", "aprobada"].includes(a.event));
+    expect(eventos.map((a) => a.event)).toEqual(["enviada_aprobacion", "aprobada"]);
+    expect(eventos.every((a) => a.actorId === "dual-role")).toBe(true);
+    expect(deps.notificationData.some((n) => n.template === "pendiente_aprobador")).toBe(false);
+    expect(deps.notificationData.some((n) => n.template === "requisicion_aprobada" && n.userId === "sol")).toBe(true);
+  });
+  it("send_and_approve: revisor a secas o aprobador a secas no pueden; el maestro debe ser el aprobador asignado (y nada se mueve si no lo es); admin_sixteam sí sin estar asignado", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(r.id, dual);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, dual);
+    await expect(service.sendAndApproveAsMaster(r.id, reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.sendAndApproveAsMaster(r.id, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.sendAndApproveAsMaster(r.id, dual)).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" });
+    expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); // no se envió a aprobación a medias
+    await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const } })).resolves.toMatchObject({ status: "aprobada" });
+    await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const }, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" }); // nunca por MCP
+  });
+});
 describe("centros de costo", () => {
   it("review() hereda el centro de la obra cuando no hay uno explícito ni previo, y el revisor puede cambiarlo o limpiarlo", async () => {
     const service = new ProcurementService(fakeDeps());

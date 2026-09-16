@@ -31,7 +31,7 @@ function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
   // también tiene `societyId`, y sin este orden un centro se auditaría con la forma de una obra
   // (perdiendo `code`, su dato propio). `code` es el discriminador: ninguna otra forma de CatalogRecord
   // lo tiene.
-  if ("code" in value) { const costCenter = value as CatalogCostCenter; return { name: costCenter.name, code: costCenter.code ?? null, societyId: costCenter.societyId ?? null, active: costCenter.active }; }
+  if ("code" in value) { const costCenter = value as CatalogCostCenter; return { name: costCenter.name, code: costCenter.code ?? null, societyId: costCenter.societyId ?? null, type: costCenter.type ?? "obra", active: costCenter.active }; }
   // Cajas (2026-09-12): comprobado ANTES que el de "work" de abajo por la MISMA razón que costCenters
   // — "type" es el discriminador (ninguna otra forma de CatalogRecord lo tiene).
   if ("type" in value) { const cashBox = value as CatalogCashBox; return { name: cashBox.name, type: cashBox.type, societyId: cashBox.societyId ?? null, costCenterId: cashBox.costCenterId ?? null, active: cashBox.active }; }

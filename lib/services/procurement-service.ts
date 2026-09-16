@@ -1,5 +1,5 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeIdentification, normalizeItemName, orderTypeFor, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type BeneficiaryInput, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
-import type { AuditRepository, CatalogCostCenter, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
+import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeIdentification, normalizeItemName, orderTypeFor, resolveBilledCompany, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type BeneficiaryInput, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import type { AuditRepository, CatalogCostCenter, CatalogSociety, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
 // H3 (docs/plan-rendimiento.md, Fase 3): los repositorios de listas devuelven `T[]` sin `query` o
@@ -39,7 +39,13 @@ export interface CreateRequisitionInput { type: RequisitionType; societyId?: str
  * ver `resolveCostCenter` en lib/domain/rules.ts); `null`/`""` = desasignar explícitamente; un string no
  * vacío = asignar ese centro (validado en `review()` contra el mismo catálogo que `isEligibleApprover`).
  */
-export interface ReviewInput { tagId: string; approverId?: string | null; workId?: string; costCenterId?: string | null; paymentTerms?: string; items: ItemLine[]; }
+/**
+ * `billedCompanyId` (RF-009, adenda de pagos): MISMA semántica de tres estados que `costCenterId` —
+ * `undefined` = no tocar (y si la requisición aún no tiene empresa facturada, se deriva el default con
+ * `resolveBilledCompany`); `null`/`""` = desasignar (y volver a derivar el default); un string = asignar esa
+ * sociedad (existe y activa; puede ser DISTINTA de la sociedad de la requisición: es el punto).
+ */
+export interface ReviewInput { tagId: string; approverId?: string | null; workId?: string; costCenterId?: string | null; billedCompanyId?: string | null; paymentTerms?: string; items: ItemLine[]; }
 /**
  * `cashBoxId`/`paymentMethod` obligatorios (2026-09-12): TODO movimiento de caja vive bajo una caja
  * del catálogo `cajas` con un medio de pago — ya no es exclusivo de la caja menor clásica de obra (ver
@@ -205,9 +211,13 @@ export class ProcurementService {
         approverId: requisition.approverId,
         workId: requisition.workId,
         costCenterId: requisition.costCenterId,
+        billedCompanyId: requisition.billedCompanyId,
         paymentTerms: requisition.paymentTerms,
         items: requisition.items,
       });
+      // RF-307/RF-1003 (adenda de pagos, D5): "el maestro puso 100 millones" — Daniel corrige el valor y el
+      // original tiene que quedar en la traza. Se toma ANTES de reemplazar las líneas.
+      const montoAntes = sumLines(requisition.items);
       if (requisition.status === "devuelta") await this.transition(requisition, "en_revision", actor, "retomada_revision", undefined, this.origin(context), tx.audit);
       if (requisition.status !== "en_revision") throw new DomainError("INVALID_STATE", "La requisición no está en revisión");
       // Solicitud de pago (feat/solicitud-de-pago): mismo listón que create() — beneficiario y
@@ -247,14 +257,35 @@ export class ProcurementService {
       // M-6: mismo criterio de tres estados que approverId — `undefined` no toca; `null`/`""` desasigna;
       // un string no vacío se valida (existe, activo, y su sociedad —si tiene una fija— coincide con la
       // de la requisición o el centro es compartido) contra el mismo puerto que isEligibleApprover.
+      let assignedCostCenter: CatalogCostCenter | null = null;
       if (input.costCenterId !== undefined) {
         const costCenterId = input.costCenterId || undefined;
         if (costCenterId) {
           if (!requisition.societyId) throw new DomainError("INVALID_INPUT", "La requisición no tiene sociedad conocida para validar el centro de costo");
           const costCenter = await tx.catalogs.get("costCenters", costCenterId) as CatalogCostCenter | null;
           if (!costCenter || !costCenter.active || (costCenter.societyId && costCenter.societyId !== requisition.societyId)) throw new DomainError("INVALID_INPUT", "El centro de costo debe existir, estar activo y ser compartido o de la sociedad de la requisición");
+          assignedCostCenter = costCenter;
         }
         requisition.costCenterId = costCenterId;
+      }
+      // RF-009 (adenda de pagos, A7): empresa facturada — misma semántica de tres estados que el centro de
+      // costo. Una sociedad explícita solo tiene que existir y estar activa: NO se exige que coincida con
+      // la de la requisición (la factura de un gasto de Juliana puede venir a nombre de PROIM). Sin valor
+      // propio, el default lo dice el dominio (`resolveBilledCompany`): sociedad del centro de costo
+      // efectivo, si no la de la obra, si no la de la requisición — se calcula UNA vez y queda guardado,
+      // para que el siguiente autoguardado no lo pise y el revisor vea lo mismo que se va a contabilizar.
+      if (input.billedCompanyId !== undefined) {
+        const billedCompanyId = input.billedCompanyId || undefined;
+        if (billedCompanyId) {
+          const society = await tx.catalogs.get("societies", billedCompanyId) as CatalogSociety | null;
+          if (!society || !society.active) throw new DomainError("INVALID_INPUT", "La empresa facturada debe ser una sociedad activa");
+        }
+        requisition.billedCompanyId = billedCompanyId;
+      }
+      if (!requisition.billedCompanyId) {
+        const costCenter = assignedCostCenter ?? (requisition.costCenterId ? await tx.catalogs.get("costCenters", requisition.costCenterId) as CatalogCostCenter | null : null);
+        const work = assignedWork ?? (requisition.workId ? await tx.catalogs.get("works", requisition.workId) as CatalogWork | null : null);
+        requisition.billedCompanyId = resolveBilledCompany(requisition, costCenter, work);
       }
       // M-7 (QA reasignación, decisión consciente PENDIENTE de confirmar con el cliente): nada aquí
       // impide que un usuario con roles revisor+aprobador a la vez se asigne a sí mismo como approverId
@@ -291,11 +322,16 @@ export class ProcurementService {
         approverId: requisition.approverId,
         workId: requisition.workId,
         costCenterId: requisition.costCenterId,
+        billedCompanyId: requisition.billedCompanyId,
         paymentTerms: requisition.paymentTerms,
         items: requisition.items,
       });
       if (afterReview !== beforeReview) {
-        await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId: requisition.approverId, workId: input.workId, costCenterId: requisition.costCenterId, paymentTerms: input.paymentTerms }, this.origin(context), tx.audit);
+        // RF-1003: en una solicitud de pago el cambio de valor queda con antes/después (una compra edita
+        // líneas, no "un valor"; ahí el detalle por ítem ya viaja en `items`).
+        const montoDespues = sumLines(requisition.items);
+        const montos = requisition.type === "pago" && montoDespues !== montoAntes ? { montoAntes, montoDespues } : {};
+        await this.audit("requisicion", id, "revisada", actor, { tagId: input.tagId, approverId: requisition.approverId, workId: input.workId, costCenterId: requisition.costCenterId, billedCompanyId: requisition.billedCompanyId, paymentTerms: input.paymentTerms, ...montos }, this.origin(context), tx.audit);
       }
       return requisition;
     });
@@ -341,22 +377,45 @@ export class ProcurementService {
   // "sendForApproval" ya NO exige proveedor final por ítem (decisión de la reunión: aprobar y designar
   // proveedor son roles distintos). Sí exige obra: gastos.obra_id es NOT NULL y sin obra generateOrders
   // reventaría al registrar el gasto. Las líneas declinadas no cuentan como "vigentes" (approvedLines).
-  async sendForApproval(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0);
+  // `options.notifyApprovers` (RF-308): `sendAndApproveAsMaster` lo apaga — avisarle por WhatsApp al
+  // aprobador que tiene algo pendiente cuando ese mismo aprobador lo va a aprobar en el mismo instante es ruido.
+  async sendForApproval(id: string, context: RequestContext, options: { notifyApprovers?: boolean } = {}): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0);
     // Centros de costo (2026-09-12, decisión del dueño): exigido junto a obra/etiqueta/aprobador — sin
     // él, generateOrders() no tendría de dónde copiar el centro del gasto (ver la nota "ojo" en su
     // propio cuerpo, más abajo). El caso común nunca lo dispara: review() ya lo hereda de la obra en
     // cuanto se asigna una; solo falta aquí si el revisor lo desasignó explícitamente sin volver a elegir uno.
-    if (!requisition.workId || !requisition.tagId || !requisition.approverId || !requisition.costCenterId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra, etiqueta, centro de costo, aprobador y valor cotizado mayor a cero son obligatorios en cada ítem vigente"); await this.transition(requisition, "en_aprobacion", actor, "enviada_aprobacion", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition);
+    if (!requisition.workId || !requisition.tagId || !requisition.approverId || !requisition.costCenterId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra, etiqueta, centro de costo, aprobador y valor cotizado mayor a cero son obligatorios en cada ítem vigente");
+    // RF-304 (adenda de pagos): en una solicitud de pago la empresa facturada es obligatoria — es lo que
+    // el contador contabiliza. review() la deriva sola, así que solo falta si nadie pasó por revisión.
+    if (requisition.type === "pago" && !requisition.billedCompanyId) throw new DomainError("REVIEW_INCOMPLETE", "Una solicitud de pago exige empresa facturada antes de enviarse a aprobación");
+    await this.transition(requisition, "en_aprobacion", actor, "enviada_aprobacion", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition);
     // UN AVISO POR APROBADOR, no uno por requisición. Con aprobadores por ítem hay varias personas a
     // las que les toca algo, y cada una tiene que recibir SU mensaje con SUS ítems. El `approverId`
     // viaja en el payload porque es lo que luego deja al emisor elegir el contexto correcto: el
     // teléfono lo sigue sacando de `usuarios`, nunca del cuerpo de una petición.
     //
     // Con un solo aprobador esto encola exactamente una notificación, igual que siempre.
-    for (const aprobador of pendingApproverIds(requisition.items, requisition.approverId)) {
+    if (options.notifyApprovers !== false) for (const aprobador of pendingApproverIds(requisition.items, requisition.approverId)) {
       await tx.notifications.enqueue({ userId: aprobador, channel: "whatsapp", template: "pendiente_aprobador", payload: { requisitionId: requisition.id, consecutive: requisition.consecutive, approverId: aprobador } });
     }
     return requisition; }); }
+  /**
+   * RF-308 (adenda de pagos, A9): auto-aprobación en un paso para el usuario MAESTRO (revisor+aprobador,
+   * Daniel) o admin_sixteam — el atajo de caja menor del PRD §4.3: "Daniel radica, Daniel revisa, Daniel
+   * se auto-aprueba". Encadena `sendForApproval` + `approve`, cada uno con su transacción y su evento de
+   * auditoría (enviada_aprobacion y aprobada, mismo actor): son DOS gestos auditados, no uno. Antes de
+   * mover nada se comprueba que este actor pueda aprobar ESTA requisición (aprobador asignado, o
+   * admin_sixteam): si no, fallaría a mitad de camino con la requisición ya en aprobación y sin aviso a
+   * su aprobador real.
+   */
+  async sendAndApproveAsMaster(id: string, context: RequestContext): Promise<Requisition> {
+    const actor = this.actor(context); assertCanSelfApprove(actor);
+    assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
+    const requisition = await this.requisition(id);
+    if (!actor.roles.includes("admin_sixteam") && requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "Para aprobar en un solo paso debe figurar como aprobador de la requisición");
+    await this.sendForApproval(id, context, { notifyApprovers: false });
+    return this.approve(id, context);
+  }
   /** Reunión 2026-08-31: decisión por ítem del aprobador (aprobar/declinar/ajustar cantidad). No cambia el estado de la requisición: eso lo sigue haciendo approve(). */
   async decideItems(id: string, decisions: readonly ItemDecision[], context: RequestContext): Promise<Requisition> {
     const actor = this.actor(context); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
@@ -507,7 +566,9 @@ export class ProcurementService {
         await transactional.orders.save(order); orders.push(order);
         await this.audit("orden", order.id, "generada", actor, { requisitionId: id, supplierId }, this.origin(context), transactional.audit);
         const base = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).base, 0), iva = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).iva, 0);
-        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, orderDate, base, iva, total: sumLines(groupLines), costCenterId };
+        // RF-009: la empresa facturada se congela en el gasto igual que el centro de costo — review() ya la
+        // derivó; el `?? societyId` es defensa para una requisición aprobada antes de que existiera el campo.
+        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, orderDate, base, iva, total: sumLines(groupLines), costCenterId, billedCompanyId: requisition.billedCompanyId ?? requisition.societyId };
         await transactional.expenses.save(expense);
         await this.audit("gasto", expense.id, "registrado", actor, { orderId: order.id, supplierId }, this.origin(context), transactional.audit);
       }

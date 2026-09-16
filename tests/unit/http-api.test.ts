@@ -147,6 +147,14 @@ describe("parseListQuery / hasListFilters — H3", () => {
     expect(() => parseListQuery(url("?paidFrom=01-09-2026"))).toThrow();
   });
 
+  it("billedCompanyId exige un uuid válido y cuenta como filtro (RF-707)", () => {
+    const validId = "11111111-1111-4111-8111-111111111111";
+    const { query } = parseListQuery(url(`?billedCompanyId=${validId}`));
+    expect(query.billedCompanyId).toBe(validId);
+    expect(hasListFilters(query)).toBe(true);
+    expect(() => parseListQuery(url("?billedCompanyId=proim"))).toThrow();
+  });
+
   it("limit exige un entero entre 1 y 200; fuera de rango se rechaza", () => {
     expect(parseListQuery(url("?limit=50")).query.limit).toBe(50);
     expect(() => parseListQuery(url("?limit=0"))).toThrow();
@@ -284,6 +292,17 @@ describe("requisitionActionSchema — review acepta costCenterId (centro de cost
     expect(requisitionActionSchema.safeParse({ ...base, costCenterId: null }).success).toBe(true); // desasignar
     expect(requisitionActionSchema.safeParse({ ...base, costCenterId: "" }).success).toBe(true); // desasignar
     expect(requisitionActionSchema.safeParse({ ...base, costCenterId: "no-uuid" }).success).toBe(false);
+  });
+
+  // RF-009/RF-308 (adenda de pagos): empresa facturada con la misma forma de tres estados, y la acción
+  // de auto-aprobación en un paso — sin esto, la pantalla de revisión (S2) caería en la frontera HTTP.
+  it("review acepta billedCompanyId (uuid, null, \"\" o ausente) y la acción send_and_approve existe", () => {
+    expect(requisitionActionSchema.safeParse({ ...base, billedCompanyId: "20000000-0000-4000-8000-000000000004" })).toMatchObject({ success: true, data: { billedCompanyId: "20000000-0000-4000-8000-000000000004" } });
+    expect(requisitionActionSchema.safeParse({ ...base, billedCompanyId: null }).success).toBe(true);
+    expect(requisitionActionSchema.safeParse({ ...base, billedCompanyId: "" }).success).toBe(true);
+    expect(requisitionActionSchema.safeParse({ ...base, billedCompanyId: "proim" }).success).toBe(false);
+    expect(requisitionActionSchema.safeParse({ action: "send_and_approve" })).toMatchObject({ success: true, data: { action: "send_and_approve" } });
+    expect(requisitionActionSchema.safeParse({ action: "send_and_approve", comment: "x" }).success).toBe(false);
   });
 
   it("conserva costCenterId al parsear (no lo descarta .strict() al combinarlo con el resto de la revisión)", () => {

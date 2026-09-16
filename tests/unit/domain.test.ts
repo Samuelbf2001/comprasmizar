@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeItemName, orderTypeFor, paymentStatus, sumApprovedLines, sumLines, sumPaid, validateShares, type Order, type OrderPayment, type Requisition } from "../../lib/domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeIdentification, normalizeItemName, orderTypeFor, paymentStatus, resolveBilledCompany, sumApprovedLines, sumLines, sumPaid, validateShares, type Order, type OrderPayment, type Requisition } from "../../lib/domain";
 
 const line = { id: "i1", quantity: 2, unit: "und", unitBase: 100, unitIva: 19, unitTotal: 119 };
 describe("domain permissions", () => {
@@ -155,6 +155,28 @@ describe("adenda de pagos: estado_pago derivado, anulación y saldo", () => {
     expect(() => assertCanAnnulPayment(pago({}), "")).toThrow(DomainError);
     expect(() => assertCanAnnulPayment(pago({}), "   ")).toThrow("motivo");
     expect(() => assertCanAnnulPayment(pago({ annulled: true }), "otra vez")).toThrow("ya está anulado");
+  });
+});
+// Adenda de pagos (RF-009 empresa facturada, RF-308 auto-aprobación, RF-606 identificación).
+describe("adenda de pagos: empresa facturada, auto-aprobación e identificación", () => {
+  it("empresa facturada por defecto = sociedad del CC; si el centro es compartido, la de la obra; si no hay obra, la de la requisición; la elegida en revisión manda", () => {
+    expect(resolveBilledCompany({ societyId: "mizar" }, { societyId: "proim" }, { societyId: "mizar" })).toBe("proim");
+    expect(resolveBilledCompany({ societyId: "mizar" }, { societyId: null }, { societyId: "ictinos" })).toBe("ictinos"); // centro compartido
+    expect(resolveBilledCompany({ societyId: "mizar" }, null, null)).toBe("mizar"); // centro administrativo sin obra
+    expect(resolveBilledCompany({ societyId: "mizar", billedCompanyId: "palmoc" }, { societyId: "proim" }, { societyId: "mizar" })).toBe("palmoc");
+    expect(resolveBilledCompany({})).toBeUndefined();
+  });
+  it("send_and_approve exige roles: solo revisor+aprobador (usuario maestro) o admin_sixteam", () => {
+    expect(() => assertCanSelfApprove({ id: "daniel", roles: ["revisor", "aprobador"] })).not.toThrow();
+    expect(() => assertCanSelfApprove({ id: "root", roles: ["admin_sixteam"] })).not.toThrow();
+    expect(() => assertCanSelfApprove({ id: "daniel", roles: ["revisor"] })).toThrow(DomainError);
+    expect(() => assertCanSelfApprove({ id: "nelson", roles: ["aprobador"] })).toThrow(DomainError);
+    expect(() => assertCanSelfApprove({ id: "claudia", roles: ["contabilidad", "admin_mizar"] })).toThrow(DomainError);
+  });
+  it("normalizeIdentification compara por forma (sin puntos, guiones ni espacios), conservando letras", () => {
+    expect(normalizeIdentification("900.123.456-7")).toBe("9001234567");
+    expect(normalizeIdentification(" E-556677 ")).toBe("E556677");
+    expect(normalizeIdentification("---")).toBe("");
   });
 });
 describe("RF-1102 dashboard queue and recent activity", () => {

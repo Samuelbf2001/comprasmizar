@@ -97,8 +97,13 @@ export const requisitionActionSchema = z.discriminatedUnion("action", [
   // ver resolveCostCenter en lib/domain/rules.ts). Repetir aquí el olvido de approverId (ver el
   // comentario de reviewedItemSchema, arriba) tumbaría TODA la revisión en cuanto la pantalla mande este
   // campo — por eso se cruza con una prueba (tests/unit/http-api.test.ts).
-  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), workId: z.string().uuid().optional(), costCenterId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
+  // billedCompanyId (RF-009, adenda de pagos): MISMA forma de tres estados que costCenterId — uuid asigna,
+  // ""/null desasigna (y review() vuelve a derivar el default), ausente no toca.
+  z.object({ action: z.literal("review"), tagId: z.string().uuid(), approverId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), workId: z.string().uuid().optional(), costCenterId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), billedCompanyId: z.union([z.string().uuid(), z.literal(""), z.null()]).optional(), paymentTerms: z.string().trim().min(1).max(240).optional(), items: z.array(reviewedItemSchema).min(1).max(100) }).strict(),
   z.object({ action: z.literal("send_for_approval") }).strict(),
+  // RF-308 (adenda de pagos, A9): enviar a aprobación Y aprobar en un solo paso — solo usuario maestro
+  // (revisor+aprobador) o admin_sixteam; deja DOS eventos de auditoría (ProcurementService.sendAndApproveAsMaster).
+  z.object({ action: z.literal("send_and_approve") }).strict(),
   // "approve" pierde multiSupplier: aprobar ya no genera órdenes (eso es generate_orders, un paso propio).
   z.object({ action: z.literal("approve") }).strict(),
   z.object({ action: z.literal("return"), comment: z.string().trim().min(1).max(2_000) }).strict(),

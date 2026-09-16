@@ -153,6 +153,27 @@ export function itemApproverId(line: ItemLine, headApproverId?: string): string 
 export function resolveCostCenter(requisition: { costCenterId?: string }, work?: { costCenterId?: string } | null): string | undefined {
   return requisition.costCenterId ?? work?.costCenterId ?? undefined;
 }
+/**
+ * RF-009 (adenda de pagos, A7): la EMPRESA FACTURADA es la sociedad a cuyo nombre viene el soporte —
+ * lo que contabiliza el contador — y no tiene por qué ser la del centro de costo (Claudia) ni la de la
+ * requisición: la factura de un gasto de Juliana puede venir a nombre de PROIM. Es LA función del
+ * default (la elegida en revisión si la hay; si no la sociedad del centro de costo; si no la de la obra;
+ * si no la propia de la requisición) y por eso vive aquí, hermana de `resolveCostCenter`. Un centro
+ * COMPARTIDO (sin sociedad) cae a la obra, y un centro sin obra (administrativo/personal) a la sociedad
+ * de la requisición. Tipado estructural a propósito, como `resolveCostCenter`.
+ */
+export function resolveBilledCompany(requisition: { billedCompanyId?: string; societyId?: string }, costCenter?: { societyId?: string | null } | null, work?: { societyId?: string } | null): string | undefined {
+  return requisition.billedCompanyId ?? costCenter?.societyId ?? work?.societyId ?? requisition.societyId ?? undefined;
+}
+/**
+ * RF-308 (adenda de pagos, A9): la auto-aprobación en un paso es solo para el usuario MAESTRO — quien
+ * reúne revisor Y aprobador (Daniel) — o admin_sixteam (que ya decide cualquier requisición, M-5). Un
+ * revisor a secas o un aprobador a secas no la tienen: cada uno hace su mitad del flujo.
+ */
+export function assertCanSelfApprove(actor: Actor): void {
+  if (actor.roles.includes("admin_sixteam") || (actor.roles.includes("revisor") && actor.roles.includes("aprobador"))) return;
+  throw new DomainError("FORBIDDEN", "Aprobar en un solo paso exige los roles de revisor y aprobador");
+}
 /** Ítems que ESTE actor tiene pendientes de decidir. Vacío no significa "no le toca": puede haberlos ya decidido. */
 export function pendingItemsFor(actorId: string, lines: readonly ItemLine[], headApproverId?: string): ItemLine[] {
   return lines.filter((line) => (line.status ?? "pendiente") === "pendiente" && itemApproverId(line, headApproverId) === actorId);

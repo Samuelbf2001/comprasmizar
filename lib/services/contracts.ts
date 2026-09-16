@@ -1,4 +1,4 @@
-import type { Actor, AuditEvent, CashBoxType, CashClose, CashCloseStatus, CashPayment, CostCenterMovement, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role, SupplierIdentificationType } from "../domain";
+import type { Actor, AuditEvent, CashBoxType, CashClose, CashCloseStatus, CashPayment, CostCenterMovement, CostCenterType, DashboardAmountByKey, Expense, ExpenseShare, Income, Order, OrderPayment, PettyCash, Requisition, RequisitionStatus, Role, SupplierIdentificationType } from "../domain";
 import type { ListQuery, Page } from "./list-query";
 
 /** Persistence ports. Infrastructure adapters (e.g. Supabase) implement these; domain services do not depend on them. */
@@ -192,7 +192,8 @@ export interface CatalogRequester { id: string; name: string; phone: string; act
  * el centro solo es válido en requisiciones de esa sociedad (`validar_centro_costo_requisicion`,
  * trigger de la migración). `code` es opcional, como el NIT de sociedades/proveedores.
  */
-export interface CatalogCostCenter { id: string; name: string; code?: string | null; societyId?: string | null; active: boolean; }
+/** `type` (RF-007, 202609150003): obra (default) / administrativo / personal / empresa. Opcional en el tipo por los objetos legado; desde Postgres siempre viaja. */
+export interface CatalogCostCenter { id: string; name: string; code?: string | null; societyId?: string | null; type?: CostCenterType; active: boolean; }
 /**
  * DECISIÓN DEL DUEÑO (2026-09-12, migración 202609120003): catálogo nuevo de cajas — "dónde vive la
  * plata" (caja menor de obra, administrativa, banco o personal). `costCenterId`: centro DEFAULT de

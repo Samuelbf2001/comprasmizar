@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Sql } from "postgres";
 import { DomainError, type Actor } from "../../lib/domain";
 import { PostgresPorts } from "../../lib/infrastructure/postgres-repositories";
+import type { CatalogCostCenter } from "../../lib/services";
 import { decodeCursor, encodeCursor } from "../../lib/services/list-query";
 
 /**
@@ -389,6 +390,45 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
     const select = sql.calls.find((call) => /^select po\.\*/i.test(call.text))!;
     expect(select.text).toMatch(/where po\.medio_pago = 'efectivo' and not po\.anulado and po\.fecha >= \?::date and po\.fecha <= \?::date and r\.centro_costo_id = \? order by po\.fecha, po\.created_at/);
     expect(rows).toEqual([expect.objectContaining({ id: "pago-1", amount: 50000, method: "efectivo", note: "Peaje", annulled: false, orderConsecutive: "OP-2026-0007", orderType: "OP", requisitionId: "req-1", requisitionConsecutive: "REQ-2026-0009", workId: "obra-1", costCenterId: "cc-1", supplierId: "prov-1" })]);
+  });
+  // RF-009 (adenda de pagos, N3): empresa facturada por el mismo join que el centro de costo; filtro
+  // `billedCompanyId` en órdenes/requisiciones (columna de la requisición) y gastos (instantánea propia).
+  it("orderSelectColumns suma r.empresa_facturada_id, getOrder lo mapea a Order.billedCompanyId y billedCompanyId filtra órdenes, requisiciones y gastos", async () => {
+    const sql = fakeSql((call) => (/^select o\.\*/i.test(call.text)
+      ? [{ id: "o1", consecutivo: "OC-2026-0001", tipo: "OC", requisicion_id: "req-1", estado_cumplimiento: "generada", requisicion_empresa_facturada_id: "proim" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    expect((await ports.getOrder("o1"))?.billedCompanyId).toBe("proim");
+    expect(sql.calls.find((call) => /^select o\.\*/i.test(call.text))!.text).toMatch(/r\.empresa_facturada_id as requisicion_empresa_facturada_id/);
+    await ports.listVisibleOrders({ id: "daniel", roles: ["revisor"] }, { billedCompanyId: "proim", limit: 10 });
+    expect(sql.calls.at(-1)!.text).toMatch(/and r\.empresa_facturada_id = \?/);
+    await ports.listVisibleRequisitions({ id: "daniel", roles: ["revisor"] }, { billedCompanyId: "proim", limit: 10 });
+    expect(sql.calls.at(-1)!.text).toMatch(/and r\.empresa_facturada_id = \?/);
+    await ports.listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { billedCompanyId: "proim", limit: 10 });
+    expect(sql.calls.at(-1)!.text).toMatch(/and g\.empresa_facturada_id = \?/);
+  });
+  it("saveRequisition/saveExpense escriben empresa_facturada_id (y la requisición la reenvía en el on conflict)", async () => {
+    const sql = fakeSql(() => []);
+    const ports = new PostgresPorts(sql);
+    await ports.saveRequisition({ id: "r1", consecutive: "REQ-2026-0001", type: "pago", societyId: "soc", channel: "web", status: "en_revision", billedCompanyId: "proim", items: [] });
+    const insert = sql.calls.find((call) => /^insert into requisiciones/i.test(call.text))!;
+    expect(insert.text).toMatch(/empresa_facturada_id/);
+    expect(insert.text).toMatch(/empresa_facturada_id = excluded\.empresa_facturada_id/);
+    expect(insert.values).toContain("proim");
+    await ports.saveExpense({ id: "g1", workId: "w", origin: "requisicion", referenceId: "o1", orderDate: "2026-09-15", base: 100, iva: 0, total: 100, costCenterId: "cc", billedCompanyId: "proim" });
+    const expenseInsert = sql.calls.find((call) => /^insert into gastos/i.test(call.text))!;
+    expect(expenseInsert.text).toMatch(/centro_costo_id, empresa_facturada_id\)/);
+    expect(expenseInsert.values.slice(-2)).toEqual(["cc", "proim"]);
+  });
+  it("costCenters: create/update escriben tipo (default obra) y el mapeador lo expone como type", async () => {
+    const sql = fakeSql((call) => (/^insert into centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", codigo: null, sociedad_id: null, tipo: "empresa", activo: true }] : /^update centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", tipo: "personal", activo: true }] : []));
+    const ports = new PostgresPorts(sql);
+    const input: Omit<CatalogCostCenter, "id"> = { name: "Gastos PROIM", type: "empresa", active: true };
+    const created = await ports.create("costCenters", input);
+    expect(created).toMatchObject({ type: "empresa" });
+    expect(sql.calls.find((call) => /^insert into centros_costo/i.test(call.text))!.values).toEqual(["Gastos PROIM", null, null, "empresa", true]);
+    expect(await ports.update("costCenters", "cc-1", { type: "personal" })).toMatchObject({ type: "personal" });
+    expect(sql.calls.find((call) => /^update centros_costo/i.test(call.text))!.text).toMatch(/tipo=coalesce\(\?, tipo\)/);
   });
   it("markExpensePaid(null) deshace la fecha de pago del gasto (anulación del pago que cerraba la orden)", async () => {
     const sql = fakeSql((call) => (/^update gastos/i.test(call.text) ? [{ id: "g1" }] : []));
