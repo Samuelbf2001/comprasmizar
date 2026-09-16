@@ -5,7 +5,9 @@
  * periodo sí puede traer filas sin pagar, así que todo consumidor de este tipo debe tolerar `date`
  * ausente.
  */
-export interface ReportExpense { orderDate: string; date?: string; work: string; tag?: string; supplier?: string; origin: "requisicion" | "caja_menor"; base: number; iva: number; total: number; }
+/** RF-707 (adenda de pagos): `billedCompany`, `paymentStatus` y `paid` son opcionales por los llamadores
+ *  legado (PDF de socios, pruebas); el Excel de gastos los imprime cuando vienen. */
+export interface ReportExpense { orderDate: string; date?: string; work: string; tag?: string; supplier?: string; origin: "requisicion" | "caja_menor"; base: number; iva: number; total: number; billedCompany?: string; paymentStatus?: string; paid?: number; }
 
 /**
  * Reunión 2026-08-31 (Fase 6): formato real de la orden, calcado de la hoja "ORDEN DE ANTICIPO"

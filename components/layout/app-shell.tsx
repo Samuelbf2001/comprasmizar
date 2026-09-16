@@ -44,8 +44,11 @@ const roleInitials: Record<Role, string> = {
   "Administrador Mizar": "CM",
   "Administrador Sixteam": "SS",
 };
-// roleAllowed se construye con TODOS los hrefs de `navigation`, incluidos los que llevan
-// `hidden` (hoy /gastos): ocultar una entrada del menú no debe quitarle la ruta a ningún rol.
+// roleAllowed se construye con TODOS los hrefs de `navigation`, incluidos los que llevaran
+// `hidden`: ocultar una entrada del menú no debe quitarle la ruta a ningún rol.
+// "/gastos" es "Cierre de caja" (adenda A10): la ven los roles con "expense:read" en el servidor
+// (lib/domain/rules.ts) — Revisor, Contabilidad, Administrador Mizar y Administrador Sixteam. El
+// Aprobador ve Reportes pero NO el cierre: no tiene ese permiso y la pantalla le respondería 403.
 export const roleAllowed: Record<Role, string[]> = {
   Solicitante: [
     "/",
@@ -71,6 +74,7 @@ export const roleAllowed: Record<Role, string[]> = {
   ],
   "Administrador Mizar": [
     "/",
+    "/gastos",
     "/catalogos",
     "/proveedores",
     "/reportes",

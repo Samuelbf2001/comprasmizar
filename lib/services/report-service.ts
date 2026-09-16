@@ -1,6 +1,7 @@
-import { assertPermission, approvedLines, calculateLineAmounts, sumLineAmounts, type Actor, type Requisition } from "../domain";
+import { assertPermission, approvedLines, calculateLineAmounts, calculateLineTotal, paymentStatus as derivePaymentStatus, sumLineAmounts, type Actor, type CashPayment, type Money, type Order, type OrderType, type PaymentMethod, type PaymentStatus, type Requisition } from "../domain";
 import type { RequestContext, ServiceDependencies } from "./contracts";
-import type { Page } from "./list-query";
+import type { ListQuery, Page } from "./list-query";
+import type { CashPaymentsQuery } from "./procurement-service";
 
 /**
  * RF-1301 (Reportes, reunión 2026-09-11): filtros del reporte de requisiciones. `workId`/`period` ya
@@ -15,10 +16,49 @@ export interface ReportFilters {
   tagId?: string;
   approverId?: string;
   costCenterId?: string;
+  /** RF-707 (adenda de pagos): empresa facturada (`requisiciones.empresa_facturada_id`). */
+  billedCompanyId?: string;
   /** "YYYY-MM": se resuelve a un rango de fecha que cubre el mes completo (RF-1301, "compilado mensual"),
    *  sobre la misma columna (`requisiciones.created_at`) que ya usa el filtro de periodo de /revision. */
   period?: string;
   status?: readonly string[];
+}
+/**
+ * RF-707: filtros del reporte de ÓRDENES (comprometido vs pagado). `period` filtra por mes de
+ * `fecha_generacion`; `paymentMethod`/`paymentStatus` son los mismos filtros del panel de órdenes
+ * (`ListQuery`, RF-509). Sin aprobador ni etiqueta: una orden no los tiene.
+ */
+export interface OrderReportFilters {
+  workId?: string;
+  costCenterId?: string;
+  billedCompanyId?: string;
+  period?: string;
+  paymentMethod?: PaymentMethod;
+  paymentStatus?: PaymentStatus;
+}
+/**
+ * Una fila del reporte por ORDEN (RF-707, "comprometido vs pagado"): `total` = Σ líneas de la orden
+ * (`calculateLineTotal`, la única fuente de verdad, nunca un cálculo propio); `paidAmount` = Σ pagos
+ * vigentes (los anulados no cuentan, N1); `paymentStatus` derivado. `period` es el mes de generación:
+ * el compromiso nace cuando se genera la orden, no cuando se paga.
+ */
+export interface OrderReportRow {
+  id: string;
+  consecutive: string;
+  type: OrderType;
+  requisitionId: string;
+  requisitionConsecutive?: string;
+  generatedAt?: string;
+  period?: string;
+  workId?: string;
+  costCenterId?: string;
+  billedCompanyId?: string;
+  supplierId?: string;
+  total: Money;
+  paidAmount: Money;
+  paymentStatus: PaymentStatus;
+  paymentMethods: PaymentMethod[];
+  lastPaymentAt?: string;
 }
 /** Una fila del reporte por ÍTEM (hoja 2 del Excel, RF-1301). Los montos ya pasaron por
  *  `calculateLineAmounts` (lib/domain/rules.ts) — nunca se recalculan aguas abajo. */
@@ -54,6 +94,8 @@ export interface ReportRow {
   /** Centro de costo EFECTIVO de la requisición (UI, 2026-09-12) — ver `Requisition.costCenterId`/
    *  `resolveCostCenter` en lib/domain/rules.ts. */
   costCenterId?: string;
+  /** RF-009/RF-707: empresa facturada de la requisición (`Requisition.billedCompanyId`). */
+  billedCompanyId?: string;
   approverIds: string[];
   status: string;
   supplierIds: string[];
@@ -105,11 +147,28 @@ function toReportRow(requisition: Requisition): ReportRow {
   return {
     id: requisition.id, consecutive: requisition.consecutive, date: requisition.createdAt,
     societyId: requisition.societyId, workId: requisition.workId, tagId: requisition.tagId,
-    costCenterId: requisition.costCenterId,
+    costCenterId: requisition.costCenterId, billedCompanyId: requisition.billedCompanyId,
     approverIds: approverIdsFor(requisition), status: requisition.status, supplierIds: supplierIdsFor(requisition),
     base: amounts.base, iva: amounts.iva, total: amounts.total, items,
   };
 }
+// Una línea legacy inconsistente se reporta en 0 en vez de tumbar el reporte (mismo criterio que toReportRow).
+function orderTotal(order: Order): Money {
+  let total = 0;
+  for (const line of order.lines ?? []) { try { total += calculateLineTotal(line); } catch { /* fila legacy inconsistente */ } }
+  return total;
+}
+function toOrderReportRow(order: Order): OrderReportRow {
+  const total = orderTotal(order), paidAmount = order.paidAmount ?? 0;
+  return {
+    id: order.id, consecutive: order.consecutive, type: order.type, requisitionId: order.requisitionId, requisitionConsecutive: order.requisitionConsecutive,
+    generatedAt: order.generatedAt, period: order.generatedAt?.slice(0, 7), workId: order.workId || undefined, costCenterId: order.costCenterId,
+    billedCompanyId: order.billedCompanyId, supplierId: order.supplierId, total, paidAmount,
+    paymentStatus: order.paymentStatus ?? derivePaymentStatus(total, paidAmount), paymentMethods: order.paymentMethods ?? [], lastPaymentAt: order.lastPaymentAt,
+  };
+}
+/** Una orden `no_necesario` dejó de ser un compromiso (su gasto se anuló): no entra en "comprometido". */
+const COMMITTED_ORDER_STATUSES = ["generada", "cumplida", "no_cumplida"] as const;
 
 /**
  * RF-1301: índice de nombres para RESOLVER los ids crudos del reporte a texto legible — solo lo necesita
@@ -121,6 +180,38 @@ function toReportRow(requisition: Requisition): ReportRow {
  */
 export interface ReportCatalogNames { works: ReadonlyMap<string, string>; tags: ReadonlyMap<string, string>; societies: ReadonlyMap<string, string>; users: ReadonlyMap<string, string>; suppliers: ReadonlyMap<string, string>; costCenters: ReadonlyMap<string, string>; }
 export interface ReportCatalogSource { load(): Promise<ReportCatalogNames>; }
+
+/**
+ * RF-708 (cierre de caja, adenda A10): una fila del cierre = un pago VIGENTE con medio `efectivo` (Caja)
+ * dentro del rango, con los nombres YA resueltos en el servidor. A diferencia de `ReportRow`, aquí sí se
+ * resuelven: la pantalla de cierre no parte de un bundle con catálogos (consulta el rango bajo demanda,
+ * ver components/screens/connected/expenses.tsx) y el Excel del cierre tampoco tiene quién los traduzca
+ * después — resolverlos una vez sirve a ambos. `attachmentId` es el comprobante (adjunto `pago_orden`).
+ */
+export interface CashCloseReportRow {
+  id: string; date: string; amount: number; externalReference?: string; note?: string; attachmentId?: string; registeredBy?: string;
+  orderId: string; orderConsecutive: string; orderType: OrderType; requisitionId: string; requisitionConsecutive: string;
+  workId?: string; workName: string; costCenterId?: string; costCenterName: string; billedCompanyId?: string; billedCompanyName: string;
+  supplierId?: string; supplierName: string;
+}
+export interface CashCloseReport { from: string; to: string; costCenterId?: string; rows: CashCloseReportRow[]; total: number; }
+
+const nameOf = (map: ReadonlyMap<string, string>, id: string | undefined): string => (id ? (map.get(id) ?? "—") : "—");
+
+/** Pura (sin permisos ni I/O): la autorización y la consulta viven en `ProcurementService.listCashPayments`. */
+export function toCashCloseReport(payments: readonly CashPayment[], names: ReportCatalogNames, query: CashPaymentsQuery): CashCloseReport {
+  const rows: CashCloseReportRow[] = payments.map((payment) => ({
+    id: payment.id, date: payment.date, amount: payment.amount, externalReference: payment.externalReference, note: payment.note,
+    attachmentId: payment.attachmentId, registeredBy: payment.registeredBy,
+    orderId: payment.orderId, orderConsecutive: payment.orderConsecutive, orderType: payment.orderType,
+    requisitionId: payment.requisitionId, requisitionConsecutive: payment.requisitionConsecutive,
+    workId: payment.workId, workName: nameOf(names.works, payment.workId),
+    costCenterId: payment.costCenterId, costCenterName: nameOf(names.costCenters, payment.costCenterId),
+    billedCompanyId: payment.billedCompanyId, billedCompanyName: nameOf(names.societies, payment.billedCompanyId),
+    supplierId: payment.supplierId, supplierName: nameOf(names.suppliers, payment.supplierId),
+  }));
+  return { from: query.from, to: query.to, costCenterId: query.costCenterId || undefined, rows, total: rows.reduce((sum, row) => sum + row.amount, 0) };
+}
 
 export class ReportService {
   constructor(private readonly deps: ServiceDependencies) {}
@@ -142,6 +233,7 @@ export class ReportService {
     for (let page = 0; page < REPORT_MAX_PAGES; page++) {
       const result = await this.deps.requisitions.listVisibleTo(actor, {
         workId: filters.workId, tagId: filters.tagId, approverId: filters.approverId, costCenterId: filters.costCenterId,
+        billedCompanyId: filters.billedCompanyId,
         status: filters.status ? [...filters.status] : undefined,
         from: range?.from, to: range?.to, limit: REPORT_PAGE_LIMIT, cursor,
       });
@@ -153,6 +245,32 @@ export class ReportService {
       cursor = result.nextCursor;
     }
     return requisitions.map(toReportRow);
+  }
+
+  /**
+   * RF-707: reporte de ÓRDENES para "comprometido (Σ órdenes generadas) vs pagado (Σ pagos vigentes)".
+   * Misma puerta ("report:read") y misma visibilidad heredada del repositorio que `listReport`; los
+   * filtros van al SQL vía `ListQuery` (RF-509). Paginado con el mismo tope que el de requisiciones.
+   */
+  async listOrderReport(filters: OrderReportFilters, context: RequestContext): Promise<OrderReportRow[]> {
+    const actor = this.actor(context);
+    assertPermission(actor.roles, "report:read", this.authOrigin(context));
+    const range = filters.period ? monthRange(filters.period) : undefined;
+    const orders: Order[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < REPORT_MAX_PAGES; page++) {
+      const query: ListQuery = {
+        status: [...COMMITTED_ORDER_STATUSES], workId: filters.workId, costCenterId: filters.costCenterId, billedCompanyId: filters.billedCompanyId,
+        paymentMethod: filters.paymentMethod, paymentStatus: filters.paymentStatus,
+        from: range?.from, to: range?.to, limit: REPORT_PAGE_LIMIT, cursor,
+      };
+      const result = await this.deps.orders.listVisibleTo(actor, query);
+      if (!isPage(result)) { orders.push(...result); break; }
+      orders.push(...result.rows);
+      if (!result.nextCursor) break;
+      cursor = result.nextCursor;
+    }
+    return orders.map(toOrderReportRow);
   }
 
   /** Único punto que decide si ESTE actor puede descargar el Excel — la ruta de export lo llama antes de

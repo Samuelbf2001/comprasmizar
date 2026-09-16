@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { Actor } from "../domain";
 
-/** Tools registered by the runtime today. Approval, return and decline are excluded permanently. */
-export const MCP_TOOL_NAMES = ["consultar_requisiciones", "consultar_ordenes", "consultar_gastos", "estado_embudo", "registrar_caja_menor", "actualizar_estado_orden", "ficha_proveedor", "exportar_reporte"] as const;
+/** Tools registered by the runtime today (app/mcp/server.ts). Approval, return and decline are excluded permanently.
+ *  Adenda de pagos (A10/RF-1204): `registrar_caja_menor` se retira — la caja es `registrar_pago` con medio efectivo — y
+ *  entran `listar_centros_costo`/`crear_centro_costo`. */
+export const MCP_TOOL_NAMES = ["consultar_requisiciones", "consultar_ordenes", "consultar_gastos", "estado_embudo", "registrar_pago", "actualizar_estado_orden", "listar_centros_costo", "crear_centro_costo", "ficha_proveedor", "exportar_reporte"] as const;
 /** Production gates: require catalogue/notification adapters or the Helisa mapping before registration. */
 export const MCP_GATED_TOOL_NAMES = ["crear_requisicion", "administrar_catalogo", "reenviar_notificacion"] as const;
 export type McpToolName = (typeof MCP_TOOL_NAMES)[number];

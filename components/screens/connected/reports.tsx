@@ -1,16 +1,19 @@
 "use client";
 
-// RF-1301 (Reportes, reunión 2026-09-11): pantalla conectada de /reportes. Reemplaza el uso prestado de
-// ConnectedExpenses (mismo RouteKind que /gastos, ver el historial de components/screens/connected/data.ts)
-// por un reporte propio, centrado en REQUISICIONES (no en gastos): filtros por obra, periodo, aprobador y
-// etiqueta; descarga en Excel del resultado filtrado; y un compilado mensual agrupado por obra/centro de
-// costo, con "Aprobadas por mí" por defecto para el rol Aprobador (Juliana pidió exactamente eso en la
-// reunión). El diseño de filtros queda abierto a sumar "centro de costo" el día que exista esa entidad —
-// hoy centro de costo ≈ obra (ver ReportFilters en lib/services/report-service.ts).
-import { Fragment, useState } from "react";
+// RF-1301 (Reportes, reunión 2026-09-11): pantalla conectada de /reportes, centrada en REQUISICIONES:
+// filtros por obra, periodo, aprobador, etiqueta y centro de costo; descarga en Excel del resultado
+// filtrado; y un compilado mensual agrupado por centro de costo, con "Aprobadas por mí" por defecto para
+// el rol Aprobador (Juliana pidió exactamente eso en la reunión).
+// RF-707 (adenda de pagos): filtro por empresa facturada y un bloque de ÓRDENES — "comprometido"
+// (Σ órdenes generadas) frente a "pagado" (Σ pagos vigentes) por centro de costo y por periodo — con sus
+// propios filtros de medio y estado de pago (una requisición no tiene pagos; la orden sí).
+import { Fragment, useEffect, useState } from "react";
 import { ArrowDownToLine, Inbox, SearchX } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
+import type { OrderReportRow } from "../../../lib/services/report-service";
+import { apiRequest, friendlyErrorText } from "../../../lib/http/friendly-error";
 import { SectionTitle, Tone } from "../screen-primitives";
+import { MEDIO_PAGO_OPTIONS, PAYMENT_STATUS_LABELS } from "./payment-labels";
 import {
   emptyCatalogs,
   estadoLabel,
@@ -27,9 +30,29 @@ import {
 // mismo patrón que ya usa el resto de connected/* (p. ej. ConnectedExpenses con `canCreate`).
 const CAN_EXPORT_ROLES: readonly Role[] = ["Aprobador", "Contabilidad", "Administrador Mizar", "Administrador Sixteam"];
 
+// `billedCompanyId` ya viaja en GET /api/reports (ReportRow en lib/services/report-service.ts); el tipo
+// de shared.tsx no se toca en la ola 2, así que se extiende aquí.
+type ReportRowWithCompany = ReportRow & { billedCompanyId?: string };
+
 function namesFor(ids: string[], options: { id: string; name: string }[]): string {
   if (!ids.length) return "—";
   return ids.map((id) => options.find((option) => option.id === id)?.name ?? "—").join(", ");
+}
+
+export type CommittedVsPaidGroup = { key: string; orders: number; committed: number; paid: number };
+/** Suma comprometido (total de la orden) y pagado (pagos vigentes) por la clave que devuelva `keyOf`;
+ *  clave vacía = "sin centro de costo"/"sin periodo". Orden de aparición: quien pinta decide cómo ordenar. */
+export function groupCommittedVsPaid(rows: readonly OrderReportRow[], keyOf: (row: OrderReportRow) => string | undefined): CommittedVsPaidGroup[] {
+  const groups = new Map<string, CommittedVsPaidGroup>();
+  for (const row of rows) {
+    const key = keyOf(row) ?? "";
+    const group = groups.get(key) ?? { key, orders: 0, committed: 0, paid: 0 };
+    group.orders += 1;
+    group.committed += row.total;
+    group.paid += row.paidAmount;
+    groups.set(key, group);
+  }
+  return [...groups.values()];
 }
 
 export function ConnectedReports({
@@ -39,8 +62,10 @@ export function ConnectedReports({
   data: ReportBundle;
   role: Role;
 }) {
-  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const rows = (Array.isArray(data?.rows) ? data.rows : []) as ReportRowWithCompany[];
   const catalogs = data?.catalogs ?? emptyCatalogs;
+  const societies = catalogs.societies ?? [];
+  const costCenters = catalogs.costCenters ?? [];
   const isApprover = role === "Aprobador";
   const canExport = CAN_EXPORT_ROLES.includes(role);
 
@@ -51,6 +76,8 @@ export function ConnectedReports({
   // Centros de costo (UI, 2026-09-12): filtro adicional, independiente de "Obra" — una requisición
   // puede compartir centro con otras obras.
   const [costCenterFilter, setCostCenterFilter] = useState("");
+  // RF-707: empresa facturada (a quién viene el soporte), independiente del centro de costo.
+  const [billedCompanyFilter, setBilledCompanyFilter] = useState("");
   // RF-1301 punto 3: por defecto, un aprobador entra viendo solo lo que YA aprobó (no lo pendiente ni lo
   // declinado) — puede destildarlo para ver el resto de lo que tiene asignado en el mes.
   const [approvedByMeOnly, setApprovedByMeOnly] = useState(isApprover);
@@ -66,6 +93,7 @@ export function ConnectedReports({
       (!approverFilter || row.approverIds.includes(approverFilter)) &&
       (!tagFilter || row.tagId === tagFilter) &&
       (!costCenterFilter || row.costCenterId === costCenterFilter) &&
+      (!billedCompanyFilter || row.billedCompanyId === billedCompanyFilter) &&
       (!isApprover || !approvedByMeOnly || row.status === "aprobada"),
   );
   const total = filteredRows.reduce((sum, row) => sum + row.total, 0);
@@ -74,12 +102,54 @@ export function ConnectedReports({
   // elegido — sin periodo, "compilar" no significa nada todavía.
   const costCenterGroups = period ? groupReportRowsByCostCenter(filteredRows, catalogs) : [];
 
+  // ── Órdenes: comprometido vs pagado (RF-707) ──────────────────────────────────────────────────
+  // Se piden una vez al montar (todo lo visible para el actor, como /api/reports) y se filtran en
+  // cliente con los mismos filtros de arriba más medio/estado de pago. Sin bandera "loading": `null`
+  // sin error significa "consultando"; el efecto solo hace setState dentro de then/catch.
+  const [orderRows, setOrderRows] = useState<OrderReportRow[] | null>(null);
+  const [ordersError, setOrdersError] = useState("");
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState("");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState("");
+  useEffect(() => {
+    let active = true;
+    apiRequest<{ rows: OrderReportRow[] }>("/api/reports/orders")
+      .then((loaded) => {
+        if (active) setOrderRows(Array.isArray(loaded?.rows) ? loaded.rows : []);
+      })
+      .catch((error) => {
+        if (active) setOrdersError(friendlyErrorText(error, "No fue posible consultar las órdenes."));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  const filteredOrders = (orderRows ?? []).filter(
+    (row) =>
+      (!workFilter || row.workId === workFilter) &&
+      (!period || row.period === period) &&
+      (!costCenterFilter || row.costCenterId === costCenterFilter) &&
+      (!billedCompanyFilter || row.billedCompanyId === billedCompanyFilter) &&
+      (!paymentMethodFilter || row.paymentMethods.includes(paymentMethodFilter as OrderReportRow["paymentMethods"][number])) &&
+      (!paymentStatusFilter || row.paymentStatus === paymentStatusFilter),
+  );
+  const committed = filteredOrders.reduce((sum, row) => sum + row.total, 0);
+  const paid = filteredOrders.reduce((sum, row) => sum + row.paidAmount, 0);
+  const costCenterName = (id: string) => (id ? (costCenters.find((costCenter) => costCenter.id === id)?.name ?? "—") : "Sin centro de costo");
+  const byCostCenter = groupCommittedVsPaid(filteredOrders, (row) => row.costCenterId)
+    .sort((a, b) => costCenterName(a.key).localeCompare(costCenterName(b.key), "es"));
+  const byPeriod = groupCommittedVsPaid(filteredOrders, (row) => row.period)
+    .sort((a, b) => b.key.localeCompare(a.key));
+  const ordersLoading = orderRows === null && !ordersError;
+
   const clearFilters = () => {
     setWorkFilter("");
     setPeriod("");
     setApproverFilter("");
     setTagFilter("");
     setCostCenterFilter("");
+    setBilledCompanyFilter("");
+    setPaymentMethodFilter("");
+    setPaymentStatusFilter("");
   };
 
   const exportParams = new URLSearchParams();
@@ -87,15 +157,26 @@ export function ConnectedReports({
   if (tagFilter) exportParams.set("tagId", tagFilter);
   if (approverFilter) exportParams.set("approverId", approverFilter);
   if (costCenterFilter) exportParams.set("costCenterId", costCenterFilter);
+  if (billedCompanyFilter) exportParams.set("billedCompanyId", billedCompanyFilter);
   if (period) exportParams.set("period", period);
   const exportHref = `/api/reports/export${exportParams.size ? `?${exportParams.toString()}` : ""}`;
+
+  const balanceRow = (group: CommittedVsPaidGroup, label: string) => (
+    <tr key={group.key || "sin-clave"}>
+      <td>{label}</td>
+      <td>{group.orders}</td>
+      <td className="money">{money.format(group.committed)}</td>
+      <td className="money">{money.format(group.paid)}</td>
+      <td className="money">{money.format(group.committed - group.paid)}</td>
+    </tr>
+  );
 
   return (
     <>
       <SectionTitle
         eyebrow="Datos conectados"
         title="Reporte operativo"
-        description="Lectura autorizada de requisiciones, filtrable por obra, periodo, aprobador y etiqueta."
+        description="Lectura autorizada de requisiciones, filtrable por obra, periodo, aprobador, etiqueta, centro de costo y empresa facturada; y el comprometido frente a lo pagado por orden."
         action={
           canExport ? (
             <a className="button button-dark" href={exportHref}>
@@ -141,8 +222,17 @@ export function ConnectedReports({
             <span>Centro de costo</span>
             <select value={costCenterFilter} onChange={(event) => setCostCenterFilter(event.target.value)}>
               <option value="">Todos</option>
-              {(catalogs.costCenters ?? []).map((costCenter) => (
+              {costCenters.map((costCenter) => (
                 <option key={costCenter.id} value={costCenter.id}>{costCenter.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Empresa facturada</span>
+            <select value={billedCompanyFilter} onChange={(event) => setBilledCompanyFilter(event.target.value)}>
+              <option value="">Todas</option>
+              {societies.map((society) => (
+                <option key={society.id} value={society.id}>{society.name}</option>
               ))}
             </select>
           </label>
@@ -191,6 +281,7 @@ export function ConnectedReports({
                     <th>Fecha</th>
                     <th>Obra</th>
                     <th>Centro de costo</th>
+                    <th>Empresa facturada</th>
                     <th>Etiqueta</th>
                     <th>Aprobador(es)</th>
                     <th>Estado</th>
@@ -198,12 +289,13 @@ export function ConnectedReports({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((row: ReportRow) => (
+                  {filteredRows.map((row) => (
                     <tr key={row.id}>
                       <td>{row.consecutive}</td>
                       <td>{row.date ? formatIsoDate(row.date) : "—"}</td>
                       <td>{catalogs.works.find((work) => work.id === row.workId)?.name ?? "—"}</td>
-                      <td>{(catalogs.costCenters ?? []).find((costCenter) => costCenter.id === row.costCenterId)?.name ?? "—"}</td>
+                      <td>{costCenters.find((costCenter) => costCenter.id === row.costCenterId)?.name ?? "—"}</td>
+                      <td>{societies.find((society) => society.id === row.billedCompanyId)?.name ?? "—"}</td>
                       <td>{catalogs.tags.find((tag) => tag.id === row.tagId)?.name ?? "—"}</td>
                       <td>{namesFor(row.approverIds, catalogs.users ?? [])}</td>
                       <td>
@@ -265,6 +357,100 @@ export function ConnectedReports({
           </section>
         )}
       </div>
+      <section className="panel" data-testid="report-committed-vs-paid">
+        <div className="panel-head">
+          <div>
+            <h2>Comprometido vs pagado</h2>
+            <p className="panel-sub">
+              Órdenes generadas (lo comprometido) frente a sus pagos vigentes, con los filtros de arriba; los pagos anulados no cuentan.
+            </p>
+          </div>
+          <div className="title-actions">
+            <label className="field">
+              <span>Medio de pago</span>
+              <select value={paymentMethodFilter} onChange={(event) => setPaymentMethodFilter(event.target.value)}>
+                <option value="">Todos</option>
+                {MEDIO_PAGO_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Estado de pago</span>
+              <select value={paymentStatusFilter} onChange={(event) => setPaymentStatusFilter(event.target.value)}>
+                <option value="">Todos</option>
+                {(Object.keys(PAYMENT_STATUS_LABELS) as Array<keyof typeof PAYMENT_STATUS_LABELS>).map((status) => (
+                  <option key={status} value={status}>{PAYMENT_STATUS_LABELS[status]}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+        {ordersLoading ? (
+          <p className="muted-copy" role="status">Consultando las órdenes…</p>
+        ) : ordersError ? (
+          <p className="field-error" role="alert">{ordersError}</p>
+        ) : (
+          <>
+            <div className="stats-strip">
+              <div>
+                <span>Comprometido</span>
+                <b data-testid="report-committed">{money.format(committed)}</b>
+              </div>
+              <div>
+                <span>Pagado</span>
+                <b data-testid="report-paid">{money.format(paid)}</b>
+              </div>
+              <div>
+                <span>Saldo por pagar</span>
+                <b data-testid="report-balance">{money.format(committed - paid)}</b>
+              </div>
+              <div>
+                <span>Órdenes</span>
+                <b data-testid="report-orders-count">{filteredOrders.length}</b>
+              </div>
+            </div>
+            {filteredOrders.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-icon"><SearchX aria-hidden="true" size={21} /></span>
+                <h3>Sin órdenes para estos filtros</h3>
+                <p>Ajusta o limpia los filtros para ver el comprometido y lo pagado.</p>
+              </div>
+            ) : (
+              <>
+                <div className="table-wrap" data-testid="report-by-costcenter">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Centro de costo</th>
+                        <th>Órdenes</th>
+                        <th>Comprometido</th>
+                        <th>Pagado</th>
+                        <th>Saldo</th>
+                      </tr>
+                    </thead>
+                    <tbody>{byCostCenter.map((group) => balanceRow(group, costCenterName(group.key)))}</tbody>
+                  </table>
+                </div>
+                <div className="table-wrap" data-testid="report-by-period">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Periodo (mes de la orden)</th>
+                        <th>Órdenes</th>
+                        <th>Comprometido</th>
+                        <th>Pagado</th>
+                        <th>Saldo</th>
+                      </tr>
+                    </thead>
+                    <tbody>{byPeriod.map((group) => balanceRow(group, group.key || "Sin fecha"))}</tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </section>
     </>
   );
 }

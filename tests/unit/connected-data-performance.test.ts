@@ -118,64 +118,29 @@ describe("H2: el detalle de una requisición pide /detail + catálogos, sin llam
   });
 });
 
-describe("H2: gastos hace una sola llamada de adjuntos con todos los ids de caja menor", () => {
-  it("agrupa los adjuntos por entityId a partir de UNA respuesta por lote", async () => {
-    const pettyRows = [
-      { id: "petty-1", workId: "work-1", date: "2026-08-01", concept: "Uno", tagId: "tag-1", amount: 10000 },
-      { id: "petty-2", workId: "work-1", date: "2026-08-02", concept: "Dos", tagId: "tag-1", amount: 20000 },
-      { id: "petty-3", workId: "work-1", date: "2026-08-03", concept: "Tres", tagId: "tag-1", amount: 30000 },
-    ];
-    const attachmentsBatchHandler = vi.fn(() =>
-      jsonResponse({
-        attachments: [
-          { id: "att-1", entity: "caja_menor", entityId: "petty-1", type: "soporte", name: "r1.pdf", mimeType: "application/pdf", sizeBytes: 1 },
-          { id: "att-2", entity: "caja_menor", entityId: "petty-3", type: "soporte", name: "r3.pdf", mimeType: "application/pdf", sizeBytes: 1 },
-        ],
-      }),
-    );
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const path = url.split("?")[0];
-      if (path === "/api/expenses") return jsonResponse([]);
-      if (path === "/api/catalogs") return jsonResponse(catalogsPayload);
-      if (path === "/api/petty-cash") return jsonResponse(pettyRows);
-      // Cajas/ingresos (2026-09-12): loadRoute("expenses") ahora también pide /api/incomes para el
-      // mismo rol que ya lee caja menor (income:register comparte ese conjunto de roles).
-      if (path === "/api/incomes") return jsonResponse([]);
-      if (path === "/api/attachments/caja_menor") return attachmentsBatchHandler();
-      throw new Error(`Fetch no simulado para "${path}"`);
-    });
-
-    const bundle = (await loadRoute("/gastos", "Contabilidad")) as {
-      pettyCash: Array<{ id: string }>;
-      pettyAttachments: Record<string, Array<{ id: string }>>;
-    };
-
-    const attachmentCalls = fetchMock.mock.calls
-      .map(([input]) => String(input))
-      .filter((url) => url.startsWith("/api/attachments/caja_menor"));
-    expect(attachmentCalls).toHaveLength(1);
-    const requestedIds = new URL(attachmentCalls[0], "http://localhost").searchParams.get("ids");
-    expect(requestedIds?.split(",").sort()).toEqual(["petty-1", "petty-2", "petty-3"]);
-
-    expect(bundle.pettyCash).toHaveLength(3);
-    expect(bundle.pettyAttachments["petty-1"]).toHaveLength(1);
-    expect(bundle.pettyAttachments["petty-2"] ?? []).toHaveLength(0);
-    expect(bundle.pettyAttachments["petty-3"]).toHaveLength(1);
-  });
-
-  it("no llama al lote de adjuntos cuando no hay filas de caja menor", async () => {
+// Adenda de pagos (A10): /gastos es "Cierre de caja" y consulta los pagos por caja bajo demanda desde
+// la pantalla; la carga de ruta ya no pide caja menor, ingresos ni el lote de adjuntos (rutas retiradas
+// con 410 — pedirlas tumbaría la pantalla entera).
+describe("A10: /gastos solo carga el libro de gastos y los catálogos", () => {
+  it("no pide /api/petty-cash, /api/incomes ni adjuntos de caja_menor, y deja esos campos vacíos", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
       routedFetch({
-        "/api/expenses": () => jsonResponse([]),
+        "/api/expenses": () => jsonResponse([{ id: "exp-1", workId: "work-1", origin: "requisicion", referenceId: "r-1", orderDate: "2026-09-01", total: 1000 }]),
         "/api/catalogs": () => jsonResponse(catalogsPayload),
-        "/api/petty-cash": () => jsonResponse([]),
-        "/api/incomes": () => jsonResponse([]),
       }),
     );
-    await loadRoute("/gastos", "Contabilidad");
-    const calledUrls = fetchMock.mock.calls.map(([input]) => String(input));
-    expect(calledUrls.some((url) => url.startsWith("/api/attachments/caja_menor"))).toBe(false);
+    const bundle = (await loadRoute("/gastos", "Contabilidad")) as {
+      expenses: Array<{ id: string }>;
+      pettyCash: unknown[];
+      pettyAttachments: Record<string, unknown[]>;
+      incomes?: unknown[];
+    };
+    const calledPaths = fetchMock.mock.calls.map(([input]) => String(input).split("?")[0]);
+    expect(calledPaths.sort()).toEqual(["/api/catalogs", "/api/expenses"]);
+    expect(bundle.expenses).toHaveLength(1);
+    expect(bundle.pettyCash).toEqual([]);
+    expect(bundle.pettyAttachments).toEqual({});
+    expect(bundle.incomes).toEqual([]);
   });
 });
 

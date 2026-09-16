@@ -97,37 +97,6 @@ export async function loadMoreRequisitions(
   return (await readJson(requisitionsPageUrl(pathname, cursor))) as RequisitionsPage;
 }
 
-// H2 (docs/plan-rendimiento.md): adjuntos por lote (`/api/attachments/:entity?ids=a,b,c`, 1–100
-// uuids) en vez de una llamada por fila — hoy solo caja menor lo necesita (detalle de
-// requisición ya viene resuelto en `/api/requisitions/:id/detail`, con `entity`/`entityId` por
-// fila). Se trocea de 100 en 100 por si algún día hay más de 100 filas de caja menor visibles.
-const ATTACHMENTS_BATCH_SIZE = 100;
-
-async function fetchAttachmentsBatch(
-  entity: "caja_menor",
-  ids: string[],
-): Promise<Record<string, AttachmentRow[]>> {
-  if (ids.length === 0) return {};
-  const batches: string[][] = [];
-  for (let index = 0; index < ids.length; index += ATTACHMENTS_BATCH_SIZE) {
-    batches.push(ids.slice(index, index + ATTACHMENTS_BATCH_SIZE));
-  }
-  const responses = await Promise.all(
-    batches.map((batch) =>
-      readJson(`/api/attachments/${entity}?ids=${batch.map(encodeURIComponent).join(",")}`),
-    ),
-  );
-  const grouped: Record<string, AttachmentRow[]> = {};
-  for (const response of responses) {
-    const rows = (response as { attachments?: AttachmentRow[] }).attachments;
-    if (!Array.isArray(rows)) continue;
-    for (const attachment of rows) {
-      (grouped[attachment.entityId] ??= []).push(attachment);
-    }
-  }
-  return grouped;
-}
-
 export async function loadRoute(pathname: string, role: Role): Promise<unknown> {
   const kind = routeKind(pathname);
   if (kind === "dashboard") {
@@ -215,32 +184,20 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
     } satisfies OrdersBundle;
   }
   if (kind === "expenses") {
-    // income:register (revisor/contabilidad/admin_sixteam) es el MISMO conjunto de roles que ya lee
-    // caja menor — se reutiliza el nombre existente en vez de declarar una lista aparte idéntica.
-    const canReadPettyCash = [
-      "Revisor",
-      "Contabilidad",
-      "Administrador Sixteam",
-    ].includes(role);
-    const [expenses, catalogs, pettyCash, incomes] = await Promise.all([
+    // Adenda de pagos (A10): "Cierre de caja" consulta los pagos por caja bajo demanda
+    // (`/api/reports/cash-close?from&to`, ver expenses.tsx); aquí solo viaja el libro de gastos con
+    // sus catálogos. Caja menor directa, ingresos y adjuntos de caja_menor ya no se piden (rutas
+    // retiradas con 410); los campos siguen en el bundle, vacíos, para no tocar shared.tsx.
+    const [expenses, catalogs] = await Promise.all([
       readJson("/api/expenses"),
       getCatalogs(),
-      canReadPettyCash ? readJson("/api/petty-cash") : Promise.resolve([]),
-      canReadPettyCash ? readJson("/api/incomes") : Promise.resolve([]),
     ]);
-    const pettyRows = pettyCash as PettyRow[];
-    // H2: una sola llamada por lote (`/api/attachments/caja_menor?ids=...`) en vez de una por
-    // fila de caja menor — antes crecía linealmente con el histórico.
-    const pettyAttachments = await fetchAttachmentsBatch(
-      "caja_menor",
-      pettyRows.map((row) => row.id),
-    );
     return {
       expenses: expenses as ExpenseRow[],
       catalogs: catalogs as CatalogData,
-      pettyCash: pettyRows,
-      pettyAttachments,
-      incomes: incomes as IncomeRow[],
+      pettyCash: [] as PettyRow[],
+      pettyAttachments: {},
+      incomes: [] as IncomeRow[],
     } satisfies ExpenseBundle;
   }
   if (kind === "reports") {

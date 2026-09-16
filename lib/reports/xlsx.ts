@@ -17,10 +17,12 @@ export async function buildProvisionalHelisaXlsx(expenses: readonly ReportExpens
   // "provisional" en minúscula a propósito: el marcador ALL-CAPS de esta exportación (evaluado en
   // producción como "identificador técnico a la vista", ver informe de la tarea de fechas de gasto)
   // se retiró del literal del PDF de socios; este mismo criterio aplica aquí.
-  const sheet = workbook.addWorksheet("Gastos provisional"); sheet.addRow(["Exportación provisional V0.1 - pendiente validación Helisa"]); sheet.mergeCells("A1:I1");
-  sheet.addRow(["Fecha orden", "Fecha pago", "Obra", "Etiqueta", "Proveedor", "Origen", "Base COP", "IVA COP", "Total COP"]);
-  for (const row of expenses) sheet.addRow([row.orderDate, row.date ?? "", row.work, row.tag ?? "", row.supplier ?? "", row.origin, row.base, row.iva, row.total]);
-  const total = expenses.reduce((sum, row) => sum + row.total, 0); sheet.addRow(["", "", "", "", "", "TOTAL", "", "", total]); sheet.getRow(2).font = { bold: true }; sheet.columns.forEach((column) => { column.width = 18; });
+  const sheet = workbook.addWorksheet("Gastos provisional"); sheet.addRow(["Exportación provisional V0.1 - pendiente validación Helisa"]); sheet.mergeCells("A1:L1");
+  // RF-707: empresa facturada, estado de pago y pagado (Σ pagos vigentes de la orden) al lado del total.
+  sheet.addRow(["Fecha orden", "Fecha pago", "Obra", "Etiqueta", "Proveedor", "Empresa facturada", "Origen", "Estado de pago", "Base COP", "IVA COP", "Total COP", "Pagado COP"]);
+  for (const row of expenses) sheet.addRow([row.orderDate, row.date ?? "", row.work, row.tag ?? "", row.supplier ?? "", row.billedCompany ?? "", row.origin, row.paymentStatus ?? "", row.base, row.iva, row.total, row.paid ?? ""]);
+  const total = expenses.reduce((sum, row) => sum + row.total, 0), paid = expenses.reduce((sum, row) => sum + (row.paid ?? 0), 0);
+  sheet.addRow(["", "", "", "", "", "", "", "TOTAL", "", "", total, paid]); sheet.getRow(2).font = { bold: true }; sheet.columns.forEach((column) => { column.width = 18; });
   return workbook.xlsx.writeBuffer();
 }
 
@@ -44,13 +46,15 @@ export async function buildRequisitionReportXlsx(rows: readonly ReportRow[], nam
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Plataforma Mizar";
   const summary = workbook.addWorksheet("Reporte");
-  const headers = ["Consecutivo", "Fecha", "Empresa", "Obra", "Centro de costo", "Etiqueta", "Aprobador(es)", "Estado", "Proveedor(es)", "Base COP", "IVA COP", "Total COP"];
+  // RF-707: "Empresa facturada" (a quién viene el soporte) junto al centro de costo; "Empresa" sigue
+  // siendo la sociedad de la requisición.
+  const headers = ["Consecutivo", "Fecha", "Empresa", "Obra", "Centro de costo", "Empresa facturada", "Etiqueta", "Aprobador(es)", "Estado", "Proveedor(es)", "Base COP", "IVA COP", "Total COP"];
   summary.addRow(headers);
   summary.getRow(1).font = { bold: true };
   const writeRow = (row: ReportRow) =>
     summary.addRow([
       row.consecutive, row.date ? row.date.slice(0, 10) : "", nameOf(names.societies, row.societyId), nameOf(names.works, row.workId),
-      nameOf(names.costCenters, row.costCenterId), nameOf(names.tags, row.tagId), namesJoined(names.users, row.approverIds), row.status,
+      nameOf(names.costCenters, row.costCenterId), nameOf(names.societies, row.billedCompanyId), nameOf(names.tags, row.tagId), namesJoined(names.users, row.approverIds), row.status,
       namesJoined(names.suppliers, row.supplierIds), row.base, row.iva, row.total,
     ]);
   const grandTotal = { base: 0, iva: 0, total: 0 };
@@ -66,13 +70,13 @@ export async function buildRequisitionReportXlsx(rows: readonly ReportRow[], nam
     for (const [costCenterId, groupRows] of groups) {
       for (const row of groupRows) writeRow(row);
       const subtotal = groupRows.reduce((sum, row) => ({ base: sum.base + row.base, iva: sum.iva + row.iva, total: sum.total + row.total }), { base: 0, iva: 0, total: 0 });
-      const subtotalRow = summary.addRow(["", "", "", "", `Subtotal ${nameOf(names.costCenters, costCenterId)}`, "", "", "", "", subtotal.base, subtotal.iva, subtotal.total]);
+      const subtotalRow = summary.addRow(["", "", "", "", `Subtotal ${nameOf(names.costCenters, costCenterId)}`, "", "", "", "", "", subtotal.base, subtotal.iva, subtotal.total]);
       subtotalRow.font = { bold: true };
     }
   } else {
     for (const row of rows) writeRow(row);
   }
-  const totalRow = summary.addRow(["", "", "", "", "", "", "", "", "TOTAL GENERAL", grandTotal.base, grandTotal.iva, grandTotal.total]);
+  const totalRow = summary.addRow(["", "", "", "", "", "", "", "", "", "TOTAL GENERAL", grandTotal.base, grandTotal.iva, grandTotal.total]);
   totalRow.font = { bold: true };
   summary.columns.forEach((column) => { column.width = 20; });
 
