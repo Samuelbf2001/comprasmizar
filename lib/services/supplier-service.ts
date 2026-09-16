@@ -1,4 +1,4 @@
-import { DomainError, normalizeIdentification, type Actor, type BeneficiaryInput, type Supplier, type SupplierBankDetails, type SupplierContact, type SupplierDocument, type SupplierDocumentType, type SupplierIdentificationType, type SupplierOrderHistory } from "../domain";
+import { DomainError, hasPermission, normalizeIdentification, type Actor, type BeneficiaryInput, type Supplier, type SupplierBankDetails, type SupplierContact, type SupplierDocument, type SupplierDocumentType, type SupplierIdentificationType, type SupplierOrderHistory } from "../domain";
 
 export const SUPPLIER_DOCUMENT_BUCKET = "proveedor-documentos-privados";
 export const SUPPLIER_DOCUMENT_TYPES = ["rut", "camara_comercio", "certificacion_bancaria", "certificado_calidad"] as const;
@@ -52,23 +52,24 @@ export function resolveSupplierIdentity(value: Pick<SupplierWrite, "nit" | "iden
 
 export class SupplierService {
   constructor(private readonly deps: SupplierServiceDependencies) {}
-  private async canManage(actor: Actor, tx: SupplierTransaction): Promise<void> {
-    if (actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam")) return;
-    if (actor.roles.includes("admin_mizar") && await tx.features.isEnabled("catalogos_admin_mizar")) return;
+  // H11 (docs/qa/QA-pagos-y-caja.md): admin_mizar entraba por "catalogos_admin_mizar" (autoservicio de
+  // TODO el catálogo, apagado por defecto) en vez de por su propio permiso — RF-605 dice que Mizar
+  // administra proveedores sin depender de ese flag. `hasPermission(..., "supplier:manage")` cubre
+  // admin_mizar (rules.ts) y también revisor/admin_sixteam, que ya la tenían por su propio camino;
+  // `tx.features` se deja sin usar aquí a propósito (el flag sigue gobernando el resto del catálogo).
+  private canManage(actor: Actor): void {
+    if (actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage")) return;
     throw new DomainError("FORBIDDEN", "No puede administrar proveedores");
   }
-  private async canRead(actor: Actor, tx: SupplierTransaction): Promise<void> {
-    if (actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam")) return;
-    if (actor.roles.includes("admin_mizar") && await tx.features.isEnabled("catalogos_admin_mizar")) return;
+  private canRead(actor: Actor): void {
+    if (actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage")) return;
     throw new DomainError("FORBIDDEN", "No puede consultar proveedores");
   }
-  private async canReadBank(actor: Actor, tx: SupplierTransaction): Promise<boolean> {
-    if (actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam")) return true;
-    return actor.roles.includes("admin_mizar") && await tx.features.isEnabled("catalogos_admin_mizar");
+  private canReadBank(actor: Actor): boolean {
+    return actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage");
   }
-  private async access(actor: Actor, tx: SupplierTransaction): Promise<SupplierAccess> {
-    const mizarEnabled = actor.roles.includes("admin_mizar") && await tx.features.isEnabled("catalogos_admin_mizar");
-    const canManage = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || mizarEnabled;
+  private access(actor: Actor): SupplierAccess {
+    const canManage = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage");
     return { canManage, canReadBank: canManage || actor.roles.includes("contabilidad") };
   }
   private async audit(tx: SupplierTransaction, event: string, supplierId: string, actor: Actor, data: Record<string, unknown>): Promise<void> {
@@ -86,22 +87,22 @@ export class SupplierService {
   private path(supplierId: string, documentId: string, name: string): string { return `proveedores/${supplierId}/${documentId}/${name}`; }
 
   async list(actor: Actor): Promise<{ suppliers: SupplierView[]; access: SupplierAccess }> {
-    return this.deps.transactions.transaction(undefined, async (tx) => { await this.canRead(actor, tx); return { suppliers: (await tx.suppliers.list()).map((supplier) => this.view(supplier, false)), access: await this.access(actor, tx) }; });
+    return this.deps.transactions.transaction(undefined, async (tx) => { this.canRead(actor); return { suppliers: (await tx.suppliers.list()).map((supplier) => this.view(supplier, false)), access: this.access(actor) }; });
   }
   async get(supplierId: string, actor: Actor): Promise<{ supplier: SupplierView; orders: SupplierOrderHistory[]; documents: PublicDocument[]; access: SupplierAccess }> {
-    return this.deps.transactions.transaction(supplierId, async (tx) => { await this.canRead(actor, tx); const supplier = await tx.suppliers.get(supplierId); if (!supplier) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const access = await this.access(actor, tx); const [orders, documents] = await Promise.all([tx.suppliers.listOrders(supplierId), tx.suppliers.listDocuments(supplierId)]); return { supplier: this.view(supplier, access.canReadBank), orders, documents: documents.map(safeDocument), access }; });
+    return this.deps.transactions.transaction(supplierId, async (tx) => { this.canRead(actor); const supplier = await tx.suppliers.get(supplierId); if (!supplier) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const access = this.access(actor); const [orders, documents] = await Promise.all([tx.suppliers.listOrders(supplierId), tx.suppliers.listDocuments(supplierId)]); return { supplier: this.view(supplier, access.canReadBank), orders, documents: documents.map(safeDocument), access }; });
   }
   async create(value: SupplierWrite & { name: string }, actor: Actor): Promise<SupplierView> {
     const identity = resolveSupplierIdentity(value);
-    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.canManage(actor, tx); const created = await tx.suppliers.create({ name: value.name, ...identity, pendingNormalization: value.pendingNormalization ?? false, contact: value.contact ?? {}, bankDetails: value.bankDetails ?? {}, active: value.active ?? true }); await this.audit(tx, "creado", created.id, actor, { nitConfigured: Boolean(created.nit), ...identitySnapshot(created), contactConfigured: Object.values(created.contact).some(Boolean), active: created.active }); return this.view(created, false); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o identificación"); throw error; }
+    try { return await this.deps.transactions.transaction(undefined, async (tx) => { this.canManage(actor); const created = await tx.suppliers.create({ name: value.name, ...identity, pendingNormalization: value.pendingNormalization ?? false, contact: value.contact ?? {}, bankDetails: value.bankDetails ?? {}, active: value.active ?? true }); await this.audit(tx, "creado", created.id, actor, { nitConfigured: Boolean(created.nit), ...identitySnapshot(created), contactConfigured: Object.values(created.contact).some(Boolean), active: created.active }); return this.view(created, false); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o identificación"); throw error; }
   }
   async update(supplierId: string, value: SupplierWrite, actor: Actor): Promise<SupplierView> {
-    try { return await this.deps.transactions.transaction(supplierId, async (tx) => { await this.canManage(actor, tx); const before = await tx.suppliers.get(supplierId); if (!before) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const touchesIdentity = value.nit !== undefined || value.identification !== undefined || value.identificationType !== undefined; const after = await tx.suppliers.update(supplierId, touchesIdentity ? { ...value, ...resolveSupplierIdentity(value, before) } : value); if (!after) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); await this.audit(tx, "actualizado", supplierId, actor, { before: { name: before.name, nitConfigured: Boolean(before.nit), ...identitySnapshot(before), contactConfigured: Object.values(before.contact).some(Boolean), bankDetails: redactBankDetails(before.bankDetails), active: before.active }, after: { name: after.name, nitConfigured: Boolean(after.nit), ...identitySnapshot(after), contactConfigured: Object.values(after.contact).some(Boolean), bankDetails: redactBankDetails(after.bankDetails), active: after.active } }); return this.view(after, await this.canReadBank(actor, tx)); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o identificación"); throw error; }
+    try { return await this.deps.transactions.transaction(supplierId, async (tx) => { this.canManage(actor); const before = await tx.suppliers.get(supplierId); if (!before) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const touchesIdentity = value.nit !== undefined || value.identification !== undefined || value.identificationType !== undefined; const after = await tx.suppliers.update(supplierId, touchesIdentity ? { ...value, ...resolveSupplierIdentity(value, before) } : value); if (!after) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); await this.audit(tx, "actualizado", supplierId, actor, { before: { name: before.name, nitConfigured: Boolean(before.nit), ...identitySnapshot(before), contactConfigured: Object.values(before.contact).some(Boolean), bankDetails: redactBankDetails(before.bankDetails), active: before.active }, after: { name: after.name, nitConfigured: Boolean(after.nit), ...identitySnapshot(after), contactConfigured: Object.values(after.contact).some(Boolean), bankDetails: redactBankDetails(after.bankDetails), active: after.active } }); return this.view(after, this.canReadBank(actor)); }); } catch (error) { if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o identificación"); throw error; }
   }
   /** RF-606: búsqueda por identificación en los formularios (interno, público, Flow) — `null` si no existe. Mismo permiso de lectura que `get`. */
   async findByIdentification(type: SupplierIdentificationType, identification: string, actor: Actor): Promise<SupplierView | null> {
     if (!normalizeIdentification(identification)) throw new DomainError("INVALID_INPUT", "La identificación debe tener al menos un dígito o letra");
-    return this.deps.transactions.transaction(undefined, async (tx) => { await this.canRead(actor, tx); const found = await tx.suppliers.findByIdentification(type, identification.trim()); return found ? this.view(found, false) : null; });
+    return this.deps.transactions.transaction(undefined, async (tx) => { this.canRead(actor); const found = await tx.suppliers.findByIdentification(type, identification.trim()); return found ? this.view(found, false) : null; });
   }
   /**
    * RF-606 (alta rápida desde la captura interna, S2): si la identificación ya existe se enlaza
@@ -116,7 +117,7 @@ export class SupplierService {
     if (!name) throw new DomainError("INVALID_INPUT", "El nombre del beneficiario es obligatorio");
     try {
       return await this.deps.transactions.transaction(undefined, async (tx) => {
-        await this.canManage(actor, tx);
+        this.canManage(actor);
         const existing = await tx.suppliers.findByIdentification(input.identificationType, identification);
         if (existing) return { supplier: this.view(existing, false), created: false };
         const created = await tx.suppliers.create({ name, ...resolveSupplierIdentity({ identificationType: input.identificationType, identification }), pendingNormalization: true, contact: input.phone?.trim() ? { phone: input.phone.trim() } : {}, bankDetails: {}, active: true });
@@ -127,12 +128,12 @@ export class SupplierService {
   }
   async prepareDocument(supplierId: string, value: SupplierDocumentUpload, actor: Actor): Promise<{ document: PublicDocument; upload: { url: string; method: "PUT"; multipart: { cacheControl: "3600"; fileField: "" } } }> {
     const validated = this.validateUpload(value), documentId = this.deps.ids.next(), path = this.path(supplierId, documentId, validated.name);
-    return this.deps.transactions.transaction(supplierId, async (tx) => { await this.canManage(actor, tx); if (!await tx.suppliers.get(supplierId)) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const url = await this.deps.storage.createUploadUrl(path); return { document: { id: documentId, type: value.type, name: validated.name, mimeType: validated.mimeType, sizeBytes: validated.sizeBytes, uploadedAt: this.deps.clock.now().toISOString() }, upload: { url: url.url, method: "PUT", multipart: { cacheControl: "3600", fileField: "" } } }; });
+    return this.deps.transactions.transaction(supplierId, async (tx) => { this.canManage(actor); if (!await tx.suppliers.get(supplierId)) throw new DomainError("NOT_FOUND", "Proveedor no encontrado"); const url = await this.deps.storage.createUploadUrl(path); return { document: { id: documentId, type: value.type, name: validated.name, mimeType: validated.mimeType, sizeBytes: validated.sizeBytes, uploadedAt: this.deps.clock.now().toISOString() }, upload: { url: url.url, method: "PUT", multipart: { cacheControl: "3600", fileField: "" } } }; });
   }
   async completeDocument(supplierId: string, documentId: string, value: SupplierDocumentUpload, actor: Actor): Promise<{ document: PublicDocument }> {
     const validated = this.validateUpload(value), path = this.path(supplierId, documentId, validated.name);
     return this.deps.transactions.transaction(supplierId, async (tx) => {
-      await this.canManage(actor, tx);
+      this.canManage(actor);
       if (!await tx.suppliers.get(supplierId)) throw new DomainError("NOT_FOUND", "Proveedor no encontrado");
       const existing = await tx.suppliers.getDocument(supplierId, documentId);
       if (existing) {
@@ -148,6 +149,6 @@ export class SupplierService {
     });
   }
   async downloadDocument(supplierId: string, documentId: string, actor: Actor): Promise<string> {
-    return this.deps.transactions.transaction(supplierId, async (tx) => { await this.canRead(actor, tx); const document = await tx.suppliers.getDocument(supplierId, documentId); if (!document) throw new DomainError("NOT_FOUND", "Documento no encontrado"); await this.audit(tx, "documento_descargado", supplierId, actor, { documentId, type: document.type }); return this.deps.storage.createDownloadUrl(document.storagePath, 60); });
+    return this.deps.transactions.transaction(supplierId, async (tx) => { this.canRead(actor); const document = await tx.suppliers.getDocument(supplierId, documentId); if (!document) throw new DomainError("NOT_FOUND", "Documento no encontrado"); await this.audit(tx, "documento_descargado", supplierId, actor, { documentId, type: document.type }); return this.deps.storage.createDownloadUrl(document.storagePath, 60); });
   }
 }

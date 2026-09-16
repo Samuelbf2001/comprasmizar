@@ -99,6 +99,9 @@ const HARNESSES = [
   path.join(ROOT, "supabase", "tests", "obra_opcional_centros_no_obra_verification.sql"),
   // N4 (2026-09-15, RF-601): la razón social solo es única entre empresas (NIT); dos personas homónimas conviven.
   path.join(ROOT, "supabase", "tests", "proveedores_homonimos_verification.sql"),
+  // QA adversarial de pagos y caja, H2 (2026-09-16): el teléfono del solicitante externo es opcional;
+  // el CHECK de requisiciones solo puede seguir exigiendo el nombre.
+  path.join(ROOT, "supabase", "tests", "telefono_externo_opcional_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

@@ -418,12 +418,25 @@ export class ProcurementService {
    * mover nada se comprueba que este actor pueda aprobar ESTA requisición (aprobador asignado, o
    * admin_sixteam): si no, fallaría a mitad de camino con la requisición ya en aprobación y sin aviso a
    * su aprobador real.
+   *
+   * H4 (docs/qa/QA-pagos-y-caja.md): la cabecera no es el único aprobador posible — el reparto por ítem
+   * (11-sep) deja aprobadores DISTINTOS en `items[].approverId`. Si alguno no es el actor, la validación
+   * tiene que rechazar ANTES de llamar a `sendForApproval`: hacerlo después (dentro de `approve()`, que
+   * ya corre en su propia transacción) dejaba la requisición en `en_aprobacion` con `notifyApprovers:
+   * false` — nadie se enteraba de que había algo pendiente. `pendingApproverIds` (mismo criterio que usa
+   * `approve()` para decidir si ya puede cerrar) sobre los ítems TAL COMO están antes de enviar a
+   * aprobación da la lista completa de a quién le toca decidir.
    */
   async sendAndApproveAsMaster(id: string, context: RequestContext): Promise<Requisition> {
     const actor = this.actor(context); assertCanSelfApprove(actor);
     assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
     const requisition = await this.requisition(id);
-    if (!actor.roles.includes("admin_sixteam") && requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "Para aprobar en un solo paso debe figurar como aprobador de la requisición");
+    const omnipotente = actor.roles.includes("admin_sixteam");
+    if (!omnipotente && requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "Para aprobar en un solo paso debe figurar como aprobador de la requisición");
+    if (!omnipotente) {
+      const otros = pendingApproverIds(requisition.items, requisition.approverId).filter((aprobador) => aprobador !== actor.id);
+      if (otros.length) throw new DomainError("APPROVAL_PENDING_OTHERS", `Falta${otros.length > 1 ? "n" : ""} ${otros.length} aprobador(es) de ítem distintos de quien radica`);
+    }
     await this.sendForApproval(id, context, { notifyApprovers: false });
     return this.approve(id, context);
   }

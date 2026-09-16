@@ -23,7 +23,18 @@ values
   ('10000000-0000-4000-8000-000000000005', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'admin-mizar.demo@mizar.test', extensions.crypt('local-only-change-me', extensions.gen_salt('bf')), now(), '{"provider":"email","providers":["email"]}', '{}', now(), now()),
   ('10000000-0000-4000-8000-000000000006', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'admin-sixteam.demo@mizar.test', extensions.crypt('local-only-change-me', extensions.gen_salt('bf')), now(), '{"provider":"email","providers":["email"]}', '{}', now(), now()),
   ('10000000-0000-4000-8000-000000000007', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'juliana.demo@mizar.test', extensions.crypt('local-only-change-me', extensions.gen_salt('bf')), now(), '{"provider":"email","providers":["email"]}', '{}', now(), now())
-on conflict (id) do update set email = excluded.email, updated_at = excluded.updated_at;
+-- H8 (docs/qa/QA-pagos-y-caja.md): un cluster local sembrado ANTES del 15-sep tiene estas 7 cuentas
+-- bajo UUIDs viejos (formato `…-0000-0000-…`, cambiado a `…-4000-8000-…`). `on conflict (id)` no
+-- detecta ESE choque -- el id nuevo no colisiona con nada -- así que Postgres intenta el INSERT de
+-- verdad y revienta contra `auth_users_email_unico_ci` (202609110001). El conflicto real es por
+-- CORREO, no por id: se ataca por ahí, y el `where auth.users.id = excluded.id` deja el UPDATE como
+-- no-op (la cuenta vieja queda intacta, con su id de siempre) en vez de intentar reasignarle un id
+-- nuevo -- lo que arrastraría en cascada a `usuario_roles`, `requisiciones.solicitante_id`, etc. sin
+-- ON UPDATE CASCADE. Refrescar contraseña/estado en una cuenta vieja sin poder renumerarla es la
+-- limitación aceptada: `--reset` sigue siendo el camino para un cluster que ya arrastra datos reales
+-- bajo esos ids viejos.
+on conflict ((lower(email))) do update set encrypted_password = excluded.encrypted_password, updated_at = excluded.updated_at
+where auth.users.id = excluded.id;
 
 -- Roles según la reunión del 2026-08-31: Daniel revisa y fija obra/proveedor; Nelson y Juliana
 -- aprueban; Claudia es contabilidad.
@@ -35,16 +46,26 @@ insert into public.usuarios (id, nombre, email, estado) values
   ('10000000-0000-4000-8000-000000000005', 'Admin Mizar Demo', 'admin-mizar.demo@mizar.test', 'activo'),
   ('10000000-0000-4000-8000-000000000006', 'Admin Sixteam', 'admin-sixteam.demo@mizar.test', 'activo'),
   ('10000000-0000-4000-8000-000000000007', 'Juliana Demo', 'juliana.demo@mizar.test', 'activo')
-on conflict (id) do update set nombre = excluded.nombre, email = excluded.email, estado = excluded.estado;
+-- Mismo criterio que arriba: `usuarios` YA tenía `unique (email)` (202609110001) y el mismo choque de
+-- id-viejo-vs-nuevo la revienta un paso más adelante si se sigue apuntando el conflicto a (id).
+on conflict (email) do update set nombre = excluded.nombre, estado = excluded.estado
+where usuarios.id = excluded.id;
 
-insert into public.usuario_roles (usuario_id, rol) values
-  ('10000000-0000-4000-8000-000000000001', 'solicitante'),
-  ('10000000-0000-4000-8000-000000000002', 'revisor'),
-  ('10000000-0000-4000-8000-000000000003', 'aprobador'),
-  ('10000000-0000-4000-8000-000000000004', 'contabilidad'),
-  ('10000000-0000-4000-8000-000000000005', 'admin_mizar'),
-  ('10000000-0000-4000-8000-000000000006', 'admin_sixteam'),
-  ('10000000-0000-4000-8000-000000000007', 'aprobador')
+-- Resuelto por CORREO contra `usuarios`, no por id literal: si una cuenta de arriba conservó su id
+-- viejo (choque de correo, ver el comentario de auth.users), este insert le asigna el rol al id que
+-- REALMENTE tiene hoy esa cuenta, en vez de a un id nuevo que podría no existir todavía y violar la FK.
+insert into public.usuario_roles (usuario_id, rol)
+select u.id, r.rol::public.rol_usuario
+from public.usuarios u
+join (values
+  ('solicitante.demo@mizar.test', 'solicitante'),
+  ('daniel.demo@mizar.test', 'revisor'),
+  ('nelson.demo@mizar.test', 'aprobador'),
+  ('claudia.demo@mizar.test', 'contabilidad'),
+  ('admin-mizar.demo@mizar.test', 'admin_mizar'),
+  ('admin-sixteam.demo@mizar.test', 'admin_sixteam'),
+  ('juliana.demo@mizar.test', 'aprobador')
+) as r(email, rol) on lower(u.email) = lower(r.email)
 on conflict do nothing;
 
 -- Empresas activas nombradas por Daniel en la reunión (Mizar, Ictinos, Villa del Sol, Proim, Palmoc).
@@ -80,13 +101,19 @@ insert into public.obras (id, nombre, sociedad_id, estado, public_submission_ena
 on conflict (id) do update set nombre = excluded.nombre, sociedad_id = excluded.sociedad_id, estado = excluded.estado;
 
 -- La etiqueta sugiere el aprobador por defecto (el revisor puede cambiarlo). Nómina va a Juliana
--- para que ambos aprobadores aparezcan en la demo.
-insert into public.etiquetas (nombre, aprobador_id, activa) values
-  ('Materiales', '10000000-0000-4000-8000-000000000003', true),
-  ('Nomina', '10000000-0000-4000-8000-000000000007', true),
-  ('Servicios', '10000000-0000-4000-8000-000000000003', true),
-  ('Herramientas', '10000000-0000-4000-8000-000000000003', true),
-  ('Transporte', '10000000-0000-4000-8000-000000000003', true)
+-- para que ambos aprobadores aparezcan en la demo. `aprobador_id` por CORREO (H8, mismo motivo que
+-- usuario_roles arriba): este insert SIEMPRE actualiza aprobador_id por el conflicto de `nombre`, y un
+-- id literal que no exista todavía en `usuarios` (cuenta vieja conservada) violaría la FK en el UPDATE.
+insert into public.etiquetas (nombre, aprobador_id, activa)
+select t.nombre, u.id, true
+from (values
+  ('Materiales', 'nelson.demo@mizar.test'),
+  ('Nomina', 'juliana.demo@mizar.test'),
+  ('Servicios', 'nelson.demo@mizar.test'),
+  ('Herramientas', 'nelson.demo@mizar.test'),
+  ('Transporte', 'nelson.demo@mizar.test')
+) as t(nombre, email)
+join public.usuarios u on lower(u.email) = lower(t.email)
 on conflict (nombre) do update set aprobador_id = excluded.aprobador_id, activa = excluded.activa;
 
 insert into public.proveedores (id, razon_social, nit, contacto, datos_bancarios, activo) values

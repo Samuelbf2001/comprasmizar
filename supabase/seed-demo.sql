@@ -72,7 +72,9 @@ begin
   -- migrado `centros_costo` está VACÍO (el backfill de 202609120001 corre ANTES de que existan las
   -- obras de este seed, así que no tiene nada que backfillear) — sin este insert, el ingreso de abajo
   -- violaría `ingresos.centro_costo_id` NOT NULL.
-  insert into public.centros_costo (nombre) values ('Administración') on conflict (nombre) do nothing;
+  -- H12 (docs/qa/QA-pagos-y-caja.md): sin `tipo` explícito nace 'obra' (default de 202609150003) y exige
+  -- obra para enviar a aprobación — un centro llamado "Administración" que la pide es una contradicción.
+  insert into public.centros_costo (nombre, tipo) values ('Administración', 'administrativo') on conflict (nombre) do nothing;
   select id into v_centro_admin from public.centros_costo where nombre = 'Administración';
 
   -- Guardia de integridad con el seed. Estos ítems y etiquetas los siembra supabase/seed.sql; si
