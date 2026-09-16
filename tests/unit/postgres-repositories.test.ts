@@ -446,6 +446,19 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
     expect(await ports.update("costCenters", "cc-1", { type: "personal" })).toMatchObject({ type: "personal" });
     expect(sql.calls.find((call) => /^update centros_costo/i.test(call.text))!.text).toMatch(/tipo=coalesce\(\?, tipo\)/);
   });
+  // N4 (202609150005): el duplicado por nombre solo se busca entre empresas (NIT contra NIT); la
+  // identificación se compara normalizada por tipo.
+  it("findSupplierDuplicate: el nombre solo choca entre NIT, y la identificación choca por (tipo, normalizada)", async () => {
+    const sql = fakeSql(() => []);
+    const ports = new PostgresPorts(sql);
+    await ports.findSupplierDuplicate({ name: "Juan Pérez", identificationType: "CC", identification: "71.111.111" });
+    const persona = sql.calls.at(-1)!;
+    expect(persona.text).toMatch(/\(\? and tipo_identificacion = 'NIT' and lower\(btrim\(razon_social\)\) = lower\(btrim\(\?\)\)\)/);
+    expect(persona.text).toMatch(/\?::text is not null and tipo_identificacion = \? and identificacion_normalizada = \?/);
+    expect(persona.values).toEqual([null, null, false, "Juan Pérez", null, null, "71111111", "CC", "71111111"]);
+    await ports.findSupplierDuplicate({ name: "Sixteam SAS", nit: "901.555" });
+    expect(sql.calls.at(-1)!.values).toEqual([null, null, true, "Sixteam SAS", "901.555", "901.555", null, "NIT", null]);
+  });
   it("markExpensePaid(null) deshace la fecha de pago del gasto (anulación del pago que cerraba la orden)", async () => {
     const sql = fakeSql((call) => (/^update gastos/i.test(call.text) ? [{ id: "g1" }] : []));
     await expect(new PostgresPorts(sql).markExpensePaid("orden-1", null)).resolves.toBe(1);

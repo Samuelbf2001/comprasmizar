@@ -17,7 +17,8 @@ function fixture(options: { feature?: boolean; object?: { sizeBytes: number; mim
   const repository = {
     list: async () => [...suppliers.values()].map((value) => structuredClone(value)),
     get: async (id: string) => suppliers.has(id) ? structuredClone(suppliers.get(id)!) : null,
-    create: async (value: Omit<Supplier, "id">) => { const normalizedNit = value.nit?.replace(/[^0-9A-Za-z]/g, "").toLowerCase(); if ([...suppliers.values()].some((entry) => entry.name === value.name || (normalizedNit && entry.nit?.replace(/[^0-9A-Za-z]/g, "").toLowerCase() === normalizedNit))) throw Object.assign(new Error("duplicate"), { code: "23505" }); const created = { ...value, id: `supplier-${suppliers.size + 1}` }; suppliers.set(created.id, structuredClone(created)); return created; },
+    // Mismas unicidades que la base (202609150002/202609150005): nombre solo entre NIT, NIT, y (tipo, identificación normalizada).
+    create: async (value: Omit<Supplier, "id">) => { const normalize = (raw: string | null | undefined) => raw?.replace(/[^0-9A-Za-z]/g, "").toLowerCase() || undefined; const normalizedNit = normalize(value.nit), normalizedId = normalize(value.identification), type = value.identificationType ?? "NIT"; if ([...suppliers.values()].some((entry) => (type === "NIT" && (entry.identificationType ?? "NIT") === "NIT" && entry.name.trim().toLowerCase() === value.name.trim().toLowerCase()) || (normalizedNit && normalize(entry.nit) === normalizedNit) || (normalizedId && (entry.identificationType ?? "NIT") === type && normalize(entry.identification ?? entry.nit) === normalizedId))) throw Object.assign(new Error("duplicate"), { code: "23505" }); const created = { ...value, id: `supplier-${suppliers.size + 1}` }; suppliers.set(created.id, structuredClone(created)); return created; },
     update: async (id: string, value: Partial<Omit<Supplier, "id">>) => { const before = suppliers.get(id); if (!before) return null; const after = { ...before, ...value }; suppliers.set(id, structuredClone(after)); return after; },
     // RF-606: por (tipo, identificación normalizada) — mismo criterio que la columna generada real; el
     // proveedor inicial no declara tipo, así que cuenta como NIT con su `nit` de espejo.
@@ -190,6 +191,30 @@ describe("SupplierService — identificación NIT/CC y beneficiario (adenda de p
     expect(JSON.stringify(state.audits)).toContain('"source":"beneficiario"');
     await expect(state.service.resolveOrCreateBeneficiary({ identificationType: "CC", identification: "1.234", name: "Bloqueado" }, accounting)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(state.service.resolveOrCreateBeneficiary({ identificationType: "CC", identification: "1.234", name: "   " }, reviewer)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+});
+
+// N4 (202609150005): la razón social solo es única entre empresas; entre personas manda la identificación.
+describe("SupplierService — homónimos (N4)", () => {
+  it("dos personas homónimas con cédulas distintas conviven, por alta directa y por alta rápida de beneficiario", async () => {
+    const state = fixture();
+    const primero = await state.service.create({ name: "Juan Pérez", identificationType: "CC", identification: "71.111.111" }, reviewer);
+    const segundo = await state.service.create({ name: "Juan Pérez", identificationType: "CC", identification: "71.222.222" }, reviewer);
+    expect(primero.id).not.toBe(segundo.id);
+    const tercero = await state.service.resolveOrCreateBeneficiary({ identificationType: "CE", identification: "E-3333", name: "Juan Pérez" }, reviewer);
+    expect(tercero).toMatchObject({ created: true, supplier: { name: "Juan Pérez", identificationType: "CE" } });
+    // Una empresa homónima de una persona también cabe: solo NIT contra NIT choca.
+    await expect(state.service.create({ name: "Juan Pérez", identificationType: "NIT", identification: "900.444.444-1" }, reviewer)).resolves.toMatchObject({ identificationType: "NIT" });
+    // La MISMA cédula sigue siendo la misma persona.
+    await expect(state.service.create({ name: "Otro Nombre", identificationType: "CC", identification: "71111111" }, reviewer)).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(state.service.resolveOrCreateBeneficiary({ identificationType: "CC", identification: "71-222-222", name: "J. Pérez" }, reviewer)).resolves.toMatchObject({ created: false, supplier: { id: segundo.id } });
+  });
+  it("dos NIT con la misma razón social siguen chocando", async () => {
+    const state = fixture();
+    await state.service.create({ name: "Sixteam SAS", identificationType: "NIT", identification: "901.555.666-1" }, reviewer);
+    await expect(state.service.create({ name: "Sixteam SAS", identificationType: "NIT", identification: "901.999.999-9" }, reviewer)).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(state.service.create({ name: "  sixteam sas ", nit: "800.123" }, reviewer)).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(state.service.resolveOrCreateBeneficiary({ identificationType: "NIT", identification: "901.999.999-9", name: "Sixteam SAS" }, reviewer)).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });
 
