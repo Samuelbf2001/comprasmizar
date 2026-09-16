@@ -37,15 +37,16 @@ function fixture(options: { feature?: boolean; object?: { sizeBytes: number; mim
 }
 
 describe("SupplierService", () => {
-  it("creates the RF-603 minimum only for review/Sixteam and returns a safe selectable supplier", async () => {
+  it("creates the RF-603 minimum for review/Sixteam/admin_mizar and returns a safe selectable supplier", async () => {
     const state = fixture();
     const created = await state.service.create({ name: "Arenera Chicamocha" }, reviewer);
     expect(created).toMatchObject({ id: "supplier-2", name: "Arenera Chicamocha", nit: null, contact: {}, active: true });
     expect(created).not.toHaveProperty("bankDetails");
     await expect(fixture().service.create({ name: "Agregados" }, sixteam)).resolves.toMatchObject({ name: "Agregados", nit: null });
     await expect(fixture().service.create({ name: "Bloqueado" }, { id: "requester", roles: ["solicitante"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(fixture().service.create({ name: "Bloqueado" }, mizarAdmin)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(fixture({ feature: true }).service.create({ name: "Autoservicio" }, mizarAdmin)).resolves.toMatchObject({ name: "Autoservicio", nit: null });
+    // H11 (docs/qa/QA-pagos-y-caja.md): admin_mizar administra proveedores por su propio permiso
+    // (supplier:manage, rules.ts), sin depender del feature flag "catalogos_admin_mizar" — RF-605.
+    await expect(fixture().service.create({ name: "Autoservicio" }, mizarAdmin)).resolves.toMatchObject({ name: "Autoservicio", nit: null });
     const audit = JSON.stringify(state.audits);
     expect(audit).not.toContain("Arenera Chicamocha");
     expect(audit).not.toContain("bankDetails");
@@ -69,11 +70,12 @@ describe("SupplierService", () => {
     await expect(service.get(supplierId, { id: "requester", roles: ["solicitante"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("fails closed for non-operators and rechecks the Mizar catalogue feature inside every transaction", async () => {
+  it("fails closed for non-operators; admin_mizar administra sin depender del feature flag (H11)", async () => {
     const disabled = fixture();
     await expect(disabled.service.create({ name: "Bloqueado", nit: "900111222" }, accounting)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(disabled.service.update(supplierId, { bankDetails: { accountNumber: "1111" } }, accounting)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(disabled.service.update(supplierId, { active: false }, mizarAdmin)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // Mismo resultado con el flag apagado o encendido: supplier:manage ya no pasa por "catalogos_admin_mizar".
+    await expect(disabled.service.update(supplierId, { active: false }, mizarAdmin)).resolves.toMatchObject({ active: false });
     await expect(fixture({ feature: true }).service.update(supplierId, { active: false }, mizarAdmin)).resolves.toMatchObject({ active: false });
   });
 

@@ -31,7 +31,11 @@ const permissions: Record<Role, readonly string[]> = {
   // ingresos y quien cierra el mes. "cash:close" NO la tiene el revisor (a diferencia de
   // "income:register"): cerrar caja es un gesto contable, no de compras.
   contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:read", "report:export", "order:read", "order:account", "payment:register", "income:register", "cash:close", "dashboard:read"],
-  admin_mizar: ["requisition:create", "catalog:manage", "dashboard:read", "expense:read", "report:read", "report:export"],
+  // "supplier:manage" (H11, QA pagos y caja): RF-605 dice que Mizar administra proveedores; antes solo
+  // lo tenía por la puerta de atrás del feature flag "catalogos_admin_mizar" (autoservicio de catálogos
+  // en general, apagado por defecto) — «Proveedores» aparecía en su menú pero GET /api/suppliers
+  // siempre respondía 403 en una instalación nueva.
+  admin_mizar: ["requisition:create", "catalog:manage", "supplier:manage", "dashboard:read", "expense:read", "report:read", "report:export"],
   admin_sixteam: ["*"],
 };
 // "requisition:review" protege decline/review/startReview/sendForApproval (procurement-service.ts):
