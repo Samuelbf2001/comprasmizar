@@ -2,8 +2,8 @@
 
 **Cliente:** Mizar · Ictinos — Diseño y Construcción (Colombia)
 **Proveedor:** Sixteam.pro
-**Versión:** 1.2 — 24 de agosto de 2026 (v1.1: WhatsApp vía Kapso, servidor MCP propio, dashboard, plan por subagente · v1.2: bandeja de Kapso incrustada en la plataforma; datos en Supabase, app en VPS Hostinger)
-**Estado:** Borrador final para validación interna (Samuel + Ernesto) antes de arrancar construcción
+**Versión:** 1.3 — 15 de septiembre de 2026 (v1.1: WhatsApp vía Kapso, servidor MCP propio, dashboard, plan por subagente · v1.2: bandeja de Kapso incrustada en la plataforma; datos en Supabase, app en VPS Hostinger · **v1.3: Órdenes de Pago, pagos parciales, centros de costo y caja menor redefinidos en la adenda [PRD-pagos-y-caja-menor.md](PRD-pagos-y-caja-menor.md), que deroga M8**)
+**Estado:** En construcción. La adenda v1.3 manda sobre este documento donde se contradigan.
 
 **Fuentes de este documento:**
 - Reunión 12-ago-2026 (Samuel + Juliana + Daniel): definición del flujo y del "corazón" del sistema.
@@ -11,6 +11,8 @@
 - Reunión demo 21-ago-2026 (Ernesto + Claudia + Daniel + Samuel): **último alcance validado** — catálogo de ítems, declinación, caja menor, impuestos, reportes imprimibles.
 - Propuesta comercial "Mizar — Dos Alcances" (agosto 2026).
 - Demo HTML (`mizar_demo.html`): módulos dashboard, requisiciones, revisión, aprobaciones, gastos, formulario público, WhatsApp, etiquetas.
+- Reunión 11-sep-2026 (Samuel + Juliana + Daniel + Claudia + contador): flujo de compra de materiales validado.
+- Reunión 15-sep-2026 (Samuel + Daniel): Órdenes de Pago, caja menor y centros de costo → [PRD-pagos-y-caja-menor.md](PRD-pagos-y-caja-menor.md).
 
 ---
 
@@ -230,7 +232,9 @@ Prioridad: **[F1..F4]** = fase donde se entrega. Los RF sin nota de alcance apli
 - **RF-705** Reporte visualizable en plataforma e **imprimible a PDF con formato de presentación** para socios, por obra/sociedad y periodo.
 - **RF-706 [Completo]** Reportes ejecutivos: resumen por periodo y tipo de gasto, gráficos, vista de flujo de trabajo (cuántas requisiciones hay en cada estado).
 
-### M8 — Caja menor [F3] *(nuevo, 21-ago)*
+### M8 — Caja menor [F3] *(nuevo, 21-ago)* — **DEROGADO el 15-sep-2026**
+
+> La caja menor **no** es un formulario aparte sin aprobación. Un gasto pagado por caja es una requisición normal (compra o pago) que Daniel se auto-aprueba como usuario maestro y cuyo pago se registra con **medio = caja**. Ver [PRD-pagos-y-caja-menor.md](PRD-pagos-y-caja-menor.md) §4.3 y RF-507. Los RF-801..803 se conservan solo como historial.
 
 - **RF-801** Registro manual de gastos de caja menor: obra, fecha, concepto, etiqueta, valor, soporte adjunto. No pasa por el flujo de aprobación de requisiciones.
 - **RF-802** Los gastos de caja menor se integran al cuadro de gastos por obra (RF-701) y a sus exportaciones, marcados con su origen.
@@ -306,7 +310,7 @@ Convención: núcleo compartido (reutilizable por módulos futuros del ERP) + ta
 | `orden_items` | orden_id, requisicion_item_id |
 | `gastos` | id, obra_id, origen (requisicion/caja_menor), referencia_id, etiqueta_id, proveedor_id, fecha, valor_base, iva, valor_total, periodo |
 | `gastos_reparto` | gasto_id, obra_id, valor — para gastos compartidos entre obras |
-| `caja_menor` | id, obra_id, fecha, concepto, etiqueta_id, valor, registrado_por |
+| ~~`caja_menor`~~ | **Eliminada (v1.3).** Sustituida por la tabla `pagos` (medio = caja) y el catálogo `centros_costo`; ver adenda §6 |
 | `notificaciones` | id, usuario_id, canal, plantilla, payload, estado_envio, fecha |
 | `whatsapp_eventos` | id, direccion (entrada/salida), telefono, requisicion_id (nullable), tipo (flow/plantilla/mensaje), payload_json, estado_entrega, kapso_message_id, fecha — log del canal, no bandeja |
 | `mcp_api_keys` | id, usuario_id, nombre, key_hash, activa, ultima_vez_usada, fecha_creacion |
