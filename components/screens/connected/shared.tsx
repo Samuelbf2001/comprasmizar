@@ -5,6 +5,7 @@
 // el mismo archivo) para que dashboard.tsx, new-requisition.tsx, requisitions.tsx, detail.tsx,
 // orders.tsx, expenses.tsx, data.ts y screen.tsx puedan importarlo.
 import type { Role } from "../../../lib/demo-data";
+import type { PaymentMethod, PaymentStatus } from "../../../lib/domain";
 import { uploadSignedAttachment, type AttachmentMetadata } from "../attachment-upload";
 import type { RouteKind } from "../skeletons";
 import type { FriendlyError } from "../../../lib/http/friendly-error";
@@ -162,6 +163,10 @@ export type OrderRow = {
   // el servidor en el MISMO join que ya trae requisitionConsecutive/workId (ver Order.costCenterId en
   // lib/domain/model.ts). Ausente en los mismos caminos donde esos dos también lo están.
   costCenterId?: string;
+  paymentStatus?: PaymentStatus;
+  lastPaymentAt?: string;
+  paymentMethods?: PaymentMethod[];
+  billedCompanyId?: string;
 };
 // Reunión agosto 2026: un pago parcial de una orden — mismo shape que OrderPayment en
 // lib/domain/model.ts, tal como lo sirve GET /api/orders/:id/payments.
@@ -174,6 +179,12 @@ export type OrderPaymentRow = {
   method: OrderPaymentMethod;
   externalReference?: string;
   registeredBy?: string;
+  note?: string;
+  annulled?: boolean;
+  annulmentReason?: string;
+  annulledBy?: string;
+  annulledAt?: string;
+  attachmentId?: string;
 };
 // Reunión 2026-09: "la fecha del gasto es la del pago" — orderDate (nace con el registro) siempre
 // viaja; date/period (fecha y periodo de PAGO) faltan mientras la orden no se ha pagado.
@@ -683,7 +694,7 @@ export async function uploadOperationalAttachment({
   file,
   onProgress,
 }: {
-  entity: "requisicion" | "requisicion_item" | "caja_menor";
+  entity: "requisicion" | "requisicion_item" | "caja_menor" | "pago_orden";
   entityId: string;
   type: "soporte" | "foto" | "cotizacion";
   file: File;

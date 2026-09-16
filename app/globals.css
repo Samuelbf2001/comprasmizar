@@ -440,7 +440,7 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .tabs button{padding:var(--space-3) var(--space-4);color:var(--muted);font-size:var(--text-xs);border-bottom:2px solid transparent;transition:color var(--duration-fast) var(--ease),border-color var(--duration-fast) var(--ease)}
 .tabs button span{margin-left:var(--space-1);color:var(--muted)}
 .tabs button.is-active{color:var(--navy);border-bottom-color:var(--navy);font-weight:700}
-.filter-bar{display:flex;gap:var(--space-2);align-items:center;margin-bottom:var(--space-4)}
+.filter-bar{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin-bottom:var(--space-4)}
 .search-field{height:38px;display:flex;align-items:center;gap:var(--space-2);background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-sm);padding:0 var(--space-3);flex:1;max-width:440px;color:var(--muted);transition:border-color var(--duration-fast) var(--ease)}
 .search-field:focus-within{border-color:var(--navy-light)}
 .search-field input{border:0;outline:0;width:100%;font-size:var(--text-xs);background:transparent}

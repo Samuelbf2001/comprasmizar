@@ -35,24 +35,6 @@ import {
 import { mutate } from "./data";
 import { MEDIO_PAGO_OPTIONS, medioPagoLabel, PAYMENT_STATUS_LABELS, PaymentStatusBadge } from "./payment-labels";
 
-// Adenda de pagos (ola 2, S1): `shared.tsx` no se toca en esta ola (docs/TASKS-pagos-y-caja.md §4), así
-// que los campos que la ola 1 añadió a `Order`/`OrderPayment` (lib/domain/model.ts) se declaran aquí,
-// aditivos y opcionales y con los mismos nombres, hasta que el coordinador los mueva a
-// `OrderRow`/`OrderPaymentRow`.
-type OrderListRow = OrderRow & {
-  paymentStatus?: PaymentStatus;
-  lastPaymentAt?: string;
-  paymentMethods?: PaymentMethod[];
-  billedCompanyId?: string;
-};
-type PaymentRow = OrderPaymentRow & {
-  note?: string;
-  annulled?: boolean;
-  annulmentReason?: string;
-  annulledBy?: string;
-  annulledAt?: string;
-  attachmentId?: string;
-};
 type PaymentInput = { date: string; amount: number; method: PaymentMethod; externalReference?: string; note?: string };
 type PaymentDialogState =
   | { step: "form"; orderId: string; mode: "registrar" | "saldo" }
@@ -93,7 +75,7 @@ export function ConnectedOrders({
   // parece un problema de su cuenta. Cuando hay lente, la frase nombra el rol prestado.
   const sinPermiso = (accion: string) =>
     viewingAs ? `Estás viendo como ${viewingAs}; ese rol no ${accion}.` : `Tu rol no ${accion}.`;
-  const baseRows: OrderListRow[] = Array.isArray(data?.rows) ? data.rows : [],
+  const baseRows: OrderRow[] = Array.isArray(data?.rows) ? data.rows : [],
     catalogs = data?.catalogs ?? emptyCatalogs,
     [feedback, setFeedback] = useState(""),
     [success, setSuccess] = useState(""),
@@ -143,7 +125,7 @@ export function ConnectedOrders({
   // desorden, y una que llegue para otra query se descarta en el updater (compara contra el estado
   // más reciente, sin refs — la regla react-hooks/refs no deja leer un ref desde funciones que
   // acaban pasadas por props).
-  const [serverList, setServerList] = useState<{ query: string; rows: OrderListRow[] | null; loading: boolean }>({ query: "", rows: null, loading: false });
+  const [serverList, setServerList] = useState<{ query: string; rows: OrderRow[] | null; loading: boolean }>({ query: "", rows: null, loading: false });
   const loadServerRows = async (filters: PaymentFilters) => {
     const query = paymentFiltersQuery(filters);
     if (!query) {
@@ -152,7 +134,7 @@ export function ConnectedOrders({
     }
     setServerList((current) => ({ query, rows: current.rows, loading: true }));
     try {
-      const result = (await apiRequest(`/api/orders?${query}`)) as OrderListRow[];
+      const result = (await apiRequest(`/api/orders?${query}`)) as OrderRow[];
       setServerList((current) => (current.query === query ? { query, rows: Array.isArray(result) ? result : [], loading: false } : current));
     } catch (error) {
       setServerList((current) => (current.query === query ? { ...current, loading: false } : current));
@@ -272,13 +254,13 @@ export function ConnectedOrders({
   };
   // Reunión agosto 2026: historial de pagos de la orden — mismo patrón perezoso que
   // loadSupplierDossier (se pide una vez, solo al abrir la ficha; GET /api/orders/:id/payments).
-  const [paymentsByOrder, setPaymentsByOrder] = useState<Record<string, PaymentRow[]>>({});
+  const [paymentsByOrder, setPaymentsByOrder] = useState<Record<string, OrderPaymentRow[]>>({});
   const [paymentsLoading, setPaymentsLoading] = useState<string | null>(null);
   const loadPayments = async (orderId: string, force = false) => {
     if ((!force && paymentsByOrder[orderId]) || paymentsLoading === orderId) return;
     setPaymentsLoading(orderId);
     try {
-      const result = (await apiRequest(`/api/orders/${orderId}/payments`)) as PaymentRow[];
+      const result = (await apiRequest(`/api/orders/${orderId}/payments`)) as OrderPaymentRow[];
       setPaymentsByOrder((current) => ({ ...current, [orderId]: result }));
     } catch {
       // Silencioso, igual que loadSupplierDossier: el historial es un plus de la ficha.
@@ -295,14 +277,14 @@ export function ConnectedOrders({
     setSuccess("");
     setPaymentDialog(state);
   };
-  const registerPayment = async (order: OrderListRow, input: PaymentInput): Promise<PaymentRow> => {
+  const registerPayment = async (order: OrderRow, input: PaymentInput): Promise<OrderPaymentRow> => {
     const result = (await mutate(`/api/orders/${order.id}/payments`, "POST", {
       date: input.date,
       amount: input.amount,
       method: input.method,
       ...(input.externalReference ? { externalReference: input.externalReference } : {}),
       ...(input.note ? { note: input.note } : {}),
-    })) as { payment: PaymentRow; order?: OrderListRow };
+    })) as { payment: OrderPaymentRow; order?: OrderRow };
     let message = `Se registró un pago de ${money.format(result.payment.amount)} para la orden ${order.consecutive}.`;
     // Atajo conservado de "Marcar pagada": si este pago deja el saldo en cero y la orden ya estaba
     // contabilizada, se cierra el eje contable en el mismo gesto. Solo quien tiene order:pay (canPay):
@@ -323,7 +305,7 @@ export function ConnectedOrders({
   };
   // RF-510: un pago se anula con motivo, nunca se borra — el motivo vive dentro del diálogo de
   // confirmación (mismo `reason` de declinar/devolver) y el registro queda tachado en el historial.
-  const annulPayment = async (order: OrderListRow, payment: PaymentRow) => {
+  const annulPayment = async (order: OrderRow, payment: OrderPaymentRow) => {
     const { ok, reason } = await confirm({
       title: `Anular el pago de ${money.format(payment.amount)}`,
       description: `El pago del ${formatIsoDate(payment.date)} (${medioPagoLabel(payment.method)}) de la orden ${order.consecutive} quedará anulado y su valor volverá al saldo pendiente; el registro se conserva tachado en el historial.${order.adminStatus === "pagada" ? ' Como la orden ya estaba marcada como pagada, volverá a "Contabilizada".' : ""}`,
@@ -990,7 +972,7 @@ function OrderPaymentDialog({
   initial: PaymentDialogState;
   /** Cubrir el saldo también cerrará el eje contable (quien mira tiene order:pay y la orden ya está contabilizada). */
   willClosePaid: boolean;
-  onSubmit: (input: PaymentInput) => Promise<PaymentRow>;
+  onSubmit: (input: PaymentInput) => Promise<OrderPaymentRow>;
   onUploaded: () => Promise<void> | void;
   onClose: () => void;
 }) {
