@@ -420,6 +420,22 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
     expect(expenseInsert.text).toMatch(/centro_costo_id, empresa_facturada_id\)/);
     expect(expenseInsert.values.slice(-2)).toEqual(["cc", "proim"]);
   });
+  // RF-008 (N4): gastos.obra_id NULL viaja como workId "" (Expense.workId sigue siendo string por el
+  // reporte, fuera de la ola 1) y nunca se persiste "" — saveExpense escribe NULL.
+  it("un gasto sin obra se lee con workId \"\", se escribe con obra_id NULL y agrupa bajo \"\" en el dashboard", async () => {
+    const sql = fakeSql((call) => (/^select \* from gastos where id=/i.test(call.text)
+      ? [{ id: "g1", obra_id: null, origen: "requisicion", referencia_id: "o1", fecha_orden: "2026-09-15", valor_base: "250000", iva: "0", valor_total: "250000", centro_costo_id: "cc-admin", empresa_facturada_id: "proim" }]
+      : /select g\.obra_id as key/i.test(call.text) ? [{ key: null, total: "250000" }, { key: "obra-1", total: "1000" }]
+      : /^select coalesce\(sum\(g\.valor_total\)/i.test(call.text) ? [{ period_expense: "0", in_process_value: "0" }]
+      : []));
+    const ports = new PostgresPorts(sql);
+    expect(await ports.getExpense("g1")).toMatchObject({ workId: "", costCenterId: "cc-admin", billedCompanyId: "proim" });
+    await ports.saveExpense({ id: "g2", workId: "", origin: "requisicion", referenceId: "o2", orderDate: "2026-09-15", base: 100, iva: 0, total: 100, costCenterId: "cc-admin", billedCompanyId: "proim" });
+    const insert = sql.calls.find((call) => /^insert into gastos/i.test(call.text))!;
+    expect(insert.values[1]).toBeNull();
+    const aggregates = await ports.dashboardAggregates({ id: "daniel", roles: ["revisor"] }, "2026-09");
+    expect(aggregates.expenseByWork).toEqual([{ key: "", total: 250000 }, { key: "obra-1", total: 1000 }]);
+  });
   it("costCenters: create/update escriben tipo (default obra) y el mapeador lo expone como type", async () => {
     const sql = fakeSql((call) => (/^insert into centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", codigo: null, sociedad_id: null, tipo: "empresa", activo: true }] : /^update centros_costo/i.test(call.text) ? [{ id: "cc-1", nombre: "Gastos PROIM", tipo: "personal", activo: true }] : []));
     const ports = new PostgresPorts(sql);
@@ -429,6 +445,19 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
     expect(sql.calls.find((call) => /^insert into centros_costo/i.test(call.text))!.values).toEqual(["Gastos PROIM", null, null, "empresa", true]);
     expect(await ports.update("costCenters", "cc-1", { type: "personal" })).toMatchObject({ type: "personal" });
     expect(sql.calls.find((call) => /^update centros_costo/i.test(call.text))!.text).toMatch(/tipo=coalesce\(\?, tipo\)/);
+  });
+  // N4 (202609150005): el duplicado por nombre solo se busca entre empresas (NIT contra NIT); la
+  // identificación se compara normalizada por tipo.
+  it("findSupplierDuplicate: el nombre solo choca entre NIT, y la identificación choca por (tipo, normalizada)", async () => {
+    const sql = fakeSql(() => []);
+    const ports = new PostgresPorts(sql);
+    await ports.findSupplierDuplicate({ name: "Juan Pérez", identificationType: "CC", identification: "71.111.111" });
+    const persona = sql.calls.at(-1)!;
+    expect(persona.text).toMatch(/\(\? and tipo_identificacion = 'NIT' and lower\(btrim\(razon_social\)\) = lower\(btrim\(\?\)\)\)/);
+    expect(persona.text).toMatch(/\?::text is not null and tipo_identificacion = \? and identificacion_normalizada = \?/);
+    expect(persona.values).toEqual([null, null, false, "Juan Pérez", null, null, "71111111", "CC", "71111111"]);
+    await ports.findSupplierDuplicate({ name: "Sixteam SAS", nit: "901.555" });
+    expect(sql.calls.at(-1)!.values).toEqual([null, null, true, "Sixteam SAS", "901.555", "901.555", null, "NIT", null]);
   });
   it("markExpensePaid(null) deshace la fecha de pago del gasto (anulación del pago que cerraba la orden)", async () => {
     const sql = fakeSql((call) => (/^update gastos/i.test(call.text) ? [{ id: "g1" }] : []));

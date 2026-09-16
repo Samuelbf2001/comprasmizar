@@ -67,7 +67,7 @@ export class CatalogService {
   }
   private conflict(error: unknown, kind: CatalogKind): never {
     if (typeof error === "object" && error !== null && "code" in error) {
-      if (error.code === "23505") throw new DomainError("CONFLICT", kind === "suppliers" ? "Ya existe un proveedor con el mismo nombre o NIT" : kind === "societies" ? "Ya existe una sociedad con el mismo nombre o NIT" : kind === "users" ? "Ya existe un usuario con ese correo electrónico" : kind === "requesters" ? "Ya existe un solicitante autorizado con ese número de teléfono" : kind === "costCenters" ? "Ya existe un centro de costo con el mismo nombre o código" : kind === "cashBoxes" ? "Ya existe una caja con ese nombre" : "Ya existe un registro equivalente en el catálogo");
+      if (error.code === "23505") throw new DomainError("CONFLICT", kind === "suppliers" ? "Ya existe un proveedor con el mismo nombre o identificación" : kind === "societies" ? "Ya existe una sociedad con el mismo nombre o NIT" : kind === "users" ? "Ya existe un usuario con ese correo electrónico" : kind === "requesters" ? "Ya existe un solicitante autorizado con ese número de teléfono" : kind === "costCenters" ? "Ya existe un centro de costo con el mismo nombre o código" : kind === "cashBoxes" ? "Ya existe una caja con ese nombre" : "Ya existe un registro equivalente en el catálogo");
       // La FK `usuarios.id -> auth.users.id` ya no puede violarse en el alta (ambas filas se crean en la
       // misma transacción, ver postgres-repositories.ts), pero sí en una edición contra un id inventado.
       if (kind === "users" && error.code === "23503") throw new DomainError("NOT_FOUND", "El usuario indicado no existe.");
@@ -88,8 +88,8 @@ export class CatalogService {
   private async supplierConflict(repository: CatalogRepository, value: CatalogCreateInput | CatalogPatchInput, exceptId?: string): Promise<void> {
     if (!("name" in value) || typeof value.name !== "string") return;
     const supplier = value as Partial<CatalogSupplier>;
-    const duplicate = await repository.findSupplierDuplicate({ name: value.name, nit: supplier.nit }, exceptId);
-    if (duplicate) throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o NIT");
+    const duplicate = await repository.findSupplierDuplicate({ name: value.name, nit: supplier.nit, identificationType: supplier.identificationType, identification: supplier.identification }, exceptId);
+    if (duplicate) throw new DomainError("CONFLICT", "Ya existe un proveedor con el mismo nombre o identificación");
   }
   private async validateTag(record: CatalogRecord, repository: CatalogRepository): Promise<void> { const tag = record as CatalogTag; if (tag.active && (!tag.approverId || !(await repository.isEligibleApprover(tag.approverId)))) throw new DomainError("INVALID_INPUT", "Una etiqueta activa requiere un aprobador activo y elegible"); }
   // HUECO 1: chequeo previo (además del 23505 genérico de arriba) para dar un mensaje claro ANTES de

@@ -1,4 +1,4 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeIdentification, normalizeItemName, orderTypeFor, resolveBilledCompany, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type BeneficiaryInput, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, costCenterRequiresWork, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeIdentification, normalizeItemName, orderTypeFor, resolveBilledCompany, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type BeneficiaryInput, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogCostCenter, CatalogSociety, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
@@ -384,7 +384,10 @@ export class ProcurementService {
     // él, generateOrders() no tendría de dónde copiar el centro del gasto (ver la nota "ojo" en su
     // propio cuerpo, más abajo). El caso común nunca lo dispara: review() ya lo hereda de la obra en
     // cuanto se asigna una; solo falta aquí si el revisor lo desasignó explícitamente sin volver a elegir uno.
-    if (!requisition.workId || !requisition.tagId || !requisition.approverId || !requisition.costCenterId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra, etiqueta, centro de costo, aprobador y valor cotizado mayor a cero son obligatorios en cada ítem vigente");
+    // RF-008 (N4): la obra solo es obligatoria si el centro es de tipo obra (o no hay centro) —
+    // `costCenterRequiresWork`, la misma regla que el trigger `gastos_obra_segun_centro` aplica al gasto.
+    const costCenter = requisition.costCenterId ? await tx.catalogs.get("costCenters", requisition.costCenterId) as CatalogCostCenter | null : null;
+    if ((costCenterRequiresWork(costCenter) && !requisition.workId) || !requisition.tagId || !requisition.approverId || !requisition.costCenterId || !vigentes.length || incompleteLines) throw new DomainError("REVIEW_INCOMPLETE", "Obra (salvo centro de costo administrativo, personal o de empresa), etiqueta, centro de costo, aprobador y valor cotizado mayor a cero son obligatorios en cada ítem vigente");
     // RF-304 (adenda de pagos): en una solicitud de pago la empresa facturada es obligatoria — es lo que
     // el contador contabiliza. review() la deriva sola, así que solo falta si nadie pasó por revisión.
     if (requisition.type === "pago" && !requisition.billedCompanyId) throw new DomainError("REVIEW_INCOMPLETE", "Una solicitud de pago exige empresa facturada antes de enviarse a aprobación");
@@ -534,17 +537,20 @@ export class ProcurementService {
       const requisition = await transactional.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       if (requisition.status !== "aprobada") throw new DomainError("INVALID_STATE", "La requisición debe estar aprobada para generar órdenes");
       const existing = await transactional.orders.listByRequisition(id); if (existing.length > 0) return existing;
-      if (!requisition.workId) throw new DomainError("INVALID_STATE", "La requisición no tiene obra asignada");
       // Centros de costo (2026-09-12, decisión del dueño): sendForApproval() ya lo exige, así que en el
       // camino normal requisition.costCenterId siempre está poblado aquí — este fallback (la obra) y el
       // guardián de abajo son defensa en profundidad para una requisición que llegó a "aprobada" ANTES
       // de que existiera esta exigencia (dato legado), no una vía alterna para saltársela.
-      const work = requisition.costCenterId ? null : (await transactional.catalogs.get("works", requisition.workId) as CatalogWork | null);
+      const work = requisition.workId ? await transactional.catalogs.get("works", requisition.workId) as CatalogWork | null : null;
       const costCenterId = resolveCostCenter(requisition, work);
       // ojo: `saveExpense` hace `on conflict do nothing` — esta es la ÚNICA oportunidad de fijar
       // centro_costo_id en el gasto; si aquí falta, ningún UPDATE posterior lo va a arreglar. Por eso se
       // falla ALTO Y CLARO en vez de dejar nacer un gasto sin centro en silencio.
       if (!costCenterId) throw new DomainError("COST_CENTER_REQUIRED", "No fue posible determinar el centro de costo del gasto: la requisición y su obra no tienen uno asignado");
+      // RF-008 (N4): sin obra solo si el centro no es de tipo obra — misma regla que sendForApproval y que
+      // el trigger `gastos_obra_segun_centro`; el gasto nace con `workId: ""` (NULL en la base, ver Expense).
+      const costCenter = await transactional.catalogs.get("costCenters", costCenterId) as CatalogCostCenter | null;
+      if (!requisition.workId && costCenterRequiresWork(costCenter)) throw new DomainError("INVALID_STATE", "La requisición no tiene obra asignada");
       const lines = approvedLines(requisition.items); assertHasApprovedLine(lines);
       const groups = groupOrderItems(lines, requisition.type), orderType = orderTypeFor(requisition.type), year = this.now().getFullYear(), orders: Order[] = [];
       const paymentTerms = requisition.paymentTerms;
@@ -567,8 +573,9 @@ export class ProcurementService {
         await this.audit("orden", order.id, "generada", actor, { requisitionId: id, supplierId }, this.origin(context), transactional.audit);
         const base = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).base, 0), iva = groupLines.reduce((sum, line) => sum + calculateLineAmounts(line).iva, 0);
         // RF-009: la empresa facturada se congela en el gasto igual que el centro de costo — review() ya la
-        // derivó; el `?? societyId` es defensa para una requisición aprobada antes de que existiera el campo.
-        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId, origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, orderDate, base, iva, total: sumLines(groupLines), costCenterId, billedCompanyId: requisition.billedCompanyId ?? requisition.societyId };
+        // derivó; `resolveBilledCompany` es la defensa para una requisición aprobada antes de que existiera
+        // el campo (sin obra, sale de la sociedad del centro de costo).
+        const expense: Expense = { id: this.deps.ids.next(), workId: requisition.workId ?? "", origin: "requisicion", referenceId: order.id, tagId: requisition.tagId, supplierId, orderDate, base, iva, total: sumLines(groupLines), costCenterId, billedCompanyId: resolveBilledCompany(requisition, costCenter, work) };
         await transactional.expenses.save(expense);
         await this.audit("gasto", expense.id, "registrado", actor, { orderId: order.id, supplierId }, this.origin(context), transactional.audit);
       }
