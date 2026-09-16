@@ -100,6 +100,33 @@ describe("RF-1102: cola de atención y actividad reciente en el dashboard conect
     expect(go).toHaveBeenCalledWith("/ordenes");
   });
 
+  // QA H7 (adenda de pagos): buildAttentionQueue mete la misma orden como «Confirmar cumplimiento» y
+  // como «Contabilizar» para Administrador Sixteam; con la clave kind-id React avisaba de claves
+  // duplicadas y podía omitir o repetir una de las dos filas.
+  it("lists the same order once per pending action without duplicate React keys", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const orden = { kind: "orden" as const, id: "order-1", consecutive: "OC-2026-0005", workId: "work-1" };
+    render(
+      <ConnectedDashboard
+        data={{
+          metrics: {
+            byStatus: {},
+            attentionQueue: [
+              { ...orden, status: "generada", action: "Confirmar cumplimiento" },
+              { ...orden, status: "pendiente", action: "Contabilizar" },
+            ],
+          },
+          catalogs,
+        }}
+        go={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("OC-2026-0005 · Confirmar cumplimiento")).toBeInTheDocument();
+    expect(screen.getByText("OC-2026-0005 · Contabilizar")).toBeInTheDocument();
+    expect(consoleError.mock.calls.some((args) => String(args[0]).includes("same key"))).toBe(false);
+    consoleError.mockRestore();
+  });
+
   it("renders recent activity ordered as received and navigates to the right screen per document kind", () => {
     const go = vi.fn();
     render(
