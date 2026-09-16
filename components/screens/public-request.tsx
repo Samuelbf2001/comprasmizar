@@ -343,8 +343,14 @@ function Progress({ phase, etapas }: { phase: Phase; etapas: Etapa[] }) {
   </ol>;
 }
 
-function StepIntro({ code, onChangeAccess }: { code: string; onChangeAccess: () => void }) {
-  return <div className={styles.intro}><div className={styles.introLine}><div><div className={styles.kicker}><HardHat aria-hidden="true" size={17} /> Requisición de obra</div><h1>Haz la solicitud sin enredos.</h1></div><button className={styles.changeButton} type="button" onClick={onChangeAccess}>Cambiar datos</button></div><p>Unos pasos cortos, uno a la vez. Los campos con <em className={styles.required}>*</em> son necesarios para enviarla.</p><p className={styles.hint}>Acceso para: <b>{code}</b></p></div>;
+function StepIntro({ acceso, onChangeAccess }: { acceso: string; onChangeAccess: () => void }) {
+  return <div className={styles.intro}><div className={styles.introLine}><div><div className={styles.kicker}><HardHat aria-hidden="true" size={17} /> Requisición de obra</div><h1>Haz la solicitud sin enredos.</h1></div><button className={styles.changeButton} type="button" onClick={onChangeAccess}>Cambiar datos</button></div><p>Unos pasos cortos, uno a la vez. Los campos con <em className={styles.required}>*</em> son necesarios para enviarla.</p><p className={styles.hint}>Acceso para: <b>{acceso}</b></p></div>;
+}
+
+/** QA H14: por la ruta general no hay obra; el acceso es para la empresa que se elige en el primer paso. */
+function accesoPara(empresas: PublicCompany[], companyId: string, workId?: string): string {
+  if (workId) return 'obra autorizada';
+  return empresas.find(empresa => empresa.id === companyId)?.name ?? 'la empresa que elijas';
 }
 
 /**
@@ -665,7 +671,7 @@ function DemoPublicRequest() {
   const handleEnviar = () => setSent(true);
   if (sent) return <PortalFrame><section className={styles.success}><div className={styles.successDemo} role="status"><b>Modo demostración</b>No se creó una requisición real ni se guardaron datos.</div><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>Recorrido completado.</h1><p className={styles.successCopy}>El formulario quedó listo para probar. Este código no sirve para seguimiento real.</p><div className={styles.trackingCode}>REQ-DEMO-0148</div><button className={styles.primaryButton} type="button" onClick={() => { formulario.reiniciar(); setSent(false); }}>Probar otra requisición</button></section></PortalFrame>;
   if (!accessGranted) return <AccessGate code={code} error={accessError} onSubmit={handleAccess} showHelp />;
-  return <PortalFrame><StepIntro code={code} onChangeAccess={() => setAccessGranted(false)} /><AsistenteFormulario formulario={formulario} exigirEmpresa empresas={empresas} empresasCargadas onEnviar={handleEnviar} /></PortalFrame>;
+  return <PortalFrame><StepIntro acceso={accesoPara(empresas, formulario.values.company)} onChangeAccess={() => setAccessGranted(false)} /><AsistenteFormulario formulario={formulario} exigirEmpresa empresas={empresas} empresasCargadas onEnviar={handleEnviar} /></PortalFrame>;
 }
 
 function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
@@ -824,7 +830,7 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
   if (!access) return <PortalFrame><section className={`${styles.access} ${styles.closedGate}`}><div className={styles.kicker}><LockKeyhole aria-hidden="true" size={17} /> Captura cerrada</div><h1>Este enlace no está habilitado.</h1><p className={styles.accessCopy}>Solicita al responsable de tu obra un enlace vigente. No se creó ninguna requisición ni se aceptaron datos.</p></section></PortalFrame>;
   if (sent) return <PortalFrame><section className={styles.success}><span className={styles.successIcon}><Check aria-hidden="true" size={28} /></span><h1>La estamos validando.</h1><p className={styles.successCopy}>Si el enlace y la contraseña corresponden, la requisición quedará registrada. Por seguridad no mostramos un consecutivo.</p><button className={styles.primaryButton} type="button" onClick={() => { formulario.reiniciar(); setSent(false); setAccessGranted(false); }}>Enviar otra solicitud</button></section></PortalFrame>;
   if (!accessGranted) return <AccessGate code={code} error={accessError} onSubmit={handleAccess} comprobando={comprobandoClave} />;
-  return <PortalFrame><StepIntro code="obra autorizada" onChangeAccess={() => setAccessGranted(false)} /><AsistenteFormulario formulario={formulario} exigirEmpresa={!access.workId} empresas={empresas} empresasCargadas={empresasCargadas} onEnviar={handleEnviar} enviando={submitting} errorEnvio={formError} /></PortalFrame>;
+  return <PortalFrame><StepIntro acceso={accesoPara(empresas, formulario.values.company, access.workId)} onChangeAccess={() => setAccessGranted(false)} /><AsistenteFormulario formulario={formulario} exigirEmpresa={!access.workId} empresas={empresas} empresasCargadas={empresasCargadas} onEnviar={handleEnviar} enviando={submitting} errorEnvio={formError} /></PortalFrame>;
 }
 
 export function PublicRequestScreen({ demoMode, publicConfigured = false }: { demoMode: boolean; publicConfigured?: boolean }) {
