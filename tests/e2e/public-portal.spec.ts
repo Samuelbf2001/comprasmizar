@@ -101,8 +101,9 @@ test.describe("portal público de requisiciones", () => {
     await llenarItem(page, 0, "Cemento gris uso general", "20", "bulto");
     await irAlResumen(page);
 
-    // El resumen muestra la empresa por NOMBRE y el artículo numerado con cantidad y unidad.
-    await expect(page.getByText("Ictinos")).toBeVisible();
+    // El resumen muestra la empresa por NOMBRE y el artículo numerado con cantidad y unidad. Se busca en
+    // el resumen (`dd`) porque la cabecera «Acceso para:» también la nombra desde QA H14.
+    await expect(page.locator("dd").filter({ hasText: "Ictinos" })).toBeVisible();
     await expect(page.getByText("1. Cemento gris uso general")).toBeVisible();
     await expect(page.getByText("20 bulto")).toBeVisible();
 
@@ -298,7 +299,7 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.getByText("CC 1020304050")).toBeVisible();
     await expect(page.getByText(/1\.250\.000/)).toBeVisible();
     await expect(page.getByText("Levantamiento topográfico lote 3")).toBeVisible();
-    await expect(page.getByText("Ictinos")).toBeVisible();
+    await expect(page.locator("dd").filter({ hasText: "Ictinos" })).toBeVisible();
 
     await page.getByRole("button", { name: "Enviar solicitud" }).click();
     await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
