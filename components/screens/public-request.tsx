@@ -2,7 +2,7 @@
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight, Camera, Check, ClipboardList, FileText, HardHat, LockKeyhole, PackageCheck, Phone, Plus, ShieldCheck, SquarePen, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Banknote, Camera, Check, ClipboardList, FileText, HardHat, LockKeyhole, PackageCheck, Phone, Plus, ShieldCheck, SquarePen, UserRound, X } from 'lucide-react';
 import { companies } from '../../lib/demo-data';
 import { formatAttachmentSize, IMAGE_MIME_TYPES, validateAttachmentFile } from './attachment-upload';
 import styles from './public-request.module.css';
@@ -34,12 +34,31 @@ type PublicCompany = { id: string; name: string };
  *  `ProductionPublicRequest.handleEnviar`), calcado del `PhotoPicker` del Flow de WhatsApp — una foto
  *  opcional por artículo. `null` = sin foto, el caso normal. */
 type RequestLine = { description: string; quantity: string; unit: string; supplier: string; productLink: string; photo: File | null };
+/** Mismos valores que `SUPPLIER_IDENTIFICATION_TYPE_VALUES` (lib/http/schemas.ts) y que el CHECK de
+ *  `proveedores.tipo_identificacion`; repetidos aquí porque cliente y servidor no comparten build. */
+type IdentificationType = 'CC' | 'NIT' | 'CE' | 'PAS';
+const TIPOS_IDENTIFICACION: { valor: IdentificationType; etiqueta: string }[] = [
+  { valor: 'CC', etiqueta: 'Cédula de ciudadanía' },
+  { valor: 'NIT', etiqueta: 'NIT' },
+  { valor: 'CE', etiqueta: 'Cédula de extranjería' },
+  { valor: 'PAS', etiqueta: 'Pasaporte' },
+];
+/** Mismo tope que `MAX_PUBLIC_PAYMENT_CONCEPT_LENGTH` en el endpoint (RF-108: "concepto corto"). */
+const MAX_CONCEPTO = 120;
+/**
+ * Solicitud de pago (RF-108, A12 del plan): quien la radica ES el beneficiario —un profesional o un
+ * proveedor que cobra—, así que aquí no hay "solicitante" aparte: `beneficiaryName` es el nombre que
+ * viaja como solicitante externo y el teléfono es el mismo `phone` de siempre. `amount` se guarda
+ * como dígitos (texto) y se convierte a número solo al enviar; `photo` es la factura o cuenta de
+ * cobro, con el MISMO mecanismo que la foto de un artículo (viaja como `foto_0`).
+ */
+type PaymentValues = { identificationType: IdentificationType; identification: string; beneficiaryName: string; amount: string; concept: string; photo: File | null };
 type RequestValues = {
   // `company`, no `work`: el solicitante elige EMPRESA y la obra la asigna el revisor (reunión
   // 2026-08-31; Ernesto: "ya dijimos era empresa"). El enlace POR OBRA sigue trayendo la suya fija,
   // y entonces este campo ni se pide.
   type: 'compra' | 'pago'; company: string; date: string; requestor: string;
-  notes: string; lines: RequestLine[];
+  notes: string; lines: RequestLine[]; payment: PaymentValues;
 };
 /**
  * `phone` no vive en `RequestValues` —tiene su propio estado, porque también viaja aparte en el
@@ -62,14 +81,25 @@ type FieldErrors = Record<string, string>;
  * `item` es UNA fase que cubre VARIAS pantallas (una por artículo, ver `itemIndex` en el estado del
  * formulario): el indicador de avance las trata como un solo tramo porque su número no es fijo.
  */
-type Phase = 'tipo' | 'datos' | 'item' | 'cuando' | 'resumen';
-const ETAPAS: { fase: Phase; etiqueta: string }[] = [
+type Phase = 'tipo' | 'datos' | 'item' | 'cuando' | 'beneficiario' | 'pago' | 'resumen';
+type Etapa = { fase: Phase; etiqueta: string };
+const ETAPAS_COMPRA: Etapa[] = [
   { fase: 'tipo', etiqueta: 'Solicitud' },
   { fase: 'datos', etiqueta: 'Tus datos' },
   { fase: 'item', etiqueta: 'Material' },
   { fase: 'cuando', etiqueta: '¿Cuándo?' },
   { fase: 'resumen', etiqueta: 'Resumen' },
 ];
+/** RF-108 (A12): tras «Solicitud de pago» el camino es de tres pasos —quién cobra, el pago, resumen—.
+ *  Sin "Tus datos" (quien radica es el beneficiario) y sin artículos ni "¿Para cuándo?": el concepto
+ *  y el monto son la única línea. */
+const ETAPAS_PAGO: Etapa[] = [
+  { fase: 'tipo', etiqueta: 'Solicitud' },
+  { fase: 'beneficiario', etiqueta: 'Quién cobra' },
+  { fase: 'pago', etiqueta: 'El pago' },
+  { fase: 'resumen', etiqueta: 'Resumen' },
+];
+const etapasDe = (type: RequestValues['type']) => (type === 'pago' ? ETAPAS_PAGO : ETAPAS_COMPRA);
 const TYPE_LABELS: Record<RequestValues['type'], string> = { compra: 'Compra de material', pago: 'Solicitud de pago' };
 
 function nuevaLinea(): RequestLine {
@@ -88,9 +118,14 @@ const MAX_LINEAS = 20;
  *  sacarlas. Si algún día existe ese catálogo, aquí es donde se conectaría un `datalist` igual. */
 const UNIDADES_SUGERIDAS = ["und", "m", "m²", "m³", "kg", "bulto", "galón", "viaje", "global"];
 
-function initialValues(): RequestValues {
-  return { type: "compra", company: "", date: new Date().toISOString().slice(0, 10), requestor: "", notes: "", lines: [nuevaLinea()] };
+function pagoInicial(): PaymentValues {
+  return { identificationType: 'CC', identification: '', beneficiaryName: '', amount: '', concept: '', photo: null };
 }
+function initialValues(): RequestValues {
+  return { type: "compra", company: "", date: new Date().toISOString().slice(0, 10), requestor: "", notes: "", lines: [nuevaLinea()], payment: pagoInicial() };
+}
+/** Pesos colombianos sin decimales, como se escriben en obra: "$ 1.250.000". */
+const formatoCOP = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
 
 function focusFirstError(errors: FieldErrors) {
   const field = Object.keys(errors)[0];
@@ -122,9 +157,11 @@ function useFormularioRequisicion() {
   // string`), y un `File` no lo es. `null` quita la foto (botón "Quitar foto").
   const setLineaFoto = (indice: number, foto: File | null) =>
     setValues(current => ({ ...current, lines: current.lines.map((linea, i) => (i === indice ? { ...linea, photo: foto } : linea)) }));
+  const updatePago = <K extends keyof PaymentValues>(campo: K, valor: PaymentValues[K]) =>
+    setValues(current => ({ ...current, payment: { ...current.payment, [campo]: valor } }));
   const agregarLinea = () => setValues(current => (current.lines.length >= MAX_LINEAS ? current : { ...current, lines: [...current.lines, nuevaLinea()] }));
   // NUNCA por debajo de una línea. El esquema exige `items.min(1)`, así que llegar al resumen sin
-  // ítems daría un 202 neutro sin requisición: el peor final posible, porque parece que sí se envió.
+  // ítems acabaría en un 400 del endpoint sin requisición.
   //
   // Los detalles abiertos y los errores se REINDEXAN al quitar: son índices, no identidades. Sin
   // esto, quitar el ítem 1 dejaría el panel abierto y el error rojo sobre el que ocupe su lugar, que
@@ -141,7 +178,7 @@ function useFormularioRequisicion() {
   };
   const alternarDetalle = (indice: number) => setDetalles(abiertos => (abiertos.includes(indice) ? abiertos.filter(i => i !== indice) : [...abiertos, indice]));
   const reiniciar = () => { setValues(initialValues()); setErrors({}); setDetalles([]); setPhone(''); setPhase('tipo'); setItemIndex(0); };
-  return { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, setLineaFoto, agregarLinea, quitarLinea, alternarDetalle, reiniciar };
+  return { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, setLineaFoto, updatePago, agregarLinea, quitarLinea, alternarDetalle, reiniciar };
 }
 
 /**
@@ -151,10 +188,38 @@ function useFormularioRequisicion() {
  * que falla.
  */
 /** Fase "¿Qué vas a solicitar?": tipo y empresa. El tipo SIEMPRE tiene un valor —el radio nace en
- *  "compra"—, así que lo único que puede fallar es la empresa, y solo si el enlace no la trae fija. */
+ *  "compra"—, así que lo único que puede fallar es la empresa, y solo si el enlace no la trae fija.
+ *  En una solicitud de PAGO la empresa se pide en "El pago" (junto al monto: es a la que se cobra,
+ *  A12 del plan), así que aquí no se exige. */
 function validarTipoEmpresa(values: RequestValues, exigirEmpresa: boolean): FieldErrors {
   const next: FieldErrors = {};
-  if (exigirEmpresa && !values.company) next.company = "Selecciona la empresa.";
+  if (exigirEmpresa && values.type === 'compra' && !values.company) next.company = "Selecciona la empresa.";
+  return next;
+}
+/** La misma regla del teléfono en "Tus datos" (compra) y en "¿Quién cobra?" (pago). */
+function errorTelefono(phone: string): string | undefined {
+  return phone.trim() && phone.replace(/[^0-9]/g, "").length < 7 ? "Ese teléfono está incompleto. Déjalo vacío o escríbelo completo." : undefined;
+}
+/** Mismos topes que el esquema del endpoint (3..32). Sin puntos ni espacios: el número es la
+ *  identidad del beneficiario y "1.020.304" no enlazaría con "1020304"; el campo los quita al teclear. */
+const IDENTIFICACION_RE = /^[0-9A-Za-z-]{3,32}$/;
+/** Fase "¿Quién cobra?" (pago): identificación, nombre y teléfono opcional. */
+function validarBeneficiario(pago: PaymentValues, phone: string): FieldErrors {
+  const next: FieldErrors = {};
+  if (!IDENTIFICACION_RE.test(pago.identification.trim())) next.identification = "Escribe el número de identificación, solo números y letras.";
+  if (pago.beneficiaryName.trim().length < 2) next.beneficiaryName = "Escribe el nombre completo o la razón social.";
+  const telefono = errorTelefono(phone);
+  if (telefono) next.phone = telefono;
+  return next;
+}
+/** Fase "El pago": empresa a la que se cobra (si el enlace no la trae fija), monto y concepto. */
+function validarPago(values: RequestValues, exigirEmpresa: boolean): FieldErrors {
+  const next: FieldErrors = {};
+  if (exigirEmpresa && !values.company) next.company = "Selecciona la empresa a la que cobras.";
+  if (!(Number(values.payment.amount) > 0)) next.amount = "Indica el monto a cobrar, en pesos.";
+  const concepto = values.payment.concept.trim();
+  if (!concepto) next.concept = "Di en pocas palabras qué se paga.";
+  else if (concepto.length > MAX_CONCEPTO) next.concept = `El concepto debe tener máximo ${MAX_CONCEPTO} caracteres.`;
   return next;
 }
 /**
@@ -168,7 +233,8 @@ function validarTipoEmpresa(values: RequestValues, exigirEmpresa: boolean): Fiel
 function validarDatos(values: RequestValues, phone: string): FieldErrors {
   const next: FieldErrors = {};
   if (values.requestor.trim().length < 2) next.requestor = "Escribe tu nombre.";
-  if (phone.trim() && phone.replace(/[^0-9]/g, "").length < 7) next.phone = "Ese teléfono está incompleto. Déjalo vacío o escríbelo completo.";
+  const telefono = errorTelefono(phone);
+  if (telefono) next.phone = telefono;
   return next;
 }
 /** Un artículo: la pantalla que se repite una vez por ítem. Con el índice en la clave para que el
@@ -184,7 +250,7 @@ function validarItem(indice: number, linea: RequestLine): FieldErrors {
 /** Todos los artículos juntos: la red de seguridad del RESUMEN antes de enviar. Cada pantalla ya
  *  valida el suyo al avanzar, así que esto nunca debería encontrar nada — pero si lo encuentra, es
  *  mejor devolver al asistente a la fase que falla que dejar pasar un envío que el servidor va a
- *  rechazar en silencio (el 202 de `/api/public/requisitions` es neutro a propósito). */
+ *  rechazar con un 400 sin decir en qué pantalla estaba el campo. */
 function validarItems(lines: RequestLine[]): FieldErrors {
   return lines.reduce<FieldErrors>((acumulado, linea, indice) => ({ ...acumulado, ...validarItem(indice, linea) }), {});
 }
@@ -264,12 +330,14 @@ function AccessGate({ code, error, onSubmit, comprobando = false, showHelp = fal
   </section></PortalFrame>;
 }
 
-/** Indicador de avance de las cinco fases. `item` se marca como una sola etapa aunque cubra varias
- *  pantallas —una por artículo—, porque su número total no es fijo (depende de cuántos se agreguen). */
-function Progress({ phase }: { phase: Phase }) {
-  const actual = ETAPAS.findIndex(etapa => etapa.fase === phase);
-  return <ol className={styles.progress} aria-label="Avance de la requisición">
-    {ETAPAS.map((etapa, indice) => <li key={etapa.fase} className={`${styles.progressStep} ${indice === actual ? styles.progressCurrent : indice < actual ? styles.progressDone : ''}`} aria-current={indice === actual ? 'step' : undefined}>
+/** Indicador de avance: cinco fases en compra, cuatro en pago. `item` se marca como una sola etapa
+ *  aunque cubra varias pantallas —una por artículo—, porque su número total no es fijo (depende de
+ *  cuántos se agreguen). Las columnas van en línea porque el módulo CSS fija cinco y este es el único
+ *  sitio que sabe cuántas hay. */
+function Progress({ phase, etapas }: { phase: Phase; etapas: Etapa[] }) {
+  const actual = etapas.findIndex(etapa => etapa.fase === phase);
+  return <ol className={styles.progress} style={{ gridTemplateColumns: `repeat(${etapas.length}, 1fr)` }} aria-label="Avance de la requisición">
+    {etapas.map((etapa, indice) => <li key={etapa.fase} className={`${styles.progressStep} ${indice === actual ? styles.progressCurrent : indice < actual ? styles.progressDone : ''}`} aria-current={indice === actual ? 'step' : undefined}>
       <strong>{indice < actual ? <Check aria-hidden="true" size={14} /> : indice + 1}</strong><span>{etapa.etiqueta}</span>
     </li>)}
   </ol>;
@@ -287,15 +355,15 @@ function StepIntro({ code, onChangeAccess }: { code: string; onChangeAccess: () 
  * que es quien sabe a qué contrato cargar el gasto; el Flow de WhatsApp ya funcionaba así y el
  * portal se había quedado con el selector viejo.
  */
-function SelectorEmpresa({ empresas, cargadas, valor, error, onChange }: {
-  empresas: PublicCompany[]; cargadas: boolean; valor: string; error?: string; onChange: (valor: string) => void;
+function SelectorEmpresa({ empresas, cargadas, valor, error, onChange, etiqueta = 'Empresa', ayuda = 'La obra la asigna quien revisa tu solicitud.' }: {
+  empresas: PublicCompany[]; cargadas: boolean; valor: string; error?: string; onChange: (valor: string) => void; etiqueta?: string; ayuda?: string;
 }) {
-  return <label className={styles.field}><span className={styles.fieldLabel}>Empresa <em className={styles.required}>*</em></span>
+  return <label className={styles.field}><span className={styles.fieldLabel}>{etiqueta} <em className={styles.required}>*</em></span>
     <select className={styles.control} name="company" value={valor} onChange={event => onChange(event.target.value)} disabled={!cargadas || empresas.length === 0} aria-invalid={Boolean(error)} aria-describedby={error ? 'portal-company-error' : undefined}>
       <option value="" disabled>{cargadas ? (empresas.length ? 'Selecciona la empresa' : 'No hay empresas disponibles') : 'Cargando empresas…'}</option>
       {empresas.map(empresa => <option key={empresa.id} value={empresa.id}>{empresa.name}</option>)}
     </select>
-    <small className={styles.hint}>La obra la asigna quien revisa tu solicitud.</small>
+    <small className={styles.hint}>{ayuda}</small>
     {error && <small className={styles.error} id="portal-company-error">{error}</small>}
   </label>;
 }
@@ -335,8 +403,10 @@ function FotoPreview({ file, className }: { file: File; className: string }) {
  * MISMA comprobación que ya usa el resto de la plataforma para adjuntos internos, solo que aquí es
  * cortesía de cliente, no la autoridad (esa es del servidor, ver `lib/infrastructure/public-photos.ts`).
  */
-function CampoFoto({ indice, foto, error, onFoto, onError }: {
+function CampoFoto({ indice, foto, error, onFoto, onError, etiqueta = 'Foto', titulo = 'Agregar una foto', ariaLabel = 'Foto (opcional)' }: {
   indice: number; foto: File | null; error?: string; onFoto: (file: File | null) => void; onError: (mensaje: string) => void;
+  /** En la solicitud de pago el mismo campo es la factura o cuenta de cobro (RF-108): cambia el rótulo, no el mecanismo. */
+  etiqueta?: string; titulo?: string; ariaLabel?: string;
 }) {
   const onChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -353,11 +423,11 @@ function CampoFoto({ indice, foto, error, onFoto, onError }: {
   // (`.uploadLabel`), que ya asocia el input con su texto. Anidar dos `<label>` es HTML inválido y
   // duplicaría el disparo del selector de archivos al hacer click.
   return <div className={styles.field}>
-    <span className={styles.fieldLabel}>Foto <small className={styles.hint}>opcional</small></span>
+    <span className={styles.fieldLabel}>{etiqueta} <small className={styles.hint}>opcional</small></span>
     <label className={styles.uploadLabel} htmlFor={`photo-${indice}`}>
       {foto ? <FotoPreview file={foto} className={styles.photoThumb} /> : <Camera aria-hidden="true" size={18} />}
-      <span><b>{foto ? foto.name : 'Agregar una foto'}</b><small>{foto ? formatAttachmentSize(foto.size) : 'JPG, PNG o WebP. Hasta 5 MB.'}</small></span>
-      <input aria-label="Foto (opcional)" id={`photo-${indice}`} name={`photo-${indice}`} type="file" accept="image/*" capture="environment" onChange={onChange} aria-invalid={Boolean(error)} aria-describedby={error ? `portal-photo-${indice}-error` : undefined} />
+      <span><b>{foto ? foto.name : titulo}</b><small>{foto ? formatAttachmentSize(foto.size) : 'JPG, PNG o WebP. Hasta 5 MB.'}</small></span>
+      <input aria-label={ariaLabel} id={`photo-${indice}`} name={`photo-${indice}`} type="file" accept="image/*" capture="environment" onChange={onChange} aria-invalid={Boolean(error)} aria-describedby={error ? `portal-photo-${indice}-error` : undefined} />
     </label>
     {foto && <button className={styles.lineRemove} type="button" onClick={() => onFoto(null)}><X aria-hidden="true" size={13} /> Quitar foto</button>}
     {error && <small className={styles.error} id={`portal-photo-${indice}-error`}>{error}</small>}
@@ -402,7 +472,7 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
   exigirEmpresa: boolean; empresas: PublicCompany[]; empresasCargadas: boolean;
   onEnviar: () => void | Promise<void>; enviando?: boolean; errorEnvio?: string;
 }) {
-  const { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, setLineaFoto, agregarLinea, quitarLinea, alternarDetalle } = formulario;
+  const { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, setLineaFoto, updatePago, agregarLinea, quitarLinea, alternarDetalle } = formulario;
   // Un error de foto no es como los demás: no lo pone `validarItem` al avanzar de pantalla (la foto es
   // opcional, nunca bloquea "Ir al resumen"), lo pone `CampoFoto` EN EL MOMENTO de elegir un archivo
   // inválido. Por eso es un `set`/`delete` puntual sobre la clave `photo-<índice>`, no parte de un
@@ -412,7 +482,8 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
     if (!mensaje) { if (!(clave in actuales)) return actuales; const resto = { ...actuales }; delete resto[clave]; return resto; }
     return { ...actuales, [clave]: mensaje };
   });
-  const etapaActual = ETAPAS.findIndex(etapa => etapa.fase === phase) + 1;
+  const etapas = etapasDe(values.type);
+  const etapaActual = etapas.findIndex(etapa => etapa.fase === phase) + 1;
 
   const validarEsteItem = () => {
     const next = validarItem(itemIndex, values.lines[itemIndex]);
@@ -420,7 +491,10 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
     if (Object.keys(next).length) { focusFirstError(next); return false; }
     return true;
   };
-  const irADatos = () => { const next = validarTipoEmpresa(values, exigirEmpresa); setErrors(next); if (Object.keys(next).length) { focusFirstError(next); return; } setErrors({}); setPhase('datos'); };
+  // Desde "¿Qué vas a solicitar?" el camino se bifurca: compra sigue a "Tus datos"; pago, a "¿Quién cobra?".
+  const salirDeTipo = () => { const next = validarTipoEmpresa(values, exigirEmpresa); setErrors(next); if (Object.keys(next).length) { focusFirstError(next); return; } setErrors({}); setPhase(values.type === 'pago' ? 'beneficiario' : 'datos'); };
+  const irAPago = () => { const next = validarBeneficiario(values.payment, phone); setErrors(next); if (Object.keys(next).length) { focusFirstError(next); return; } setErrors({}); setPhase('pago'); };
+  const irAResumenDesdePago = () => { const next = validarPago(values, exigirEmpresa); setErrors(next); if (Object.keys(next).length) { focusFirstError(next); return; } setErrors({}); setPhase('resumen'); };
   const irAMaterial = () => { const next = validarDatos(values, phone); setErrors(next); if (Object.keys(next).length) { focusFirstError(next); return; } setErrors({}); setItemIndex(0); setPhase('item'); };
   const agregarOtroArticulo = () => {
     if (!validarEsteItem()) return;
@@ -437,12 +511,21 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
   const atrasDesdeItem = () => { if (itemIndex > 0) setItemIndex(itemIndex - 1); else setPhase('datos'); };
   const atrasDesdeCuando = () => { setItemIndex(values.lines.length - 1); setPhase('item'); };
   const irAResumen = () => setPhase('resumen');
-  const atrasDesdeResumen = () => setPhase('cuando');
+  const atrasDesdeResumen = () => setPhase(values.type === 'pago' ? 'pago' : 'cuando');
   /** Red de seguridad antes de enviar: si algo quedara mal marcado, devuelve a la fase que falla en
-   *  vez de dejar pasar un envío que el servidor va a rechazar en silencio (202 neutro). */
+   *  vez de dejar pasar un envío que el servidor va a rechazar con un 400 sin señalar la pantalla. */
   const enviar = () => {
     const tipoErr = validarTipoEmpresa(values, exigirEmpresa);
     if (Object.keys(tipoErr).length) { setErrors(tipoErr); setPhase('tipo'); focusFirstError(tipoErr); return; }
+    if (values.type === 'pago') {
+      const beneficiarioErr = validarBeneficiario(values.payment, phone);
+      if (Object.keys(beneficiarioErr).length) { setErrors(beneficiarioErr); setPhase('beneficiario'); focusFirstError(beneficiarioErr); return; }
+      const pagoErr = validarPago(values, exigirEmpresa);
+      if (Object.keys(pagoErr).length) { setErrors(pagoErr); setPhase('pago'); focusFirstError(pagoErr); return; }
+      setErrors({});
+      void onEnviar();
+      return;
+    }
     const datosErr = validarDatos(values, phone);
     if (Object.keys(datosErr).length) { setErrors(datosErr); setPhase('datos'); focusFirstError(datosErr); return; }
     const itemsErr = validarItems(values.lines);
@@ -457,21 +540,41 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
   const empresaSeleccionada = empresas.find(empresa => empresa.id === values.company)?.name;
 
   return <>
-    <Progress phase={phase} />
+    <Progress phase={phase} etapas={etapas} />
     <form className={styles.stepCard} onSubmit={event => { event.preventDefault(); enviar(); }} noValidate>
-      {phase === 'tipo' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso {etapaActual} de {ETAPAS.length}</p><h2>¿Qué vas a solicitar?</h2><p>Elige el tipo de solicitud{exigirEmpresa ? ' y la empresa' : ''}.</p></div><div className={styles.stepBody}>
-        <fieldset className={styles.fieldset}><legend className={styles.fieldsetLegend}>Tipo de solicitud <em className={styles.required}>*</em></legend><div className={styles.choiceGrid}><label className={styles.choice}><input type="radio" name="type" value="compra" checked={values.type === 'compra'} onChange={() => update('type', 'compra')} /><span className={styles.choiceIcon}><PackageCheck aria-hidden="true" size={16} /></span>Compra de material</label><label className={styles.choice}><input type="radio" name="type" value="pago" checked={values.type === 'pago'} onChange={() => update('type', 'pago')} /><span className={styles.choiceIcon}><ClipboardList aria-hidden="true" size={16} /></span>Solicitud de pago</label></div></fieldset>
-        {exigirEmpresa && <SelectorEmpresa empresas={empresas} cargadas={empresasCargadas} valor={values.company} error={errors.company} onChange={valor => update('company', valor)} />}
-        <div className={`${styles.actionRow} ${styles.actionRowSingle}`}><button className={styles.primaryButton} type="button" onClick={irADatos}>Continuar <ArrowRight aria-hidden="true" size={19} /></button></div>
+      {phase === 'tipo' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso {etapaActual} de {etapas.length}</p><h2>¿Qué vas a solicitar?</h2><p>Elige el tipo de solicitud{exigirEmpresa && values.type === 'compra' ? ' y la empresa' : ''}.</p></div><div className={styles.stepBody}>
+        <fieldset className={styles.fieldset}><legend className={styles.fieldsetLegend}>Tipo de solicitud <em className={styles.required}>*</em></legend><div className={styles.choiceGrid}><label className={styles.choice}><input type="radio" name="type" value="compra" checked={values.type === 'compra'} onChange={() => update('type', 'compra')} /><span className={styles.choiceIcon}><PackageCheck aria-hidden="true" size={16} /></span>Compra de material</label><label className={styles.choice}><input type="radio" name="type" value="pago" checked={values.type === 'pago'} onChange={() => update('type', 'pago')} /><span className={styles.choiceIcon}><Banknote aria-hidden="true" size={16} /></span>Solicitud de pago</label></div>
+        {values.type === 'pago' && <small className={styles.hint}>Para cobrar un servicio o una cuenta: tu identificación, a qué empresa le cobras, el monto y el concepto. Tres pasos.</small>}</fieldset>
+        {exigirEmpresa && values.type === 'compra' && <SelectorEmpresa empresas={empresas} cargadas={empresasCargadas} valor={values.company} error={errors.company} onChange={valor => update('company', valor)} />}
+        <div className={`${styles.actionRow} ${styles.actionRowSingle}`}><button className={styles.primaryButton} type="button" onClick={salirDeTipo}>Continuar <ArrowRight aria-hidden="true" size={19} /></button></div>
       </div></>}
 
-      {phase === 'datos' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso {etapaActual} de {ETAPAS.length}</p><h2>Tus datos</h2><p>Con quién hablamos si hay que confirmar algo.</p></div><div className={styles.stepBody}>
+      {phase === 'beneficiario' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><UserRound aria-hidden="true" size={16} /> Paso {etapaActual} de {etapas.length}</p><h2>¿Quién cobra?</h2><p>La persona o empresa a la que Mizar le paga. Si ya está en el catálogo, la enlazamos por su identificación.</p></div><div className={styles.stepBody}>
+        <div className={styles.twoColumns}>
+          <label className={styles.field}><span className={styles.fieldLabel}>Tipo de identificación <em className={styles.required}>*</em></span><select className={styles.control} name="identificationType" value={values.payment.identificationType} onChange={event => updatePago('identificationType', event.target.value as IdentificationType)}>{TIPOS_IDENTIFICACION.map(tipo => <option key={tipo.valor} value={tipo.valor}>{tipo.etiqueta}</option>)}</select></label>
+          <label className={styles.field}><span className={styles.fieldLabel}>Número de identificación <em className={styles.required}>*</em></span><input className={styles.control} name="identification" value={values.payment.identification} onChange={event => updatePago('identification', event.target.value.replace(/[.\s]/g, ''))} inputMode={values.payment.identificationType === 'CC' || values.payment.identificationType === 'NIT' ? 'numeric' : 'text'} maxLength={32} placeholder={values.payment.identificationType === 'NIT' ? 'Ej. 900123456-7' : 'Ej. 1020304050'} autoComplete="off" aria-invalid={Boolean(errors.identification)} aria-describedby={errors.identification ? 'portal-identification-error' : undefined} />{errors.identification && <small className={styles.error} id="portal-identification-error">{errors.identification}</small>}</label>
+        </div>
+        <label className={styles.field}><span className={styles.fieldLabel}>Nombre completo o razón social <em className={styles.required}>*</em></span><input className={styles.control} name="beneficiaryName" value={values.payment.beneficiaryName} onChange={event => updatePago('beneficiaryName', event.target.value)} maxLength={160} placeholder="Como aparece en la cédula o el RUT" autoComplete="name" aria-invalid={Boolean(errors.beneficiaryName)} aria-describedby={errors.beneficiaryName ? 'portal-beneficiary-name-error' : undefined} />{errors.beneficiaryName && <small className={styles.error} id="portal-beneficiary-name-error">{errors.beneficiaryName}</small>}</label>
+        <label className={styles.field}><span className={styles.fieldLabel}>Tu teléfono <small className={styles.hint}>opcional</small></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="phone" value={phone} onChange={event => setPhone(event.target.value)} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(errors.phone)} aria-describedby={errors.phone ? 'portal-phone-error' : undefined} /></span><small className={styles.hint}>Para avisarte por WhatsApp cuando el pago avance. Sin él la radicamos igual, pero no podremos avisarte.</small>{errors.phone && <small className={styles.error} id="portal-phone-error">{errors.phone}</small>}</label>
+        <div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={() => setPhase('tipo')}><ArrowLeft aria-hidden="true" size={18} /> Atrás</button><button className={styles.primaryButton} type="button" onClick={irAPago}>Continuar al pago <ArrowRight aria-hidden="true" size={19} /></button></div>
+      </div></>}
+
+      {phase === 'pago' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><Banknote aria-hidden="true" size={16} /> Paso {etapaActual} de {etapas.length}</p><h2>El pago</h2><p>A qué empresa le cobras, cuánto y por qué.</p></div><div className={styles.stepBody}>
+        {exigirEmpresa && <SelectorEmpresa etiqueta="Empresa a la que cobras" ayuda="La obra y el centro de costo los asigna quien revisa tu solicitud." empresas={empresas} cargadas={empresasCargadas} valor={values.company} error={errors.company} onChange={valor => update('company', valor)} />}
+        <label className={styles.field}><span className={styles.fieldLabel}>Monto a cobrar (COP) <em className={styles.required}>*</em></span><input className={styles.control} name="amount" value={values.payment.amount} onChange={event => updatePago('amount', event.target.value.replace(/\D/g, '').slice(0, 12))} inputMode="numeric" placeholder="Ej. 1250000" aria-invalid={Boolean(errors.amount)} aria-describedby={errors.amount ? 'portal-amount-error' : 'portal-amount-hint'} /><small className={styles.hint} id="portal-amount-hint">{values.payment.amount ? `Se solicita ${formatoCOP.format(Number(values.payment.amount))}` : 'Solo números, sin puntos ni decimales.'}</small>{errors.amount && <small className={styles.error} id="portal-amount-error">{errors.amount}</small>}</label>
+        <label className={styles.field}><span className={styles.fieldLabel}>Concepto <em className={styles.required}>*</em></span><input className={styles.control} name="concept" value={values.payment.concept} onChange={event => updatePago('concept', event.target.value)} maxLength={MAX_CONCEPTO} placeholder="Ej. Levantamiento topográfico lote 3" aria-invalid={Boolean(errors.concept)} aria-describedby={errors.concept ? 'portal-concept-error' : 'portal-concept-hint'} /><small className={styles.hint} id="portal-concept-hint">Qué se paga, en pocas palabras. {values.payment.concept.length}/{MAX_CONCEPTO}</small>{errors.concept && <small className={styles.error} id="portal-concept-error">{errors.concept}</small>}</label>
+        <CampoFoto indice={0} etiqueta="Foto de la factura o cuenta de cobro" titulo="Agregar la foto" ariaLabel="Factura o cuenta de cobro (opcional)" foto={values.payment.photo} error={errors['photo-0']} onFoto={foto => updatePago('photo', foto)} onError={mensaje => onFotoError(0, mensaje)} />
+        <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> La foto solo la ve quien revisa tu solicitud.</p>
+        <div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={() => setPhase('beneficiario')}><ArrowLeft aria-hidden="true" size={18} /> Atrás</button><button className={styles.primaryButton} type="button" onClick={irAResumenDesdePago}>Ver resumen <ArrowRight aria-hidden="true" size={19} /></button></div>
+      </div></>}
+
+      {phase === 'datos' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso {etapaActual} de {etapas.length}</p><h2>Tus datos</h2><p>Con quién hablamos si hay que confirmar algo.</p></div><div className={styles.stepBody}>
         <label className={styles.field}><span className={styles.fieldLabel}>Tu nombre <em className={styles.required}>*</em></span><input className={styles.control} name="requestor" value={values.requestor} onChange={event => update('requestor', event.target.value)} placeholder="Nombre completo" autoComplete="name" aria-invalid={Boolean(errors.requestor)} aria-describedby={errors.requestor ? 'portal-requestor-error' : undefined} />{errors.requestor && <small className={styles.error} id="portal-requestor-error">{errors.requestor}</small>}</label>
         <label className={styles.field}><span className={styles.fieldLabel}>Tu teléfono <small className={styles.hint}>opcional</small></span><span className={styles.inputWithIcon}><Phone aria-hidden="true" size={18} /><input className={styles.control} name="phone" value={phone} onChange={event => setPhone(event.target.value)} placeholder="300 000 0000" inputMode="tel" autoComplete="tel" aria-invalid={Boolean(errors.phone)} aria-describedby={errors.phone ? 'portal-phone-error' : undefined} /></span><small className={styles.hint}>Para avisarte por WhatsApp del avance. Sin él la radicamos igual, pero no podremos avisarte.</small>{errors.phone && <small className={styles.error} id="portal-phone-error">{errors.phone}</small>}</label>
         <div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={() => setPhase('tipo')}><ArrowLeft aria-hidden="true" size={18} /> Atrás</button><button className={styles.primaryButton} type="button" onClick={irAMaterial}>Continuar a material <ArrowRight aria-hidden="true" size={19} /></button></div>
       </div></>}
 
-      {phase === 'item' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso {etapaActual} de {ETAPAS.length} · Artículo {itemIndex + 1}</p><h2>Artículo {itemIndex + 1}</h2><p>Uno a la vez. Si necesitas más materiales, los agregamos después de este.</p></div><div className={styles.stepBody}>
+      {phase === 'item' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso {etapaActual} de {etapas.length} · Artículo {itemIndex + 1}</p><h2>Artículo {itemIndex + 1}</h2><p>Uno a la vez. Si necesitas más materiales, los agregamos después de este.</p></div><div className={styles.stepBody}>
         <fieldset className={styles.lineCard}>
           <legend className={styles.lineLegend}><span>Ítem {itemIndex + 1}</span></legend>
           <PantallaArticulo indice={itemIndex} linea={values.lines[itemIndex]} errors={errors} detalleAbierto={detalles.includes(itemIndex)} onCampo={(campo, valor) => updateLinea(itemIndex, campo, valor)} onAlternarDetalle={() => alternarDetalle(itemIndex)} onFoto={foto => setLineaFoto(itemIndex, foto)} onFotoError={mensaje => onFotoError(itemIndex, mensaje)} />
@@ -484,13 +587,27 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
         </div>
       </div></>}
 
-      {phase === 'cuando' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso {etapaActual} de {ETAPAS.length}</p><h2>¿Para cuándo?</h2><p>Fecha y cualquier instrucción de entrega. Las dos son opcionales.</p></div><div className={styles.stepBody}>
+      {phase === 'cuando' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><ClipboardList aria-hidden="true" size={16} /> Paso {etapaActual} de {etapas.length}</p><h2>¿Para cuándo?</h2><p>Fecha y cualquier instrucción de entrega. Las dos son opcionales.</p></div><div className={styles.stepBody}>
         <label className={styles.field}><span className={styles.fieldLabel}>Fecha requerida <small className={styles.hint}>opcional</small></span><input className={styles.control} name="date" type="date" value={values.date} onChange={event => update('date', event.target.value)} aria-invalid={Boolean(errors.date)} aria-describedby={errors.date ? 'portal-date-error' : undefined} />{errors.date && <small className={styles.error} id="portal-date-error">{errors.date}</small>}</label>
         <label className={styles.field}><span className={styles.fieldLabel}>Observaciones <small className={styles.hint}>di a dónde va, opcional</small></span><textarea className={`${styles.control} ${styles.textarea}`} name="notes" value={values.notes} onChange={event => update('notes', event.target.value)} maxLength={3000} placeholder="Ej. Torre 2, piso 4" /></label>
         <div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={atrasDesdeCuando}><ArrowLeft aria-hidden="true" size={18} /> Atrás</button><button className={styles.primaryButton} type="button" onClick={irAResumen}>Ver resumen <ArrowRight aria-hidden="true" size={19} /></button></div>
       </div></>}
 
-      {phase === 'resumen' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso {etapaActual} de {ETAPAS.length}</p><h2>Resumen</h2><p>Revisa antes de enviar. Puedes volver atrás o quitar un artículo.</p></div><div className={styles.stepBody}>
+      {phase === 'resumen' && <><div className={styles.stepHeader}><p className={styles.stepEyebrow}><PackageCheck aria-hidden="true" size={16} /> Paso {etapaActual} de {etapas.length}</p><h2>Resumen</h2><p>{values.type === 'pago' ? 'Revisa antes de enviar. Puedes volver atrás para corregir.' : 'Revisa antes de enviar. Puedes volver atrás o quitar un artículo.'}</p></div><div className={styles.stepBody}>
+        {values.type === 'pago' ? <>
+          <dl className={styles.summaryMeta}>
+            <div className={styles.summaryRow}><dt>Tipo</dt><dd>{TYPE_LABELS.pago}</dd></div>
+            <div className={styles.summaryRow}><dt>Empresa</dt><dd>{exigirEmpresa ? (empresaSeleccionada ?? '—') : 'La define el enlace de tu obra'}</dd></div>
+            <div className={styles.summaryRow}><dt>Beneficiario</dt><dd>{values.payment.beneficiaryName || '—'}</dd></div>
+            <div className={styles.summaryRow}><dt>Identificación</dt><dd>{values.payment.identificationType} {values.payment.identification}</dd></div>
+            <div className={styles.summaryRow}><dt>Teléfono</dt><dd>{phone.trim() || 'Sin teléfono (sin aviso por WhatsApp)'}</dd></div>
+            <div className={styles.summaryRow}><dt>Monto</dt><dd>{formatoCOP.format(Number(values.payment.amount) || 0)}</dd></div>
+          </dl>
+          <div className={styles.summaryLine} aria-label="Concepto del pago">
+            {values.payment.photo && <FotoPreview file={values.payment.photo} className={styles.summaryPhoto} />}
+            <div><b>{values.payment.concept}</b><span className={styles.hint}>{values.payment.photo ? `Factura o cuenta de cobro: ${values.payment.photo.name}` : 'Sin factura ni cuenta de cobro adjunta'}</span></div>
+          </div>
+        </> : <>
         <dl className={styles.summaryMeta}>
           <div className={styles.summaryRow}><dt>Tipo</dt><dd>{TYPE_LABELS[values.type]}</dd></div>
           <div className={styles.summaryRow}><dt>Empresa</dt><dd>{exigirEmpresa ? (empresaSeleccionada ?? '—') : 'La define el enlace de tu obra'}</dd></div>
@@ -506,6 +623,7 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
             {values.lines.length > 1 && <button className={styles.lineRemove} type="button" onClick={() => quitarLinea(indice)}>Quitar</button>}
           </li>)}
         </ol>
+        </>}
         {errorEnvio && <p className={styles.error} role="alert">{errorEnvio}</p>}
         <div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={atrasDesdeResumen}><ArrowLeft aria-hidden="true" size={18} /> Atrás</button><button className={styles.primaryButton} type="submit" disabled={enviando}>{enviando ? 'Enviando…' : 'Enviar solicitud'} <ArrowRight aria-hidden="true" size={19} /></button></div>
       </div></>}
@@ -636,28 +754,40 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
     if (!access) return;
     setFormError(''); setSubmitting(true);
     // TELÉFONO SOLO SI SE ESCRIBIÓ. Mandar `phone: ''` no es "sin teléfono": el esquema exige min(7)
-    // y rechazaría el envío entero, y como el endpoint siempre responde 202 neutro, ese rechazo se
-    // vería exactamente igual que un envío correcto que nunca llega a la bandeja.
+    // y rechazaría el envío entero con un 400.
     const telefono = formulario.phone.trim();
+    // Obra O empresa, exactamente una (lo exige el esquema del endpoint). Con enlace por obra manda
+    // la obra firmada; por la ruta general, la empresa elegida.
+    const destino = access.workId ? { workId: access.workId } : { societyId: formulario.values.company };
+    const esPago = formulario.values.type === 'pago', pago = formulario.values.payment;
     // requiredDate va con `|| undefined` (mismo idioma que observations): el esquema la acepta
     // OPCIONAL con z.string().date() — enviar '' cuando el campo queda vacío no es "sin fecha", es
-    // una fecha inválida, y .strict() la rechazaría en el mismo silencio del 202.
-    const payload = {
-      // Obra O empresa, exactamente una (lo exige el esquema del endpoint). Con enlace por obra manda
-      // la obra firmada; por la ruta general, la empresa elegida.
-      ...(access.workId ? { workId: access.workId } : { societyId: formulario.values.company }),
-      code, type: formulario.values.type, requiredDate: formulario.values.date || undefined, name: formulario.values.requestor,
-      ...(telefono ? { phone: telefono } : {}),
-      observations: formulario.values.notes || undefined,
-      items: formulario.values.lines.map(linea => ({ description: linea.description, quantity: Number(linea.quantity), unit: linea.unit, possibleSupplier: linea.supplier || undefined, productLink: linea.productLink || undefined })),
-    };
+    // una fecha inválida, y .strict() la rechazaría con el mismo 400.
+    //
+    // Solicitud de pago (RF-108): sin `items` ni `name` — el beneficiario es quien radica, y el
+    // concepto y el monto son la única línea, que arma el endpoint. `amount` viaja como NÚMERO entero.
+    const payload = esPago
+      ? {
+        ...destino, code, type: 'pago' as const,
+        ...(telefono ? { phone: telefono } : {}),
+        beneficiary: { identificationType: pago.identificationType, identification: pago.identification.trim(), name: pago.beneficiaryName.trim() },
+        amount: Number(pago.amount), concept: pago.concept.trim(),
+      }
+      : {
+        ...destino, code, type: 'compra' as const, requiredDate: formulario.values.date || undefined, name: formulario.values.requestor,
+        ...(telefono ? { phone: telefono } : {}),
+        observations: formulario.values.notes || undefined,
+        items: formulario.values.lines.map(linea => ({ description: linea.description, quantity: Number(linea.quantity), unit: linea.unit, possibleSupplier: linea.supplier || undefined, productLink: linea.productLink || undefined })),
+      };
     // El ÍNDICE de cada foto es su posición en `items` arriba — el mismo que usa el servidor para
     // ligarla al ítem que crea (ver app/api/public/requisitions/route.ts). `payload.items` y
     // `formulario.values.lines` nacen del mismo `.map` en el mismo orden, así que el índice de una
-    // lista sirve para la otra sin traducción.
-    const fotos = formulario.values.lines
-      .map((linea, indice) => ({ indice, file: linea.photo }))
-      .filter((entrada): entrada is { indice: number; file: File } => entrada.file !== null);
+    // lista sirve para la otra sin traducción. En un pago la única línea es la 0: la factura va en `foto_0`.
+    const fotos = esPago
+      ? (pago.photo ? [{ indice: 0, file: pago.photo }] : [])
+      : formulario.values.lines
+        .map((linea, indice) => ({ indice, file: linea.photo }))
+        .filter((entrada): entrada is { indice: number; file: File } => entrada.file !== null);
     try {
       // Con fotos, `multipart/form-data`: el JSON de siempre viaja intacto en el campo `payload`, y
       // cada foto en su propio campo `foto_<índice>` (ver el endpoint). SIN fotos, el envío es
@@ -679,7 +809,14 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
       const response = await fetch('/api/public/requisitions', { method: 'POST', headers, body });
       if (response.status === 202) setSent(true);
       else if (response.status === 503) setFormError('El servicio de requisiciones no está disponible. Intenta más tarde.');
-      else setFormError('No pudimos recibir la solicitud. Revisa los campos e intenta otra vez.');
+      else if (response.status === 413) setFormError('El envío pesa demasiado. Quita la foto o elige una más liviana e intenta otra vez.');
+      else {
+        // Desde la adenda de pagos el endpoint dice POR QUÉ rechaza (400/409/422 con `message`, p. ej.
+        // un beneficiario homónimo con otra identificación): se muestra tal cual en vez de mandar a
+        // "revisar los campos" sin decir cuál. Sin mensaje —un 400 de esquema— queda el genérico.
+        const cuerpo = await response.json().catch(() => null) as { message?: string } | null;
+        setFormError(cuerpo?.message || 'No pudimos recibir la solicitud. Revisa los campos e intenta otra vez.');
+      }
     } catch { setFormError('No pudimos conectar con el servicio. Intenta más tarde.'); }
     finally { setSubmitting(false); }
   };

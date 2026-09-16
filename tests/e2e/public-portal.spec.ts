@@ -261,6 +261,72 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
   });
 
+  // RF-108 (adenda de pagos, A12): «Solicitud de pago» abre un camino de TRES pasos —¿Quién cobra?,
+  // El pago, Resumen—. Quien radica es el beneficiario (no hay "Tus datos"), la empresa se pide junto
+  // al monto (es a la que se cobra) y no hay artículos. Corre en los dos proyectos, como el resto.
+  /** Elige «Solicitud de pago» en "¿Qué vas a solicitar?". Espera el encabezado ANTES de pulsar: el
+   *  radio va oculto bajo su etiqueta (`.choice`) y se pulsa el texto, como haría el pulgar. */
+  async function elegirPago(page: Page) {
+    await expect(page.getByRole("heading", { name: "¿Qué vas a solicitar?" })).toBeVisible();
+    await page.getByText("Solicitud de pago", { exact: true }).click();
+    await expect(page.getByLabel("Solicitud de pago")).toBeChecked();
+  }
+
+  test("solicitud de pago: quién cobra, el pago y resumen, y llega al final", async ({ page }) => {
+    await abrirPortalHidratado(page);
+    await pasarCompuerta(page);
+    await elegirPago(page);
+    // La empresa ya no está en el primer paso: se pide junto al monto.
+    await expect(page.locator('select[name="company"]')).toHaveCount(0);
+    await page.getByRole("button", { name: "Continuar", exact: true }).click();
+
+    await expect(page.getByRole("heading", { name: "¿Quién cobra?" })).toBeVisible();
+    await page.getByLabel("Tipo de identificación").selectOption("CC");
+    await page.getByLabel("Número de identificación").fill("1020304050");
+    await page.getByLabel("Nombre completo o razón social").fill("Ana Topógrafa");
+    await page.getByRole("button", { name: "Continuar al pago" }).click();
+
+    await expect(page.getByRole("heading", { name: "El pago" })).toBeVisible();
+    await page.locator('select[name="company"]').selectOption({ label: "Ictinos" });
+    await page.getByLabel("Monto a cobrar").fill("1250000");
+    await expect(page.getByText(/Se solicita .*1\.250\.000/)).toBeVisible();
+    await page.getByLabel("Concepto").fill("Levantamiento topográfico lote 3");
+    await page.getByRole("button", { name: "Ver resumen" }).click();
+
+    await expect(page.getByRole("heading", { name: "Resumen" })).toBeVisible();
+    await expect(page.getByText("Ana Topógrafa")).toBeVisible();
+    await expect(page.getByText("CC 1020304050")).toBeVisible();
+    await expect(page.getByText(/1\.250\.000/)).toBeVisible();
+    await expect(page.getByText("Levantamiento topográfico lote 3")).toBeVisible();
+    await expect(page.getByText("Ictinos")).toBeVisible();
+
+    await page.getByRole("button", { name: "Enviar solicitud" }).click();
+    await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
+  });
+
+  test("solicitud de pago: sin identificación no se avanza, y sin monto no hay resumen", async ({ page }) => {
+    await abrirPortalHidratado(page);
+    await pasarCompuerta(page);
+    await elegirPago(page);
+    await page.getByRole("button", { name: "Continuar", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "¿Quién cobra?" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Continuar al pago" }).click();
+    await expect(page.locator("#portal-identification-error")).toContainText("número de identificación");
+    await expect(page.locator("#portal-beneficiary-name-error")).toContainText("nombre completo");
+
+    await page.getByLabel("Número de identificación").fill("900123456-7");
+    await page.getByLabel("Nombre completo o razón social").fill("Topografía del Valle S.A.S.");
+    await page.getByRole("button", { name: "Continuar al pago" }).click();
+    await expect(page.getByRole("heading", { name: "El pago" })).toBeVisible();
+
+    await page.locator('select[name="company"]').selectOption({ label: "Ictinos" });
+    await page.getByLabel("Concepto").fill("Anticipo topografía");
+    await page.getByRole("button", { name: "Ver resumen" }).click();
+    await expect(page.locator("#portal-amount-error")).toContainText("monto");
+    await expect(page.getByRole("heading", { name: "Resumen" })).toHaveCount(0);
+  });
+
   test("no desborda horizontalmente, ni en escritorio ni en móvil", async ({ page }) => {
     // Se corre en los dos proyectos a propósito: la promesa de la unificación es que la MISMA
     // pantalla sirva en las dos anchuras, y el desbordamiento es la forma más barata de detectar
