@@ -303,6 +303,21 @@ Vistas / consultas derivadas: `orden_saldos` (valor_total, pagado, saldo, estado
 | P11 | **Soporte obligatorio antes de contabilizar** una OP (factura o cuenta de cobro): ¿lo exige el contador o lo controla Daniel como el RUT? | Luis Miguel | Próxima sesión con contabilidad |
 | P12 | **Claudia:** ¿acepta que el reporte de esta fase muestre solo gastos (comprometido y pagado) y que los ingresos lleguen en fase 2? | Ernesto + Claudia | Antes de cerrar alcance |
 
+### 8.1 Respuestas de Ernesto (17-sep-2026)
+
+| Tema | Decisión | Estado |
+|---|---|---|
+| Quién registra y anula pagos | **Daniel y admin**, y los permisos **dejan de estar hardcodeados**: se editan desde Configuración (defaults en código, override auditado en `configuracion`) | En construcción (`feat/permisos-editables`) |
+| Anular pago de orden ya pagada | Se queda como está: con motivo, auditado, la orden vuelve a «contabilizada» | Sin cambios |
+| «Aprobar yo mismo» con ítems de otro aprobador | **Daniel tiene control total**: aprueba por encima del aprobador asignado, y la auditoría registra que aprobó Daniel (y a quién se saltó) | En construcción (`feat/permisos-editables`) |
+| Alta rápida de proveedor | Que nazca «pendiente de completar» está bien; no tiene que nacer completa | Sin cambios |
+| Teléfono del remitente en pagos por WhatsApp | Está bien: cada quien pide sus pagos. El camino es el formulario público de solicitudes de pago, con contraseña básica | Sin cambios (modelo de contraseña por confirmar) |
+| Avisar al beneficiario cuando se le paga (P10) | **No se avisa** | Cerrado |
+| Contador: sobre físico de recibos (P8) | Vamos a **todo virtual**: se siguen pudiendo ver y descargar los documentos, y se prepara un flujo para que **el cruce se haga en el sistema** (pagos contra extracto), aunque Daniel dijera que por ahora cruza en papel | Especificación pendiente |
+| Soporte obligatorio antes de contabilizar (P11) | **Opcional**: los maestros de obra no aportan factura ni cuenta de cobro | Sin cambios |
+| Adjuntos del portal de pago | **Muchos tipos**: PDF, Excel, CSV, imágenes y similares, no solo fotos | En construcción (`feat/portal-adjuntos-tipos`) |
+| Nómina de PROIM (P9), ingresos en fase 2 (P12), Cierre de caja para el aprobador | **Se ignoran por ahora** | Aplazado |
+
 ---
 
 ## 9. Pendientes del cliente (no bloquean el desarrollo: se avanza con datos demo)
@@ -342,3 +357,39 @@ Esta adenda está terminada cuando:
 5. El reporte de gastos filtra por **centro de costo** y por **empresa facturada** por separado, con totales de comprometido y pagado por periodo.
 6. Todo cambio de monto, auto-aprobación y pago queda en `auditoria` con usuario y valores antes/después.
 7. Ni por la web ni por el MCP se puede aprobar una solicitud ajena; la auto-aprobación solo existe para usuario maestro y queda registrada como dos eventos.
+
+---
+
+## 12. Cruce bancario en el sistema (especificación, pendiente de aprobar)
+
+Nace de la respuesta de Ernesto del 17-sep a P8: **«vamos a preparar para que sea todo virtual… prepara flujo para que cruce en sistema»**. Hoy Daniel cruza a mano, una vez al mes, los comprobantes físicos contra el extracto del banco. La idea es que ese cruce ocurra dentro de la plataforma. **Nada de esto está construido**: es la propuesta para aprobar o corregir antes de tocar código.
+
+### 12.1 Qué problema resuelve
+
+Un pago registrado en la plataforma dice «el 12 de septiembre le transferí $1.285.000 a Ferretería X». El extracto del banco dice si esa plata salió de verdad. Hoy nadie compara las dos cosas dentro del sistema: si un pago se registró mal, se registró dos veces o no salió nunca, solo se descubre en el cruce manual de fin de mes.
+
+### 12.2 Flujo propuesto
+
+1. **Subir el extracto.** Daniel o Contabilidad suben el archivo que da el banco (CSV o Excel) y eligen la cuenta bancaria. Cada movimiento queda guardado con fecha, valor, descripción, referencia y signo (salida o entrada).
+2. **Emparejar automáticamente.** El sistema propone parejas movimiento ↔ pago registrado, empezando por lo seguro: mismo valor exacto y fecha dentro de ±3 días; sube la confianza si la referencia del pago aparece en la descripción del banco. Se muestran tres cubos: **cuadra solo**, **posible** (varios candidatos o diferencia de días) y **sin pareja**.
+3. **Confirmar a mano lo dudoso.** Nada se da por cuadrado sin que una persona lo acepte, salvo lo que cuadra exacto. Se puede deshacer una pareja, y todo queda en `auditoria`.
+4. **Cerrar el periodo.** Al terminar, queda un resumen: pagos sin movimiento en el banco (¿se registró algo que no salió?), movimientos sin pago (¿salió plata que nadie registró?) y diferencias de valor.
+
+### 12.3 Lo que hay que construir
+
+- Tablas nuevas: `cuentas_bancarias`, `movimientos_banco` (con el hash del archivo y una clave única por movimiento para que subir dos veces el mismo extracto no duplique nada) y `conciliaciones` (la pareja movimiento ↔ pago, con quién y cuándo la confirmó).
+- Lector de extractos: empieza por **un solo banco**, el que usen hoy. Cada banco tiene su formato, así que el lector debe ser una pieza sustituible, no una cadena de parches.
+- Pantalla «Cruce bancario» (Contabilidad y Daniel): subir extracto, ver los tres cubos, confirmar, deshacer, y el resumen del periodo.
+- Los pagos ganan un estado de cruce (`sin cruzar` / `cuadrado`) visible en la ficha de la orden y en el Cierre de caja.
+- Regla dura: el cruce **no cambia** el estado de pago ni el contable de una orden. Solo informa. Si aparece una diferencia, se corrige anulando el pago con motivo, que es el camino que ya existe.
+
+### 12.4 Fuera de alcance
+
+Conectarse al banco por API (esto es archivo subido a mano), la contabilidad en Helisa, y los ingresos, que siguen en la fase 2 financiera.
+
+### 12.5 Lo que falta decidir antes de construir
+
+- **Banco y formato**: ¿con cuál se empieza y quién consigue un extracto de ejemplo?
+- **Alcance**: ¿solo transferencias, o también lo pagado por caja (que no pasa por el banco y nunca va a cuadrar contra el extracto)?
+- **Quién lo hace**: ¿sube el extracto Contabilidad, Daniel, o los dos?
+- **Con qué frecuencia**: ¿mensual como hoy, o cada semana?
