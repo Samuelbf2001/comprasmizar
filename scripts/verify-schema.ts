@@ -102,6 +102,9 @@ const HARNESSES = [
   // QA adversarial de pagos y caja, H2 (2026-09-16): el teléfono del solicitante externo es opcional;
   // el CHECK de requisiciones solo puede seguir exigiendo el nombre.
   path.join(ROOT, "supabase", "tests", "telefono_externo_opcional_verification.sql"),
+  // Soporte del portal con más formatos (2026-09-17, 202609170002): que ampliar la lista blanca no
+  // aflojara la correspondencia extensión↔MIME, la invariante "una foto es una imagen" ni el tope.
+  path.join(ROOT, "supabase", "tests", "adjuntos_tipos_archivo_verification.sql"),
 ];
 
 function migrationFiles(): string[] {

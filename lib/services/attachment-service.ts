@@ -2,24 +2,53 @@ import { DomainError, type Actor, type AttachmentEntity, type PrivateAttachment,
 
 export const PRIVATE_ATTACHMENT_BUCKET = "requisicion-adjuntos";
 export const PRIVATE_ATTACHMENT_TYPES = ["soporte", "cotizacion", "foto"] as const;
-export const MAX_PRIVATE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const MIME_TYPES = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
-/** Subconjunto de `MIME_TYPES` que son imágenes de verdad — lo usa también
- *  `lib/infrastructure/public-photos.ts` (foto opcional por artículo del portal público) para no
- *  redefinir qué cuenta como imagen en dos sitios distintos. */
-export const IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+/**
+ * 10 MB, un solo tope para toda la plataforma (2026-09-17). Antes había dos: el selector del
+ * navegador cortaba en 10 MB y el esquema del endpoint aceptaba 20 MB, así que el número que veía
+ * quien sube y el que defendía el servidor no eran el mismo. Se unifica en el más bajo de los dos —
+ * el que ya se le prometía a la gente— y el esquema de `POST /api/attachments/...` lo IMPORTA de
+ * aquí en vez de repetirlo. El CHECK de la base (`tamano_bytes <= 20971520`) se queda en 20 MB a
+ * propósito: es la barrera exterior sobre filas históricas radicadas con el tope viejo, no el
+ * límite del producto.
+ */
+export const MAX_PRIVATE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/**
+ * Extensiones válidas por MIME y, a la vez, la lista blanca de MIME de la plataforma: quien decide
+ * qué se acepta es esta tabla, no la extensión del archivo (el MIME sale SIEMPRE de husmear los
+ * bytes, ver lib/infrastructure/attachment-mime.ts) — la extensión solo tiene que ser coherente con
+ * lo que resultó ser. Ampliada el 2026-09-17 con Excel, Word, PowerPoint y CSV/texto por decisión
+ * de Ernesto sobre el soporte del portal público.
+ */
+const ATTACHMENT_EXTENSIONS: Record<string, readonly string[]> = {
+  "application/pdf": ["pdf"],
+  "image/jpeg": ["jpg", "jpeg"],
+  "image/png": ["png"],
+  "image/webp": ["webp"],
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ["xlsx"],
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ["docx"],
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ["pptx"],
+  "application/vnd.ms-excel": ["xls"],
+  // Un CSV y un .txt son el MISMO hallazgo para el servidor («esto es texto»): no hay forma de
+  // demostrar por contenido cuál de los dos es, así que comparten MIME y se sirven como texto.
+  "text/plain": ["csv", "txt"],
+};
+export const ATTACHMENT_MIME_TYPES: ReadonlySet<string> = new Set(Object.keys(ATTACHMENT_EXTENSIONS));
+/** Subconjunto de `ATTACHMENT_MIME_TYPES` que son imágenes de verdad — lo usa también
+ *  `lib/infrastructure/public-attachments.ts` (soporte opcional por artículo del portal público)
+ *  para no redefinir qué cuenta como imagen en dos sitios distintos. */
+export const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/webp"]);
 // `pago_orden` (adenda de pagos, A5): el comprobante de un pago es un adjunto más, bajo pagos-orden/<pago>/…
 // — mismo bucket, misma ruta canónica y mismo contrato prepare/complete que caja_menor (202609150001).
 const PREFIX: Record<AttachmentEntity, string> = { requisicion: "requisiciones", requisicion_item: "requisicion-items", caja_menor: "caja-menor", pago_orden: "pagos-orden" };
 /** Entidades cuya lectura es SOLO por rol (sin dueño por fila): las únicas que admite `listMany`. */
 const ROLE_ONLY_ENTITIES: readonly AttachmentEntity[] = ["caja_menor", "pago_orden"];
 /**
- * Extensiones válidas para un MIME dado — la MISMA lista que usaba `validate()` a pelo, ahora
- * exportada para que `public-photos.ts` (foto del portal público) compruebe la extensión con el
- * mismo criterio en vez de reinventarlo. Devuelve `[]` para un MIME fuera de la lista blanca.
+ * Extensiones válidas para un MIME dado, exportada para que `public-attachments.ts` (soporte del
+ * portal público) compruebe la extensión con el mismo criterio en vez de reinventarlo. Devuelve
+ * `[]` para un MIME fuera de la lista blanca.
  */
-export function expectedAttachmentExtensions(mimeType: string): string[] {
-  return mimeType === "application/pdf" ? ["pdf"] : mimeType === "image/jpeg" ? ["jpg", "jpeg"] : mimeType === "image/png" ? ["png"] : mimeType === "image/webp" ? ["webp"] : [];
+export function expectedAttachmentExtensions(mimeType: string): readonly string[] {
+  return ATTACHMENT_EXTENSIONS[mimeType] ?? [];
 }
 
 export interface PrivateAttachmentUpload { type: (typeof PRIVATE_ATTACHMENT_TYPES)[number]; name: string; mimeType: string; sizeBytes: number; }
@@ -54,7 +83,7 @@ type AttachmentView = Omit<PrivateAttachment, "entity" | "entityId" | "storagePa
 type AttachmentBatchView = AttachmentView & { entity: AttachmentEntity; entityId: string };
 const MAX_BATCH_IDS = 100;
 
-/** Exportado para que `public-photos.ts` (portal público) sanee el nombre del archivo con el MISMO
+/** Exportado para que `public-attachments.ts` (portal público) sanee el nombre del archivo con el MISMO
  *  criterio — sin esto habría dos definiciones de "nombre de archivo válido" divergiendo con el tiempo. */
 export function filename(value: string): string {
   const normalized = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
@@ -81,11 +110,15 @@ export class PrivateAttachmentService {
   private validate(entity: AttachmentEntity, input: PrivateAttachmentUpload): { type: PrivateAttachmentUpload["type"]; name: string; mimeType: string; sizeBytes: number } {
     const name = filename(input.name), mimeType = input.mimeType.toLowerCase();
     if (!PRIVATE_ATTACHMENT_TYPES.includes(input.type)) throw new DomainError("INVALID_DOCUMENT", "Tipo de soporte no permitido");
-    if (entity === "requisicion_item" && input.type !== "foto") throw new DomainError("INVALID_DOCUMENT", "Los soportes de ítem deben ser fotos");
+    // Un ítem admite `foto` (la de siempre, del Flow de WhatsApp o del portal) y, desde 2026-09-17,
+    // `soporte`: por el portal público llega ahora la factura o la cotización del artículo, que es
+    // un documento, no una foto. La regla que sí se mantiene intacta es la de abajo: lo que se
+    // llame `foto` tiene que SER una imagen.
+    if (entity === "requisicion_item" && input.type !== "foto" && input.type !== "soporte") throw new DomainError("INVALID_DOCUMENT", "Un ítem sólo admite fotos o soportes");
     if (entity === "caja_menor" && input.type !== "soporte") throw new DomainError("INVALID_DOCUMENT", "Caja menor sólo admite soportes");
     if (entity === "pago_orden" && input.type !== "soporte") throw new DomainError("INVALID_DOCUMENT", "El comprobante de un pago sólo admite soportes");
-    if (!MIME_TYPES.has(mimeType)) throw new DomainError("INVALID_DOCUMENT", "MIME de soporte no permitido");
-    if (input.type === "foto" && !mimeType.startsWith("image/")) throw new DomainError("INVALID_DOCUMENT", "Las fotos deben usar un MIME de imagen");
+    if (!ATTACHMENT_MIME_TYPES.has(mimeType)) throw new DomainError("INVALID_DOCUMENT", "MIME de soporte no permitido");
+    if (input.type === "foto" && !IMAGE_MIME_TYPES.has(mimeType)) throw new DomainError("INVALID_DOCUMENT", "Las fotos deben usar un MIME de imagen");
     const extension = name.slice(name.lastIndexOf(".") + 1), expected = expectedAttachmentExtensions(mimeType);
     if (!expected.includes(extension)) throw new DomainError("INVALID_DOCUMENT", "La extensión no coincide con el MIME");
     if (!Number.isInteger(input.sizeBytes) || input.sizeBytes < 1 || input.sizeBytes > MAX_PRIVATE_ATTACHMENT_BYTES) throw new DomainError("PAYLOAD_TOO_LARGE", "El soporte supera el tamaño permitido");

@@ -1,6 +1,6 @@
-import { sniffAttachmentMime } from "../../../../lib/infrastructure/attachment-mime";
+import { PLAIN_TEXT_MIME_TYPE, sniffAttachmentMimeOrPlainText } from "../../../../lib/infrastructure/attachment-mime";
 import { readObject, verifyStorageToken, writeObject } from "../../../../lib/infrastructure/local-storage";
-import { MAX_PRIVATE_ATTACHMENT_BYTES, PRIVATE_ATTACHMENT_BUCKET } from "../../../../lib/services/attachment-service";
+import { ATTACHMENT_MIME_TYPES, MAX_PRIVATE_ATTACHMENT_BYTES, PRIVATE_ATTACHMENT_BUCKET } from "../../../../lib/services/attachment-service";
 import { MAX_SUPPLIER_DOCUMENT_BYTES, SUPPLIER_DOCUMENT_BUCKET } from "../../../../lib/services/supplier-service";
 
 export const runtime = "nodejs";
@@ -21,7 +21,10 @@ export const runtime = "nodejs";
  * de escribir nada.
  */
 const RULES: Record<string, { maxBytes: number; mimeTypes: ReadonlySet<string> }> = {
-  [PRIVATE_ATTACHMENT_BUCKET]: { maxBytes: MAX_PRIVATE_ATTACHMENT_BYTES, mimeTypes: new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]) },
+  // La lista blanca es la MISMA tabla que aplica `PrivateAttachmentService.validate` (desde
+  // 2026-09-17: PDF, imágenes, Excel, Word, PowerPoint y CSV/texto), importada en vez de repetida —
+  // dos listas copiadas son dos listas que acaban divergiendo.
+  [PRIVATE_ATTACHMENT_BUCKET]: { maxBytes: MAX_PRIVATE_ATTACHMENT_BYTES, mimeTypes: ATTACHMENT_MIME_TYPES },
   // Los documentos de proveedor no admiten webp: es la misma lista que aplica SupplierService.
   [SUPPLIER_DOCUMENT_BUCKET]: { maxBytes: MAX_SUPPLIER_DOCUMENT_BYTES, mimeTypes: new Set(["application/pdf", "image/jpeg", "image/png"]) },
 };
@@ -53,7 +56,7 @@ export async function PUT(request: Request): Promise<Response> {
   const bytes = Buffer.from(await file.arrayBuffer());
   if (bytes.byteLength < 1 || bytes.byteLength > rules.maxBytes) return new Response("Archivo demasiado grande", { status: 413, headers: { "Cache-Control": "no-store" } });
 
-  const signature = sniffAttachmentMime(bytes);
+  const signature = sniffAttachmentMimeOrPlainText(bytes);
   if (!signature || !rules.mimeTypes.has(signature.mimeType)) return new Response("Tipo de archivo no permitido", { status: 415, headers: { "Cache-Control": "no-store" } });
 
   try { await writeObject(verified.bucket, verified.objectPath, bytes, signature.mimeType); }
@@ -75,15 +78,25 @@ export async function GET(request: Request): Promise<Response> {
   if (!object) return denied();
 
   // `attachment` + nombre saneado: el objeto se descarga, nunca se interpreta en el origen de la
-  // aplicación. Es lo que impide que un PDF con script se ejecute con la sesión del usuario.
+  // aplicación. Es lo que impide que un PDF con script se ejecute con la sesión del usuario — y, desde
+  // que se admiten XLSX y CSV (2026-09-17), lo que impide que una hoja o un texto con HTML dentro se
+  // rendericen aquí. Las tres barreras son independientes a propósito:
+  //   `attachment`  -> el navegador descarga en vez de mostrar, sea cual sea el tipo;
+  //   `nosniff`     -> y no reinterpreta el tipo por su contenido si el Content-Type no le cuadra;
+  //   CSP en sandbox -> y si algo lo renderizara igual, no hay origen ni script permitido.
+  // El `Content-Type` es SIEMPRE el que decidió el servidor al husmear los bytes (sidecar de
+  // local-storage.ts), nunca el que declaró quien subió el archivo.
   const filename = verified.objectPath.slice(verified.objectPath.lastIndexOf("/") + 1);
   return new Response(new Uint8Array(object.bytes), {
     status: 200,
     headers: {
-      "Content-Type": object.info.mimeType,
+      // `charset` explícito solo para el texto, que es lo único que un navegador podría decodificar
+      // con la codificación equivocada (`isPlainText` ya garantizó que es UTF-8 válido).
+      "Content-Type": object.info.mimeType === PLAIN_TEXT_MIME_TYPE ? `${PLAIN_TEXT_MIME_TYPE}; charset=utf-8` : object.info.mimeType,
       "Content-Length": String(object.info.sizeBytes),
       "Content-Disposition": `attachment; filename="${filename.replace(/["\\]/g, "")}"`,
       "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
       "Cache-Control": "private, no-store",
     },
   });

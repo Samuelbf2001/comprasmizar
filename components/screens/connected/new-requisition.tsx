@@ -380,7 +380,7 @@ export function ConnectedNewRequisition({
             <AttachmentPicker
               id="requisition-support"
               label={type === "pago" ? "Factura o cuenta de cobro (opcional)" : "Soporte general (opcional)"}
-              help="PDF, JPG, PNG o WebP · máximo 10 MB"
+              help="PDF, Excel, Word, CSV o imagen · máximo 10 MB"
               file={supportFile}
               onFile={setSupportFile}
               onError={setFeedback}
@@ -769,7 +769,7 @@ export function DemoRequisitionScreen() {
           <AttachmentPicker
             id="demo-requisition-support"
             label="Soporte general (opcional)"
-            help="PDF, JPG, PNG o WebP · máximo 10 MB"
+            help="PDF, Excel, Word, CSV o imagen · máximo 10 MB"
             file={supportFile}
             onFile={setSupportFile}
             onError={setFeedback}

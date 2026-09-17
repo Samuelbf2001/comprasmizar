@@ -4,7 +4,7 @@ import { colombiaDateParts, DomainError, type Requisition } from "../../../../li
 import { ProcurementService } from "../../../../lib/services";
 import { SUPPLIER_IDENTIFICATION_TYPE_VALUES } from "../../../../lib/http/schemas";
 import { createPostgresDependencies } from "../../../../lib/infrastructure/postgres-repositories";
-import { createPublicPhotoUploader, type PublicPhotoCandidate } from "../../../../lib/infrastructure/public-photos";
+import { createPublicAttachmentUploader, type PublicAttachmentCandidate } from "../../../../lib/infrastructure/public-attachments";
 import { isPublicConfigured } from "../../../../lib/security/env";
 import { publicFormRateLimiter, publicWorkAggregateRateLimiter, publicWorkRateLimiter } from "../../../../lib/security/rate-limit";
 
@@ -116,25 +116,31 @@ function failure(error: unknown): Response {
 }
 const MAX_PUBLIC_JSON_BYTES = 100_000;
 /**
- * ~60 MB (RF portal-fotos-articulo): hasta 20 fotos de 5 MB cada una (ver
- * `lib/infrastructure/public-photos.ts`) más margen para el resto del `multipart/form-data`. Defensa
- * en profundidad, no la única: cada foto se vuelve a validar por separado (MIME real, tamaño) antes de
- * guardarla, así que un cuerpo dentro del tope pero con un archivo inválido no rompe nada — esa foto
- * se descarta y la requisición se crea igual.
+ * ~60 MB: tope AGREGADO del cuerpo multipart, distinto del tope POR ARCHIVO (10 MB, ver
+ * `MAX_PUBLIC_ATTACHMENT_BYTES` en `lib/infrastructure/public-attachments.ts`). Son dos límites con
+ * dos trabajos: el de archivo es lo que se le promete a quien sube uno, y este acota lo que un
+ * anónimo puede hacernos leer de una sola vez — por eso no es 20 × 10 MB. Defensa en profundidad, no
+ * la única: cada archivo se vuelve a validar por separado (MIME real, tamaño) antes de guardarlo, así
+ * que un cuerpo dentro del tope pero con un archivo inválido no rompe nada — ese archivo se descarta
+ * y la requisición se crea igual.
  */
 const MAX_PUBLIC_MULTIPART_BYTES = 60 * 1024 * 1024;
 /** `foto_<índice>`: el índice es la posición del artículo en `items`, la MISMA que usa el portal para
  *  mostrar los errores de cada línea (`description-<índice>`, ver public-request.tsx). En una solicitud
- *  de pago solo existe el índice 0: la factura o cuenta de cobro va ligada al único concepto. */
+ *  de pago solo existe el índice 0: la factura o cuenta de cobro va ligada al único concepto.
+ *
+ *  El nombre del campo se queda en `foto_` aunque desde 2026-09-17 transporte también PDF, Excel y CSV:
+ *  es el contrato de red que ya hablan el portal y este endpoint, y renombrarlo no cambiaría ni una
+ *  validación. Qué ES cada archivo lo decide el servidor mirando los bytes, nunca el nombre del campo. */
 const PHOTO_FIELD_RE = /^foto_(\d+)$/;
 
 export async function POST(request: Request) {
   // Caddy must overwrite X-Real-IP; never parse a client-supplied X-Forwarded-For chain here.
   if (!isPublicConfigured()) return unavailable(); const ip = request.headers.get("x-real-ip") ?? "direct"; if (!publicFormRateLimiter.consume(ip)) return neutral();
-  // Portal público con foto opcional por artículo: la MISMA petición que radica trae, además del JSON
-  // de siempre, un `multipart/form-data` con un campo `payload` (idéntico contrato JSON) y hasta una
-  // `foto_<índice>` por artículo. El camino JSON puro (sin fotos) es EXACTAMENTE el de siempre — nada
-  // de lo de abajo lo toca cuando `content-type` no es multipart.
+  // Portal público con soporte opcional por artículo: la MISMA petición que radica trae, además del
+  // JSON de siempre, un `multipart/form-data` con un campo `payload` (idéntico contrato JSON) y hasta
+  // una `foto_<índice>` por artículo. El camino JSON puro (sin archivos) es EXACTAMENTE el de siempre —
+  // nada de lo de abajo lo toca cuando `content-type` no es multipart.
   const contentType = (request.headers.get("content-type") ?? "").toLowerCase();
   const isMultipart = contentType.startsWith("multipart/form-data");
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
@@ -228,25 +234,25 @@ export async function POST(request: Request) {
         items: parsed.data.items.map((item) => ({ ...item, id: randomUUID(), unitBase: 0, unitIva: 0 })),
       }, {});
   } catch (error) { return failure(error); }
-  // Solo se guardan fotos si la radicación fue válida — llegar aquí ya exigió limitador, contraseña
+  // Solo se guardan archivos si la radicación fue válida — llegar aquí ya exigió limitador, contraseña
   // y validación, en ese orden. `requisition.items` conserva el mismo orden que `parsed.data.items`
   // (ver ProcurementService.materializeProposals), así que el índice del campo `foto_<índice>` sigue
-  // señalando al mismo artículo. Un índice sin ítem correspondiente (más fotos que artículos, o un
+  // señalando al mismo artículo. Un índice sin ítem correspondiente (más archivos que artículos, o un
   // índice inventado) se ignora en vez de reventar.
   //
   // Y nunca convierte la respuesta en error: la requisición YA existe, y un fallo aquí que devolviera
-  // 503 haría que la persona la volviera a mandar por duplicado. `saveAll` ya descarta la foto inválida
-  // por su cuenta; esto cubre lo que pase antes de llegar a él (leer los bytes, abrir el almacén).
+  // 503 haría que la persona la volviera a mandar por duplicado. `saveAll` ya descarta el archivo
+  // inválido por su cuenta; esto cubre lo que pase antes de llegar a él (leer los bytes, abrir el almacén).
   if (photosByIndex.size) {
     try {
-      const candidates: PublicPhotoCandidate[] = [];
+      const candidates: PublicAttachmentCandidate[] = [];
       for (const [index, file] of photosByIndex) {
         const item = requisition.items[index];
         if (!item) continue;
         candidates.push({ itemId: item.id, name: file.name, bytes: Buffer.from(await file.arrayBuffer()) });
       }
-      if (candidates.length) await createPublicPhotoUploader().saveAll(requisition.id, candidates);
-    } catch { /* la requisición ya quedó radicada; la foto es lo único que se pierde */ }
+      if (candidates.length) await createPublicAttachmentUploader().saveAll(requisition.id, candidates);
+    } catch { /* la requisición ya quedó radicada; el archivo es lo único que se pierde */ }
   }
   return neutral();
 }

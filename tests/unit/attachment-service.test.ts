@@ -148,7 +148,10 @@ describe("PrivateAttachmentService", () => {
   it("rejects unsafe paths/types and audits only safe metadata", async () => {
     const state = fixture();
     await expect(state.service.prepare("requisicion", requisitionId, { ...upload, name: "../../secreto.pdf" }, requester)).rejects.toMatchObject({ code: "INVALID_DOCUMENT" });
-    await expect(state.service.prepare("requisicion_item", itemId, upload, requester)).rejects.toMatchObject({ code: "INVALID_DOCUMENT" });
+    // 2026-09-17: un ítem admite `soporte` además de `foto` (por el portal llega la factura del
+    // artículo), pero nunca `cotizacion` — esa es del comprador y vive en la cabecera. Y lo que se
+    // llame `foto` tiene que SER una imagen: un PDF con `type: "foto"` se sigue rechazando.
+    await expect(state.service.prepare("requisicion_item", itemId, { ...upload, type: "cotizacion" }, requester)).rejects.toMatchObject({ code: "INVALID_DOCUMENT" });
     await expect(state.service.prepare("requisicion_item", itemId, { ...upload, type: "foto" }, requester)).rejects.toMatchObject({ code: "INVALID_DOCUMENT" });
     await expect(state.service.prepare("caja_menor", cashId, { ...upload, type: "cotizacion" }, reviewer)).rejects.toMatchObject({ code: "INVALID_DOCUMENT" });
     await state.service.complete("requisicion", requisitionId, attachmentId, upload, requester);

@@ -414,12 +414,12 @@ describe("portal público guiado — varios artículos, uno por pantalla", () =>
 
 // RF portal-fotos-articulo: UNA foto opcional por artículo, calcada del `PhotoPicker` del Flow de
 // WhatsApp. Diseño de seguridad (ver app/api/public/requisitions/route.ts y
-// lib/infrastructure/public-photos.ts): la foto viaja en la MISMA petición que radica, como
+// lib/infrastructure/public-attachments.ts): el archivo viaja en la MISMA petición que radica, como
 // `multipart/form-data` con el JSON de siempre intacto en el campo `payload` y cada foto en
 // `foto_<índice>` — nunca un endpoint de subida previa. Aquí se prueba SOLO el cliente: selección,
-// vista previa, quitar, el tope de 5 MB, y que el envío cambia a FormData nada más que cuando hace
+// vista previa, quitar, los formatos y el tope de 10 MB, y que el envío cambia a FormData nada más que cuando hace
 // falta.
-describe("foto opcional por artículo (RF portal-fotos-articulo)", () => {
+describe("soporte opcional por artículo (RF portal-fotos-articulo)", () => {
   beforeEach(() => {
     setHash({ obra: workId, token });
     stubFetch();
@@ -437,7 +437,7 @@ describe("foto opcional por artículo (RF portal-fotos-articulo)", () => {
 
   it("se elige una foto, se ve su vista previa y su nombre, y se puede quitar", async () => {
     await llegarAlPrimerArticulo();
-    expect(screen.getByText(/Agregar una foto/i)).toBeInTheDocument();
+    expect(screen.getByText(/Agregar un archivo/i)).toBeInTheDocument();
     const archivo = new File([new Uint8Array(10)], "frente-obra.jpg", { type: "image/jpeg" });
     fireEvent.change(campo("photo-0"), { target: { files: [archivo] } });
 
@@ -445,28 +445,45 @@ describe("foto opcional por artículo (RF portal-fotos-articulo)", () => {
     // La vista previa es una miniatura de verdad, no solo el nombre del archivo.
     expect(document.querySelector("img")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Quitar foto/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Quitar archivo/i }));
     expect(screen.queryByText("frente-obra.jpg")).not.toBeInTheDocument();
-    expect(screen.getByText(/Agregar una foto/i)).toBeInTheDocument();
+    expect(screen.getByText(/Agregar un archivo/i)).toBeInTheDocument();
   });
 
-  it("una foto de más de 5 MB se rechaza en el cliente, con un mensaje claro, y no se elige", async () => {
+  // Ampliación de formatos (2026-09-17): quien radica por el portal suele ser un proveedor con una
+  // factura, no un maestro con una foto. El campo dice los formatos y el tope, y el diálogo del
+  // navegador filtra por MIME y por extensión (los sistemas que no reportan MIME para un .xlsx).
+  it("acepta un PDF y un Excel, y lo anuncia con su nombre — sin miniatura, que no la tienen", async () => {
     await llegarAlPrimerArticulo();
-    const grande = new File([new Uint8Array(6 * 1024 * 1024)], "grande.jpg", { type: "image/jpeg" });
+    expect(screen.getByText(/Foto, PDF, Excel, Word o CSV\. Hasta 10 MB\./i)).toBeInTheDocument();
+    const accept = campo("photo-0").getAttribute("accept") ?? "";
+    expect(accept).toContain("application/pdf");
+    expect(accept).toContain(".xlsx");
+    expect(accept).toContain(".csv");
+
+    const factura = new File([new Uint8Array(10)], "factura.pdf", { type: "application/pdf" });
+    fireEvent.change(campo("photo-0"), { target: { files: [factura] } });
+    expect(await screen.findByText("factura.pdf")).toBeInTheDocument();
+    expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("un archivo de más de 10 MB se rechaza en el cliente, con un mensaje claro, y no se elige", async () => {
+    await llegarAlPrimerArticulo();
+    const grande = new File([new Uint8Array(11 * 1024 * 1024)], "grande.jpg", { type: "image/jpeg" });
     fireEvent.change(campo("photo-0"), { target: { files: [grande] } });
 
-    expect(await screen.findByText(/máximo 5 MB/i)).toBeInTheDocument();
+    expect(await screen.findByText(/máximo 10 MB/i)).toBeInTheDocument();
     expect(screen.queryByText("grande.jpg")).not.toBeInTheDocument();
-    expect(screen.getByText(/Agregar una foto/i)).toBeInTheDocument();
+    expect(screen.getByText(/Agregar un archivo/i)).toBeInTheDocument();
   });
 
-  it("un archivo que no es imagen se rechaza en el cliente", async () => {
+  it("un formato fuera de la lista se sigue rechazando en el cliente", async () => {
     await llegarAlPrimerArticulo();
-    const pdf = new File([new Uint8Array(10)], "cotizacion.pdf", { type: "application/pdf" });
-    fireEvent.change(campo("photo-0"), { target: { files: [pdf] } });
+    const svg = new File([new Uint8Array(10)], "dibujo.svg", { type: "image/svg+xml" });
+    fireEvent.change(campo("photo-0"), { target: { files: [svg] } });
 
-    expect(await screen.findByText(/debe ser JPG, PNG o WebP/i)).toBeInTheDocument();
-    expect(screen.queryByText("cotizacion.pdf")).not.toBeInTheDocument();
+    expect(await screen.findByText(/debe ser PDF, Excel, Word, CSV o imagen/i)).toBeInTheDocument();
+    expect(screen.queryByText("dibujo.svg")).not.toBeInTheDocument();
   });
 
   it("con foto, el envío usa FormData: el JSON de siempre viaja intacto en 'payload' y la foto en 'foto_<índice>'", async () => {

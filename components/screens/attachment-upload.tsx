@@ -4,9 +4,50 @@ import { FileText, Image as ImageIcon, Upload, X } from "lucide-react";
 import { useId, type ChangeEvent } from "react";
 import { describeApiError, FriendlyApiError } from "../../lib/http/friendly-error";
 
+/** El MISMO 10 MB que defiende el servidor (`MAX_PRIVATE_ATTACHMENT_BYTES` en
+ *  lib/services/attachment-service.ts, y `MAX_PUBLIC_ATTACHMENT_BYTES` para el portal). Duplicado a
+ *  propósito —cliente y servidor no comparten build—, pero ya no DISTINTO: hasta 2026-09-17 aquí
+ *  ponía 10 MB y el esquema del endpoint aceptaba 20. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const DOCUMENT_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp"] as const;
+/**
+ * Lo que el diálogo del navegador deja elegir (decisión de Ernesto, 2026-09-17: «muchos tipos de
+ * archivos, CSV, Excel, etc., PDF, imágenes, lo que sea»). Es la lista del servidor MÁS `text/csv`:
+ * el mismo .csv llega como `text/csv`, como `application/vnd.ms-excel` o como `text/plain` según el
+ * sistema, y quien manda es el servidor, que mira los bytes y lo guarda como texto.
+ */
+export const DOCUMENT_MIME_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-excel",
+  "text/plain",
+  "text/csv",
+] as const;
 export const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+/** Cómo se le nombran los formatos a una persona; no es la lista técnica de arriba. */
+export const DOCUMENT_FORMATS_LABEL = "PDF, Excel, Word, CSV o imagen (JPG, PNG, WebP)";
+export const IMAGE_FORMATS_LABEL = "JPG, PNG o WebP";
+/** Algunos sistemas no reportan MIME para un .xlsx o un .csv, así que el diálogo filtra mejor si
+ *  además ve la extensión — `accept` admite las dos formas a la vez. */
+const ACCEPT_EXTENSIONS: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "image/jpeg": ".jpg,.jpeg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+  "application/vnd.ms-excel": ".xls",
+  "text/plain": ".txt",
+  "text/csv": ".csv",
+};
+export function attachmentAccept(allowedMimeTypes: readonly string[]): string {
+  return [...allowedMimeTypes, ...allowedMimeTypes.map((mime) => ACCEPT_EXTENSIONS[mime] ?? "")].filter(Boolean).join(",");
+}
 
 export type AttachmentMetadata = {
   name: string;
@@ -34,7 +75,7 @@ export function validateAttachmentFile(
   const allowed = options.allowedMimeTypes ?? DOCUMENT_MIME_TYPES;
   const maxBytes = options.maxBytes ?? MAX_ATTACHMENT_BYTES;
   if (!allowed.includes(file.type)) {
-    return `El archivo debe ser ${allowed.includes("application/pdf") ? "PDF, JPG, PNG o WebP" : "JPG, PNG o WebP"}.`;
+    return `El archivo debe ser ${allowed.includes("application/pdf") ? DOCUMENT_FORMATS_LABEL : IMAGE_FORMATS_LABEL}.`;
   }
   if (file.size < 1 || file.size > maxBytes) {
     return `El archivo debe pesar como máximo ${Math.round(maxBytes / (1024 * 1024))} MB.`;
@@ -90,7 +131,7 @@ export function AttachmentPicker({
           <small>{file ? `${file.name} · ${formatAttachmentSize(file.size)}` : help}</small>
         </span>
         <span className="attachment-picker-action"><Upload aria-hidden="true" size={14} /> {file ? "Cambiar" : "Adjuntar"}</span>
-        <input aria-label={label} id={inputId} type="file" accept={allowedMimeTypes.join(",")} onChange={onChange} disabled={disabled} />
+        <input aria-label={label} id={inputId} type="file" accept={attachmentAccept(allowedMimeTypes)} onChange={onChange} disabled={disabled} />
       </label>
       {file && (
         <button className="attachment-remove" type="button" onClick={() => onFile(null)} disabled={disabled}>

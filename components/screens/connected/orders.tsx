@@ -1146,7 +1146,7 @@ function OrderPaymentDialog({
               <AttachmentPicker
                 id="order-payment-receipt"
                 label="Comprobante del pago"
-                help="PDF, JPG, PNG o WebP · máximo 10 MB"
+                help="PDF, Excel, Word, CSV o imagen · máximo 10 MB"
                 file={file}
                 onFile={setFile}
                 onError={setError}

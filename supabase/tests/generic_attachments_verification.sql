@@ -131,12 +131,15 @@ begin
     raise exception 'Requisición aceptó tipo no permitido';
   exception when sqlstate '23514' then null;
   end;
+  -- 202609170002: un ítem ya admite `soporte` además de `foto` (el portal público radica la factura
+  -- del artículo, que es un documento). Lo que sigue prohibido es cualquier OTRO tipo — `cotizacion`
+  -- es del comprador y vive en la cabecera, nunca en una línea.
   begin
     insert into public.adjuntos(id, entidad, entidad_id, url_storage, tipo, nombre_original, tamano_bytes, storage_bucket, mime_type, subido_por)
       values (v_adjunto, 'requisicion_item', v_item,
         'requisicion-items/' || v_item || '/' || v_adjunto || '/soporte-qa.pdf',
-        'soporte', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
-    raise exception 'Ítem aceptó un tipo distinto de foto';
+        'cotizacion', 'soporte-qa.pdf', 1024, 'requisicion-adjuntos', 'application/pdf', '10000000-0000-4000-8000-000000000001');
+    raise exception 'Ítem aceptó un tipo que no es foto ni soporte';
   exception when sqlstate '23514' then null;
   end;
   begin

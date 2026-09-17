@@ -109,6 +109,9 @@
 /* Misma miniatura en el resumen, junto al artículo al que pertenece — algo más grande porque ahí no
    compite con el texto "Agregar una foto". */
 .summaryPhoto{width:52px;height:52px;flex:none;border-radius:10px;object-fit:cover;background:var(--surface)}
+/* Un PDF, un Excel o un CSV no tienen miniatura que mostrar: ocupan el MISMO hueco que ocuparía la
+   foto, con su icono, para que la fila del resumen no cambie de forma según el tipo de archivo. */
+.summaryDoc{width:52px;height:52px;flex:none;display:grid;place-items:center;border-radius:10px;background:var(--surface);color:var(--muted)}
 .securityNote{display:flex;align-items:flex-start;gap:var(--space-2);margin:0;padding:var(--space-3);border-radius:12px;background:#edf3f6;color:#345167;font-size:var(--text-3xs);font-weight:700;line-height:1.45}
 .securityNote svg{flex:none;margin-top:1px}
 .success{max-width:520px;margin:var(--space-7) auto;text-align:center}
