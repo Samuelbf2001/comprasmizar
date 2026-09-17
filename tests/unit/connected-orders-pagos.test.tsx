@@ -142,7 +142,7 @@ describe("diálogo de pago: medio con etiqueta de caja, nota y validación inlin
   it('"Registrar pago" abre el diálogo; el POST lleva medio y nota, y el historial muestra "Caja (efectivo)"', async () => {
     const fetchMock = mockFetch({ history: [vigente] });
     const refresh = vi.fn();
-    renderOrders([order], "Contabilidad", refresh);
+    renderOrders([order], "Revisor", refresh);
     await abrirFicha(fetchMock);
     // A1: la caja menor ES el medio `efectivo`; la etiqueta visible es la de payment-labels.tsx.
     expect(screen.getAllByText("Caja (efectivo)").length).toBeGreaterThan(0);
@@ -161,8 +161,18 @@ describe("diálogo de pago: medio con etiqueta de caja, nota y validación inlin
     await screen.findByRole("dialog", { name: "Adjuntar comprobante" });
     await waitFor(() => expect(calls(fetchMock, "GET", "/api/orders/order-1/payments").length).toBe(2));
     expect(refresh).toHaveBeenCalled();
-    // Contabilidad no tiene order:pay: aunque el pago cubriera el saldo, nunca se encadena "pagada".
+    // El abono no cubre el saldo ($20.000 de $50.000): no se encadena "pagada".
     expect(calls(fetchMock, "PATCH", "/api/orders/order-1/status").length).toBe(0);
+  });
+
+  // DECISIÓN DE ERNESTO (2026-09-17): registrar y anular pagos sale de contabilidad. La ficha no
+  // ofrece un botón que el servidor va a rechazar: dice por qué no está.
+  it("contabilidad ya no ve «Registrar pago»: la ficha explica que no le corresponde", async () => {
+    const fetchMock = mockFetch({ history: [vigente] });
+    renderOrders([order], "Contabilidad");
+    await abrirFicha(fetchMock);
+    expect(screen.queryByRole("button", { name: "Registrar pago" })).toBeNull();
+    expect(screen.getByText(/puede registrar pagos de esta orden/)).toBeInTheDocument();
   });
 
   it("exige medio y no deja superar el saldo, sin llamar al servidor", async () => {

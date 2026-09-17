@@ -39,12 +39,35 @@ const manageResponse = (canManage: boolean) =>
 const healthResponse = () =>
   new Response(JSON.stringify({ components: { kapso: true }, whatsapp_fallidos_24h: 0 }), { status: 200 });
 
-function mockFetch(canManage: boolean) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
+// «Permisos por rol» (decisión de Ernesto, 2026-09-17): el catálogo, los defaults y el permiso
+// bloqueado los manda el servidor — la pantalla no conoce ninguna regla, así que la prueba se apoya
+// en un payload mínimo con los dos roles y los dos permisos que hacen falta para ver el mecanismo.
+const permissionsPayload = (overrides: Record<string, string[]> = {}) => ({
+  roles: [{ key: "contabilidad", label: "Contabilidad" }, { key: "admin_sixteam", label: "Administrador Sixteam" }],
+  permissions: [
+    { key: "payment:register", label: "Registrar y anular pagos", group: "Órdenes y pagos" },
+    { key: "config:manage", label: "Configurar la plataforma", group: "Catálogos y administración" },
+  ],
+  defaults: { contabilidad: [], admin_sixteam: ["*"] },
+  effective: { contabilidad: overrides.contabilidad ?? [], admin_sixteam: overrides.admin_sixteam ?? ["*"] },
+  overridden: Object.keys(overrides),
+  lockedPermission: "config:manage",
+});
+
+function mockFetch(canManage: boolean, onPermissionsPut?: (body: unknown) => void) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/public-access") return Promise.resolve(publicAccessResponse());
     if (url === "/api/catalogs/manage") return Promise.resolve(manageResponse(canManage));
     if (url === "/api/health") return Promise.resolve(healthResponse());
+    if (url === "/api/config/permissions") {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body)) as { overrides: Record<string, string[]> };
+        onPermissionsPut?.(body);
+        return Promise.resolve(new Response(JSON.stringify(permissionsPayload(body.overrides)), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(permissionsPayload()), { status: 200 }));
+    }
     if (url === `/api/usuarios/${userId}/clave`) return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     return Promise.reject(new Error(`fetch no esperado en la prueba: ${url}`));
   });
@@ -118,5 +141,60 @@ describe("SettingsScreen", () => {
     expect(go).toHaveBeenCalledWith("/mensajes");
     fireEvent.click(screen.getByRole("button", { name: /^Empresas/ }));
     expect(go).toHaveBeenCalledWith("/catalogos/sociedades");
+  });
+});
+
+// DECISIÓN DE ERNESTO (2026-09-17): los permisos por rol se editan aquí, y SOLO Administrador Sixteam
+// los ve. La pantalla manda únicamente los roles que difieren del default (así «Restaurar valores por
+// defecto» devuelve también los cambios futuros de rules.ts en vez de congelar una copia).
+describe("SettingsScreen — Permisos por rol", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => cleanup());
+
+  it("Administrador Mizar no ve la sección ni consulta su endpoint", async () => {
+    mockFetch(false);
+    render(<SettingsScreen role="Administrador Mizar" go={vi.fn()} />);
+    await screen.findByText("Daniel Hernández");
+    expect(screen.queryByRole("heading", { name: "Permisos por rol" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Guardar permisos" })).toBeNull();
+  });
+
+  it("marca lo vigente, señala lo distinto del default y guarda solo los roles que cambian", async () => {
+    const enviados: unknown[] = [];
+    mockFetch(true, (body) => enviados.push(body));
+    render(<SettingsScreen role="Administrador Sixteam" go={vi.fn()} />);
+    const casilla = await screen.findByRole("checkbox", { name: "Registrar y anular pagos — Contabilidad" });
+    expect(casilla).not.toBeChecked();
+    // El comodín de Administrador Sixteam se ve como "todo marcado".
+    expect(screen.getByRole("checkbox", { name: "Registrar y anular pagos — Administrador Sixteam" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Guardar permisos" })).toBeDisabled();
+    fireEvent.click(casilla);
+    expect(casilla).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Guardar permisos" }));
+    await waitFor(() => expect(enviados).toHaveLength(1));
+    expect(enviados[0]).toEqual({ overrides: { contabilidad: ["payment:register"] } });
+    expect(await screen.findByText(/Permisos guardados/)).toBeInTheDocument();
+  });
+
+  it("no deja desmarcar «Configurar la plataforma» a Administrador Sixteam (candado anti-pie)", async () => {
+    mockFetch(true);
+    render(<SettingsScreen role="Administrador Sixteam" go={vi.fn()} />);
+    const bloqueada = await screen.findByRole("checkbox", { name: "Configurar la plataforma — Administrador Sixteam" });
+    expect(bloqueada).toBeDisabled();
+    expect(bloqueada).toBeChecked();
+  });
+
+  it("«Restaurar valores por defecto» vuelve a dejar el rol sin excepción", async () => {
+    const enviados: unknown[] = [];
+    mockFetch(true, (body) => enviados.push(body));
+    render(<SettingsScreen role="Administrador Sixteam" go={vi.fn()} />);
+    const casilla = await screen.findByRole("checkbox", { name: "Registrar y anular pagos — Contabilidad" });
+    fireEvent.click(casilla);
+    const [restaurarContabilidad] = screen.getAllByRole("button", { name: "Restaurar valores por defecto" });
+    expect(restaurarContabilidad).toBeEnabled();
+    fireEvent.click(restaurarContabilidad);
+    expect(casilla).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Guardar permisos" })).toBeDisabled();
+    expect(enviados).toHaveLength(0);
   });
 });

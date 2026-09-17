@@ -28,7 +28,13 @@ export type CashCloseStatus = "abierto" | "cerrado";
 export type CostCenterType = "obra" | "administrativo" | "personal" | "empresa";
 export type Money = number;
 
-export interface Actor { id: string; roles: readonly Role[]; }
+/**
+ * `permissions` es la lista EFECTIVA del actor (unión de sus roles con el override de
+ * `configuracion.permisos_por_rol_v1` ya aplicado, ver `resolveActorPermissions`). La resuelve la
+ * infraestructura al autenticar y la cuelga aquí para que el dominio siga siendo puro: `hasPermission`
+ * la usa tal cual y nunca consulta la base. Ausente = "usa los defaults de lib/domain/rules.ts".
+ */
+export interface Actor { id: string; roles: readonly Role[]; permissions?: readonly string[]; }
 export interface AuditEvent { entity: string; entityId: string; event: string; actorId?: string; at: Date; data?: Record<string, unknown>; origin?: "web" | "mcp" | "kapso"; }
 export interface ItemLine {
   id: string; itemId?: string; description?: string; quantity: number; unit: string;

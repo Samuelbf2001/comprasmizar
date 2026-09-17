@@ -5,6 +5,7 @@ import { SESSION_COOKIE, verifySession } from "./local-auth";
 import { runtimeEnv } from "../security/env";
 import { sharedPostgres } from "./postgres-repositories";
 import { getCachedProfile, setCachedProfile, type ActorProfile } from "./actor-cache";
+import { withEffectivePermissions } from "./role-permissions";
 
 export type ResolvedActor = { id: string; roles: Role[]; displayName: string; email?: string };
 
@@ -82,7 +83,13 @@ async function resolveServerActorUncached(): Promise<ResolvedActor> {
  */
 export const resolveServerActor = cache(resolveServerActorUncached);
 
+/**
+ * El actor sale de aquí con su lista EFECTIVA de permisos ya resuelta (defaults de
+ * `lib/domain/rules.ts` + override de `configuracion.permisos_por_rol_v1`, ver role-permissions.ts).
+ * Una sola resolución por petición: a partir de este punto cada `assertPermission(actor, …)` es una
+ * comparación en memoria, no una consulta.
+ */
 export async function requireServerActor(): Promise<Actor> {
   const actor = await resolveServerActorUncached();
-  return { id: actor.id, roles: actor.roles };
+  return withEffectivePermissions({ id: actor.id, roles: actor.roles });
 }

@@ -188,6 +188,18 @@ type MissingField = "tag" | "work" | "approver" | "price" | null;
 type BilledCompanyAware = { billedCompanyId?: string };
 type CostCenterOption = NamedOption & { societyId?: string };
 
+/** Aprobadores saltados en un evento `aprobada` (ver `approveTx` en lib/services/procurement-service.ts).
+ *  El `data` de auditoría es jsonb libre: se lee a la defensiva, nunca se confía en su forma. */
+function overriddenApprovers(data: Record<string, unknown> | undefined): Array<{ id: string; name?: string }> {
+  const raw = data?.overrodeApprovers;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const { id, name } = entry as { id?: unknown; name?: unknown };
+    return typeof id === "string" ? [{ id, name: typeof name === "string" ? name : undefined }] : [];
+  });
+}
+
 export function ConnectedRequisitionDetail({
   data,
   role,
@@ -707,21 +719,33 @@ export function ConnectedRequisitionDetail({
     void run(reviewThen(reviewBody(), "send_for_approval"), "Requisición enviada a aprobación.");
   };
   /**
-   * RF-308 (A9): enviar a aprobación Y aprobar en un solo paso. `sendAndApproveAsMaster` exige que el
-   * actor figure como aprobador asignado, así que la revisión se guarda PRIMERO con `approverId` =
-   * quien está mirando (sin tocar el <select>: si la secuencia falla, la pantalla queda como estaba)
-   * y solo después se llama `send_and_approve`. Quedan dos eventos en la trazabilidad.
+   * RF-308 (A9): enviar a aprobación Y aprobar en un solo paso. Quedan dos eventos en la trazabilidad.
+   *
+   * DECISIÓN DE ERNESTO (2026-09-17): el maestro aprueba «aunque haya otro aprobador», así que este
+   * atajo YA NO reescribe el aprobador asignado con quien mira. Antes lo hacía por obligación —
+   * `sendAndApproveAsMaster` exigía figurar como aprobador—, y el efecto colateral era borrar de la
+   * ficha a la persona a la que se estaba pasando por encima, justo el dato que ahora debe quedar
+   * registrado. Solo se pone al visor como aprobador cuando NO hay ninguno elegido, porque la
+   * revisión sigue exigiendo uno para poder enviarse.
    */
   const handleSelfApprove = async () => {
     if (busy || !data.viewerId) return;
-    if (focusMissingField(validateReviewComplete(data.viewerId))) return;
+    const aprobadorElegido = approverId || requisition.approverId || "";
+    const aprobadorFinal = aprobadorElegido || data.viewerId;
+    if (focusMissingField(validateReviewComplete(aprobadorFinal))) return;
+    // A quién se pasa por encima: el aprobador de cabecera si es otro, más los aprobadores por ítem
+    // distintos de quien mira. Es exactamente lo que el servidor guardará en `overrodeApprovers`.
+    const saltados = [...new Set([aprobadorFinal, ...lines.map((line) => line.approverId).filter(Boolean)] as string[])].filter((id) => id !== data.viewerId);
+    const nombres = saltados.map((id) => resolveUserName(catalogs, id, "otro aprobador")).join(", ");
     const result = await confirm({
       title: "Aprobar yo mismo",
-      description: `La requisición ${requisition.consecutive} se enviará a aprobación y quedará aprobada en un solo paso, contigo como aprobador. Quedarán dos eventos en la trazabilidad y no se podrá regresar a revisión.`,
+      description: saltados.length
+        ? `La requisición ${requisition.consecutive} se enviará a aprobación y quedará aprobada en un solo paso. Vas a aprobar POR ENCIMA de ${nombres}: su decisión ya no se pedirá y quedará registrado en la trazabilidad que aprobaste tú. No se podrá regresar a revisión.`
+        : `La requisición ${requisition.consecutive} se enviará a aprobación y quedará aprobada en un solo paso, contigo como aprobador. Quedarán dos eventos en la trazabilidad y no se podrá regresar a revisión.`,
       confirmLabel: "Aprobar yo mismo",
     });
     if (!result.ok) return;
-    void run(reviewThen(reviewBody({ approverId: data.viewerId }), "send_and_approve"), "Requisición aprobada en un solo paso.");
+    void run(reviewThen(reviewBody({ approverId: aprobadorFinal }), "send_and_approve"), "Requisición aprobada en un solo paso.");
   };
   const handleDeclineWhole = async () => {
     const result = await confirm({
@@ -1784,6 +1808,16 @@ export function ConnectedRequisitionDetail({
                   {typeof entry.data?.comment === "string"
                     ? ` · ${entry.data.comment}`
                     : ""}
+                  {/* DECISIÓN DE ERNESTO (2026-09-17): «que quede que el que aprobó fue Daniel».
+                      El servidor guarda a quién se saltó en el evento `aprobada`; sin pintarlo aquí,
+                      una aprobación por encima sería indistinguible de una normal en la ficha. */}
+                  {overriddenApprovers(entry.data).length > 0 && (
+                    <span data-testid="audit-override">
+                      {` · Aprobó por encima de ${overriddenApprovers(entry.data)
+                        .map((skipped) => skipped.name || resolveUserName(catalogs, skipped.id, "otro aprobador"))
+                        .join(", ")}`}
+                    </span>
+                  )}
                 </p>
               ))
             ) : (

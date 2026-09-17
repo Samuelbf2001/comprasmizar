@@ -58,18 +58,18 @@ export class SupplierService {
   // admin_mizar (rules.ts) y también revisor/admin_sixteam, que ya la tenían por su propio camino;
   // `tx.features` se deja sin usar aquí a propósito (el flag sigue gobernando el resto del catálogo).
   private canManage(actor: Actor): void {
-    if (actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage")) return;
+    if (actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || hasPermission(actor, "supplier:manage")) return;
     throw new DomainError("FORBIDDEN", "No puede administrar proveedores");
   }
   private canRead(actor: Actor): void {
-    if (actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage")) return;
+    if (actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam") || hasPermission(actor, "supplier:manage")) return;
     throw new DomainError("FORBIDDEN", "No puede consultar proveedores");
   }
   private canReadBank(actor: Actor): boolean {
-    return actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage");
+    return actor.roles.includes("revisor") || actor.roles.includes("contabilidad") || actor.roles.includes("admin_sixteam") || hasPermission(actor, "supplier:manage");
   }
   private access(actor: Actor): SupplierAccess {
-    const canManage = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || hasPermission(actor.roles, "supplier:manage");
+    const canManage = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam") || hasPermission(actor, "supplier:manage");
     return { canManage, canReadBank: canManage || actor.roles.includes("contabilidad") };
   }
   private async audit(tx: SupplierTransaction, event: string, supplierId: string, actor: Actor, data: Record<string, unknown>): Promise<void> {

@@ -85,10 +85,12 @@ export function ConnectedOrders({
     // "contabilizada" es de contabilidad (order:account); "pagada" es del revisor (order:pay).
     canAccount = role === "Contabilidad" || role === "Administrador Sixteam",
     canPay = role === "Revisor" || role === "Administrador Sixteam",
-    // Reunión agosto 2026: `payment:register` en lib/domain/rules.ts es revisor/contabilidad/
-    // admin_sixteam — el registro de un abono parcial es un gesto más frecuente que "contabilizar" o
-    // "pagar el saldo", así que junta a quien puede hacer cualquiera de los dos.
-    canRegisterPayment = canPay || canAccount;
+    // DECISIÓN DE ERNESTO (2026-09-17): `payment:register` pasó a ser de revisor/admin_sixteam —
+    // contabilidad SALE. Esta pantalla decide por el rol principal del visor, no por su lista
+    // efectiva de permisos, así que refleja el DEFAULT de lib/domain/rules.ts: si un administrador
+    // le devuelve el permiso a contabilidad desde Configuración, el servidor lo aceptará pero este
+    // botón seguirá oculto hasta que el payload de órdenes traiga los permisos del visor.
+    canRegisterPayment = canPay;
   // Expediente del proveedor (RUT, cámara de comercio…) para que el contador lo descargue
   // junto con la orden sin buscarlo por otro lado (GET /api/suppliers/:id ya lo expone).
   const [supplierDocuments, setSupplierDocuments] = useState<Record<string, Array<{ id: string; name: string }>>>({});

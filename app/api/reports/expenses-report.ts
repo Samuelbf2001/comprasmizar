@@ -42,7 +42,7 @@ export interface BuildExpensesReportOptions { origin?: "web" | "mcp"; societyInd
 /** Cada obra pertenece a una sociedad distinta y el corte es mensual (RF-705): se puede filtrar por obra, sociedad y periodo. */
 export async function buildExpensesReport(dependencies: ServiceDependencies, actor: Actor, filters: ExpensesReportFilters, options: BuildExpensesReportOptions = {}): Promise<ExpensesReportFile> {
   const origin = options.origin ?? "web";
-  assertPermission(actor.roles, "report:export", origin);
+  assertPermission(actor, "report:export", origin);
   // RF-707: lo pagado y el estado de pago de cada gasto salen de su orden (Σ pagos vigentes); el
   // reporte de órdenes exige "report:read", que todo rol con "report:export" ya tiene.
   const [visible, orders] = await Promise.all([

@@ -663,6 +663,24 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .settings-inline-edit>input{flex:1;min-width:160px;border:1px solid var(--line-strong);background:var(--paper);border-radius:var(--radius-sm);height:42px;padding:0 var(--space-3);font-size:var(--text-sm);color:var(--ink)}
 .settings-section table td{vertical-align:top}
 .settings-section>*+*{margin-top:var(--space-4)}
+/* Matriz «Permisos por rol» (decisión de Ernesto, 2026-09-17): permisos en filas, roles en columnas.
+   Densa a propósito (25 × 6): la celda es la unidad de lectura, así que el aire va en la columna de
+   nombres y no en cada casilla. La columna de permisos queda fija al desplazar en horizontal —
+   sin eso, a mitad de tabla no se sabe qué se está marcando. */
+.permission-matrix td,.permission-matrix th{padding:var(--space-2) var(--space-3)}
+.permission-matrix thead th{vertical-align:bottom;white-space:normal;min-width:118px}
+.permission-matrix thead th>span{display:block;text-transform:none;font-size:var(--text-2xs);letter-spacing:0;color:var(--ink)}
+.permission-matrix tbody th{text-align:left;text-transform:none;letter-spacing:0;font-weight:500;font-size:var(--text-xs);color:#474d56;background:var(--paper);white-space:normal;min-width:230px;position:sticky;left:0}
+.permission-matrix tbody td{vertical-align:middle}
+.permission-matrix .permission-group th{background:var(--surface);color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-size:var(--text-3xs);font-weight:700;position:static}
+.permission-matrix input[type=checkbox]{width:16px;height:16px;accent-color:var(--navy);cursor:pointer}
+.permission-matrix input[type=checkbox]:disabled{cursor:not-allowed;opacity:.55}
+.permission-differs{background:var(--blue-soft)}
+.permission-role-flag{margin-top:var(--space-1)}
+.permission-restore{display:block;margin-top:var(--space-1);color:var(--navy);font-size:var(--text-3xs);font-weight:600;text-transform:none;letter-spacing:0;text-align:center;width:100%;white-space:normal}
+.permission-restore:disabled{color:var(--muted);opacity:.6;cursor:default}
+.permission-legend{display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-3xs);color:var(--muted)}
+.permission-legend-swatch{height:12px;width:12px;border-radius:3px;background:var(--blue-soft);border:1px solid var(--line);flex:none}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:var(--space-3) 0;border-top:1px solid var(--line)}
 .toggle-row span b,.toggle-row span small{display:block}
 .toggle-row b{font-size:var(--text-xs)}

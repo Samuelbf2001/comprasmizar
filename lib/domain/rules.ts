@@ -2,15 +2,22 @@ import type { Actor, CostCenterType, DashboardActivityItem, DashboardAmountByKey
 import { DomainError } from "./model";
 
 export const ALL_ROLES: readonly Role[] = ["solicitante", "revisor", "aprobador", "contabilidad", "admin_mizar", "admin_sixteam"];
+/**
+ * VALORES POR DEFECTO, no la última palabra (decisión de Ernesto, 2026-09-17: «que los permisos no
+ * estén hardcodeados: que se puedan editar»). Un override por rol vive en `configuracion`
+ * (`permisos_por_rol_v1`) y lo carga la infraestructura, que le pasa al `Actor` la lista EFECTIVA ya
+ * resuelta; este módulo sigue siendo dominio puro, sin base de datos y sin async. Editar esta tabla
+ * sigue siendo lo que cambia el default de una instalación nueva.
+ */
 const permissions: Record<Role, readonly string[]> = {
   solicitante: ["requisition:create", "requisition:read:own", "dashboard:read"],
   // "order:create" (generar órdenes) es del revisor, NO del aprobador: aprobar y designar proveedor/generar
   // órdenes son roles distintos por decisión explícita de la reunión 2026-08-31 — exigirle al aprobador
   // proveedor o generación de órdenes rompería su rol de solo aprobar.
-  // "payment:register" (reunión agosto 2026, pagos parciales): revisor/contabilidad/admin_sixteam —
-  // los mismos que hoy pueden mover el eje administrativo hacia "pagada" (order:pay/order:account),
-  // sumados en un solo permiso porque registrar un abono parcial no es "contabilizar" ni "pagar el
-  // saldo completo": es un tercer gesto, más frecuente, que ninguno de los dos cubre por sí solo.
+  // "payment:register" (reunión agosto 2026, pagos parciales; acotado por Ernesto el 2026-09-17 a
+  // revisor y admin_sixteam): registrar un abono parcial no es "contabilizar" ni "pagar el saldo
+  // completo", es un tercer gesto, más frecuente, que ninguno de los dos cubre por sí solo — y el
+  // dueño decidió que quien lo hace es Daniel, no contabilidad.
   // RF-1301 (Reportes, reunión 2026-09-11): "report:read" (ver el reporte de requisiciones) y
   // "report:export" (descargar su Excel) se separan porque el revisor ya podía ENTRAR a /reportes sin
   // poder descargar (el botón de XLSX provisional de gastos solo se pinta para Contabilidad/Administrador
@@ -30,7 +37,12 @@ const permissions: Record<Role, readonly string[]> = {
   // administrativa a inicio de mes e ingresa los gastos para el reporte — es quien más registra
   // ingresos y quien cierra el mes. "cash:close" NO la tiene el revisor (a diferencia de
   // "income:register"): cerrar caja es un gesto contable, no de compras.
-  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:read", "report:export", "order:read", "order:account", "payment:register", "income:register", "cash:close", "dashboard:read"],
+  // DECISIÓN DE ERNESTO (2026-09-17): "payment:register" SALE de contabilidad — registrar y anular
+  // pagos queda en revisor (Daniel) y admin_sixteam. Contabilidad conserva ver pagos y comprobantes
+  // (order:read), contabilizar (order:account) y su cierre de caja; "income:register"/"cash:close" no
+  // se tocan (son del módulo de cajas, no del pago de órdenes). Quien quiera devolvérselo ya no
+  // necesita tocar este archivo: lo edita en Configuración → Permisos por rol.
+  contabilidad: ["requisition:read", "petty_cash:read", "expense:read", "report:read", "report:export", "order:read", "order:account", "income:register", "cash:close", "dashboard:read"],
   // "supplier:manage" (H11, QA pagos y caja): RF-605 dice que Mizar administra proveedores; antes solo
   // lo tenía por la puerta de atrás del feature flag "catalogos_admin_mizar" (autoservicio de catálogos
   // en general, apagado por defecto) — «Proveedores» aparecía en su menú pero GET /api/suppliers
@@ -38,16 +50,110 @@ const permissions: Record<Role, readonly string[]> = {
   admin_mizar: ["requisition:create", "catalog:manage", "supplier:manage", "dashboard:read", "expense:read", "report:read", "report:export"],
   admin_sixteam: ["*"],
 };
+export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<Role, readonly string[]>> = permissions;
+/** Comodín de `admin_sixteam`: "todos los permisos, también los que se inventen mañana". */
+export const WILDCARD_PERMISSION = "*";
+/**
+ * Catálogo CERRADO de permisos, con el nombre de negocio de cada uno — la pantalla de Configuración
+ * pinta estas etiquetas y nunca el slug crudo, y `assertValidPermissionOverrides` rechaza cualquier
+ * clave que no esté aquí (un permiso mal escrito en `configuracion` no puede volverse un permiso que
+ * nadie tiene y nadie ve). Añadir un permiso nuevo al código obliga a añadirlo también aquí.
+ */
+export const PERMISSION_CATALOG: readonly { key: string; label: string; group: string }[] = [
+  { key: "requisition:create", label: "Crear requisiciones", group: "Requisiciones" },
+  { key: "requisition:read", label: "Ver todas las requisiciones", group: "Requisiciones" },
+  { key: "requisition:read:own", label: "Ver sus propias requisiciones", group: "Requisiciones" },
+  { key: "requisition:read:assigned", label: "Ver las requisiciones que le tocan", group: "Requisiciones" },
+  { key: "requisition:review", label: "Revisar y enviar a aprobación", group: "Requisiciones" },
+  { key: "requisition:approve", label: "Aprobar requisiciones", group: "Requisiciones" },
+  { key: "requisition:return", label: "Devolver para corrección", group: "Requisiciones" },
+  { key: "order:read", label: "Ver órdenes", group: "Órdenes y pagos" },
+  { key: "order:create", label: "Generar órdenes", group: "Órdenes y pagos" },
+  { key: "order:update", label: "Editar órdenes", group: "Órdenes y pagos" },
+  { key: "order:pay", label: "Marcar órdenes como pagadas", group: "Órdenes y pagos" },
+  { key: "order:account", label: "Contabilizar órdenes", group: "Órdenes y pagos" },
+  { key: "payment:register", label: "Registrar y anular pagos", group: "Órdenes y pagos" },
+  { key: "expense:read", label: "Ver gastos", group: "Gastos y caja" },
+  { key: "petty_cash:read", label: "Ver caja menor", group: "Gastos y caja" },
+  { key: "petty_cash:create", label: "Registrar caja menor", group: "Gastos y caja" },
+  { key: "income:register", label: "Registrar ingresos de caja", group: "Gastos y caja" },
+  { key: "cash:close", label: "Cerrar caja", group: "Gastos y caja" },
+  { key: "report:read", label: "Entrar a Reportes", group: "Reportes" },
+  { key: "report:export", label: "Descargar reportes", group: "Reportes" },
+  { key: "dashboard:read", label: "Ver el tablero", group: "Reportes" },
+  { key: "item:manage", label: "Administrar ítems del catálogo", group: "Catálogos y administración" },
+  { key: "supplier:manage", label: "Administrar proveedores", group: "Catálogos y administración" },
+  { key: "catalog:manage", label: "Administrar catálogos", group: "Catálogos y administración" },
+  { key: "config:manage", label: "Configurar la plataforma", group: "Catálogos y administración" },
+];
+export const ALL_PERMISSIONS: readonly string[] = PERMISSION_CATALOG.map((entry) => entry.key);
+/**
+ * Permiso que `admin_sixteam` NO puede perder: es el que abre la propia pantalla de permisos. Sin
+ * este candado, un override podía dejar la plataforma sin nadie capaz de deshacerlo — y la única
+ * salida sería un UPDATE a mano contra Postgres.
+ */
+export const ADMIN_LOCKED_PERMISSION = "config:manage";
+/** Override guardado en `configuracion.permisos_por_rol_v1`: un rol ausente conserva su default. */
+export type RolePermissionOverrides = Partial<Record<Role, readonly string[]>>;
+
+/** Lista efectiva de UN rol: el override si lo tiene, y si no el default. Pura, sin base de datos. */
+export function resolveRolePermissions(role: Role, overrides?: RolePermissionOverrides): readonly string[] {
+  return overrides?.[role] ?? permissions[role] ?? [];
+}
+/** Lista efectiva de un actor (unión de sus roles). Es lo que la infraestructura le cuelga al `Actor`. */
+export function resolveActorPermissions(roles: readonly Role[], overrides?: RolePermissionOverrides): readonly string[] {
+  const effective = new Set<string>();
+  for (const role of roles) for (const permission of resolveRolePermissions(role, overrides)) effective.add(permission);
+  return [...effective];
+}
+/**
+ * Valida un override venido de `configuracion` o de la pantalla ANTES de aplicarlo: solo roles
+ * conocidos, solo permisos del catálogo, sin repetidos, y con el candado de `admin_sixteam`. Se
+ * ejecuta en los dos sentidos (al guardar y al leer) porque la fila la puede editar cualquiera con
+ * acceso a Postgres, y un jsonb corrupto no puede traducirse en permisos silenciosamente perdidos.
+ */
+export function assertValidPermissionOverrides(value: unknown): RolePermissionOverrides {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new DomainError("INVALID_INPUT", "Los permisos por rol deben venir como un objeto {rol: [permisos]}");
+  const result: Partial<Record<Role, readonly string[]>> = {};
+  for (const [role, list] of Object.entries(value as Record<string, unknown>)) {
+    if (!ALL_ROLES.includes(role as Role)) throw new DomainError("INVALID_INPUT", `Rol desconocido: ${role}`);
+    if (!Array.isArray(list) || list.some((permission) => typeof permission !== "string")) throw new DomainError("INVALID_INPUT", `Los permisos de ${role} deben ser una lista de textos`);
+    const unique = [...new Set(list as string[])];
+    for (const permission of unique) {
+      if (permission === WILDCARD_PERMISSION) continue;
+      if (!ALL_PERMISSIONS.includes(permission)) throw new DomainError("INVALID_INPUT", `Permiso desconocido: ${permission}`);
+    }
+    result[role as Role] = unique;
+  }
+  const admin = result.admin_sixteam;
+  if (admin && !admin.includes(WILDCARD_PERMISSION) && !admin.includes(ADMIN_LOCKED_PERMISSION)) {
+    throw new DomainError("FORBIDDEN", "Administrador Sixteam no puede quedarse sin «Configurar la plataforma»: nadie podría volver a editar los permisos");
+  }
+  return result;
+}
 // "requisition:review" protege decline/review/startReview/sendForApproval (procurement-service.ts):
 // bloquearlo también estructuralmente cierra la denegación permanente (RF-1205), no solo aprobar/devolver.
 const mcpForbidden = new Set(["requisition:approve", "requisition:return", "requisition:review"]);
 
-export function hasPermission(roles: readonly Role[], permission: string, origin: "web" | "mcp" = "web"): boolean {
-  if (origin === "mcp" && mcpForbidden.has(permission)) return false;
-  return roles.some((role) => permissions[role]?.includes("*") || permissions[role]?.includes(permission));
+/**
+ * Un `Actor` trae su lista EFECTIVA ya resuelta (con el override de `configuracion` aplicado por la
+ * infraestructura); una lista de roles suelta se resuelve contra los defaults. Pasar el actor es lo
+ * correcto en todo el servidor — pasar `actor.roles` ignoraría el override, que es justo el error que
+ * este tipo unión hace difícil cometer por accidente.
+ */
+export type PermissionSubject = readonly Role[] | Actor;
+function subjectPermissions(subject: PermissionSubject): readonly string[] {
+  if (Array.isArray(subject)) return resolveActorPermissions(subject as readonly Role[]);
+  const actor = subject as Actor;
+  return actor.permissions ?? resolveActorPermissions(actor.roles);
 }
-export function assertPermission(roles: readonly Role[], permission: string, origin: "web" | "mcp" = "web"): void {
-  if (!hasPermission(roles, permission, origin)) throw new DomainError("FORBIDDEN", `Permiso denegado: ${permission}`);
+export function hasPermission(subject: PermissionSubject, permission: string, origin: "web" | "mcp" = "web"): boolean {
+  if (origin === "mcp" && mcpForbidden.has(permission)) return false;
+  const effective = subjectPermissions(subject);
+  return effective.includes(WILDCARD_PERMISSION) || effective.includes(permission);
+}
+export function assertPermission(subject: PermissionSubject, permission: string, origin: "web" | "mcp" = "web"): void {
+  if (!hasPermission(subject, permission, origin)) throw new DomainError("FORBIDDEN", `Permiso denegado: ${permission}`);
 }
 
 const transitions: Record<RequisitionStatus, readonly RequisitionStatus[]> = {
@@ -186,8 +292,19 @@ export function resolveBilledCompany(requisition: { billedCompanyId?: string; so
  * revisor a secas o un aprobador a secas no la tienen: cada uno hace su mitad del flujo.
  */
 export function assertCanSelfApprove(actor: Actor): void {
-  if (actor.roles.includes("admin_sixteam") || (actor.roles.includes("revisor") && actor.roles.includes("aprobador"))) return;
+  if (canOverrideAssignedApprover(actor)) return;
   throw new DomainError("FORBIDDEN", "Aprobar en un solo paso exige los roles de revisor y aprobador");
+}
+/**
+ * DECISIÓN DE ERNESTO (2026-09-17): «Daniel tiene control total para aprobar aunque haya otro
+ * aprobador, pero que quede que el que aprobó fue Daniel». Quien reúne revisor Y aprobador (el
+ * usuario maestro) y `admin_sixteam` pueden cerrar una aprobación por encima del aprobador asignado;
+ * el resto NO — un aprobador a secas sigue sin poder decidir lo ajeno (ver `decideItems`). Es la
+ * misma condición que habilita la auto-aprobación en un paso, y por eso vive en una sola función:
+ * dos copias de esta regla serían dos criterios distintos de "quién manda".
+ */
+export function canOverrideAssignedApprover(actor: Actor): boolean {
+  return actor.roles.includes("admin_sixteam") || (actor.roles.includes("revisor") && actor.roles.includes("aprobador"));
 }
 /** Ítems que ESTE actor tiene pendientes de decidir. Vacío no significa "no le toca": puede haberlos ya decidido. */
 export function pendingItemsFor(actorId: string, lines: readonly ItemLine[], headApproverId?: string): ItemLine[] {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, calculateDashboard, groupExpenseByCostCenter, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, paymentStatus, sumApprovedLines, sumLines, sumPaid, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
+import { DEFAULT_ROLE_PERMISSIONS, DomainError, calculateDashboard, groupExpenseByCostCenter, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, paymentStatus, resolveActorPermissions, sumApprovedLines, sumLines, sumPaid, type AuditEvent, type Expense, type ExpenseShare, type Order, type OrderPayment, type PettyCash, type Requisition, type RequisitionStatus } from "../../lib/domain";
 import { ProcurementService, type CatalogSupplier, type ServiceDependencies } from "../../lib/services";
 
 const ZERO_BY_STATUS: Record<RequisitionStatus, number> = { enviada: 0, en_revision: 0, en_aprobacion: 0, aprobada: 0, devuelta: 0, declinada: 0 };
@@ -146,6 +146,10 @@ function fakeDeps(): ServiceDependencies & { req: Map<string, Requisition>; orde
     : kind === "societies" && id === "soc" ? { id: "soc", name: "Mizar", active: true }
     : kind === "societies" && id === "proim" ? { id: "proim", name: "Proim", active: true }
     : kind === "societies" && id === "soc-inactiva" ? { id: "soc-inactiva", name: "Cerrada", active: false }
+    // Usuarios: los consulta `namedApprovers` para escribir el nombre del aprobador saltado en la
+    // auditoría de una aprobación por encima (decisión de Ernesto, 2026-09-17). Un id sin ficha deja
+    // solo el uuid, que es el caso "usuario borrado del catálogo".
+    : kind === "users" && id === "sonia" ? { id: "sonia", name: "Sonia Aprobadora", email: "sonia@mizar.test", active: true, roles: ["aprobador"] }
     : null
   ), update: async (_kind: string, _id: string, value: never) => value, findSupplierDuplicate: async () => null,
     findSupplierByIdentification: async (type: string, identification: string) => {
@@ -962,13 +966,29 @@ describe("ProcurementService", () => {
       await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 39, method: "efectivo" }, reviewer)).rejects.toMatchObject({ code: "PAYMENT_EXCEEDS_ORDER" }); // 200+39=239 > 238
       expect(deps.paymentsData.filter((p) => p.orderId === orderA.id)).toHaveLength(1); // el rechazado no quedó grabado
     });
-    it("exige el permiso payment:register (revisor/contabilidad/admin_sixteam) — un aprobador o el solicitante no pueden", async () => {
+    // DECISIÓN DE ERNESTO (2026-09-17): "payment:register" es de Daniel (revisor) y admin_sixteam.
+    // Contabilidad SALE — conserva ver órdenes y contabilizarlas, pero no registra pagos.
+    it("exige el permiso payment:register (revisor/admin_sixteam) — aprobador, solicitante y CONTABILIDAD no pueden", async () => {
       const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
       await service.approve(r.id, approver);
       const [orderA] = await service.generateOrders(r.id, reviewer);
       await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, requester)).rejects.toMatchObject({ code: "FORBIDDEN" });
-      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, { actor: { id: "cont", roles: ["contabilidad"] } })).resolves.toBeTruthy();
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, { actor: { id: "cont", roles: ["contabilidad"] } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, { actor: { id: "root", roles: ["admin_sixteam"] } })).resolves.toBeTruthy();
+    });
+    // El override de `configuracion` (permisos_por_rol_v1) le devuelve el permiso a contabilidad sin
+    // tocar una línea de código: el actor llega con su lista efectiva ya resuelta (ver
+    // lib/infrastructure/role-permissions.ts) y el dominio la usa tal cual.
+    it("un override de permisos por rol le devuelve payment:register a contabilidad, y se lo quita al revisor", async () => {
+      const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+      await service.approve(r.id, approver);
+      const [orderA] = await service.generateOrders(r.id, reviewer);
+      const overrides = { contabilidad: ["order:read", "payment:register"], revisor: DEFAULT_ROLE_PERMISSIONS.revisor.filter((permission) => permission !== "payment:register") };
+      const contaConOverride = { actor: { id: "cont", roles: ["contabilidad"] as const, permissions: resolveActorPermissions(["contabilidad"], overrides) } };
+      const revisorSinPago = { actor: { id: "daniel", roles: ["revisor"] as const, permissions: resolveActorPermissions(["revisor"], overrides) } };
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 50, method: "efectivo" }, contaConOverride)).resolves.toBeTruthy();
+      await expect(service.registerOrderPayment(orderA.id, { date: "2026-08-06", amount: 10, method: "efectivo" }, revisorSinPago)).rejects.toMatchObject({ code: "FORBIDDEN" });
     });
     it("sin gasto asociado falla con ORDER_EXPENSE_MISSING (misma señal que updateOrderAdminStatus)", async () => {
       const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
@@ -1081,9 +1101,11 @@ describe("ProcurementService", () => {
       const { payment } = await service.registerOrderPayment(orderA.id, { date: "2026-08-05", amount: 100, method: "efectivo" }, reviewer);
       await expect(service.annulOrderPayment(orderA.id, payment.id, "   ", reviewer)).rejects.toMatchObject({ code: "ANNULMENT_REASON_REQUIRED" });
       await expect(service.annulOrderPayment(orderA.id, payment.id, "motivo", approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      // Contabilidad tampoco anula desde el 2026-09-17 (misma decisión que registrar).
+      await expect(service.annulOrderPayment(orderA.id, payment.id, "motivo", { actor: { id: "cont", roles: ["contabilidad"] } })).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(service.annulOrderPayment(orderA.id, "no-existe", "motivo", reviewer)).rejects.toMatchObject({ code: "NOT_FOUND" });
       await expect(service.annulOrderPayment("otra-orden", payment.id, "motivo", reviewer)).rejects.toMatchObject({ code: "NOT_FOUND" });
-      await service.annulOrderPayment(orderA.id, payment.id, "Duplicado", { actor: { id: "cont", roles: ["contabilidad"] } });
+      await service.annulOrderPayment(orderA.id, payment.id, "Duplicado", { actor: { id: "root", roles: ["admin_sixteam"] } });
       await expect(service.annulOrderPayment(orderA.id, payment.id, "otra vez", reviewer)).rejects.toMatchObject({ code: "PAYMENT_ALREADY_ANNULLED" });
       expect(deps.paymentsData.find((p) => p.id === payment.id)).toMatchObject({ annulled: true, annulmentReason: "Duplicado" });
     });
@@ -1363,7 +1385,9 @@ describe("empresa facturada, monto auditado y auto-aprobación (adenda de pagos)
     expect(deps.notificationData.some((n) => n.template === "pendiente_aprobador")).toBe(false);
     expect(deps.notificationData.some((n) => n.template === "requisicion_aprobada" && n.userId === "sol")).toBe(true);
   });
-  it("send_and_approve: revisor a secas o aprobador a secas no pueden; el maestro debe ser el aprobador asignado (y nada se mueve si no lo es); admin_sixteam sí sin estar asignado", async () => {
+  // DECISIÓN DE ERNESTO (2026-09-17): el maestro aprueba aunque la cabecera apunte a otro. Lo que NO
+  // cambia es quién es maestro: un revisor a secas o un aprobador a secas siguen sin poder.
+  it("send_and_approve: revisor a secas o aprobador a secas no pueden; el maestro aprueba aunque la cabecera sea de otro; admin_sixteam también", async () => {
     const deps = fakeDeps(), service = new ProcurementService(deps);
     const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
     const r = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
@@ -1371,26 +1395,42 @@ describe("empresa facturada, monto auditado y auto-aprobación (adenda de pagos)
     await service.review(r.id, { tagId: "tag", approverId: "nelson", items }, dual);
     await expect(service.sendAndApproveAsMaster(r.id, reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(service.sendAndApproveAsMaster(r.id, approver)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(service.sendAndApproveAsMaster(r.id, dual)).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" });
-    expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); // no se envió a aprobación a medias
-    await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const } })).resolves.toMatchObject({ status: "aprobada" });
-    await expect(service.sendAndApproveAsMaster(r.id, { actor: { id: "root", roles: ["admin_sixteam"] as const }, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" }); // nunca por MCP
+    await expect(service.sendAndApproveAsMaster(r.id, dual)).resolves.toMatchObject({ status: "aprobada" });
+    // Queda escrito por encima de quién: el aprobador asignado era nelson, no dual-role.
+    expect(deps.audits.filter((a) => a.entityId === r.id && a.event === "aprobada").at(-1)).toMatchObject({ actorId: "dual-role", data: { overrideReason: "aprobacion_por_encima", overrodeApprovers: [{ id: "nelson" }] } });
+    const otra = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(otra.id, dual);
+    await service.review(otra.id, { tagId: "tag", approverId: "nelson", items }, dual);
+    await expect(service.sendAndApproveAsMaster(otra.id, { actor: { id: "root", roles: ["admin_sixteam"] as const } })).resolves.toMatchObject({ status: "aprobada" });
+    await expect(service.sendAndApproveAsMaster(otra.id, { actor: { id: "root", roles: ["admin_sixteam"] as const }, origin: "mcp" })).rejects.toMatchObject({ code: "FORBIDDEN" }); // nunca por MCP
   });
-  // H4 (docs/qa/QA-pagos-y-caja.md): con reparto por ítem, un ítem puede tener un aprobador DISTINTO
-  // de quien radica. Antes, sendAndApproveAsMaster solo miraba la cabecera: enviaba a aprobación
-  // (sin avisar, notifyApprovers:false) y RECIÉN ahí approve() rechazaba con APPROVAL_PENDING_OTHERS —
-  // la requisición quedaba huérfana en en_aprobacion y sonia nunca se enteraba.
-  it("send_and_approve con reparto por ítem: un aprobador de ítem distinto del maestro rechaza ANTES de mover nada", async () => {
+  // H4 (docs/qa/QA-pagos-y-caja.md) sigue cubierto, pero por la vía correcta: envío y aprobación
+  // comparten UNA transacción, así que ya no hay forma de quedarse en `en_aprobacion` sin aviso.
+  it("send_and_approve con reparto por ítem: el maestro aprueba por encima del aprobador de ítem y la auditoría lo registra con nombre", async () => {
     const deps = fakeDeps(), service = new ProcurementService(deps);
     const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
     const r = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
     await service.startReview(r.id, dual);
     // l1 → sonia (otro aprobador elegible), l2 sin approverId propio: hereda la cabecera (dual-role).
     await service.review(r.id, { tagId: "tag", approverId: "dual-role", items: [{ ...items[0], approverId: "sonia" }, items[1]] }, dual);
-    await expect(service.sendAndApproveAsMaster(r.id, dual)).rejects.toMatchObject({ code: "APPROVAL_PENDING_OTHERS" });
-    expect((await deps.requisitions.get(r.id))?.status).toBe("en_revision"); // no quedó a medias en en_aprobacion
-    expect(deps.audits.filter((a) => a.entityId === r.id && ["enviada_aprobacion", "aprobada"].includes(a.event))).toHaveLength(0);
-    expect(deps.notificationData).toHaveLength(0); // tampoco se avisó a sonia a medias
+    await expect(service.sendAndApproveAsMaster(r.id, dual)).resolves.toMatchObject({ status: "aprobada" });
+    const aprobada = deps.audits.filter((a) => a.entityId === r.id && a.event === "aprobada").at(-1);
+    expect(aprobada).toMatchObject({ actorId: "dual-role", data: { overrideReason: "aprobacion_por_encima", overrodeApprovers: [{ id: "sonia", name: "Sonia Aprobadora" }] } });
+    expect(deps.notificationData.some((n) => n.template === "pendiente_aprobador")).toBe(false); // a sonia no se le pide decidir algo ya decidido
+  });
+  // El candado que NO se movió: un aprobador cualquiera sigue sin poder cerrar lo ajeno.
+  it("un aprobador a secas no puede aprobar lo que decide otro aprobador", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps);
+    const dual = { actor: { id: "dual-role", roles: ["revisor", "aprobador"] as const } };
+    const r = await service.create({ type: "compra", societyId: "soc", workId: "work", channel: "web", items }, requester);
+    await service.startReview(r.id, dual);
+    await service.review(r.id, { tagId: "tag", approverId: "nelson", items: [{ ...items[0], approverId: "sonia" }, items[1]] }, dual);
+    await service.sendForApproval(r.id, dual);
+    // nelson decide lo suyo (l2, heredado de la cabecera) y no puede cerrar por sonia.
+    await expect(service.approve(r.id, approver)).rejects.toMatchObject({ code: "APPROVAL_PENDING_OTHERS" });
+    // Y alguien que no aprueba nada de esta requisición ni siquiera llega a esa comprobación.
+    await expect(service.approve(r.id, { actor: { id: "ajeno", roles: ["aprobador"] as const } })).rejects.toMatchObject({ code: "NOT_ASSIGNED_APPROVER" });
+    expect((await deps.requisitions.get(r.id))?.status).toBe("en_aprobacion");
   });
   it("send_and_approve con reparto por ítem: si cabecera Y todos los ítems son el maestro, aprueba con dos eventos", async () => {
     const deps = fakeDeps(), service = new ProcurementService(deps);

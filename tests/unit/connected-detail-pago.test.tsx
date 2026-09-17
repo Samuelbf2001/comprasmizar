@@ -169,23 +169,36 @@ describe("Aprobar yo mismo (RF-308)", () => {
     expect(screen.getByRole("button", { name: "Aprobar yo mismo" })).toBeInTheDocument();
   });
 
-  it("guarda la revisión con approverId = quien mira y DESPUÉS manda send_and_approve, tras confirmar", async () => {
+  // DECISIÓN DE ERNESTO (2026-09-17): el atajo ya no reescribe el aprobador asignado — el maestro
+  // aprueba POR ENCIMA y el diálogo lo avisa con el nombre de a quién se salta.
+  it("conserva el aprobador asignado, avisa que se aprueba por encima y DESPUÉS manda send_and_approve", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(okResponse());
     renderDetail({ approverId: "approver-1", billedCompanyId: "soc-1" }, "Revisor", { viewerId: "master-1", viewerRoles: ["revisor", "aprobador"] });
-    // El <select> de aprobador sigue apuntando a otra persona: el atajo no depende de él.
+    // El <select> de aprobador sigue apuntando a otra persona, y ahora eso es justo lo que se respeta.
     expect(screen.getByRole("combobox", { name: "Aprobador" })).toHaveValue("approver-1");
     fireEvent.click(screen.getByRole("button", { name: "Aprobar yo mismo" }));
     const dialog = await screen.findByRole("dialog", { name: "Aprobar yo mismo" });
-    expect(dialog).toHaveTextContent("dos eventos");
+    expect(dialog).toHaveTextContent("POR ENCIMA");
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const [review, approve] = bodiesOf(fetchMock);
     expect(review.action).toBe("review");
-    expect(review.approverId).toBe("master-1");
+    expect(review.approverId).toBe("approver-1");
     expect(review.billedCompanyId).toBe("soc-1");
     expect(approve).toEqual({ action: "send_and_approve" });
     // No `findByRole("status")`: el indicador de autoguardado también es role="status".
     expect(await screen.findByText(/aprobada en un solo paso/)).toBeInTheDocument();
+  });
+  it("sin aprobador elegido se pone a quien mira y el diálogo no habla de saltarse a nadie", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(okResponse());
+    renderDetail({ approverId: undefined, billedCompanyId: "soc-1" }, "Revisor", { viewerId: "master-1", viewerRoles: ["revisor", "aprobador"] });
+    fireEvent.click(screen.getByRole("button", { name: "Aprobar yo mismo" }));
+    const dialog = await screen.findByRole("dialog", { name: "Aprobar yo mismo" });
+    expect(dialog).toHaveTextContent("dos eventos");
+    expect(dialog).not.toHaveTextContent("POR ENCIMA");
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(bodiesOf(fetchMock)[0].approverId).toBe("master-1");
   });
 
   it("cancelar la confirmación no manda nada", async () => {
@@ -211,6 +224,23 @@ describe("Aprobar yo mismo (RF-308)", () => {
   it("un aprobador a secas no lo ve, ni con su propia lente", () => {
     renderDetail({}, "Aprobador", { viewerId: "approver-1", viewerRoles: ["aprobador"] });
     expect(screen.queryByRole("button", { name: "Aprobar yo mismo" })).toBeNull();
+  });
+
+  // «Que quede que el que aprobó fue Daniel»: el servidor guarda a quién se saltó en el evento
+  // `aprobada`; sin pintarlo, la ficha mostraría una aprobación indistinguible de una normal.
+  it("el historial dice por encima de quién se aprobó", () => {
+    renderDetail({ status: "aprobada" }, "Revisor", {
+      viewerId: "master-1",
+      viewerRoles: ["revisor", "aprobador"],
+      history: [
+        { event: "aprobada", at: "2026-09-17T15:00:00.000Z", actorId: "master-1", data: { from: "en_aprobacion", to: "aprobada", overrideReason: "aprobacion_por_encima", overrodeApprovers: [{ id: "approver-1", name: "Nelson Aprobador" }] } },
+        { event: "enviada_aprobacion", at: "2026-09-17T14:59:00.000Z", actorId: "master-1", data: { from: "en_revision", to: "en_aprobacion" } },
+      ],
+    });
+    expect(screen.getByTestId("audit-override")).toHaveTextContent("Aprobó por encima de Nelson Aprobador");
+    // Una aprobación normal no gana texto nuevo.
+    expect(screen.getAllByTestId("audit-event")).toHaveLength(2);
+    expect(screen.getAllByTestId("audit-override")).toHaveLength(1);
   });
 });
 
