@@ -214,6 +214,10 @@ function PermissionsSection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overrides }),
       }));
+      // La interfaz lee los permisos del bootstrap de catálogos, que tiene caché de sesión de 5
+      // minutos: sin invalidarlo, quien acaba de guardar seguiría viendo las pantallas con la matriz
+      // anterior (y su lente «Ver como» también).
+      invalidateCatalogs();
       setSuccess("Permisos guardados. Cada usuario los verá en su próxima acción.");
     } catch (error) {
       setFeedback(friendlyErrorText(error, "No fue posible guardar los permisos."));

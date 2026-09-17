@@ -25,6 +25,7 @@ import { SectionTitle } from "../screen-primitives";
 import { RouteSkeleton } from "../skeletons";
 import { friendlyErrorText, isFriendlyApiError } from "../../../lib/http/friendly-error";
 import {
+  conLaLente,
   emptyCatalogs,
   type CatalogData,
   type ConnectedProps,
@@ -175,6 +176,13 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
       active = false;
     };
   }, [pathname, role, kind]);
+  // Único punto donde la lente «Ver como» toca los datos: deja en el bundle los permisos EFECTIVOS del
+  // rol prestado para que las pantallas pregunten siempre por permiso y nunca por nombre de rol. Se
+  // memoiza sobre `load.data` (no sobre `load`) porque una revalidación en segundo plano cambia el
+  // estado sin cambiar los datos, y requisitions.tsx reinicia su paginación comparando `data` por
+  // identidad.
+  const readyData = load.state === "ready" ? load.data : undefined;
+  const data = useMemo(() => conLaLente(readyData, viewingAs), [readyData, viewingAs]);
   if (!kind) return null;
   if (load.state === "loading")
     return <RouteSkeleton kind={load.kind} pathname={pathname} />;
@@ -253,14 +261,14 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
       )}
       <Suspense fallback={<RouteSkeleton kind={kind} pathname={pathname} />}>
         {kind === "dashboard" && (
-          <ConnectedDashboard data={load.data} go={go} />
+          <ConnectedDashboard data={data} go={go} />
         )}
         {kind === "new" && (
-          <ConnectedNewRequisition catalogs={load.data as CatalogData} go={go} />
+          <ConnectedNewRequisition catalogs={data as CatalogData} go={go} />
         )}
         {kind === "detail" && (
           <ConnectedRequisitionDetail
-            data={load.data as DetailBundle}
+            data={data as DetailBundle}
             role={role}
             go={go}
             refresh={refresh}
@@ -268,7 +276,7 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
         )}
         {kind === "requisitions" && (
           <ConnectedRequisitions
-            data={load.data as RequisitionsBundle}
+            data={data as RequisitionsBundle}
             pathname={pathname}
             go={go}
             refresh={refresh}
@@ -277,7 +285,7 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
         )}
         {kind === "orders" && (
           <ConnectedOrders
-            data={load.data as OrdersBundle}
+            data={data as OrdersBundle}
             role={role}
             viewingAs={viewingAs}
             refresh={refresh}
@@ -288,18 +296,18 @@ export function ConnectedScreen({ pathname, role, viewingAs = null, go }: Connec
           <ConnectedCatalogAdmin
             pathname={pathname}
             role={role}
-            initialData={load.data as CatalogData}
+            initialData={data as CatalogData}
           />
         )}
         {kind === "expenses" && (
           <ConnectedExpenses
-            data={load.data as ExpenseBundle}
+            data={data as ExpenseBundle}
             role={role}
             refresh={refresh}
           />
         )}
         {kind === "reports" && (
-          <ConnectedReports data={load.data as ReportBundle} role={role} />
+          <ConnectedReports data={data as ReportBundle} role={role} />
         )}
       </Suspense>
     </div>

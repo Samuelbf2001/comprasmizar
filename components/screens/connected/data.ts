@@ -13,6 +13,7 @@
 import type { Role } from "../../../lib/demo-data";
 import { apiRequest } from "../../../lib/http/friendly-error";
 import type { RouteKind } from "../skeletons";
+import { permisosDelVisor, type ViewerPermissions } from "./shared";
 import type {
   AttachmentRow,
   AuditRow,
@@ -97,8 +98,27 @@ export async function loadMoreRequisitions(
   return (await readJson(requisitionsPageUrl(pathname, cursor))) as RequisitionsPage;
 }
 
+// DECISIÓN DE ERNESTO (2026-09-17): la interfaz decide por PERMISO EFECTIVO, no por nombre de rol.
+// Los permisos llegan en el bootstrap de catálogos (ver GET app/api/catalogs/route.ts) y de ahí SUBEN
+// al nivel del bundle, que es lo que recibe cada pantalla.
+function permisosDelBootstrap(catalogs: unknown): ViewerPermissions {
+  const payload = (catalogs ?? {}) as ViewerPermissions;
+  return { viewerPermissions: payload.viewerPermissions, rolePermissions: payload.rolePermissions };
+}
+
 export async function loadRoute(pathname: string, role: Role): Promise<unknown> {
   const kind = routeKind(pathname);
+  // La pantalla de catálogos no pasa por este bootstrap (tiene el suyo, /api/catalogs/manage) y se
+  // sirve tal cual; pedirle además /api/catalogs sería una llamada que hoy no hace.
+  if (kind === "catalogs") return readJson("/api/catalogs/manage");
+  const bundle = (await routeBundle(pathname, role, kind)) as Record<string, unknown>;
+  // Los permisos se pegan AQUÍ, una sola vez y para TODOS los `kind`, justo por el hallazgo H3: la
+  // normalización del detalle rearma el bundle campo a campo y ya se comió una vez `viewerId`/
+  // `viewerRoles`. Añadirlos en cada rama volvería a dejar ese error al alcance de un descuido.
+  return { ...bundle, ...permisosDelBootstrap(await getCatalogs()) };
+}
+
+async function routeBundle(pathname: string, role: Role, kind: RouteKind | undefined): Promise<unknown> {
   if (kind === "dashboard") {
     // RF-1102/RF-706/RF-1103: se agrega /api/catalogs (ya accesible para cualquier rol autenticado,
     // ver GET en app/api/catalogs/route.ts) solo para resolver nombres de obra/etiqueta en la cola de
@@ -157,13 +177,22 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
     // lo descargan para nada. `/api/requisitions` pasa a pedirse paginado (100 filas) y filtrado
     // por estado en el servidor en vez de traer TODA la bandeja para filtrar en cliente.
     const isRevision = pathname.startsWith("/revision");
-    const canReadOrders =
-      isRevision &&
-      ["Revisor", "Aprobador", "Contabilidad", "Administrador Sixteam"].includes(role);
+    // Quién puede leer órdenes lo dice "order:read", no la lista de nombres de rol que estaba clavada
+    // aquí: sin permiso, `/api/orders` responde 403 y tumbaría la bandeja entera. Se encadena a los
+    // catálogos (que traen los permisos) en vez de esperarlos: la página de requisiciones sigue
+    // pidiéndose en paralelo, y los catálogos están en caché de sesión casi siempre.
+    const catalogsRequest = getCatalogs();
+    const ordersRequest = isRevision
+      ? catalogsRequest.then((loaded) =>
+          permisosDelVisor(permisosDelBootstrap(loaded), role)("order:read")
+            ? readJson("/api/orders")
+            : [],
+        )
+      : Promise.resolve([]);
     const [page, catalogs, orders] = await Promise.all([
       readJson(requisitionsPageUrl(pathname)),
-      getCatalogs(),
-      canReadOrders ? readJson("/api/orders") : Promise.resolve([]),
+      catalogsRequest,
+      ordersRequest,
     ]);
     const { rows, nextCursor, viewerId } = page as RequisitionsPage;
     return {
@@ -220,7 +249,6 @@ export async function loadRoute(pathname: string, role: Role): Promise<unknown> 
       catalogs: catalogs as CatalogData,
     } satisfies ReportBundle;
   }
-  if (kind === "catalogs") return readJson("/api/catalogs/manage");
   throw new Error("Ruta operativa no soportada.");
 }
 

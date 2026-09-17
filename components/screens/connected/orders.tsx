@@ -27,6 +27,7 @@ import {
   formatIsoDate,
   localTodayISO,
   money,
+  permisosDelVisor,
   resolveUserName,
   type OrderPaymentRow,
   type OrderRow,
@@ -75,22 +76,22 @@ export function ConnectedOrders({
   // parece un problema de su cuenta. Cuando hay lente, la frase nombra el rol prestado.
   const sinPermiso = (accion: string) =>
     viewingAs ? `Estás viendo como ${viewingAs}; ese rol no ${accion}.` : `Tu rol no ${accion}.`;
+  // DECISIÓN DE ERNESTO (2026-09-17): los permisos por rol se editan en Configuración, así que lo que
+  // esta ficha ofrece se decide por PERMISO EFECTIVO del visor —el mismo que autoriza el servidor— y
+  // no por el nombre del rol de sesión. Con la lente puesta, `viewerPermissions` ya trae los del rol
+  // prestado (ver `conLaLente` en shared.tsx).
+  const puede = permisosDelVisor(data, role);
   const baseRows: OrderRow[] = Array.isArray(data?.rows) ? data.rows : [],
     catalogs = data?.catalogs ?? emptyCatalogs,
     [feedback, setFeedback] = useState(""),
     [success, setSuccess] = useState(""),
     [openOrderId, setOpenOrderId] = useState<string | null>(null),
-    canUpdate = role === "Revisor" || role === "Administrador Sixteam",
+    canUpdate = puede("order:update"),
     // Reunión 2026-08-31: eje administrativo/contable, independiente del cumplimiento de arriba.
     // "contabilizada" es de contabilidad (order:account); "pagada" es del revisor (order:pay).
-    canAccount = role === "Contabilidad" || role === "Administrador Sixteam",
-    canPay = role === "Revisor" || role === "Administrador Sixteam",
-    // DECISIÓN DE ERNESTO (2026-09-17): `payment:register` pasó a ser de revisor/admin_sixteam —
-    // contabilidad SALE. Esta pantalla decide por el rol principal del visor, no por su lista
-    // efectiva de permisos, así que refleja el DEFAULT de lib/domain/rules.ts: si un administrador
-    // le devuelve el permiso a contabilidad desde Configuración, el servidor lo aceptará pero este
-    // botón seguirá oculto hasta que el payload de órdenes traiga los permisos del visor.
-    canRegisterPayment = canPay;
+    canAccount = puede("order:account"),
+    canPay = puede("order:pay"),
+    canRegisterPayment = puede("payment:register");
   // Expediente del proveedor (RUT, cámara de comercio…) para que el contador lo descargue
   // junto con la orden sin buscarlo por otro lado (GET /api/suppliers/:id ya lo expone).
   const [supplierDocuments, setSupplierDocuments] = useState<Record<string, Array<{ id: string; name: string }>>>({});

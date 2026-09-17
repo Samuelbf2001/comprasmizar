@@ -28,6 +28,7 @@ import {
   localTodayISO,
   money,
   originLabel,
+  permisosDelVisor,
   type ExpenseBundle,
   type ExpenseRow,
 } from "./shared";
@@ -71,12 +72,15 @@ export function ConnectedExpenses({
   refresh: () => void | Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>("cierre");
+  // DECISIÓN DE ERNESTO (2026-09-17): por permiso efectivo del visor, no por nombre de rol — es lo
+  // mismo que exige el servidor y lo único que respeta los permisos editados en Configuración.
+  const puede = permisosDelVisor(data, role);
   const rows = Array.isArray(data.expenses) ? data.expenses : [],
     costCenters = data.catalogs.costCenters ?? [],
-    // Repartir un gasto entre obras (RF-305) sigue siendo del revisor/admin_sixteam.
-    canCreate = role === "Revisor" || role === "Administrador Sixteam",
-    // report:export (lib/domain/rules.ts): Contabilidad/Administrador Mizar/Administrador Sixteam.
-    canExport = role === "Contabilidad" || role === "Administrador Mizar" || role === "Administrador Sixteam";
+    // Repartir un gasto entre obras (RF-305) exige "requisition:review", que es lo que comprueba
+    // ProcurementService.redistribute.
+    canCreate = puede("requisition:review"),
+    canExport = puede("report:export");
 
   // ── Cierre de caja (RF-708) ──────────────────────────────────────────────────────────────────
   // Se consulta bajo demanda por rango (no viaja en el bundle de la ruta: el rango lo elige el usuario).
