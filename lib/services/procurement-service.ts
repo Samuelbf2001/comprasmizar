@@ -103,7 +103,7 @@ export class ProcurementService {
       if (!authorized) throw new DomainError("PUBLIC_ACCESS_DENIED", "Enlace o código público inválido");
     }
     else if (input.channel === "whatsapp") { if (origin !== "kapso" || !input.kapsoEventId?.trim()) throw new DomainError("FORBIDDEN", "WhatsApp solo acepta eventos Kapso verificados"); }
-    else assertPermission(this.actor(context).roles, "requisition:create", this.authOrigin(context));
+    else assertPermission(this.actor(context), "requisition:create", this.authOrigin(context));
     // Reunión 2026-08-31: el solicitante elige empresa, no obra (la asigna el revisor). El Flow de
     // WhatsApp ya NO pide obra: manda empresa, igual que web. El único canal que puede omitir empresa
     // es el público POR OBRA, cuya sociedad deriva el trigger `requisiciones_0_derivar_sociedad`
@@ -137,7 +137,7 @@ export class ProcurementService {
     const actor = context.actor ?? { id: input.channel === "whatsapp" ? "kapso" : "public", roles: [] }, elevated = actor.roles.includes("revisor") || actor.roles.includes("admin_mizar") || actor.roles.includes("admin_sixteam");
     if (!isExternalChannel && input.requesterId && input.requesterId !== actor.id && !elevated) throw new DomainError("FORBIDDEN", "Un solicitante solo puede crear para sí mismo");
     // Crear un proveedor "al vuelo" desde la web es alta de catálogo: solo quien ya puede administrarlos.
-    if (beneficiary && !isExternalChannel && !hasPermission(actor.roles, "supplier:manage", this.authOrigin(context))) throw new DomainError("FORBIDDEN", "Solo compras puede crear un beneficiario por identificación; elija uno del catálogo");
+    if (beneficiary && !isExternalChannel && !hasPermission(actor, "supplier:manage", this.authOrigin(context))) throw new DomainError("FORBIDDEN", "Solo compras puede crear un beneficiario por identificación; elija uno del catálogo");
     const requesterId = isExternalChannel ? undefined : input.requesterId ?? actor.id;
     // El año del consecutivo sale SIEMPRE del reloj del servidor, nunca de la fecha requerida (que ahora es
     // opcional y ya era inconsistente con approve()/generateOrders() y con los triggers SQL de consecutivo).
@@ -186,10 +186,10 @@ export class ProcurementService {
     await this.audit("proveedor", created.id, "creado", actor, { identificationType: input.identificationType, identificationConfigured: true, pendingNormalization: true, source: "beneficiario", channel }, origin, tx.audit);
     return created;
   }
-  async startReview(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); await this.transition(requisition, "en_revision", actor, "entrada_revision", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition); return requisition; }); }
-  async proposeItem(requisitionId: string, description: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:create", this.authOrigin(context)); if (!description.trim()) throw new DomainError("INVALID_INPUT", "Descripción obligatoria"); return this.transaction(`requisition:${requisitionId}`, async (tx) => { const requisition = await tx.requisitions.get(requisitionId); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const reviewer = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam"); if (!reviewer && requisition.requesterId !== actor.id) throw new DomainError("FORBIDDEN", "No puede modificar una requisición ajena"); const editable = reviewer ? ["en_revision", "devuelta"] : ["enviada"]; if (!editable.includes(requisition.status)) throw new DomainError("INVALID_STATE", "La requisición no admite nuevos ítems en este estado"); const [line] = await this.materializeProposals([{ id: this.deps.ids.next(), description: description.trim(), quantity: 1, unit: "unidad", unitBase: 0, unitIva: 0 }], actor, this.origin(context), tx); requisition.items.push(line); await tx.requisitions.save(requisition); await this.audit("requisicion", requisition.id, "item_propuesto", actor, { itemId: line.itemId }, this.origin(context), tx.audit); return requisition; }); }
+  async startReview(id: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); await this.transition(requisition, "en_revision", actor, "entrada_revision", undefined, this.origin(context), tx.audit); await tx.requisitions.save(requisition); return requisition; }); }
+  async proposeItem(requisitionId: string, description: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:create", this.authOrigin(context)); if (!description.trim()) throw new DomainError("INVALID_INPUT", "Descripción obligatoria"); return this.transaction(`requisition:${requisitionId}`, async (tx) => { const requisition = await tx.requisitions.get(requisitionId); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const reviewer = actor.roles.includes("revisor") || actor.roles.includes("admin_sixteam"); if (!reviewer && requisition.requesterId !== actor.id) throw new DomainError("FORBIDDEN", "No puede modificar una requisición ajena"); const editable = reviewer ? ["en_revision", "devuelta"] : ["enviada"]; if (!editable.includes(requisition.status)) throw new DomainError("INVALID_STATE", "La requisición no admite nuevos ítems en este estado"); const [line] = await this.materializeProposals([{ id: this.deps.ids.next(), description: description.trim(), quantity: 1, unit: "unidad", unitBase: 0, unitIva: 0 }], actor, this.origin(context), tx); requisition.items.push(line); await tx.requisitions.save(requisition); await this.audit("requisicion", requisition.id, "item_propuesto", actor, { itemId: line.itemId }, this.origin(context), tx.audit); return requisition; }); }
   async review(id: string, input: ReviewInput, context: RequestContext): Promise<Requisition> {
-    const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); if (!input.tagId) throw new DomainError("INVALID_INPUT", "Etiqueta obligatoria"); sumLines(input.items);
+    const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); if (!input.tagId) throw new DomainError("INVALID_INPUT", "Etiqueta obligatoria"); sumLines(input.items);
     return this.transaction(`requisition:${id}`, async (tx) => {
       // Decisión del cliente (reunión 2026-09): el aprobador ya NO se deriva de la etiqueta — lo elige el
       // revisor aquí. Se valida contra el mismo puerto que ya usa CatalogService.validateTag para exigir
@@ -356,7 +356,7 @@ export class ProcurementService {
    * entrar, no gana nada con la notificación).
    */
   async reassignApprover(id: string, approverId: string, context: RequestContext): Promise<Requisition> {
-    const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context));
     if (!approverId) throw new DomainError("INVALID_INPUT", "Debe indicar el nuevo aprobador");
     return this.transaction(`requisition:${id}`, async (tx) => {
       if (!(await tx.catalogs.isEligibleApprover(approverId))) throw new DomainError("INVALID_INPUT", "El aprobador debe ser un usuario activo y elegible");
@@ -381,13 +381,13 @@ export class ProcurementService {
    *
    * O sea: la transición es legal para el APROBADOR; la acción del revisor conserva su propio límite.
    */
-  async decline(id: string, reason: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.status === "en_aprobacion") throw new DomainError("INVALID_TRANSITION", "La requisición ya está en aprobación: la decide su aprobador o se reasigna"); await this.transition(requisition, "declinada", actor, "declinada", reason.trim(), this.origin(context), tx.audit); requisition.declineReason = reason.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_declinada", tx); return requisition; }); }
+  async decline(id: string, reason: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.status === "en_aprobacion") throw new DomainError("INVALID_TRANSITION", "La requisición ya está en aprobación: la decide su aprobador o se reasigna"); await this.transition(requisition, "declinada", actor, "declinada", reason.trim(), this.origin(context), tx.audit); requisition.declineReason = reason.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_declinada", tx); return requisition; }); }
   // "sendForApproval" ya NO exige proveedor final por ítem (decisión de la reunión: aprobar y designar
   // proveedor son roles distintos). Sí exige obra: gastos.obra_id es NOT NULL y sin obra generateOrders
   // reventaría al registrar el gasto. Las líneas declinadas no cuentan como "vigentes" (approvedLines).
   // `options.notifyApprovers` (RF-308): `sendAndApproveAsMaster` lo apaga — avisarle por WhatsApp al
   // aprobador que tiene algo pendiente cuando ese mismo aprobador lo va a aprobar en el mismo instante es ruido.
-  async sendForApproval(id: string, context: RequestContext, options: { notifyApprovers?: boolean } = {}): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0);
+  async sendForApproval(id: string, context: RequestContext, options: { notifyApprovers?: boolean } = {}): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0);
     // Centros de costo (2026-09-12, decisión del dueño): exigido junto a obra/etiqueta/aprobador — sin
     // él, generateOrders() no tendría de dónde copiar el centro del gasto (ver la nota "ojo" en su
     // propio cuerpo, más abajo). El caso común nunca lo dispara: review() ya lo hereda de la obra en
@@ -429,7 +429,7 @@ export class ProcurementService {
    */
   async sendAndApproveAsMaster(id: string, context: RequestContext): Promise<Requisition> {
     const actor = this.actor(context); assertCanSelfApprove(actor);
-    assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
+    assertPermission(actor, "requisition:review", this.authOrigin(context)); assertPermission(actor, "requisition:approve", this.authOrigin(context));
     const requisition = await this.requisition(id);
     const omnipotente = actor.roles.includes("admin_sixteam");
     if (!omnipotente && requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "Para aprobar en un solo paso debe figurar como aprobador de la requisición");
@@ -442,7 +442,7 @@ export class ProcurementService {
   }
   /** Reunión 2026-08-31: decisión por ítem del aprobador (aprobar/declinar/ajustar cantidad). No cambia el estado de la requisición: eso lo sigue haciendo approve(). */
   async decideItems(id: string, decisions: readonly ItemDecision[], context: RequestContext): Promise<Requisition> {
-    const actor = this.actor(context); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "requisition:approve", this.authOrigin(context));
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       // M-5: admin_sixteam puede decidir CUALQUIER requisición en aprobación, no solo las asignadas —
@@ -479,7 +479,7 @@ export class ProcurementService {
   // groupOrderItems ni features: ese trabajo se movió a generateOrders(), un paso explícito que el
   // comprador detona con un botón (decisión de la reunión 2026-08-31).
   async approve(id: string, context: RequestContext): Promise<Requisition> {
-    const actor = this.actor(context); assertPermission(actor.roles, "requisition:approve", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "requisition:approve", this.authOrigin(context));
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       // M-5: mismo bypass de decideItems() — ver justificación junto a buildAttentionQueue en lib/domain/rules.ts.
@@ -526,7 +526,7 @@ export class ProcurementService {
    * construcción, alterar cantidad/precio/tasas/estado de lo que ya aprobó otra persona.
    */
   async assignSuppliers(id: string, assignments: readonly SupplierAssignment[], context: RequestContext): Promise<Requisition> {
-    const actor = this.actor(context); assertPermission(actor.roles, "order:create", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "order:create", this.authOrigin(context));
     if (!assignments.length) throw new DomainError("INVALID_INPUT", "Debe asignar al menos un proveedor");
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
@@ -553,7 +553,7 @@ export class ProcurementService {
    * ANTES de guardar nada, así que una generación parcial nunca deja huérfanos.
    */
   async generateOrders(id: string, context: RequestContext): Promise<Order[]> {
-    const actor = this.actor(context); assertPermission(actor.roles, "order:create", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "order:create", this.authOrigin(context));
     return this.deps.transactions.transaction(`requisition:${id}`, async (transactional) => {
       const requisition = await transactional.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
       if (requisition.status !== "aprobada") throw new DomainError("INVALID_STATE", "La requisición debe estar aprobada para generar órdenes");
@@ -614,7 +614,7 @@ export class ProcurementService {
    * La devolución POR ÍTEM quedó fuera de v1 a propósito (reunión 11-sep-2026). Si algún día entra,
    * este es el sitio, y entonces sí habrá que decidir qué pasa con lo ya decidido por los demás.
    */
-  async returnForCorrection(id: string, comment: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:return", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado"); await this.transition(requisition, "devuelta", actor, "devuelta", comment.trim(), this.origin(context), tx.audit); requisition.returnReason = comment.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_devuelta", tx); return requisition; }); }
+  async returnForCorrection(id: string, comment: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:return", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.approverId !== actor.id && !actor.roles.includes("admin_sixteam")) throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado"); await this.transition(requisition, "devuelta", actor, "devuelta", comment.trim(), this.origin(context), tx.audit); requisition.returnReason = comment.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_devuelta", tx); return requisition; }); }
   /**
    * GRAVE 2 (QA reasignación, reunión 2026-09): el eje administrativo (adminStatus) y el de cumplimiento
    * (status, aquí) son independientes — una orden puede llegar a `no_necesario` ya `contabilizada` (el
@@ -628,7 +628,7 @@ export class ProcurementService {
    * en este `if`: el material puede llegar después, el compromiso sigue en pie.
    */
   async updateOrderStatus(orderId: string, status: OrderStatus, context: RequestContext): Promise<Order> {
-    const actor = this.actor(context); assertPermission(actor.roles, "order:update", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "order:update", this.authOrigin(context));
     return this.transaction(`order:${orderId}`, async (tx) => {
       const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
       if (order.status !== "generada" || !["cumplida", "no_cumplida", "no_necesario"].includes(status)) throw new DomainError("INVALID_TRANSITION", "Estado de orden inválido");
@@ -645,7 +645,7 @@ export class ProcurementService {
   }
   /** Reunión 2026-08-31: eje administrativo/contable, independiente de updateOrderStatus (cumplimiento). "contabilizada" exige order:account (contabilidad); "pagada" exige order:pay (revisor/admins). */
   async updateOrderAdminStatus(orderId: string, status: OrderAdminStatus, context: RequestContext): Promise<Order> {
-    const actor = this.actor(context); assertPermission(actor.roles, status === "contabilizada" ? "order:account" : "order:pay", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, status === "contabilizada" ? "order:account" : "order:pay", this.authOrigin(context));
     return this.transaction(`order:${orderId}`, async (tx) => {
       const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
       assertAdminTransition(order.adminStatus, status, order.status);
@@ -694,7 +694,7 @@ export class ProcurementService {
    * la pantalla actualice la columna "Pagado / Total" sin un segundo viaje.
    */
   async registerOrderPayment(orderId: string, input: OrderPaymentInput, context: RequestContext): Promise<{ payment: OrderPayment; order: Order }> {
-    const actor = this.actor(context); assertPermission(actor.roles, "payment:register", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "payment:register", this.authOrigin(context));
     return this.transaction(`order:${orderId}`, async (tx) => {
       const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
       // Mismo criterio que ORDER_ALREADY_PAID en updateOrderStatus: una orden ya pagada no admite más
@@ -721,7 +721,7 @@ export class ProcurementService {
    * corrigiendo (E2E #6 del PRD: "anular el pago 2 con motivo → vuelve a parcial").
    */
   async annulOrderPayment(orderId: string, paymentId: string, reason: string, context: RequestContext): Promise<{ payment: OrderPayment; order: Order }> {
-    const actor = this.actor(context); assertPermission(actor.roles, "payment:register", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "payment:register", this.authOrigin(context));
     return this.transaction(`order:${orderId}`, async (tx) => {
       const order = await tx.orders.get(orderId); if (!order) throw new DomainError("NOT_FOUND", "Orden no encontrada");
       const payment = await tx.orderPayments.get(orderId, paymentId); if (!payment) throw new DomainError("NOT_FOUND", "Pago no encontrado");
@@ -746,7 +746,7 @@ export class ProcurementService {
    * esos roles son elevados en `listVisibleOrders`.
    */
   async listCashPayments(query: CashPaymentsQuery, context: RequestContext): Promise<CashPayment[]> {
-    const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "expense:read", this.authOrigin(context));
     if (!/^\d{4}-\d{2}-\d{2}$/.test(query.from) || !/^\d{4}-\d{2}-\d{2}$/.test(query.to) || query.from > query.to) throw new DomainError("INVALID_INPUT", "El rango del cierre debe ser dos fechas YYYY-MM-DD, desde ≤ hasta");
     return this.deps.orderPayments.listCash({ from: query.from, to: query.to, costCenterId: query.costCenterId || undefined });
   }
@@ -763,9 +763,9 @@ export class ProcurementService {
     await this.getVisibleOrder(orderId, context);
     return this.deps.orderPayments.listByOrder(orderId);
   }
-  async redistribute(expenseId: string, total: number, shares: ExpenseShare[], context: RequestContext): Promise<void> { const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context)); if (shares.some((share) => share.expenseId !== expenseId)) throw new DomainError("INVALID_SHARE", "Todas las líneas deben pertenecer al gasto"); await this.transaction(`expense:${expenseId}`, async (tx) => { const expense = await tx.expenses.get(expenseId); if (!expense) throw new DomainError("NOT_FOUND", "Gasto no encontrado"); if (expense.total !== total) throw new DomainError("EXPENSE_TOTAL_MISMATCH", "El total del reparto no coincide con el gasto"); validateShares(expense.total, shares); await tx.expenses.saveShares(shares); await this.audit("gasto", expenseId, "repartido", actor, { total: expense.total }, this.origin(context), tx.audit); }); }
+  async redistribute(expenseId: string, total: number, shares: ExpenseShare[], context: RequestContext): Promise<void> { const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); if (shares.some((share) => share.expenseId !== expenseId)) throw new DomainError("INVALID_SHARE", "Todas las líneas deben pertenecer al gasto"); await this.transaction(`expense:${expenseId}`, async (tx) => { const expense = await tx.expenses.get(expenseId); if (!expense) throw new DomainError("NOT_FOUND", "Gasto no encontrado"); if (expense.total !== total) throw new DomainError("EXPENSE_TOTAL_MISMATCH", "El total del reparto no coincide con el gasto"); validateShares(expense.total, shares); await tx.expenses.saveShares(shares); await this.audit("gasto", expenseId, "repartido", actor, { total: expense.total }, this.origin(context), tx.audit); }); }
   async registerPettyCash(input: PettyCashInput, context: RequestContext): Promise<{ entry: PettyCash; expense: Expense }> {
-    const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:create", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "petty_cash:create", this.authOrigin(context));
     if (!input.workId || !input.concept.trim() || !input.tagId || !input.cashBoxId || !input.paymentMethod) throw new DomainError("INVALID_INPUT", "Campos de caja obligatorios");
     assertCop(input.amount, "Valor"); if (input.amount === 0) throw new DomainError("INVALID_MONEY", "El valor debe ser mayor a cero");
     assertCop(input.iva ?? 0, "IVA");
@@ -784,7 +784,7 @@ export class ProcurementService {
       return { entry, expense };
     });
   }
-  private assertCanReadRequisitions(context: RequestContext): Actor { const actor = this.actor(context); if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor.roles, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones"); return actor; }
+  private assertCanReadRequisitions(context: RequestContext): Actor { const actor = this.actor(context); if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones"); return actor; }
   async listRequisitions(context: RequestContext): Promise<Requisition[]> { const actor = this.assertCanReadRequisitions(context); return this.deps.requisitions.listVisibleTo(actor) as Promise<Requisition[]>; }
   /**
    * H3: contraparte paginada de `listRequisitions` — `query` siempre viene informado (la ruta HTTP
@@ -810,7 +810,7 @@ export class ProcurementService {
    */
   async getRequisition(id: string, context: RequestContext): Promise<Requisition> {
     const actor = this.actor(context);
-    if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor.roles, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones");
+    if (!["requisition:read", "requisition:read:own", "requisition:read:assigned"].some((permission) => hasPermission(actor, permission, this.authOrigin(context)))) throw new DomainError("FORBIDDEN", "No puede consultar requisiciones");
     const requisition = await this.requisition(id);
     this.assertVisibleRequisition(actor, requisition);
     return requisition;
@@ -843,8 +843,8 @@ export class ProcurementService {
     const requisition = await this.getRequisition(id, context);
     const actor = this.actor(context), origin = this.authOrigin(context);
     const [orders, expenses, history] = await Promise.all([
-      hasPermission(actor.roles, "order:read", origin) ? this.deps.orders.listByRequisition(id) : Promise.resolve([]),
-      hasPermission(actor.roles, "expense:read", origin) ? this.deps.expenses.listByReference(id) : Promise.resolve([]),
+      hasPermission(actor, "order:read", origin) ? this.deps.orders.listByRequisition(id) : Promise.resolve([]),
+      hasPermission(actor, "expense:read", origin) ? this.deps.expenses.listByReference(id) : Promise.resolve([]),
       this.deps.audit.list("requisicion", id),
     ]);
     return { requisition, orders, expenses, history };
@@ -858,7 +858,7 @@ export class ProcurementService {
    * de revisión. Registra en auditoría qué cambió.
    */
   async updateRequisitionHeader(id: string, patch: { requiredDate?: string; observations?: string | null }, context: RequestContext): Promise<Requisition> {
-    const actor = this.actor(context); assertPermission(actor.roles, "requisition:review", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context));
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id);
       if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
@@ -872,17 +872,17 @@ export class ProcurementService {
       return requisition;
     });
   }
-  async listOrders(context: RequestContext): Promise<Order[]> { const actor = this.actor(context); assertPermission(actor.roles, "order:read", this.authOrigin(context)); return this.deps.orders.listVisibleTo(actor) as Promise<Order[]>; }
+  async listOrders(context: RequestContext): Promise<Order[]> { const actor = this.actor(context); assertPermission(actor, "order:read", this.authOrigin(context)); return this.deps.orders.listVisibleTo(actor) as Promise<Order[]>; }
   /** H3: contraparte paginada de `listOrders` — mismo criterio que `listRequisitionsPage`. */
   async listOrdersPage(query: ListQuery, context: RequestContext): Promise<Page<Order>> {
-    const actor = this.actor(context); assertPermission(actor.roles, "order:read", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "order:read", this.authOrigin(context));
     const result = await this.deps.orders.listVisibleTo(actor, query);
     return isPage(result) ? result : { rows: result, nextCursor: null };
   }
-  async listExpenses(context: RequestContext): Promise<Expense[]> { const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context)); return this.deps.expenses.listVisibleTo(actor) as Promise<Expense[]>; }
+  async listExpenses(context: RequestContext): Promise<Expense[]> { const actor = this.actor(context); assertPermission(actor, "expense:read", this.authOrigin(context)); return this.deps.expenses.listVisibleTo(actor) as Promise<Expense[]>; }
   /** H3: contraparte paginada de `listExpenses` — mismo criterio que `listRequisitionsPage`. */
   async listExpensesPage(query: ListQuery, context: RequestContext): Promise<Page<Expense>> {
-    const actor = this.actor(context); assertPermission(actor.roles, "expense:read", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "expense:read", this.authOrigin(context));
     const result = await this.deps.expenses.listVisibleTo(actor, query);
     return isPage(result) ? result : { rows: result, nextCursor: null };
   }
@@ -895,7 +895,7 @@ export class ProcurementService {
    */
   async listOrdersByRequisition(requisitionId: string, context: RequestContext): Promise<Order[]> {
     const actor = this.actor(context);
-    assertPermission(actor.roles, "order:read", this.authOrigin(context));
+    assertPermission(actor, "order:read", this.authOrigin(context));
     await this.getRequisition(requisitionId, context);
     return this.deps.orders.listByRequisition(requisitionId);
   }
@@ -904,15 +904,15 @@ export class ProcurementService {
    *  criterio que listOrdersByRequisition. */
   async listExpensesByReference(referenceId: string, context: RequestContext): Promise<Expense[]> {
     const actor = this.actor(context);
-    assertPermission(actor.roles, "expense:read", this.authOrigin(context));
+    assertPermission(actor, "expense:read", this.authOrigin(context));
     await this.getRequisition(referenceId, context);
     return this.deps.expenses.listByReference(referenceId);
   }
-  async listPettyCash(context: RequestContext): Promise<PettyCash[]> { const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:read", this.authOrigin(context)); return this.deps.pettyCash.list() as Promise<PettyCash[]>; }
+  async listPettyCash(context: RequestContext): Promise<PettyCash[]> { const actor = this.actor(context); assertPermission(actor, "petty_cash:read", this.authOrigin(context)); return this.deps.pettyCash.list() as Promise<PettyCash[]>; }
   /** H3: contraparte paginada de `listPettyCash` — mismo criterio que `listRequisitionsPage`. La caja
    *  menor no tiene visibilidad por actor propia (ver PettyCashRepository en contracts.ts). */
   async listPettyCashPage(query: ListQuery, context: RequestContext): Promise<Page<PettyCash>> {
-    const actor = this.actor(context); assertPermission(actor.roles, "petty_cash:read", this.authOrigin(context));
+    const actor = this.actor(context); assertPermission(actor, "petty_cash:read", this.authOrigin(context));
     const result = await this.deps.pettyCash.list(query);
     return isPage(result) ? result : { rows: result, nextCursor: null };
   }
@@ -942,7 +942,7 @@ export class ProcurementService {
    * El resultado final tiene EXACTAMENTE la misma forma que antes (`DashboardMetrics`).
    */
   async dashboard(period: string, context: RequestContext): Promise<DashboardMetrics> {
-    const actor = this.actor(context); assertPermission(actor.roles, "dashboard:read", this.authOrigin(context)); if (!/^\d{4}-\d{2}$/.test(period)) throw new DomainError("INVALID_INPUT", "Periodo inválido");
+    const actor = this.actor(context); assertPermission(actor, "dashboard:read", this.authOrigin(context)); if (!/^\d{4}-\d{2}$/.test(period)) throw new DomainError("INVALID_INPUT", "Periodo inválido");
     const [byStatus, pendingOrders, expenseAggregates] = await Promise.all([
       this.deps.requisitions.dashboardByStatus(actor),
       this.deps.orders.dashboardPendingCount(actor),

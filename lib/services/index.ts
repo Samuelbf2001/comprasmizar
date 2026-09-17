@@ -7,3 +7,4 @@ export * from "./catalog-service";
 export * from "./supplier-service";
 export * from "./attachment-service";
 export * from "./public-access-service";
+export * from "./role-permissions-service";

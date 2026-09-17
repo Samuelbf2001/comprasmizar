@@ -52,10 +52,13 @@ import { invalidateCatalogs } from "./connected/data";
 // algún día alguien la monte fuera de esa ruta.
 const ALLOWED_ROLES: Role[] = ["Administrador Sixteam", "Administrador Mizar"];
 
-type SectionId = "acceso-publico" | "usuarios" | "whatsapp" | "catalogos";
-const SECTIONS: Array<{ id: SectionId; label: string }> = [
+type SectionId = "acceso-publico" | "usuarios" | "permisos" | "whatsapp" | "catalogos";
+// «Permisos por rol» (decisión de Ernesto, 2026-09-17) es SOLO de Administrador Sixteam: no aparece
+// siquiera en el índice para Administrador Mizar, que sí ve el resto de la pantalla.
+const SECTIONS: Array<{ id: SectionId; label: string; onlySixteam?: boolean }> = [
   { id: "acceso-publico", label: "Acceso público" },
   { id: "usuarios", label: "Usuarios y roles" },
+  { id: "permisos", label: "Permisos por rol", onlySixteam: true },
   { id: "whatsapp", label: "WhatsApp" },
   { id: "catalogos", label: "Catálogos" },
 ];
@@ -95,7 +98,7 @@ export function SettingsScreen({
       />
       <div className="panel settings-layout">
         <nav className="settings-nav" aria-label="Secciones de configuración">
-          {SECTIONS.map((section) => (
+          {SECTIONS.filter((section) => !section.onlySixteam || role === "Administrador Sixteam").map((section) => (
             <button
               key={section.id}
               type="button"
@@ -111,11 +114,195 @@ export function SettingsScreen({
           {(role === "Administrador Sixteam" || role === "Administrador Mizar") && (
             <UsersSection go={go} />
           )}
+          {role === "Administrador Sixteam" && <PermissionsSection />}
           <WhatsAppSection go={go} />
           <CatalogsSection go={go} />
         </div>
       </div>
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0. Permisos por rol (decisión de Ernesto, 2026-09-17)
+// ---------------------------------------------------------------------------------------------
+
+/** Lo que devuelve GET/PUT /api/config/permissions (ver lib/services/role-permissions-service.ts).
+ *  La pantalla no conoce NINGUNA regla: los nombres de negocio, los defaults y el permiso bloqueado
+ *  vienen del servidor, que es quien tiene el catálogo. */
+type PermissionsSettings = {
+  roles: Array<{ key: string; label: string }>;
+  permissions: Array<{ key: string; label: string; group: string }>;
+  defaults: Record<string, string[]>;
+  effective: Record<string, string[]>;
+  overridden: string[];
+  lockedPermission: string;
+};
+
+const WILDCARD = "*";
+/** `admin_sixteam` guarda `["*"]` (todo, también lo que se invente mañana). En la matriz eso es
+ *  "todas marcadas"; al desmarcar una, el comodín se expande a la lista explícita para poder quitarla. */
+const marca = (lista: string[], permiso: string) => lista.includes(WILDCARD) || lista.includes(permiso);
+const mismos = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("|") === [...b].sort().join("|");
+
+function PermissionsSection() {
+  const [data, setData] = useState<PermissionsSettings | null>(null);
+  const [draft, setDraft] = useState<Record<string, string[]>>({});
+  const [loadError, setLoadError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const adopt = (value: PermissionsSettings) => {
+    setData(value);
+    setDraft(Object.fromEntries(Object.entries(value.effective).map(([role, list]) => [role, [...list]])));
+  };
+
+  useEffect(() => {
+    let active = true;
+    apiRequest<PermissionsSettings>("/api/config/permissions")
+      .then((value) => { if (active) adopt(value); })
+      .catch((error: unknown) => { if (active) setLoadError(friendlyErrorText(error, "No fue posible consultar los permisos por rol.")); });
+    return () => { active = false; };
+  }, []);
+
+  if (loadError) {
+    return (
+      <section id="settings-permisos" className="settings-section">
+        <div><h2>Permisos por rol</h2><p>Qué puede hacer cada rol dentro de la plataforma.</p></div>
+        <p className="field-error catalog-feedback" role="alert">{loadError}</p>
+      </section>
+    );
+  }
+  if (!data) {
+    return (
+      <section id="settings-permisos" className="settings-section">
+        <div><h2>Permisos por rol</h2><p>Qué puede hacer cada rol dentro de la plataforma.</p></div>
+        <p className="public-access-status">Consultando permisos…</p>
+      </section>
+    );
+  }
+
+  const toggle = (role: string, permiso: string) => {
+    setSuccess("");
+    setFeedback("");
+    setDraft((previous) => {
+      const actual = previous[role] ?? [];
+      const explicita = actual.includes(WILDCARD) ? data.permissions.map((entry) => entry.key) : actual;
+      const siguiente = explicita.includes(permiso) ? explicita.filter((entry) => entry !== permiso) : [...explicita, permiso];
+      return { ...previous, [role]: siguiente };
+    });
+  };
+  const restore = (role: string) => {
+    setSuccess("");
+    setFeedback("");
+    setDraft((previous) => ({ ...previous, [role]: [...data.defaults[role]] }));
+  };
+  // Solo viajan los roles que DIFIEREN del default: un rol igual al default no deja override, y así
+  // «Restaurar valores por defecto» le devuelve también los cambios futuros de rules.ts.
+  const overrides = Object.fromEntries(Object.entries(draft).filter(([role, lista]) => !mismos(lista, data.defaults[role])));
+  const cambiado = !mismos(Object.keys(overrides).sort(), [...data.overridden].sort())
+    || Object.entries(overrides).some(([role, lista]) => !mismos(lista, data.effective[role]));
+
+  const save = async () => {
+    setFeedback("");
+    setSuccess("");
+    setSaving(true);
+    try {
+      adopt(await apiRequest<PermissionsSettings>("/api/config/permissions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overrides }),
+      }));
+      setSuccess("Permisos guardados. Cada usuario los verá en su próxima acción.");
+    } catch (error) {
+      setFeedback(friendlyErrorText(error, "No fue posible guardar los permisos."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const grupos = [...new Set(data.permissions.map((permiso) => permiso.group))];
+  return (
+    <section id="settings-permisos" className="settings-section">
+      <div>
+        <h2>Permisos por rol</h2>
+        <p>
+          Qué puede hacer cada rol. Lo que marques aquí manda sobre los valores con los que viene la
+          plataforma; lo que quede igual al valor por defecto no se guarda como excepción.
+        </p>
+      </div>
+      <div className="table-wrap">
+        <table className="permission-matrix">
+          <caption className="sr-only">Permisos por rol: marca qué puede hacer cada rol</caption>
+          <thead>
+            <tr>
+              <th scope="col">Permiso</th>
+              {data.roles.map((role) => (
+                <th key={role.key} scope="col" className="align-center">
+                  <span>{role.label}</span>
+                  {!mismos(draft[role.key] ?? [], data.defaults[role.key]) && (
+                    <span className="badge badge-blue permission-role-flag">Modificado</span>
+                  )}
+                  <button
+                    className="permission-restore"
+                    type="button"
+                    disabled={saving || mismos(draft[role.key] ?? [], data.defaults[role.key])}
+                    onClick={() => restore(role.key)}
+                  >
+                    Restaurar valores por defecto
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {grupos.map((grupo) => (
+              <Fragment key={grupo}>
+                <tr className="permission-group">
+                  <th scope="colgroup" colSpan={data.roles.length + 1}>{grupo}</th>
+                </tr>
+                {data.permissions.filter((permiso) => permiso.group === grupo).map((permiso) => (
+                  <tr key={permiso.key}>
+                    <th scope="row">{permiso.label}</th>
+                    {data.roles.map((role) => {
+                      const activo = marca(draft[role.key] ?? [], permiso.key);
+                      // El candado anti-pie, también en pantalla: Administrador Sixteam no puede
+                      // quedarse sin «Configurar la plataforma» porque nadie podría volver a entrar
+                      // aquí. El servidor lo rechaza igual; esto solo evita ofrecer el disparo.
+                      const bloqueado = role.key === "admin_sixteam" && permiso.key === data.lockedPermission;
+                      return (
+                        <td key={role.key} className={`align-center${activo !== marca(data.defaults[role.key], permiso.key) ? " permission-differs" : ""}`}>
+                          <input
+                            type="checkbox"
+                            checked={activo}
+                            disabled={saving || bloqueado}
+                            aria-label={`${permiso.label} — ${role.label}`}
+                            title={bloqueado ? "Administrador Sixteam siempre conserva este permiso" : undefined}
+                            onChange={() => toggle(role.key, permiso.key)}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="permission-legend">
+        <span className="permission-legend-swatch" aria-hidden="true" /> Celda resaltada: distinta del
+        valor por defecto de la plataforma.
+      </p>
+      {feedback && <p className="field-error catalog-feedback" role="alert">{feedback}</p>}
+      {success && <p className="catalog-success" role="status">{success}</p>}
+      <div className="settings-inline-edit">
+        <button className="button button-dark" type="button" disabled={saving || !cambiado} onClick={() => void save()}>
+          {saving ? "Guardando…" : "Guardar permisos"}
+        </button>
+      </div>
+    </section>
   );
 }
 

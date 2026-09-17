@@ -32,7 +32,7 @@ export async function buildCashCloseReport(dependencies: ServiceDependencies, ac
 }
 
 export function assertCanDownloadCashClose(actor: Actor, origin: "web" | "mcp" = "web"): void {
-  assertPermission(actor.roles, "report:export", origin);
+  assertPermission(actor, "report:export", origin);
 }
 
 export async function buildCashCloseXlsx(report: CashCloseReport): Promise<Uint8Array> {

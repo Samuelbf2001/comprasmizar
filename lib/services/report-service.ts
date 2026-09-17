@@ -226,7 +226,7 @@ export class ReportService {
    */
   async listReport(filters: ReportFilters, context: RequestContext): Promise<ReportRow[]> {
     const actor = this.actor(context);
-    assertPermission(actor.roles, "report:read", this.authOrigin(context));
+    assertPermission(actor, "report:read", this.authOrigin(context));
     const range = filters.period ? monthRange(filters.period) : undefined;
     const requisitions: Requisition[] = [];
     let cursor: string | undefined;
@@ -254,7 +254,7 @@ export class ReportService {
    */
   async listOrderReport(filters: OrderReportFilters, context: RequestContext): Promise<OrderReportRow[]> {
     const actor = this.actor(context);
-    assertPermission(actor.roles, "report:read", this.authOrigin(context));
+    assertPermission(actor, "report:read", this.authOrigin(context));
     const range = filters.period ? monthRange(filters.period) : undefined;
     const orders: Order[] = [];
     let cursor: string | undefined;
@@ -276,6 +276,6 @@ export class ReportService {
   /** Único punto que decide si ESTE actor puede descargar el Excel — la ruta de export lo llama antes de
    *  construir el libro, además de `listReport` (que ya exige "report:read", un permiso más amplio). */
   assertCanExport(actor: Actor, origin: "web" | "mcp" = "web"): void {
-    assertPermission(actor.roles, "report:export", origin);
+    assertPermission(actor, "report:export", origin);
   }
 }

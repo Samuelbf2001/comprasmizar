@@ -57,13 +57,13 @@ export class CatalogService {
     // autoservicio de catálogos, a diferencia del resto de kinds gestionados por esta función).
     if (kind === "societies") { if (actor.roles.includes("admin_mizar")) return; throw new DomainError("FORBIDDEN", "No puede administrar sociedades"); }
     const specialized = kind === "items" ? "item:manage" : kind === "suppliers" ? "supplier:manage" : "catalog:manage";
-    if (kind === "items") { assertPermission(actor.roles, specialized); return; }
+    if (kind === "items") { assertPermission(actor, specialized); return; }
     if (kind === "suppliers" && actor.roles.includes("revisor")) return;
     if (actor.roles.includes("admin_mizar")) {
       if (!(await features.isEnabled("catalogos_admin_mizar"))) throw new DomainError("FEATURE_DISABLED", "El autoservicio de catálogos aún no está habilitado");
       return;
     }
-    assertPermission(actor.roles, specialized);
+    assertPermission(actor, specialized);
   }
   private conflict(error: unknown, kind: CatalogKind): never {
     if (typeof error === "object" && error !== null && "code" in error) {

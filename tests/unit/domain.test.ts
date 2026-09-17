@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, costCenterRequiresWork, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeIdentification, normalizeItemName, orderTypeFor, paymentStatus, resolveBilledCompany, sumApprovedLines, sumLines, sumPaid, validateShares, type Order, type OrderPayment, type Requisition } from "../../lib/domain";
+import { ALL_PERMISSIONS, DEFAULT_ROLE_PERMISSIONS, DomainError, PERMISSION_CATALOG, assertValidPermissionOverrides, resolveActorPermissions, resolveRolePermissions, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, buildRecentActivity, calculateDashboard, calculateLineAmounts, calculateLineTotal, calculateTax, canGenerateOrders, canTransition, costCenterRequiresWork, groupExpenseByPeriod, groupExpenseByTag, groupExpenseByWork, groupOrderItems, hasPermission, nextConsecutive, normalizeIdentification, normalizeItemName, orderTypeFor, paymentStatus, resolveBilledCompany, sumApprovedLines, sumLines, sumPaid, validateShares, type Order, type OrderPayment, type Requisition } from "../../lib/domain";
 
 const line = { id: "i1", quantity: 2, unit: "und", unitBase: 100, unitIva: 19, unitTotal: 119 };
 describe("domain permissions", () => {
@@ -16,6 +16,54 @@ describe("domain permissions", () => {
     expect(hasPermission(["revisor"], "requisition:review", "mcp")).toBe(false);
     expect(hasPermission(["revisor"], "requisition:review", "web")).toBe(true);
     expect(() => assertPermission(["admin_sixteam"], "requisition:review", "mcp")).toThrow(DomainError);
+  });
+  // DECISIÓN DE ERNESTO (2026-09-17): registrar y anular pagos queda en revisor y admin_sixteam.
+  it("payment:register es del revisor y admin_sixteam; contabilidad conserva ver y contabilizar", () => {
+    expect(hasPermission(["revisor"], "payment:register")).toBe(true);
+    expect(hasPermission(["admin_sixteam"], "payment:register")).toBe(true);
+    expect(hasPermission(["contabilidad"], "payment:register")).toBe(false);
+    expect(hasPermission(["contabilidad"], "order:read")).toBe(true);
+    expect(hasPermission(["contabilidad"], "order:account")).toBe(true);
+    // El módulo retirado «Gastos y caja» no se reactiva: lo que contabilidad ya tenía ahí sigue igual.
+    expect(hasPermission(["contabilidad"], "income:register")).toBe(true);
+    expect(hasPermission(["contabilidad"], "cash:close")).toBe(true);
+  });
+});
+// DECISIÓN DE ERNESTO (2026-09-17): los valores de rules.ts son DEFAULT; un override por rol vive en
+// `configuracion` y llega al dominio como la lista efectiva del actor. El dominio sigue puro: estas
+// pruebas no tocan base de datos.
+describe("permisos editables por rol", () => {
+  it("un actor con lista efectiva propia manda sobre el default de sus roles", () => {
+    const sinPagos = { id: "daniel", roles: ["revisor"] as const, permissions: resolveActorPermissions(["revisor"], { revisor: ["order:read"] }) };
+    expect(hasPermission(sinPagos, "payment:register")).toBe(false);
+    expect(hasPermission(sinPagos, "order:read")).toBe(true);
+    const contaConPagos = { id: "cont", roles: ["contabilidad"] as const, permissions: resolveActorPermissions(["contabilidad"], { contabilidad: ["payment:register"] }) };
+    expect(hasPermission(contaConPagos, "payment:register")).toBe(true);
+    // Sin `permissions`, un actor se resuelve contra los defaults: nada cambia para quien no lo trae.
+    expect(hasPermission({ id: "cont", roles: ["contabilidad"] }, "payment:register")).toBe(false);
+    // El comodín de admin_sixteam sigue valiendo como "todo".
+    expect(hasPermission({ id: "root", roles: ["admin_sixteam"], permissions: resolveActorPermissions(["admin_sixteam"]) }, "config:manage")).toBe(true);
+  });
+  it("un rol ausente del override conserva su default, y la unión de roles se acumula", () => {
+    expect(resolveRolePermissions("aprobador", { revisor: [] })).toEqual(DEFAULT_ROLE_PERMISSIONS.aprobador);
+    expect([...resolveActorPermissions(["revisor", "aprobador"], { revisor: ["order:read"] })].sort()).toEqual([...new Set(["order:read", ...DEFAULT_ROLE_PERMISSIONS.aprobador])].sort());
+  });
+  it("rechaza roles y permisos desconocidos, y no deja a admin_sixteam sin config:manage", () => {
+    expect(() => assertValidPermissionOverrides({ inventado: [] })).toThrow(/Rol desconocido/);
+    expect(() => assertValidPermissionOverrides({ revisor: ["order:volar"] })).toThrow(/Permiso desconocido/);
+    expect(() => assertValidPermissionOverrides({ revisor: "order:read" })).toThrow(DomainError);
+    expect(() => assertValidPermissionOverrides([])).toThrow(DomainError);
+    // El candado anti-pie: sin «Configurar la plataforma» nadie podría volver a abrir esta pantalla.
+    expect(() => assertValidPermissionOverrides({ admin_sixteam: ["order:read"] })).toThrow(/Configurar la plataforma/);
+    expect(assertValidPermissionOverrides({ admin_sixteam: ["config:manage", "order:read"] })).toEqual({ admin_sixteam: ["config:manage", "order:read"] });
+    expect(assertValidPermissionOverrides({ admin_sixteam: ["*"] })).toEqual({ admin_sixteam: ["*"] });
+    // Repetidos se colapsan: la fila de `configuracion` no guarda ruido.
+    expect(assertValidPermissionOverrides({ revisor: ["order:read", "order:read"] })).toEqual({ revisor: ["order:read"] });
+  });
+  it("el catálogo de permisos cubre TODOS los que reparten los defaults (un permiso sin etiqueta sería invisible en Configuración)", () => {
+    const repartidos = new Set(Object.values(DEFAULT_ROLE_PERMISSIONS).flat().filter((permission) => permission !== "*"));
+    expect([...repartidos].filter((permission) => !ALL_PERMISSIONS.includes(permission))).toEqual([]);
+    expect(PERMISSION_CATALOG.every((entry) => entry.label.trim() && entry.group.trim())).toBe(true);
   });
 });
 describe("domain workflow", () => {

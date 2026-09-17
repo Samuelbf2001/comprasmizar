@@ -43,8 +43,17 @@ vi.mock("../../lib/infrastructure/postgres-repositories", () => ({
   },
 }));
 
+// El override de permisos por rol (decisión de Ernesto, 2026-09-17) tiene su propia consulta y su
+// propio caché, con sus pruebas en tests/unit/role-permissions.test.ts. Aquí se sustituye por la
+// resolución pura contra los defaults: esta prueba cuenta consultas de PERFIL, y mezclar las dos
+// haría que el contador dijera cosas sobre una caché que no es la que vigila.
+vi.mock("../../lib/infrastructure/role-permissions", () => ({
+  withEffectivePermissions: async (actor: { roles: Role[] }) => ({ ...actor, permissions: resolveActorPermissions(actor.roles) }),
+}));
+
 import { requireServerActor } from "../../lib/infrastructure/auth";
 import { invalidateActorCache } from "../../lib/infrastructure/actor-cache";
+import { resolveActorPermissions, type Role } from "../../lib/domain";
 
 /** Deja una sesión válida para `sub`: cookie presente y verifySession que la resuelve a ese usuario. */
 const sessionFor = (sub: string) => { mocks.cookieValue = `token-de-${sub}`; mocks.sessionUserId = sub; };
@@ -74,7 +83,9 @@ describe("requireServerActor — sesión propia + una sola consulta SQL cacheada
   it("sesión válida + usuario activo con roles reconocidos -> actor", async () => {
     sessionFor("user-1");
     mocks.sqlRows = [activeRow(["revisor", "solicitante"])];
-    await expect(requireServerActor()).resolves.toEqual({ id: "user-1", roles: ["revisor", "solicitante"] });
+    // `permissions` es la lista EFECTIVA que resuelve withEffectivePermissions (decisión de Ernesto,
+    // 2026-09-17: permisos editables): sin fila en `configuracion` son exactamente los defaults.
+    await expect(requireServerActor()).resolves.toEqual({ id: "user-1", roles: ["revisor", "solicitante"], permissions: resolveActorPermissions(["revisor", "solicitante"]) });
     expect(mocks.sqlCalls).toBe(1);
   });
 

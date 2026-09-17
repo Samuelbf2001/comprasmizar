@@ -214,10 +214,10 @@ describe("panel de Pagos — columna 'Pagado / Total' y diálogo de la ficha", (
     expect(row.textContent).toMatch(/\$\s?0\s?\/\s?\$\s?0/);
   });
 
-  it("al abrir la ficha, el panel Pagos carga el historial (GET) y contabilidad puede registrar un pago (POST)", async () => {
+  it("al abrir la ficha, el panel Pagos carga el historial (GET) y el revisor puede registrar un pago (POST)", async () => {
     const fetchMock = mockFetch([{ id: "pago-0", orderId: "order-1", date: "2026-08-01", amount: 50_000, method: "efectivo" }]);
     const refresh = vi.fn();
-    render(<ConnectedOrders data={{ rows: [rowWithPayment], catalogs }} role="Contabilidad" refresh={refresh} go={vi.fn()} />);
+    render(<ConnectedOrders data={{ rows: [rowWithPayment], catalogs }} role="Revisor" refresh={refresh} go={vi.fn()} />);
     fireEvent.click(screen.getByText("OC-001"));
     await waitFor(() =>
       expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/orders/order-1/payments")).toBe(true),
