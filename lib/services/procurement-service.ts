@@ -1,4 +1,4 @@
-import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertCop, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, costCenterRequiresWork, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeIdentification, normalizeItemName, orderTypeFor, resolveBilledCompany, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type BeneficiaryInput, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
+import { DomainError, approvedLines, assertAdminTransition, assertCanAnnulPayment, assertCanSelfApprove, assertCop, canOverrideAssignedApprover, assertHasApprovedLine, assertPaymentRequestShape, assertPaymentWithinOrder, assertPermission, assertTransition, buildAttentionQueue, combinedDeclineReason, costCenterRequiresWork, itemApproverId, pendingApproverIds, buildRecentActivity, calculateTax, calculateLineAmounts, calculateLineTotal, colombiaDateParts, groupOrderItems, hasPermission, normalizeIdentification, normalizeItemName, orderTypeFor, resolveBilledCompany, resolveCostCenter, sumLines, sumPaid, validateShares, type Actor, type AuditEvent, type BeneficiaryInput, type CashPayment, type DashboardMetrics, type Expense, type ExpenseShare, type ItemLine, type ItemStatus, type Order, type OrderAdminStatus, type OrderPayment, type OrderStatus, type PaymentMethod, type PettyCash, type Requisition, type RequisitionChannel, type RequisitionType } from "../domain";
 import type { AuditRepository, CatalogCostCenter, CatalogSociety, CatalogSupplier, CatalogWork, RequestContext, ServiceDependencies, TransactionRepositories } from "./contracts";
 import type { ListQuery, Page } from "./list-query";
 
@@ -75,7 +75,7 @@ export class ProcurementService {
   private actor(context: RequestContext): Actor { if (!context.actor) throw new DomainError("UNAUTHENTICATED", "Debe autenticarse"); return context.actor; }
   private async requisition(id: string): Promise<Requisition> { const requisition = await this.deps.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); return requisition; }
   private async audit(entity: string, entityId: string, event: string, actor: Actor, data?: Record<string, unknown>, origin: "web" | "mcp" | "kapso" = "web", repository: AuditRepository = this.deps.audit): Promise<void> { const actorId = actor.id === "kapso" || actor.id === "public" ? undefined : actor.id; await repository.append({ entity, entityId, event, actorId, at: this.now(), data, origin }); }
-  private async transition(requisition: Requisition, to: Requisition["status"], actor: Actor, event: string, comment?: string, origin: "web" | "mcp" | "kapso" = "web", auditRepository?: AuditRepository): Promise<void> { const from = requisition.status; assertTransition(from, to, comment); requisition.status = to; await this.audit("requisicion", requisition.id, event, actor, { from, to, ...(comment ? { comment } : {}) }, origin, auditRepository); }
+  private async transition(requisition: Requisition, to: Requisition["status"], actor: Actor, event: string, comment?: string, origin: "web" | "mcp" | "kapso" = "web", auditRepository?: AuditRepository, extra?: Record<string, unknown>): Promise<void> { const from = requisition.status; assertTransition(from, to, comment); requisition.status = to; await this.audit("requisicion", requisition.id, event, actor, { from, to, ...(comment ? { comment } : {}), ...extra }, origin, auditRepository); }
   private async notifyRequester(requisition: Requisition, template: string, tx: TransactionRepositories): Promise<void> { const channel = requisition.channel === "web" ? "interno" : "whatsapp"; if (requisition.requesterId) await tx.notifications.enqueue({ userId: requisition.requesterId, channel, template, payload: { requisitionId: requisition.id, consecutive: requisition.consecutive } }); else if (requisition.externalRequester?.phone) await tx.notifications.enqueue({ phone: requisition.externalRequester.phone, channel: "whatsapp", template, payload: { requisitionId: requisition.id, consecutive: requisition.consecutive } }); }
   /**
    * BLOQUEANTE (feat/solicitud-de-pago): antes materializaba un ítem de CATÁLOGO a partir de
@@ -387,7 +387,11 @@ export class ProcurementService {
   // reventaría al registrar el gasto. Las líneas declinadas no cuentan como "vigentes" (approvedLines).
   // `options.notifyApprovers` (RF-308): `sendAndApproveAsMaster` lo apaga — avisarle por WhatsApp al
   // aprobador que tiene algo pendiente cuando ese mismo aprobador lo va a aprobar en el mismo instante es ruido.
-  async sendForApproval(id: string, context: RequestContext, options: { notifyApprovers?: boolean } = {}): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0);
+  async sendForApproval(id: string, context: RequestContext, options: { notifyApprovers?: boolean } = {}): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, (tx) => this.sendForApprovalTx(tx, id, actor, context, options)); }
+  /** Cuerpo transaccional de `sendForApproval`, extraído para que `sendAndApproveAsMaster` lo encadene
+   *  con el de `approve` en UNA sola transacción (ver su comentario). Devuelve la requisición ya
+   *  guardada, para que el paso siguiente no tenga que releerla. */
+  private async sendForApprovalTx(tx: TransactionRepositories, id: string, actor: Actor, context: RequestContext, options: { notifyApprovers?: boolean }): Promise<Requisition> { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); const vigentes = approvedLines(requisition.items), incompleteLines = vigentes.some((line) => calculateLineTotal(line) <= 0);
     // Centros de costo (2026-09-12, decisión del dueño): exigido junto a obra/etiqueta/aprobador — sin
     // él, generateOrders() no tendría de dónde copiar el centro del gasto (ver la nota "ojo" en su
     // propio cuerpo, más abajo). El caso común nunca lo dispara: review() ya lo hereda de la obra en
@@ -409,7 +413,7 @@ export class ProcurementService {
     if (options.notifyApprovers !== false) for (const aprobador of pendingApproverIds(requisition.items, requisition.approverId)) {
       await tx.notifications.enqueue({ userId: aprobador, channel: "whatsapp", template: "pendiente_aprobador", payload: { requisitionId: requisition.id, consecutive: requisition.consecutive, approverId: aprobador } });
     }
-    return requisition; }); }
+    return requisition; }
   /**
    * RF-308 (adenda de pagos, A9): auto-aprobación en un paso para el usuario MAESTRO (revisor+aprobador,
    * Daniel) o admin_sixteam — el atajo de caja menor del PRD §4.3: "Daniel radica, Daniel revisa, Daniel
@@ -419,26 +423,24 @@ export class ProcurementService {
    * admin_sixteam): si no, fallaría a mitad de camino con la requisición ya en aprobación y sin aviso a
    * su aprobador real.
    *
-   * H4 (docs/qa/QA-pagos-y-caja.md): la cabecera no es el único aprobador posible — el reparto por ítem
-   * (11-sep) deja aprobadores DISTINTOS en `items[].approverId`. Si alguno no es el actor, la validación
-   * tiene que rechazar ANTES de llamar a `sendForApproval`: hacerlo después (dentro de `approve()`, que
-   * ya corre en su propia transacción) dejaba la requisición en `en_aprobacion` con `notifyApprovers:
-   * false` — nadie se enteraba de que había algo pendiente. `pendingApproverIds` (mismo criterio que usa
-   * `approve()` para decidir si ya puede cerrar) sobre los ítems TAL COMO están antes de enviar a
-   * aprobación da la lista completa de a quién le toca decidir.
+   * DECISIÓN DE ERNESTO (2026-09-17): «Daniel tiene control total para aprobar aunque haya otro
+   * aprobador, pero que quede que el que aprobó fue Daniel». El maestro YA NO se estrella contra
+   * `NOT_ASSIGNED_APPROVER` ni `APPROVAL_PENDING_OTHERS` cuando la cabecera o algún `items[].approverId`
+   * apunta a otra persona: aprueba por encima, y el evento `aprobada` guarda a quién se saltó
+   * (`overrodeApprovers`). Deroga el pendiente N3 de docs/ESTADO-Y-PENDIENTES.md.
+   *
+   * H4 (docs/qa/QA-pagos-y-caja.md) sigue vigente en su fondo —nada de estados a medias— pero se
+   * resuelve mejor: en vez de validar de más para no dejar la requisición atascada en `en_aprobacion`
+   * con `notifyApprovers: false`, envío y aprobación comparten UNA transacción. Si la aprobación
+   * falla por lo que sea, el envío se deshace con ella y nadie queda esperando un aviso que no llegó.
    */
   async sendAndApproveAsMaster(id: string, context: RequestContext): Promise<Requisition> {
     const actor = this.actor(context); assertCanSelfApprove(actor);
     assertPermission(actor, "requisition:review", this.authOrigin(context)); assertPermission(actor, "requisition:approve", this.authOrigin(context));
-    const requisition = await this.requisition(id);
-    const omnipotente = actor.roles.includes("admin_sixteam");
-    if (!omnipotente && requisition.approverId !== actor.id) throw new DomainError("NOT_ASSIGNED_APPROVER", "Para aprobar en un solo paso debe figurar como aprobador de la requisición");
-    if (!omnipotente) {
-      const otros = pendingApproverIds(requisition.items, requisition.approverId).filter((aprobador) => aprobador !== actor.id);
-      if (otros.length) throw new DomainError("APPROVAL_PENDING_OTHERS", `Falta${otros.length > 1 ? "n" : ""} ${otros.length} aprobador(es) de ítem distintos de quien radica`);
-    }
-    await this.sendForApproval(id, context, { notifyApprovers: false });
-    return this.approve(id, context);
+    return this.transaction(`requisition:${id}`, async (tx) => {
+      const requisition = await this.sendForApprovalTx(tx, id, actor, context, { notifyApprovers: false });
+      return this.approveTx(tx, requisition, actor, context);
+    });
   }
   /** Reunión 2026-08-31: decisión por ítem del aprobador (aprobar/declinar/ajustar cantidad). No cambia el estado de la requisición: eso lo sigue haciendo approve(). */
   async decideItems(id: string, decisions: readonly ItemDecision[], context: RequestContext): Promise<Requisition> {
@@ -482,36 +484,58 @@ export class ProcurementService {
     const actor = this.actor(context); assertPermission(actor, "requisition:approve", this.authOrigin(context));
     return this.transaction(`requisition:${id}`, async (tx) => {
       const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
-      // M-5: mismo bypass de decideItems() — ver justificación junto a buildAttentionQueue en lib/domain/rules.ts.
-      const omnipotente = actor.roles.includes("admin_sixteam");
-      if (!omnipotente && requisition.approverId !== actor.id && !requisition.items.some((line) => line.approverId === actor.id)) {
-        throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
-      }
-      if (requisition.status === "aprobada" || requisition.status === "declinada") return requisition;
-      // CIERRA EL ÚLTIMO, no el primero. Con aprobadores por ítem, quien termina lo suyo pulsa
-      // "Completar aprobación" y no puede cerrar por los demás: la requisición sigue `en_aprobacion`
-      // mientras quede un ítem sin decidir. Con un solo aprobador —el caso de siempre— no cambia nada,
-      // porque la pantalla manda todas las decisiones juntas y no queda ninguno pendiente.
-      const pendientes = pendingApproverIds(requisition.items, requisition.approverId).filter((aprobador) => aprobador !== actor.id);
-      if (pendientes.length && !omnipotente) throw new DomainError("APPROVAL_PENDING_OTHERS", `Faltan ${pendientes.length} aprobador(es) por decidir sus ítems`);
-      // TODOS DECLINADOS = requisición declinada, no aprobada sin nada dentro. Antes este camino ni
-      // existía (`assertHasApprovedLine` reventaba con NO_APPROVED_ITEMS y la requisición se quedaba
-      // en aprobación para siempre); ahora se cierra diciendo la verdad, con los motivos de los ítems
-      // arrastrados a la cabecera porque la base los exige y el solicitante los necesita.
-      if (approvedLines(requisition.items).length === 0) {
-        const motivo = combinedDeclineReason(requisition.items);
-        requisition.declineReason = motivo;
-        await this.transition(requisition, "declinada", actor, "declinada", motivo, this.origin(context), tx.audit);
-        await tx.requisitions.save(requisition);
-        await this.notifyRequester(requisition, "requisicion_declinada", tx);
-        return requisition;
-      }
-      assertHasApprovedLine(requisition.items);
-      await this.transition(requisition, "aprobada", actor, "aprobada", undefined, this.origin(context), tx.audit);
-      await tx.requisitions.save(requisition);
-      await this.notifyRequester(requisition, "requisicion_aprobada", tx);
-      return requisition;
+      return this.approveTx(tx, requisition, actor, context);
     });
+  }
+  /** Cuerpo transaccional de `approve`, sobre una requisición YA cargada — así `sendAndApproveAsMaster`
+   *  encadena envío y aprobación sin releerla y, sobre todo, sin abrir una segunda transacción. */
+  private async approveTx(tx: TransactionRepositories, requisition: Requisition, actor: Actor, context: RequestContext): Promise<Requisition> {
+    // M-5: mismo bypass de decideItems() — ver justificación junto a buildAttentionQueue en lib/domain/rules.ts.
+    // DECISIÓN DE ERNESTO (2026-09-17): el bypass deja de ser exclusivo de admin_sixteam y alcanza al
+    // usuario MAESTRO (revisor+aprobador, Daniel) — `canOverrideAssignedApprover`. Un aprobador a
+    // secas sigue sin poder cerrar lo ajeno, que es el candado que importa.
+    const omnipotente = canOverrideAssignedApprover(actor);
+    if (!omnipotente && requisition.approverId !== actor.id && !requisition.items.some((line) => line.approverId === actor.id)) {
+      throw new DomainError("NOT_ASSIGNED_APPROVER", "No es el aprobador asignado");
+    }
+    if (requisition.status === "aprobada" || requisition.status === "declinada") return requisition;
+    // CIERRA EL ÚLTIMO, no el primero. Con aprobadores por ítem, quien termina lo suyo pulsa
+    // "Completar aprobación" y no puede cerrar por los demás: la requisición sigue `en_aprobacion`
+    // mientras quede un ítem sin decidir. Con un solo aprobador —el caso de siempre— no cambia nada,
+    // porque la pantalla manda todas las decisiones juntas y no queda ninguno pendiente.
+    const pendientes = pendingApproverIds(requisition.items, requisition.approverId).filter((aprobador) => aprobador !== actor.id);
+    if (pendientes.length && !omnipotente) throw new DomainError("APPROVAL_PENDING_OTHERS", `Faltan ${pendientes.length} aprobador(es) por decidir sus ítems`);
+    // TODOS DECLINADOS = requisición declinada, no aprobada sin nada dentro. Antes este camino ni
+    // existía (`assertHasApprovedLine` reventaba con NO_APPROVED_ITEMS y la requisición se quedaba
+    // en aprobación para siempre); ahora se cierra diciendo la verdad, con los motivos de los ítems
+    // arrastrados a la cabecera porque la base los exige y el solicitante los necesita.
+    if (approvedLines(requisition.items).length === 0) {
+      const motivo = combinedDeclineReason(requisition.items);
+      requisition.declineReason = motivo;
+      await this.transition(requisition, "declinada", actor, "declinada", motivo, this.origin(context), tx.audit);
+      await tx.requisitions.save(requisition);
+      await this.notifyRequester(requisition, "requisicion_declinada", tx);
+      return requisition;
+    }
+    assertHasApprovedLine(requisition.items);
+    // «Que quede que el que aprobó fue Daniel»: si se cerró por encima de alguien, el evento `aprobada`
+    // dice por encima de QUIÉN. Sin esto el historial mostraría una aprobación indistinguible de la
+    // normal, y el aprobador saltado no tendría cómo enterarse de que su decisión ya no hacía falta.
+    const saltados = pendientes.length ? await this.namedApprovers(tx, pendientes) : [];
+    await this.transition(requisition, "aprobada", actor, "aprobada", undefined, this.origin(context), tx.audit, saltados.length ? { overrodeApprovers: saltados, overrideReason: "aprobacion_por_encima" } : undefined);
+    await tx.requisitions.save(requisition);
+    await this.notifyRequester(requisition, "requisicion_aprobada", tx);
+    return requisition;
+  }
+  /** Ids + nombre de los aprobadores saltados, para que el historial no tenga que mostrar UUID crudos.
+   *  El nombre es "si lo tengo a mano": un usuario borrado del catálogo deja solo su id, no rompe nada. */
+  private async namedApprovers(tx: TransactionRepositories, ids: readonly string[]): Promise<Array<{ id: string; name?: string }>> {
+    const named: Array<{ id: string; name?: string }> = [];
+    for (const id of ids) {
+      const user = await tx.catalogs.get("users", id) as { name?: string } | null;
+      named.push(user?.name ? { id, name: user.name } : { id });
+    }
+    return named;
   }
   /**
    * Bloqueante de atasco (reunión 2026-08-31): aprobar y designar proveedor son roles distintos, así que

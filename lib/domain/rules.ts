@@ -292,8 +292,19 @@ export function resolveBilledCompany(requisition: { billedCompanyId?: string; so
  * revisor a secas o un aprobador a secas no la tienen: cada uno hace su mitad del flujo.
  */
 export function assertCanSelfApprove(actor: Actor): void {
-  if (actor.roles.includes("admin_sixteam") || (actor.roles.includes("revisor") && actor.roles.includes("aprobador"))) return;
+  if (canOverrideAssignedApprover(actor)) return;
   throw new DomainError("FORBIDDEN", "Aprobar en un solo paso exige los roles de revisor y aprobador");
+}
+/**
+ * DECISIÓN DE ERNESTO (2026-09-17): «Daniel tiene control total para aprobar aunque haya otro
+ * aprobador, pero que quede que el que aprobó fue Daniel». Quien reúne revisor Y aprobador (el
+ * usuario maestro) y `admin_sixteam` pueden cerrar una aprobación por encima del aprobador asignado;
+ * el resto NO — un aprobador a secas sigue sin poder decidir lo ajeno (ver `decideItems`). Es la
+ * misma condición que habilita la auto-aprobación en un paso, y por eso vive en una sola función:
+ * dos copias de esta regla serían dos criterios distintos de "quién manda".
+ */
+export function canOverrideAssignedApprover(actor: Actor): boolean {
+  return actor.roles.includes("admin_sixteam") || (actor.roles.includes("revisor") && actor.roles.includes("aprobador"));
 }
 /** Ítems que ESTE actor tiene pendientes de decidir. Vacío no significa "no le toca": puede haberlos ya decidido. */
 export function pendingItemsFor(actorId: string, lines: readonly ItemLine[], headApproverId?: string): ItemLine[] {
