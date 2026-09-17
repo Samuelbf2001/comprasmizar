@@ -1,6 +1,6 @@
 # Estado y pendientes — Plataforma de Requisiciones Mizar
 
-**Actualizado:** 16 de septiembre de 2026
+**Actualizado:** 17 de septiembre de 2026
 **Repo:** rama `main`, **local** — pendiente de `git push`.
 **Fuente de esta actualización:** ejecución de la adenda [`PRD-pagos-y-caja-menor.md`](../PRD-pagos-y-caja-menor.md) la noche del 15→16-sep-2026, siguiendo [`docs/TASKS-pagos-y-caja.md`](TASKS-pagos-y-caja.md).
 
@@ -15,6 +15,20 @@ El módulo «Gastos y caja» del 12-sep quedó **retirado de la UI y del API** (
 **QA adversarial hecho** (16-sep, madrugada; [`docs/qa/QA-pagos-y-caja.md`](qa/QA-pagos-y-caja.md)): 14 hallazgos, de los cuales **13 quedaron resueltos** esa misma mañana en dos paquetes verificados e integrados (§7 del informe). El restante (H10) es una decisión con el contador, no un defecto. Estado final de `main` local: lint 0, typecheck 0, 94 archivos / 1169 pruebas, 23 migraciones con sus arneses contra Postgres real, E2E 51 verdes y 0 rojos (15 omitidos por requerir backend real).
 
 Falta antes de considerar esto "en producción": **`git push`** (nada llegó a GitHub ni al VPS todavía), el despliegue, publicar en Meta el Flow de pago y el v4 del Flow de captura, y que Daniel/Claudia/el contador cierren las preguntas abiertas de la adenda (P8–P12, ver `PRD-pagos-y-caja-menor.md` §8).
+
+---
+
+## 1.bis Decisiones de Ernesto del 17-sep, ya construidas
+
+Respuestas completas y su estado en [`PRD-pagos-y-caja-menor.md`](../PRD-pagos-y-caja-menor.md) §8.1. Lo que cambió en el código ese día:
+
+- **Los permisos dejan de estar clavados en el código.** `lib/domain/rules.ts` guarda los valores por defecto y el override por rol vive en `configuracion.permisos_por_rol_v1`, editable desde una matriz rol × permiso en Configuración (solo Administrador Sixteam), con auditoría del antes/después. Nadie puede dejar a Administrador Sixteam sin `config:manage`. **Contabilidad ya no registra ni anula pagos**: eso queda en Daniel y el admin.
+- **La interfaz obedece esos permisos**, no el nombre del rol: `GET /api/catalogs` manda `viewerPermissions` y las pantallas de órdenes, cierre de caja, reportes y detalle preguntan por permiso. Editar un permiso cambia de verdad lo que se ve.
+- **Daniel aprueba por encima del aprobador asignado** (es el usuario maestro): ya no se bloquea, el envío y la aprobación van en una sola transacción, y el evento `aprobada` guarda a quién se saltó (`overrodeApprovers`) para que el historial lo muestre.
+- **El soporte de una solicitud de pago ya no tiene que ser una foto:** el portal acepta PDF, Excel (xlsx/xls), Word, CSV y texto además de imágenes, validados **por el contenido del archivo** (nunca por la extensión ni por lo que diga el cliente), con tope de 10 MB y servidos siempre como descarga, nunca abiertos en el navegador.
+- **Especificado, sin construir:** el cruce bancario en el sistema (adenda §12), que nace de querer dejar de cuadrar comprobantes en papel. Falta decidir banco, alcance y frecuencia.
+
+Estado de `main` local tras esto: lint 0, typecheck 0, 98 archivos / 1220 pruebas, 24 migraciones con sus arneses contra Postgres real, E2E 51 verdes y 0 rojos.
 
 ---
 
@@ -170,6 +184,8 @@ Falta antes de considerar esto "en producción": **`git push`** (nada llegó a G
 - Decidir con el contador qué sociedad encabeza la OP cuando la empresa facturada difiere de la sociedad de la requisición (QA H10, ligado a P8).
 - Revisar la lista de proveedores de materiales que Daniel envió por WhatsApp el 15-sep (D12).
 - Recibir de Daniel la lista expandida de centros de costo (obras + administrativo + personales + PROIM).
+- **Decisiones que Ernesto dejó abiertas el 17-sep:** qué empresa encabeza el PDF de la OP cuando la facturada difiere de la sociedad de la requisición (QA H10); si el reporte necesita además «pagado por mes de pago»; si un mes de caja se puede cerrar y bloquear; si el formulario público de pagos lleva contraseña aparte de la global; y para el cruce bancario (§12 de la adenda) con qué banco se empieza, si entra lo pagado por caja y con qué frecuencia.
+- Recorrer en navegador lo construido el 17-sep: la matriz de permisos de Configuración (y comprobar que al devolverle un permiso a Contabilidad aparecen sus botones), la aprobación por encima de otro aprobador con su rastro en el historial, y subir un PDF y un Excel por el portal de pagos.
 
 ---
 
