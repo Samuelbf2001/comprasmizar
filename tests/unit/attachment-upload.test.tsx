@@ -62,12 +62,32 @@ describe("adjuntos operativos", () => {
   });
 
   it("rechaza mime y tamaño antes de preparar", () => {
-    const badMime = new File(["x"], "script.txt", { type: "text/plain" });
-    expect(validateAttachmentFile(badMime)).toMatch(/PDF, JPG, PNG o WebP/);
+    // 2026-09-17: la lista se amplió (Excel, Word, CSV, texto), pero sigue siendo CERRADA — lo que
+    // no está dentro se rechaza igual que antes, y el mensaje nombra lo que sí se admite.
+    const badMime = new File(["x"], "dibujo.svg", { type: "image/svg+xml" });
+    expect(validateAttachmentFile(badMime)).toMatch(/PDF, Excel, Word, CSV o imagen/);
     const oversized = new File([new Uint8Array(11 * 1024 * 1024)], "large.pdf", {
       type: "application/pdf",
     });
     expect(validateAttachmentFile(oversized)).toMatch(/10 MB/);
+  });
+
+  it("admite los formatos con los que cobra un proveedor: Excel, CSV y texto", () => {
+    for (const [name, type] of [
+      ["cantidades.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+      ["presupuesto.xls", "application/vnd.ms-excel"],
+      ["cuenta-de-cobro.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+      ["lista.csv", "text/csv"],
+      ["notas.txt", "text/plain"],
+    ]) {
+      expect(validateAttachmentFile(new File(["x"], name, { type })), name).toBe("");
+    }
+    // Y el selector de FOTOS sigue siendo solo de fotos: la ampliación no lo tocó.
+    expect(
+      validateAttachmentFile(new File(["x"], "cantidades.xlsx", { type: "application/vnd.ms-excel" }), {
+        allowedMimeTypes: IMAGE_MIME_TYPES,
+      }),
+    ).toMatch(/JPG, PNG o WebP/);
   });
 
   it("acepta WebP para las fotos operativas", () => {

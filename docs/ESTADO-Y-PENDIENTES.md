@@ -124,7 +124,7 @@ Falta antes de considerar esto "en producción": **`git push`** (nada llegó a G
 **Portal (S3):**
 
 - La empresa se pide en el paso «El pago», no en el paso 1 (como en compra); alternativa: dejarla en el paso 1 para los dos tipos. (S3 Portal)
-- El adjunto del pago es solo FOTO (JPG/PNG/WebP ≤5 MB), no PDF; si Sixteam sube facturas en PDF hay que ampliar `lib/infrastructure/public-photos.ts`. (S3 Portal)
+- ~~El adjunto del pago es solo FOTO (JPG/PNG/WebP ≤5 MB), no PDF~~ — **resuelto el 17-sep-2026** por decisión de Ernesto («muchos tipos de archivos, CSV, Excel, etc., PDF, imágenes, lo que sea»): el soporte del portal admite PDF, XLSX/DOCX/PPTX, XLS, CSV/texto e imágenes hasta 10 MB, siempre validado por CONTENIDO (`lib/infrastructure/attachment-mime.ts`, `lib/infrastructure/public-attachments.ts`, migración `202609170002`). El tope de la plataforma quedó unificado en 10 MB (antes el selector decía 10 y el esquema aceptaba 20). (S3 Portal)
 - Tope del monto: 1e12; tope del concepto: 120 caracteres. (S3 Portal)
 - Los errores de dominio (409 homónimo, 422 inactivo) ya se muestran tras la contraseña correcta: cambio de postura respecto al «todo 202 neutro» previo. (S3 Portal)
 - Los estados HTTP separan forma (400) de dominio (409/422), no todo en 400 como decía el plan literalmente. (S3 Portal)

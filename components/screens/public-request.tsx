@@ -4,17 +4,23 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ArrowRight, Banknote, Camera, Check, ClipboardList, FileText, HardHat, LockKeyhole, PackageCheck, Phone, Plus, ShieldCheck, SquarePen, UserRound, X } from 'lucide-react';
 import { companies } from '../../lib/demo-data';
-import { formatAttachmentSize, IMAGE_MIME_TYPES, validateAttachmentFile } from './attachment-upload';
+import { attachmentAccept, DOCUMENT_MIME_TYPES, formatAttachmentSize, IMAGE_MIME_TYPES, validateAttachmentFile } from './attachment-upload';
 import styles from './public-request.module.css';
 
 /**
- * 5 MB — el MISMO tope que vuelve a comprobar el servidor con los bytes reales
- * (`MAX_PUBLIC_PHOTO_BYTES` en `lib/infrastructure/public-photos.ts`). Duplicado a propósito: cliente
- * y servidor no comparten build, igual que `MAX_LINEAS` de abajo y el `items.max(20)` del endpoint.
- * Esta comprobación es solo cortesía —evita subir 40 MB para que el servidor los rechace— nunca la
- * autoridad: quien decide de verdad es el servidor, oliendo los bytes.
+ * 10 MB — el MISMO tope que vuelve a comprobar el servidor con los bytes reales
+ * (`MAX_PUBLIC_ATTACHMENT_BYTES` en `lib/infrastructure/public-attachments.ts`). Duplicado a
+ * propósito: cliente y servidor no comparten build, igual que `MAX_LINEAS` de abajo y el
+ * `items.max(20)` del endpoint. Esta comprobación es solo cortesía —evita subir 40 MB para que el
+ * servidor los rechace— nunca la autoridad: quien decide de verdad es el servidor, oliendo los bytes.
+ *
+ * Subió de 5 a 10 MB el 2026-09-17 junto con los formatos: una factura escaneada en PDF o un Excel
+ * de cantidades pasan de 5 MB con facilidad, y una foto de teléfono ya rozaba el tope anterior.
  */
-const MAX_PUBLIC_PHOTO_BYTES = 5 * 1024 * 1024;
+const MAX_PUBLIC_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** Lo que el portal dice en el campo y lo que el diálogo del navegador deja elegir: la misma lista
+ *  que acepta el servidor (ver `attachment-upload.tsx`), en palabras de quien radica. */
+const AYUDA_SOPORTE = 'Foto, PDF, Excel, Word o CSV. Hasta 10 MB.';
 
 // `workId` ausente = enlace GENERAL (uno solo para todas las obras): la obra se elige en el
 // formulario, no viene firmada en el enlace. Ver lib/security/public-link.ts.
@@ -384,7 +390,7 @@ function SelectorEmpresa({ empresas, cargadas, valor, error, onChange, etiqueta 
  * el Flow de WhatsApp también deja opcionales en su pantalla de artículo.
  */
 /**
- * Vista previa de una foto ya elegida, en miniatura. Vive aparte de `CampoFoto` porque su único
+ * Vista previa de una foto ya elegida, en miniatura. Vive aparte de `CampoSoporte` porque su único
  * trabajo es el ciclo de vida del `object URL` (crearlo al montar/cambiar de archivo, revocarlo al
  * desmontar): con un `useEffect` propio, quitar el artículo (que desmonta este componente) libera la
  * miniatura sola, sin que `quitarLinea` tenga que saber nada de URLs.
@@ -401,41 +407,59 @@ function FotoPreview({ file, className }: { file: File; className: string }) {
   return <img src={url} alt="" className={className} />;
 }
 
+/** La miniatura del resumen: imagen de verdad cuando el archivo lo es, icono cuando es un documento. */
+function SoportePreview({ file }: { file: File }) {
+  return (IMAGE_MIME_TYPES as readonly string[]).includes(file.type)
+    ? <FotoPreview file={file} className={styles.summaryPhoto} />
+    : <span className={styles.summaryDoc}><FileText aria-hidden="true" size={22} /></span>;
+}
+
 /**
- * Foto opcional por artículo (RF portal-fotos-articulo), calcada del `PhotoPicker` del Flow de
- * WhatsApp que ya conoce el cliente: como allá, es UNA foto, nunca un documento, y el tope de tamaño
- * (5 MB) se explica en `MAX_PUBLIC_PHOTO_BYTES` más arriba. Reutiliza `validateAttachmentFile` de
- * `attachment-upload.tsx` en vez de reinventar "¿esto pesa demasiado o no es una imagen?" — es la
- * MISMA comprobación que ya usa el resto de la plataforma para adjuntos internos, solo que aquí es
- * cortesía de cliente, no la autoridad (esa es del servidor, ver `lib/infrastructure/public-photos.ts`).
+ * Soporte opcional por artículo (RF portal-fotos-articulo). Nació como UNA foto, calcada del
+ * `PhotoPicker` del Flow de WhatsApp; desde el 2026-09-17 admite además PDF, Excel, Word y CSV
+ * (decisión de Ernesto: «muchos tipos de archivos, CSV, Excel, etc., PDF, imágenes, lo que sea»),
+ * porque quien radica por el portal suele ser un proveedor con una factura, no un maestro con una
+ * foto. Por eso ya no se fuerza la cámara con `capture`: en el móvil el diálogo sigue ofreciendo
+ * "tomar foto" porque `accept` incluye imágenes, pero también deja llegar a los archivos.
+ *
+ * Reutiliza `validateAttachmentFile` de `attachment-upload.tsx` en vez de reinventar "¿esto pesa
+ * demasiado o no es un formato admitido?" — es la MISMA comprobación que ya usa el resto de la
+ * plataforma para adjuntos internos, solo que aquí es cortesía de cliente, no la autoridad: esa es
+ * del servidor, que husmea los bytes (ver `lib/infrastructure/public-attachments.ts`).
  */
-function CampoFoto({ indice, foto, error, onFoto, onError, etiqueta = 'Foto', titulo = 'Agregar una foto', ariaLabel = 'Foto (opcional)' }: {
+function CampoSoporte({ indice, foto, error, onFoto, onError, etiqueta = 'Soporte', titulo = 'Agregar un archivo', ariaLabel = 'Soporte (opcional)' }: {
   indice: number; foto: File | null; error?: string; onFoto: (file: File | null) => void; onError: (mensaje: string) => void;
   /** En la solicitud de pago el mismo campo es la factura o cuenta de cobro (RF-108): cambia el rótulo, no el mecanismo. */
   etiqueta?: string; titulo?: string; ariaLabel?: string;
 }) {
   const onChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
-    // Se limpia SIEMPRE, se acepte o no el archivo: sin esto, elegir la MISMA foto dos veces seguidas
-    // (p.ej. tras "Quitar foto") no dispararía un segundo `change` — el navegador no ve diferencia.
+    // Se limpia SIEMPRE, se acepte o no el archivo: sin esto, elegir el MISMO archivo dos veces
+    // seguidas (p.ej. tras "Quitar archivo") no dispararía un segundo `change` — el navegador no ve
+    // diferencia.
     event.target.value = '';
     if (!file) return;
-    const mensaje = validateAttachmentFile(file, { allowedMimeTypes: IMAGE_MIME_TYPES, maxBytes: MAX_PUBLIC_PHOTO_BYTES });
+    const mensaje = validateAttachmentFile(file, { allowedMimeTypes: DOCUMENT_MIME_TYPES, maxBytes: MAX_PUBLIC_ATTACHMENT_BYTES });
     if (mensaje) { onError(mensaje); return; }
     onError('');
     onFoto(file);
   };
+  // La miniatura solo tiene sentido con una imagen; un PDF o un Excel se anuncian con su icono y su
+  // nombre, que es toda la confirmación que necesita quien acaba de elegirlo.
+  const esImagen = foto !== null && (IMAGE_MIME_TYPES as readonly string[]).includes(foto.type);
   // `<div>`, no `<label>`, envolviendo todo: el `<label htmlFor>` de verdad es el interno
   // (`.uploadLabel`), que ya asocia el input con su texto. Anidar dos `<label>` es HTML inválido y
   // duplicaría el disparo del selector de archivos al hacer click.
   return <div className={styles.field}>
     <span className={styles.fieldLabel}>{etiqueta} <small className={styles.hint}>opcional</small></span>
     <label className={styles.uploadLabel} htmlFor={`photo-${indice}`}>
-      {foto ? <FotoPreview file={foto} className={styles.photoThumb} /> : <Camera aria-hidden="true" size={18} />}
-      <span><b>{foto ? foto.name : titulo}</b><small>{foto ? formatAttachmentSize(foto.size) : 'JPG, PNG o WebP. Hasta 5 MB.'}</small></span>
-      <input aria-label={ariaLabel} id={`photo-${indice}`} name={`photo-${indice}`} type="file" accept="image/*" capture="environment" onChange={onChange} aria-invalid={Boolean(error)} aria-describedby={error ? `portal-photo-${indice}-error` : undefined} />
+      {foto
+        ? (esImagen ? <FotoPreview file={foto} className={styles.photoThumb} /> : <FileText aria-hidden="true" size={18} />)
+        : <Camera aria-hidden="true" size={18} />}
+      <span><b>{foto ? foto.name : titulo}</b><small>{foto ? formatAttachmentSize(foto.size) : AYUDA_SOPORTE}</small></span>
+      <input aria-label={ariaLabel} id={`photo-${indice}`} name={`photo-${indice}`} type="file" accept={attachmentAccept(DOCUMENT_MIME_TYPES)} onChange={onChange} aria-invalid={Boolean(error)} aria-describedby={error ? `portal-photo-${indice}-error` : undefined} />
     </label>
-    {foto && <button className={styles.lineRemove} type="button" onClick={() => onFoto(null)}><X aria-hidden="true" size={13} /> Quitar foto</button>}
+    {foto && <button className={styles.lineRemove} type="button" onClick={() => onFoto(null)}><X aria-hidden="true" size={13} /> Quitar archivo</button>}
     {error && <small className={styles.error} id={`portal-photo-${indice}-error`}>{error}</small>}
   </div>;
 }
@@ -451,13 +475,13 @@ function PantallaArticulo({ indice, linea, errors, detalleAbierto, onCampo, onAl
       <label className={styles.field}><span className={styles.fieldLabel}>Cantidad <em className={styles.required}>*</em></span><input className={styles.control} name={`quantity-${indice}`} type="number" inputMode="decimal" min="0.001" step="0.001" value={linea.quantity} onChange={event => onCampo('quantity', event.target.value)} aria-invalid={Boolean(errors[`quantity-${indice}`])} aria-describedby={errors[`quantity-${indice}`] ? `portal-quantity-${indice}-error` : undefined} />{errors[`quantity-${indice}`] && <small className={styles.error} id={`portal-quantity-${indice}-error`}>{errors[`quantity-${indice}`]}</small>}</label>
       <label className={styles.field}><span className={styles.fieldLabel}>Unidad <em className={styles.required}>*</em></span><input className={styles.control} name={`unit-${indice}`} list="portal-unidades" value={linea.unit} onChange={event => onCampo('unit', event.target.value)} maxLength={20} placeholder="und, m², bulto…" aria-invalid={Boolean(errors[`unit-${indice}`])} aria-describedby={errors[`unit-${indice}`] ? `portal-unit-${indice}-error` : undefined} />{errors[`unit-${indice}`] && <small className={styles.error} id={`portal-unit-${indice}-error`}>{errors[`unit-${indice}`]}</small>}</label>
     </div>
-    <CampoFoto indice={indice} foto={linea.photo} error={errors[`photo-${indice}`]} onFoto={onFoto} onError={onFotoError} />
+    <CampoSoporte indice={indice} foto={linea.photo} error={errors[`photo-${indice}`]} onFoto={onFoto} onError={onFotoError} />
     <button className={styles.optionalToggle} type="button" onClick={onAlternarDetalle} aria-expanded={detalleAbierto}><span><SquarePen aria-hidden="true" size={18} /> Agregar detalles <small className={styles.hint}>(opcional)</small></span><span aria-hidden="true">{detalleAbierto ? '−' : '+'}</span></button>
     {detalleAbierto && <div className={styles.optionalPanel}>
       <label className={styles.field}><span className={styles.fieldLabel}>Posible proveedor <small className={styles.hint}>opcional</small></span><input className={styles.control} name={`supplier-${indice}`} value={linea.supplier} onChange={event => onCampo('supplier', event.target.value)} maxLength={240} /></label>
       <label className={styles.field}><span className={styles.fieldLabel}>Enlace del producto <small className={styles.hint}>HTTPS opcional</small></span><input className={styles.control} name={`productLink-${indice}`} type="url" inputMode="url" value={linea.productLink} onChange={event => onCampo('productLink', event.target.value)} maxLength={2048} placeholder="https://…" aria-invalid={Boolean(errors[`productLink-${indice}`])} aria-describedby={errors[`productLink-${indice}`] ? `portal-link-${indice}-error` : undefined} />{errors[`productLink-${indice}`] && <small className={styles.error} id={`portal-link-${indice}-error`}>{errors[`productLink-${indice}`]}</small>}</label>
     </div>}
-    <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> La foto solo la ve quien revisa tu solicitud.</p>
+    <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> El archivo solo lo ve quien revisa tu solicitud.</p>
   </>;
 }
 
@@ -480,7 +504,7 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
 }) {
   const { values, errors, setErrors, detalles, phone, setPhone, phase, setPhase, itemIndex, setItemIndex, update, updateLinea, setLineaFoto, updatePago, agregarLinea, quitarLinea, alternarDetalle } = formulario;
   // Un error de foto no es como los demás: no lo pone `validarItem` al avanzar de pantalla (la foto es
-  // opcional, nunca bloquea "Ir al resumen"), lo pone `CampoFoto` EN EL MOMENTO de elegir un archivo
+  // opcional, nunca bloquea "Ir al resumen"), lo pone `CampoSoporte` EN EL MOMENTO de elegir un archivo
   // inválido. Por eso es un `set`/`delete` puntual sobre la clave `photo-<índice>`, no parte de un
   // objeto de errores que se reconstruye entero como `validarItem`.
   const onFotoError = (indiceArticulo: number, mensaje: string) => setErrors(actuales => {
@@ -569,8 +593,8 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
         {exigirEmpresa && <SelectorEmpresa etiqueta="Empresa a la que cobras" ayuda="La obra y el centro de costo los asigna quien revisa tu solicitud." empresas={empresas} cargadas={empresasCargadas} valor={values.company} error={errors.company} onChange={valor => update('company', valor)} />}
         <label className={styles.field}><span className={styles.fieldLabel}>Monto a cobrar (COP) <em className={styles.required}>*</em></span><input className={styles.control} name="amount" value={values.payment.amount} onChange={event => updatePago('amount', event.target.value.replace(/\D/g, '').slice(0, 12))} inputMode="numeric" placeholder="Ej. 1250000" aria-invalid={Boolean(errors.amount)} aria-describedby={errors.amount ? 'portal-amount-error' : 'portal-amount-hint'} /><small className={styles.hint} id="portal-amount-hint">{values.payment.amount ? `Se solicita ${formatoCOP.format(Number(values.payment.amount))}` : 'Solo números, sin puntos ni decimales.'}</small>{errors.amount && <small className={styles.error} id="portal-amount-error">{errors.amount}</small>}</label>
         <label className={styles.field}><span className={styles.fieldLabel}>Concepto <em className={styles.required}>*</em></span><input className={styles.control} name="concept" value={values.payment.concept} onChange={event => updatePago('concept', event.target.value)} maxLength={MAX_CONCEPTO} placeholder="Ej. Levantamiento topográfico lote 3" aria-invalid={Boolean(errors.concept)} aria-describedby={errors.concept ? 'portal-concept-error' : 'portal-concept-hint'} /><small className={styles.hint} id="portal-concept-hint">Qué se paga, en pocas palabras. {values.payment.concept.length}/{MAX_CONCEPTO}</small>{errors.concept && <small className={styles.error} id="portal-concept-error">{errors.concept}</small>}</label>
-        <CampoFoto indice={0} etiqueta="Foto de la factura o cuenta de cobro" titulo="Agregar la foto" ariaLabel="Factura o cuenta de cobro (opcional)" foto={values.payment.photo} error={errors['photo-0']} onFoto={foto => updatePago('photo', foto)} onError={mensaje => onFotoError(0, mensaje)} />
-        <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> La foto solo la ve quien revisa tu solicitud.</p>
+        <CampoSoporte indice={0} etiqueta="Factura o cuenta de cobro" titulo="Agregar el archivo" ariaLabel="Factura o cuenta de cobro (opcional)" foto={values.payment.photo} error={errors['photo-0']} onFoto={foto => updatePago('photo', foto)} onError={mensaje => onFotoError(0, mensaje)} />
+        <p className={styles.securityNote}><LockKeyhole aria-hidden="true" size={17} /> El archivo solo lo ve quien revisa tu solicitud.</p>
         <div className={styles.actionRow}><button className={styles.secondaryButton} type="button" onClick={() => setPhase('beneficiario')}><ArrowLeft aria-hidden="true" size={18} /> Atrás</button><button className={styles.primaryButton} type="button" onClick={irAResumenDesdePago}>Ver resumen <ArrowRight aria-hidden="true" size={19} /></button></div>
       </div></>}
 
@@ -610,7 +634,7 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
             <div className={styles.summaryRow}><dt>Monto</dt><dd>{formatoCOP.format(Number(values.payment.amount) || 0)}</dd></div>
           </dl>
           <div className={styles.summaryLine} aria-label="Concepto del pago">
-            {values.payment.photo && <FotoPreview file={values.payment.photo} className={styles.summaryPhoto} />}
+            {values.payment.photo && <SoportePreview file={values.payment.photo} />}
             <div><b>{values.payment.concept}</b><span className={styles.hint}>{values.payment.photo ? `Factura o cuenta de cobro: ${values.payment.photo.name}` : 'Sin factura ni cuenta de cobro adjunta'}</span></div>
           </div>
         </> : <>
@@ -624,7 +648,7 @@ function AsistenteFormulario({ formulario, exigirEmpresa, empresas, empresasCarg
         </dl>
         <ol className={styles.summaryList} aria-label="Artículos de la requisición">
           {values.lines.map((linea, indice) => <li className={styles.summaryLine} key={indice}>
-            {linea.photo && <FotoPreview file={linea.photo} className={styles.summaryPhoto} />}
+            {linea.photo && <SoportePreview file={linea.photo} />}
             <div><b>{indice + 1}. {linea.description}</b><span className={styles.hint}>{linea.quantity} {linea.unit}{linea.supplier ? ` · ${linea.supplier}` : ''}</span></div>
             {values.lines.length > 1 && <button className={styles.lineRemove} type="button" onClick={() => quitarLinea(indice)}>Quitar</button>}
           </li>)}
@@ -815,7 +839,7 @@ function ProductionPublicRequest({ enabled }: { enabled: boolean }) {
       const response = await fetch('/api/public/requisitions', { method: 'POST', headers, body });
       if (response.status === 202) setSent(true);
       else if (response.status === 503) setFormError('El servicio de requisiciones no está disponible. Intenta más tarde.');
-      else if (response.status === 413) setFormError('El envío pesa demasiado. Quita la foto o elige una más liviana e intenta otra vez.');
+      else if (response.status === 413) setFormError('El envío pesa demasiado. Quita el archivo o elige uno más liviano e intenta otra vez.');
       else {
         // Desde la adenda de pagos el endpoint dice POR QUÉ rechaza (400/409/422 con `message`, p. ej.
         // un beneficiario homónimo con otra identificación): se muestra tal cual en vez de mandar a

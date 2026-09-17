@@ -6,7 +6,7 @@ import type { CatalogSupplier } from "../../lib/services/contracts";
 // RF-108 (adenda de pagos, S3): solicitud de pago desde el portal público. Este archivo prueba el
 // camino REAL de punta a punta — `POST /api/public/requisitions` con `type: "pago"` ->
 // `ProcurementService.create` (con dependencias en memoria, mismo arnés que
-// tests/integration/public-photos.test.ts) -> beneficiario enlazado o creado `pendingNormalization`
+// tests/integration/public-attachments.test.ts) -> beneficiario enlazado o creado `pendingNormalization`
 // (RF-606) en la MISMA transacción -> requisición con UNA línea de concepto cuyo valor es el monto.
 //
 // Lo que esto fija: que el pago llega a la bandeja (antes el esquema no tenía monto ni beneficiario

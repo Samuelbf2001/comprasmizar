@@ -185,13 +185,13 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
   });
 
-  // RF portal-fotos-articulo: UNA foto opcional por artículo, calcada del `PhotoPicker` del Flow de
+  // RF portal-fotos-articulo: UN soporte opcional por artículo, calcado del `PhotoPicker` del Flow de
   // WhatsApp. Corre en los DOS proyectos (desktop y mobile) como el resto de este archivo — la
   // demostración es cliente puro, así que esto prueba selección, vista previa y miniatura en el
   // resumen sin depender de ningún backend.
   test("se elige una foto opcional, se ve su vista previa y llega hasta el resumen", async ({ page }) => {
     // PNG 1x1 real y mínimo — mismos bytes que validaría el servidor de verdad (ver
-    // tests/integration/public-photos.test.ts), aunque aquí (modo demo) nadie los sube.
+    // tests/integration/public-attachments.test.ts), aunque aquí (modo demo) nadie los sube.
     const fotoMinima = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
       "base64",
@@ -201,8 +201,8 @@ test.describe("portal público de requisiciones", () => {
     await pasarTipoYEmpresa(page);
     await pasarDatos(page, "Usuario QA");
 
-    await expect(page.getByText("Agregar una foto")).toBeVisible();
-    await page.getByLabel("Foto (opcional)").setInputFiles({ name: "frente-obra.png", mimeType: "image/png", buffer: fotoMinima });
+    await expect(page.getByText("Agregar un archivo")).toBeVisible();
+    await page.getByLabel("Soporte (opcional)").setInputFiles({ name: "frente-obra.png", mimeType: "image/png", buffer: fotoMinima });
     await expect(page.getByText("frente-obra.png")).toBeVisible();
     await expect(page.locator("img")).toBeVisible();
 
@@ -215,16 +215,16 @@ test.describe("portal público de requisiciones", () => {
     await expect(page.getByRole("heading", { name: "Recorrido completado." })).toBeVisible();
   });
 
-  test("una foto que pesa de más se rechaza con un mensaje claro, sin romper el resto del formulario", async ({ page }) => {
-    const grande = Buffer.alloc(6 * 1024 * 1024, 1);
+  test("un archivo que pesa de más se rechaza con un mensaje claro, sin romper el resto del formulario", async ({ page }) => {
+    const grande = Buffer.alloc(11 * 1024 * 1024, 1);
     await abrirPortalHidratado(page);
     await pasarCompuerta(page);
     await pasarTipoYEmpresa(page);
     await pasarDatos(page, "Usuario QA");
 
-    await page.getByLabel("Foto (opcional)").setInputFiles({ name: "grande.jpg", mimeType: "image/jpeg", buffer: grande });
-    await expect(page.getByText(/máximo 5 MB/)).toBeVisible();
-    await expect(page.getByText("Agregar una foto")).toBeVisible();
+    await page.getByLabel("Soporte (opcional)").setInputFiles({ name: "grande.jpg", mimeType: "image/jpeg", buffer: grande });
+    await expect(page.getByText(/máximo 10 MB/)).toBeVisible();
+    await expect(page.getByText("Agregar un archivo")).toBeVisible();
 
     // El resto del artículo sigue funcionando: una foto rechazada no bloquea nada más.
     await llenarItem(page, 0, "Cemento gris", "20", "bulto");

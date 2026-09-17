@@ -26,7 +26,7 @@ export interface BucketStorage {
   upload(objectPath: string, bytes: Buffer, mimeType: string): Promise<void>;
 }
 
-const UPLOAD_URL_TTL_SECONDS = 15 * 60; // Archivos de hasta 20 MB por redes lentas de obra.
+const UPLOAD_URL_TTL_SECONDS = 15 * 60; // Archivos de hasta 10 MB por redes lentas de obra.
 /** Subdirectorio hermano de los buckets con el MIME/tamaño REAL observado al escribir. Empieza por
  *  punto para que no pueda colisionar nunca con un bucket (`requisicion-adjuntos`, `proveedor-...`). */
 const METADATA_DIR = ".metadatos";

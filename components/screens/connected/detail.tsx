@@ -1709,8 +1709,11 @@ export function ConnectedRequisitionDetail({
                     download={attachment.name}
                   >
                     <b>
-                      {attachment.type === "foto"
-                        ? `Foto del ítem ${
+                      {/* Desde 2026-09-17 un ítem puede traer un documento (PDF, Excel, CSV) además
+                          de la foto de siempre: lo que lo liga a una línea es la ENTIDAD, no el tipo,
+                          así que un soporte de ítem ya no se anuncia como "Soporte general". */}
+                      {attachment.entity === "requisicion_item"
+                        ? `${attachment.type === "foto" ? "Foto" : "Soporte"} del ítem ${
                             requisition.items.findIndex(
                               (item) => item.id === attachment.entityId,
                             ) + 1
@@ -1747,7 +1750,7 @@ export function ConnectedRequisitionDetail({
                 <AttachmentPicker
                   id="requisition-quote"
                   label="Adjuntar cotización"
-                  help="PDF, JPG, PNG o WebP · máximo 10 MB"
+                  help="PDF, Excel, Word, CSV o imagen · máximo 10 MB"
                   file={quoteFile}
                   onFile={(file) => {
                     setQuoteFile(file);

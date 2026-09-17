@@ -1,19 +1,24 @@
+import ExcelJS from "exceljs";
+import { PDFDocument } from "pdf-lib";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Requisition } from "../../lib/domain";
+import { MAX_PUBLIC_ATTACHMENT_BYTES } from "../../lib/infrastructure/public-attachments";
+import { publicFormRateLimiter, publicWorkAggregateRateLimiter, publicWorkRateLimiter } from "../../lib/security/rate-limit";
 import type { ServiceDependencies, TransactionRepositories } from "../../lib/services";
 
-// RF portal-fotos-articulo: el portal público (components/screens/public-request.tsx) admite ahora
-// UNA foto opcional por artículo, calcada del `PhotoPicker` del Flow de WhatsApp. Este archivo prueba
-// el camino REAL de punta a punta — `POST /api/public/requisitions` con `multipart/form-data` ->
-// `ProcurementService.create` (con dependencias en memoria, mismo arnés que
-// tests/integration/kapso-attachments.test.ts) -> `lib/infrastructure/public-photos.ts` (real, sin
-// mockear) -> almacenamiento y SQL de adjuntos FALSOS, para poder afirmar qué se escribió sin tocar
-// disco ni Postgres.
+// RF portal-fotos-articulo: el portal público (components/screens/public-request.tsx) admite UN
+// soporte opcional por artículo, calcado del `PhotoPicker` del Flow de WhatsApp. Desde el 2026-09-17
+// ese soporte ya no es solo una foto (decisión de Ernesto: «muchos tipos de archivos, CSV, Excel,
+// etc., PDF, imágenes, lo que sea»). Este archivo prueba el camino REAL de punta a punta —
+// `POST /api/public/requisitions` con `multipart/form-data` -> `ProcurementService.create` (con
+// dependencias en memoria, mismo arnés que tests/integration/kapso-attachments.test.ts) ->
+// `lib/infrastructure/public-attachments.ts` (real, sin mockear) -> almacenamiento y SQL de adjuntos
+// FALSOS, para poder afirmar qué se escribió sin tocar disco ni Postgres.
 //
-// El diseño de seguridad que esto verifica: la foto viaja en la MISMA petición que radica (nunca un
+// El diseño de seguridad que esto verifica: el archivo viaja en la MISMA petición que radica (nunca un
 // endpoint de subida previa), solo se guarda si la radicación fue válida (contraseña primero), cada
-// archivo se valida por separado con la firma binaria real (nunca el Content-Type declarado) y una
-// foto inválida se descarta sin romper la creación de la requisición.
+// archivo se valida por separado por su CONTENIDO real (nunca el Content-Type declarado) y uno
+// inválido se descarta sin romper la creación de la requisición.
 
 function fakeServiceDependencies(): { dependencies: ServiceDependencies; requisitionMap: Map<string, Requisition> } {
   const requisitionMap = new Map<string, Requisition>();
@@ -95,10 +100,28 @@ const ENV: Record<string, string> = {
 const savedEnv: Record<string, string | undefined> = {};
 
 const workId = "11111111-1111-4111-8111-111111111111";
-// Firma PNG real (8 bytes) más un poco de relleno — sniffAttachmentMime solo mira la cabecera, así
-// que esto basta para pasar por "imagen válida" sin necesitar un PNG bien formado de verdad.
+// Firma PNG real (8 bytes) más un poco de relleno — la firma solo mira la cabecera, así que esto
+// basta para pasar por "imagen válida" sin necesitar un PNG bien formado de verdad. Para los formatos
+// que SÍ exigen entender la estructura (OOXML, PDF) se generan archivos de verdad más abajo.
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 const NOT_AN_IMAGE = Buffer.from("esto no es una imagen, es texto plano");
+const CSV_BYTES = Buffer.from("descripcion,cantidad\nCemento gris,20\n", "utf8");
+const EXECUTABLE_BYTES = Buffer.concat([Buffer.from([0x4d, 0x5a, 0x90, 0x00]), Buffer.alloc(64), Buffer.from("This program cannot be run in DOS mode")]);
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+/** Archivos REALES, con las mismas librerías que el repo ya usa para generar sus propios reportes:
+ *  una cabecera inventada a mano solo probaría que el test y el validador se copiaron el mismo byte. */
+async function realPdf(): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  pdf.addPage().drawText("Factura de prueba");
+  return Buffer.from(await pdf.save());
+}
+async function realXlsx(): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("Cantidades").addRow(["Descripción", "Cantidad"]);
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+/** Quinto valor interpolado del `insert into adjuntos` (id, entidad_id, bucket, url, TIPO, …). */
+const tipoDe = (insert: { values: unknown[] }) => insert.values[4];
 
 function basePayload(overrides: Record<string, unknown> = {}) {
   return {
@@ -114,10 +137,14 @@ function multipartRequest(payload: Record<string, unknown>, files: Record<string
   return new Request("http://localhost/api/public/requisitions", { method: "POST", headers, body: form });
 }
 
-describe("foto opcional por artículo del portal público — camino real de punta a punta", () => {
+describe("soporte opcional por artículo del portal público — camino real de punta a punta", () => {
   beforeAll(() => { for (const key of Object.keys(ENV)) { savedEnv[key] = process.env[key]; process.env[key] = ENV[key]; } });
   afterAll(() => { for (const key of Object.keys(ENV)) { if (savedEnv[key] === undefined) delete process.env[key]; else process.env[key] = savedEnv[key]; } });
-  beforeEach(() => { hoisted.reset(); });
+  // Los limitadores REALES siguen en el camino (el orden "límite antes que nada" es parte de lo que
+  // este archivo cubre), pero se les devuelve el presupuesto entre pruebas: si no, a partir de la
+  // décima radicación contra la misma obra el endpoint responde el 202 neutro y las pruebas de
+  // adjuntos empezarían a "pasar" sin haber creado nada.
+  beforeEach(() => { hoisted.reset(); publicFormRateLimiter.reset(); publicWorkRateLimiter.reset(); publicWorkAggregateRateLimiter.reset(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
   it("el camino JSON puro sigue exactamente igual: no toca almacenamiento ni adjuntos", async () => {
@@ -147,13 +174,13 @@ describe("foto opcional por artículo del portal público — camino real de pun
 
     const insertAdjunto = hoisted.inserts.find((entry) => entry.sql.includes("insert into adjuntos"));
     expect(insertAdjunto).toBeDefined();
-    // `entidad='requisicion_item'`, `tipo='foto'` y `subido_por=null` viajan como texto literal en el
-    // SQL (no interpolados, ver public-photos.ts); `entidad_id` sí es un valor interpolado, con el id
-    // del ítem correcto.
+    // `entidad='requisicion_item'` y `subido_por=null` viajan como texto literal en el SQL (no
+    // interpolados, ver public-attachments.ts); `entidad_id` y, desde la ampliación de formatos,
+    // `tipo` sí son valores interpolados — una imagen sigue entrando como 'foto'.
     expect(insertAdjunto!.sql).toContain("'requisicion_item'");
-    expect(insertAdjunto!.sql).toContain("'foto'");
     expect(insertAdjunto!.sql).toMatch(/,\s*null,/);
     expect(insertAdjunto!.values).toContain(requisicion.items[1].id);
+    expect(tipoDe(insertAdjunto!)).toBe("foto");
   });
 
   it("una foto INVÁLIDA (bytes que no calzan ninguna firma) se descarta, y la requisición se crea igual", async () => {
@@ -166,11 +193,79 @@ describe("foto opcional por artículo del portal público — camino real de pun
     expect(hoisted.inserts.some((entry) => entry.sql.includes("insert into adjuntos"))).toBe(false);
   });
 
-  it("una foto que excede el tope de 5 MB se descarta sin romper la radicación", async () => {
+  it("una foto que excede el tope de 10 MB se descarta sin romper la radicación", async () => {
     const { dependencies, requisitionMap } = fakeServiceDependencies();
     hoisted.setDependencies(dependencies);
-    const tooBig = Buffer.concat([PNG_BYTES, Buffer.alloc(5 * 1024 * 1024)]);
+    const tooBig = Buffer.concat([PNG_BYTES, Buffer.alloc(MAX_PUBLIC_ATTACHMENT_BYTES)]);
     const response = await POST(multipartRequest(basePayload(), { foto_0: { name: "gigante.png", type: "image/png", bytes: tooBig } }));
+    expect(response.status).toBe(202);
+    expect(requisitionMap.size).toBe(1);
+    expect(hoisted.uploads).toHaveLength(0);
+  });
+
+  // Ampliación 2026-09-17: lo que sube quien radica por el portal ya no tiene por qué ser una foto.
+  // Lo que decide qué es cada archivo —y por tanto con qué `tipo` se guarda— son SUS BYTES.
+  it("un PDF real y un XLSX real se guardan como `soporte`, con el MIME que husmeó el servidor", async () => {
+    for (const caso of [
+      { name: "factura.pdf", bytes: await realPdf(), mimeType: "application/pdf" },
+      { name: "cantidades.xlsx", bytes: await realXlsx(), mimeType: XLSX_MIME },
+    ]) {
+      hoisted.reset();
+      const { dependencies, requisitionMap } = fakeServiceDependencies();
+      hoisted.setDependencies(dependencies);
+      // Content-Type MENTIROSO a propósito: el navegador dice que es una foto y no se le hace caso.
+      const response = await POST(multipartRequest(basePayload(), { foto_0: { name: caso.name, type: "image/png", bytes: caso.bytes } }));
+      expect(response.status).toBe(202);
+
+      const [requisicion] = [...requisitionMap.values()];
+      expect(hoisted.uploads, caso.name).toHaveLength(1);
+      expect(hoisted.uploads[0].mimeType).toBe(caso.mimeType);
+      expect(hoisted.uploads[0].path).toContain(`/${requisicion.items[0].id}/`);
+      const insertAdjunto = hoisted.inserts.find((entry) => entry.sql.includes("insert into adjuntos"));
+      // `tipo` dejó de viajar como literal en el SQL y es ahora un valor interpolado: un documento se
+      // guarda como 'soporte', nunca como 'foto' (que en la base debe seguir siendo una imagen).
+      expect(tipoDe(insertAdjunto!)).toBe("soporte");
+      
+      expect(insertAdjunto!.values).toContain(caso.mimeType);
+    }
+  });
+
+  it("un CSV se acepta como texto y una imagen sigue guardándose como `foto`", async () => {
+    const { dependencies } = fakeServiceDependencies();
+    hoisted.setDependencies(dependencies);
+    const response = await POST(multipartRequest(basePayload(), {
+      foto_0: { name: "lista.csv", type: "application/vnd.ms-excel", bytes: CSV_BYTES },
+      foto_1: { name: "frente.png", type: "image/png", bytes: PNG_BYTES },
+    }));
+    expect(response.status).toBe(202);
+    expect(hoisted.uploads.map((upload) => upload.mimeType)).toEqual(["text/plain", "image/png"]);
+    const tipos = hoisted.inserts.filter((entry) => entry.sql.includes("insert into adjuntos")).map(tipoDe);
+    expect(tipos).toEqual(["soporte", "foto"]);
+  });
+
+  it("un ejecutable disfrazado de PDF y un zip que no es OOXML se descartan, y la requisición se crea igual", async () => {
+    const zipNoOoxml = Buffer.from((await realXlsx()).toString("latin1").split("[Content_Types].xml").join("[Content_Typez].xml"), "latin1");
+    for (const caso of [
+      { name: "factura.pdf", bytes: EXECUTABLE_BYTES },
+      { name: "cantidades.xlsx", bytes: zipNoOoxml },
+    ]) {
+      hoisted.reset();
+      const { dependencies, requisitionMap } = fakeServiceDependencies();
+      hoisted.setDependencies(dependencies);
+      const response = await POST(multipartRequest(basePayload(), { foto_0: { name: caso.name, type: "application/pdf", bytes: caso.bytes } }));
+      expect(response.status).toBe(202);
+      expect(requisitionMap.size, caso.name).toBe(1);
+      expect(hoisted.uploads, caso.name).toHaveLength(0);
+      expect(hoisted.inserts.some((entry) => entry.sql.includes("insert into adjuntos"))).toBe(false);
+    }
+  });
+
+  it("un archivo cuya extensión no corresponde con lo que resultó ser se descarta", async () => {
+    const { dependencies, requisitionMap } = fakeServiceDependencies();
+    hoisted.setDependencies(dependencies);
+    // Un XLSX de verdad, pero nombrado .pdf: se guardaría con `mime_type` de hoja y nombre de PDF, y
+    // el CHECK `nombre_mime_adjunto_valido` de la base lo rechazaría. Se corta antes.
+    const response = await POST(multipartRequest(basePayload(), { foto_0: { name: "cantidades.pdf", type: "application/pdf", bytes: await realXlsx() } }));
     expect(response.status).toBe(202);
     expect(requisitionMap.size).toBe(1);
     expect(hoisted.uploads).toHaveLength(0);
