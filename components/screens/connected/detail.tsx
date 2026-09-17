@@ -26,6 +26,7 @@ import {
   formatIsoDate,
   money,
   pendingBeneficiaryId,
+  permisosDelVisor,
   resolveUserName,
   summarizeLines,
   supplierFichaPath,
@@ -307,14 +308,19 @@ export function ConnectedRequisitionDetail({
   const esAprobadorAsignado =
     Boolean(data.viewerId) &&
     (requisition.approverId === data.viewerId || (requisition.items ?? []).some((item) => item.approverId === data.viewerId));
-  const isReviewer = role === "Revisor" || role === "Administrador Sixteam",
+  // DECISIÓN DE ERNESTO (2026-09-17): quién revisa y quién aprueba lo dicen los PERMISOS EFECTIVOS del
+  // visor (los mismos que exige el servicio y que Configuración puede editar), no el nombre del rol de
+  // sesión. Eso absorbe además el caso del maestro: con `viewerPermissions` ya no hace falta mirar si
+  // entre sus roles está "aprobador" — su lista efectiva es la unión de todos.
+  const puede = permisosDelVisor(data, role);
+  const isReviewer = puede("requisition:review"),
     isApprover =
       role === "Administrador Sixteam" ||
-      (data.viewerId
-        ? esAprobadorAsignado && (role === "Aprobador" || viewerRoles.includes("aprobador"))
-        : role === "Aprobador");
+      (puede("requisition:approve") && (!data.viewerId || esAprobadorAsignado));
   // "Aprobar yo mismo" solo para quien de verdad tiene revisor + aprobador (o es admin Sixteam): nunca
-  // se ofrece una acción que el servicio va a rechazar con FORBIDDEN.
+  // se ofrece una acción que el servicio va a rechazar con FORBIDDEN. Sigue decidiéndose por ROL —y no
+  // por permiso— porque `canOverrideAssignedApprover` (lib/domain/rules.ts) también: aprobar por encima
+  // del aprobador asignado es una prerrogativa del usuario maestro, no un permiso del catálogo.
   const canSelfApprove =
     Boolean(data.viewerId) &&
     (role === "Administrador Sixteam" || (viewerRoles.includes("revisor") && viewerRoles.includes("aprobador")));

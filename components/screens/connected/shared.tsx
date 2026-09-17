@@ -6,6 +6,7 @@
 // orders.tsx, expenses.tsx, data.ts y screen.tsx puedan importarlo.
 import type { Role } from "../../../lib/demo-data";
 import type { PaymentMethod, PaymentStatus, Role as DomainRole } from "../../../lib/domain";
+import { resolveActorPermissions, resolveRolePermissions, WILDCARD_PERMISSION } from "../../../lib/domain/rules";
 import { uploadSignedAttachment, type AttachmentMetadata } from "../attachment-upload";
 import type { RouteKind } from "../skeletons";
 import type { FriendlyError } from "../../../lib/http/friendly-error";
@@ -295,7 +296,7 @@ export type DetailBundle = {
   expenses: ExpenseRow[];
   history: AuditRow[];
   attachments: AttachmentRow[];
-};
+} & ViewerPermissions;
 export type ExpenseBundle = {
   expenses: ExpenseRow[];
   catalogs: CatalogData;
@@ -307,7 +308,7 @@ export type ExpenseBundle = {
   // que no lo mencionan (tests/unit/connected-expenses-detail.test.tsx) — ConnectedExpenses trata la
   // ausencia como `[]`, igual que ya hace con `expenses`/`pettyCash` si llegaran undefined.
   incomes?: IncomeRow[];
-};
+} & ViewerPermissions;
 // BLOQUEANTE 2: `orders` es opcional porque solo se pide cuando el rol puede leerlas (mismo
 // permiso que ya usa /ordenes) — sin esto, una requisición `aprobada` sin órdenes generadas no
 // tenía forma de saber si ya le tocaba "Listas para generar orden" en /revision.
@@ -325,14 +326,14 @@ export type RequisitionsBundle = {
   orders?: OrderRow[];
   nextCursor?: string | null;
   viewerId?: string;
-};
+} & ViewerPermissions;
 // H2/H3: `requisitions` (el array completo de requisiciones, solo para resolver consecutivo/obra
 // por fila) se quita del bundle — nada más lo usaba y `OrderRow.requisitionConsecutive`/`workId`
 // ya cubren ese caso sin descargar toda la colección (ver data.ts, kind "orders").
 export type OrdersBundle = {
   rows: OrderRow[];
   catalogs: CatalogData;
-};
+} & ViewerPermissions;
 // RF-1301 (Reportes, reunión 2026-09-11): fila del reporte de requisiciones tal como la devuelve
 // GET /api/reports (ver ReportRow en lib/services/report-service.ts) — ids crudos a propósito: esta
 // pantalla YA tiene `CatalogData` (obras/etiquetas/usuarios/proveedores), así que resuelve nombres igual
@@ -369,7 +370,7 @@ export type ReportRow = {
   total: number;
   items: ReportItemRow[];
 };
-export type ReportBundle = { rows: ReportRow[]; catalogs: CatalogData };
+export type ReportBundle = { rows: ReportRow[]; catalogs: CatalogData } & ViewerPermissions;
 
 // RF-1102: elemento de la cola de "qué espera algo de mí"; producido por
 // lib/domain/rules.ts#buildAttentionQueue y expuesto tal cual por /api/dashboard.
@@ -405,7 +406,63 @@ export type DashboardMetricsPayload = {
   // Centros de costo (UI, 2026-09-12): ver DashboardMetrics.expenseByCostCenter en lib/domain/model.ts.
   expenseByCostCenter?: DashboardAmountByKey[];
 };
-export type DashboardBundle = { metrics: DashboardMetricsPayload; catalogs: CatalogData };
+export type DashboardBundle = { metrics: DashboardMetricsPayload; catalogs: CatalogData } & ViewerPermissions;
+
+/**
+ * DECISIÓN DE ERNESTO (2026-09-17): los permisos por rol se editan en Configuración, así que la
+ * interfaz no puede seguir decidiendo qué pinta comparando el NOMBRE del rol — el servidor autoriza
+ * por permiso efectivo y la pantalla tiene que preguntar lo mismo.
+ *
+ * Lo que el servidor cuelga de CADA bundle (ver GET app/api/catalogs/route.ts y `loadRoute` en
+ * data.ts): `viewerPermissions` es la lista efectiva de quien mira (override ya aplicado) y
+ * `rolePermissions` la matriz vigente rol por rol, que solo llega a quien puede editarla y existe
+ * únicamente para resolver la lente «Ver como».
+ */
+export type ViewerPermissions = {
+  viewerPermissions?: readonly string[];
+  rolePermissions?: Partial<Record<DomainRole, readonly string[]>>;
+  /** Roles del visor (solo el detalle los manda hoy): respaldo cuando no hay `viewerPermissions`. */
+  viewerRoles?: DomainRole[];
+};
+/** El rol de dominio detrás de cada nombre que la plataforma muestra (ver `priority` en app/auth-guard.ts). */
+export const DOMAIN_ROLE: Record<Role, DomainRole> = {
+  Solicitante: "solicitante",
+  Revisor: "revisor",
+  Aprobador: "aprobador",
+  Contabilidad: "contabilidad",
+  "Administrador Mizar": "admin_mizar",
+  "Administrador Sixteam": "admin_sixteam",
+};
+/**
+ * AYUDANTE ÚNICO de la interfaz: `const puede = permisosDelVisor(data, role)` y después
+ * `puede("payment:register")`. Nunca se repite un literal de rol para decidir una acción.
+ *
+ * El respaldo tiene dos escalones y no es capricho: un bundle puede llegar SIN `viewerPermissions`
+ * (payload viejo del respaldo de sessionStorage, o una pantalla montada fuera de `loadRoute`), y en
+ * ese caso lo correcto es reproducir exactamente lo que la interfaz decidía antes de este cambio —
+ * los DEFAULTS de los roles del visor si el bundle los trae (el maestro revisor+aprobador los
+ * necesita: su rol de sesión es uno solo), y si no, los del rol que se está pintando.
+ */
+export function permisosDelVisor(data: ViewerPermissions | undefined, role: Role): (permiso: string) => boolean {
+  const efectivos =
+    data?.viewerPermissions ??
+    (data?.viewerRoles?.length ? resolveActorPermissions(data.viewerRoles) : resolveRolePermissions(DOMAIN_ROLE[role]));
+  return (permiso: string) => efectivos.includes(WILDCARD_PERMISSION) || efectivos.includes(permiso);
+}
+/**
+ * Lente «Ver como»: presentación pura, y este es el único punto donde toca los datos. Sustituye los
+ * permisos del visor por los EFECTIVOS del rol prestado —los que rigen hoy, no los de `rules.ts`—
+ * para que mirar como Contabilidad siga mostrando lo que ese rol vería de verdad.
+ *
+ * Sin lente devuelve LA MISMA referencia a propósito: requisitions.tsx reinicia su paginación
+ * comparando `data` por identidad.
+ */
+export function conLaLente(data: unknown, viewingAs: Role | null): unknown {
+  if (!viewingAs || !data || typeof data !== "object") return data;
+  const bundle = data as ViewerPermissions;
+  const domainRole = DOMAIN_ROLE[viewingAs];
+  return { ...bundle, viewerPermissions: bundle.rolePermissions?.[domainRole] ?? resolveRolePermissions(domainRole) };
+}
 
 export const money = new Intl.NumberFormat("es-CO", {
   style: "currency",

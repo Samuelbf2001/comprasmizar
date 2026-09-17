@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { authenticatedJson, assertSameOrigin, parseJson } from "../../../lib/http/api";
 import { SUPPLIER_IDENTIFICATION_TYPE_VALUES } from "../../../lib/http/schemas";
-import { hasPermission } from "../../../lib/domain";
+import { ALL_ROLES, hasPermission, resolveRolePermissions } from "../../../lib/domain";
+import { loadRolePermissionOverrides } from "../../../lib/infrastructure/role-permissions";
 import { sharedPostgres } from "../../../lib/infrastructure/postgres-repositories";
 import { runtimeEnv } from "../../../lib/security/env";
 import { CatalogService } from "../../../lib/services";
@@ -120,7 +121,16 @@ export function GET() {
       // Cajas (2026-09-12): lista mínima activa para los selectores de "Gastos y caja".
       sql<CashBoxRow[]>`select id, nombre as name, tipo as type from cajas where activo = true order by nombre`,
     ]);
-    return { works, tags, suppliers, items, societies, users, approvers, costCenters, cashBoxes, features };
+    // DECISIÓN DE ERNESTO (2026-09-17): los permisos por rol se editan desde Configuración, así que la
+    // INTERFAZ tiene que decidir por permiso efectivo y no por nombre de rol. Viajan en ESTE bootstrap
+    // —el único que piden todas las rutas conectadas, ver components/screens/connected/data.ts— y no en
+    // cada lista: `/api/orders` y `/api/expenses` responden un array y no tienen dónde colgarlos.
+    // `rolePermissions` (la matriz que rige hoy, rol por rol) solo viaja para quien puede editarla, que
+    // es exactamente quien tiene la lente «Ver como»: sin ella, mirar como Contabilidad pintaría los
+    // permisos POR DEFECTO de ese rol en vez de los que Configuración le dejó.
+    const overrides = hasPermission(actor, "config:manage") ? await loadRolePermissionOverrides() : undefined;
+    const rolePermissions = overrides && Object.fromEntries(ALL_ROLES.map((role) => [role, resolveRolePermissions(role, overrides)]));
+    return { works, tags, suppliers, items, societies, users, approvers, costCenters, cashBoxes, features, viewerPermissions: actor.permissions ?? [], rolePermissions };
   });
 }
 

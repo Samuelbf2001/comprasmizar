@@ -13,6 +13,7 @@ import {
   estadoLabel,
   money,
   pendingBeneficiaryId,
+  permisosDelVisor,
   relativeAge,
   requisitionTone,
   resolveUserName,
@@ -228,8 +229,12 @@ export function ConnectedRequisitions({
   const catalogs = data?.catalogs ?? emptyCatalogs;
   const isRevision = pathname.startsWith("/revision");
   const isApprovalInbox = pathname.startsWith("/aprobaciones");
+  // M-5: el portillo del maestro NO es un permiso del catálogo (mismo criterio que
+  // `canOverrideAssignedApprover` en lib/domain/rules.ts), así que se queda decidido por rol.
   const isAdminSixteam = role === "Administrador Sixteam";
-  const canOpenSupplier = role === "Revisor" || isAdminSixteam;
+  // Completar la ficha del beneficiario, en cambio, exige "supplier:manage" — el permiso que pide
+  // PATCH /api/suppliers/:id y que ahora se edita desde Configuración.
+  const canOpenSupplier = role ? permisosDelVisor(data, role)("supplier:manage") : false;
   // H3 (docs/plan-rendimiento.md): `data.rows` es ahora UNA página (100 filas server-side); el
   // estado local guarda las páginas ya cargadas con "Cargar más" y se reinicia cuando `data`
   // cambia (nueva ruta o revalidación con una página fresca) para no arrastrar páginas viejas.

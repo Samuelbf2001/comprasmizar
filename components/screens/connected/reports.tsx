@@ -20,15 +20,10 @@ import {
   formatIsoDate,
   groupReportRowsByCostCenter,
   money,
+  permisosDelVisor,
   type ReportBundle,
   type ReportRow,
 } from "./shared";
-
-// Únicos roles con permiso de servidor "report:export" (lib/domain/rules.ts) — Revisor solo tiene
-// "report:read" (ve el reporte, no el botón), la misma asimetría que ya tenía el XLSX provisional de
-// gastos (app/api/reports/expenses-report.ts). Repetir la lista aquí en vez de pedirla al servidor es el
-// mismo patrón que ya usa el resto de connected/* (p. ej. ConnectedExpenses con `canCreate`).
-const CAN_EXPORT_ROLES: readonly Role[] = ["Aprobador", "Contabilidad", "Administrador Mizar", "Administrador Sixteam"];
 
 // `billedCompanyId` ya viaja en GET /api/reports (ReportRow en lib/services/report-service.ts); el tipo
 // de shared.tsx no se toca en la ola 2, así que se extiende aquí.
@@ -66,8 +61,12 @@ export function ConnectedReports({
   const catalogs = data?.catalogs ?? emptyCatalogs;
   const societies = catalogs.societies ?? [];
   const costCenters = catalogs.costCenters ?? [];
+  // "Aprobadas por mí" por defecto es una preferencia de PRESENTACIÓN del rol Aprobador (lo pidió
+  // Juliana), no una acción con permiso detrás: se queda decidida por rol.
   const isApprover = role === "Aprobador";
-  const canExport = CAN_EXPORT_ROLES.includes(role);
+  // Descargar el reporte, en cambio, es "report:export" — el mismo permiso que exige el servidor y que
+  // ahora se edita desde Configuración (Revisor solo tiene "report:read": entra y no descarga).
+  const canExport = permisosDelVisor(data, role)("report:export");
 
   const [workFilter, setWorkFilter] = useState("");
   const [period, setPeriod] = useState("");
