@@ -175,7 +175,11 @@ MAILTO=ernesto@sixteam.pro
 ```
 
 03:00 hora Colombia = 08:00 UTC. `/opt/mizar/.env.backup` (permisos 600) lleva `BACKUP_PASSPHRASE`,
-`GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN`, `GDRIVE_FOLDER_ID`.
+`GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN`, `GDRIVE_FOLDER_ID` y, opcional
+pero recomendado, `HEARTBEAT_BACKUP_URL`: la URL de un latido de healthchecks.io o de Better Stack.
+El guion la llama al terminar bien y le añade `/fail` si falla. Si un día el cron ni siquiera arranca,
+el monitor avisa porque el latido no llega. `MAILTO` solo avisa cuando hay salida, y un cron que no
+corre no produce ninguna.
 
 Cada noche sube dos objetos cifrados —la base y los archivos— más su `.sha256`, purga lo que pase de
 35 días y limpia las sesiones vencidas.

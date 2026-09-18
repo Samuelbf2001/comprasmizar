@@ -28,7 +28,17 @@ if [ ! -r "$ENV_FILE" ]; then echo "[$(date -u +%FT%TZ)] no se puede leer $ENV_F
 # `\042\047` son la comilla doble y la simple en octal: escribirlas literalmente aquí obliga a un
 # rompecabezas de escapes que es justo donde estos guiones se rompen en silencio.
 SECRET="$(grep -m1 '^NOTIFICATION_DISPATCH_SECRET=' "$ENV_FILE" | cut -d= -f2- | tr -d '\042\047')"
-if [ -z "$SECRET" ]; then echo "[$(date -u +%FT%TZ)] falta NOTIFICATION_DISPATCH_SECRET en $ENV_FILE" >&2; exit 2; fi
+
+# Latido para un monitor externo (misma convención que backup-daily.sh: URL a secas = bien, "/fail" =
+# falló). Si el cron deja de correr —el 11-sep pasó 13 ciclos fallando con «Permission denied» sin que
+# nadie lo viera— ningún aviso de WhatsApp sale y el monitor lo nota por ausencia. Opcional.
+HEARTBEAT_URL="$(grep -m1 '^HEARTBEAT_DISPATCH_URL=' "$ENV_FILE" | cut -d= -f2- | tr -d '\042\047' || true)"
+latido() {
+  [ -n "$HEARTBEAT_URL" ] || return 0
+  curl -fsS -m 10 --retry 2 -o /dev/null "${HEARTBEAT_URL%/}$1" || echo "[$(date -u +%FT%TZ)] no se pudo avisar al monitor" >&2
+}
+
+if [ -z "$SECRET" ]; then echo "[$(date -u +%FT%TZ)] falta NOTIFICATION_DISPATCH_SECRET en $ENV_FILE" >&2; latido /fail; exit 2; fi
 
 # El secreto viaja como variable de entorno del proceso dentro del contenedor, no como argumento:
 # los argumentos son visibles en `ps` para cualquier usuario del anfitrión.
@@ -50,7 +60,9 @@ fetch("http://127.0.0.1:3000/api/internal/dispatch-notifications", {
   .catch((error) => { process.stdout.write(`error ${error.message}`); process.exitCode = 1; });
 ' < /dev/null 2>&1)" || {
   echo "[$(date -u +%FT%TZ)] FALLO al invocar el despachador: $respuesta" >&2
+  latido /fail
   exit 1
 }
 
+latido ""
 echo "[$(date -u +%FT%TZ)] $respuesta"

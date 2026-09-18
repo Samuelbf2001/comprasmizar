@@ -19,8 +19,18 @@ RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-35}"
 REPO_DIR="${REPO_DIR:-$COMPOSE_DIR}"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 
+# Latido para un monitor externo (healthchecks.io o los heartbeats de Better Stack: los dos aceptan la
+# URL a secas para «bien» y la URL + "/fail" para «falló»). Es lo que convierte «el respaldo dejó de
+# correr» en una alerta: la marca `ultimo-exito` solo la ve quien entra al VPS a mirarla, y el día que
+# el cron no arranca no queda ningún error que leer. Opcional: sin HEARTBEAT_BACKUP_URL el respaldo
+# funciona igual. Un fallo al avisar nunca tumba el respaldo.
+latido() {
+  [ -n "${HEARTBEAT_BACKUP_URL:-}" ] || return 0
+  curl -fsS -m 10 --retry 3 -o /dev/null "${HEARTBEAT_BACKUP_URL%/}$1" || echo "[$(date -u +%FT%TZ)] no se pudo avisar al monitor" >&2
+}
+
 for variable in GDRIVE_FOLDER_ID BACKUP_PASSPHRASE; do
-  if [ -z "${!variable:-}" ]; then echo "Falta la variable $variable" >&2; exit 2; fi
+  if [ -z "${!variable:-}" ]; then echo "Falta la variable $variable" >&2; latido /fail; exit 2; fi
 done
 
 mkdir -p "$LOCAL_DIR"
@@ -34,7 +44,8 @@ files_enc="$files_plain.enc"
 # Se borran los intermedios EN CLARO pase lo que pase: un volcado sin cifrar olvidado en el disco del
 # VPS anula el motivo de cifrar la copia que sube a Drive.
 cleanup() { rm -f "$dump_plain" "$files_plain"; }
-trap cleanup EXIT
+# Cualquier salida con error (set -e) avisa al monitor además de limpiar.
+trap 'estado=$?; cleanup; [ "$estado" -eq 0 ] || latido /fail' EXIT
 
 echo "[$(date -u +%FT%TZ)] volcando la base..."
 # `--format=custom` permite restauración selectiva con pg_restore; -T evita que docker asigne un TTY
@@ -72,4 +83,5 @@ docker compose exec -T db psql -U "${POSTGRES_USER:-mizar}" -d "${POSTGRES_DB:-m
   -c "delete from public.sesiones where expira_at <= now() or creada_at <= now() - interval '7 days';" >/dev/null
 
 date -u +%FT%TZ > "$LOCAL_DIR/ultimo-exito"
+latido ""
 echo "[$(date -u +%FT%TZ)] respaldo completo: $(basename "$dump_enc") + $(basename "$files_enc")"
