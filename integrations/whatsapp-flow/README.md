@@ -429,9 +429,10 @@ npx tsx scripts/publish-whatsapp-flow.ts                  # captura — el vigen
 npx tsx scripts/publish-whatsapp-flow.ts aprobacion       # Flow de aprobación
 ```
 
-`requisicion` apunta al **v4** («Requisición de obra – Mizar v4», sin id todavía: se crea la
-primera vez que se corra el comando). El v3 (`875992355468043`, publicado) sigue en producción
-hasta que `WHATSAPP_FLOW_ID` apunte al v4; Meta no deja editar un Flow publicado, por eso cada
+`requisicion` apunta al **v4** («Requisición de obra – Mizar v4», **`2180911365805386`**, creado y
+PUBLICADO el 18-sep-2026 con `validation_errors: []` y el visto bueno de Ernesto). El v3
+(`875992355468043`, publicado) sigue en producción hasta que `WHATSAPP_FLOW_ID` apunte al v4 en el
+despliegue de la adenda; Meta no deja editar un Flow publicado, por eso cada
 corrección es un Flow nuevo. El v1 (`1972861836748301`) queda como `requisicion_v1_deprecado`: la
 entrada existe solo para que nadie suba `requisicion.flow.json` creyendo que es la fuente vigente.
 No se actualiza ni se republica.
@@ -786,7 +787,12 @@ npx tsx scripts/build-flow-pago.ts --check                       # el JSON commi
 npx tsx --env-file=.env.local scripts/publish-whatsapp-flow.ts pago   # crea/actualiza el borrador; imprime validation_errors
 ```
 
-Luego cargar `WHATSAPP_FLOW_PAGO_ID=<flow_id>` y `WHATSAPP_FLOW_PAGO_MODE=draft`, recorrer la vista
+**Estado (18-sep-2026):** «Solicitud de pago – Mizar» = **`4695777257373991`**, PUBLICADO con
+`validation_errors: []` y el visto bueno de Ernesto. En producción va `WHATSAPP_FLOW_PAGO_ID=4695777257373991`
+sin `WHATSAPP_FLOW_PAGO_MODE`. La vista previa no se recorrió a mano antes de publicar: se revisa en el UAT
+y, si algo se ve mal, se corrige creando un Flow nuevo.
+
+Procedimiento general: cargar `WHATSAPP_FLOW_PAGO_ID=<flow_id>` y `WHATSAPP_FLOW_PAGO_MODE=draft`, recorrer la vista
 previa en un teléfono real (ver «Publicar el borrador» arriba: `validation_errors: []` no garantiza
 que se vea bien) y publicar con el mismo `POST /{FLOW_ID}/publish` documentado allí. Al publicar,
 quitar `WHATSAPP_FLOW_PAGO_MODE`.

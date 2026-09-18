@@ -44,7 +44,8 @@ const FLOWS = {
    * la clave de búsqueda contra la WABA— y el historial, en git.
    */
   // v4 (adenda de pagos, A11): se retira la opción `tipo_solicitud=pago`, que existía y no
-  // funcionaba. El v3 (`875992355468043`) está PUBLICADO y Meta no deja editarlo, así que el nuevo
+  // funcionaba (v4 = `2180911365805386`, PUBLICADO el 18-sep-2026).
+  // El v3 (`875992355468043`) está PUBLICADO y Meta no deja editarlo, así que el nuevo
   // JSON solo puede subirse como un Flow nuevo; el v3 sigue en producción hasta que se cargue el id
   // del v4 en `WHATSAPP_FLOW_ID`.
   requisicion: { name: "Requisición de obra – Mizar v4", path: "integrations/whatsapp-flow/requisicion-captura.flow.json" },
@@ -70,7 +71,7 @@ const FLOWS = {
    */
 
   aprobacion: { name: "Aprobación de requisición – Mizar", path: "integrations/whatsapp-flow/aprobacion.flow.json" },
-  /** Flow de solicitud de pago (RF-908). El JSON lo genera `scripts/build-flow-pago.ts`; su id va en `WHATSAPP_FLOW_PAGO_ID`. */
+  /** Flow de solicitud de pago (RF-908). El JSON lo genera `scripts/build-flow-pago.ts`; su id va en `WHATSAPP_FLOW_PAGO_ID`. PUBLICADO el 18-sep-2026: `4695777257373991`. */
   pago: { name: "Solicitud de pago – Mizar", path: "integrations/whatsapp-flow/solicitud-pago.flow.json" },
 } as const;
 type FlowKey = keyof typeof FLOWS;
