@@ -44,6 +44,40 @@ describe("registro de errores del servidor", () => {
     expect(serialized).not.toContain("Juan Pérez");
   });
 
+  it("con LOG_INGEST_URL/TOKEN copia el error a Better Stack con Bearer, sin la query string ni datos de la fila", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubEnv("LOG_INGEST_URL", "https://ingesta.example.test");
+    vi.stubEnv("LOG_INGEST_TOKEN", "token-de-prueba");
+    try {
+      reportServerError(postgresLikeError(), { where: "route", path: "/api/suppliers?q=Juan%20Perez" });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("https://ingesta.example.test");
+      expect((init.headers as Record<string, string>).Authorization).toBe("Bearer token-de-prueba");
+      const body = JSON.parse(String(init.body));
+      expect(body).toMatchObject({ level: "error", event: "error_servidor", path: "/api/suppliers", code: "23505" });
+      expect(body.dt).toEqual(expect.any(String));
+      expect(String(init.body)).not.toMatch(/Juan|1098765432/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("sin LOG_INGEST_URL no sale nada de la máquina, y un fallo de red no rompe nada", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("sin red"));
+    reportServerError(new Error("x"), { where: "prueba" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.stubEnv("LOG_INGEST_URL", "https://ingesta.example.test");
+    vi.stubEnv("LOG_INGEST_TOKEN", "t");
+    try {
+      expect(() => reportServerError(new Error("x"), { where: "prueba" })).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("registrar nunca lanza, aunque el valor no sea un Error", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(() => reportServerError("texto suelto", { where: "prueba" })).not.toThrow();

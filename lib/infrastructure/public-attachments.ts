@@ -4,6 +4,7 @@ import { sharedPostgres } from "./postgres-repositories";
 import { createLocalBucketStorage } from "./local-storage";
 import { sniffAttachmentMimeOrPlainText } from "./attachment-mime";
 import { runtimeEnv } from "../security/env";
+import { logServerEvent } from "../observability/report-error";
 import { ATTACHMENT_MIME_TYPES, expectedAttachmentExtensions, filename as sanitizeAttachmentName, IMAGE_MIME_TYPES, PRIVATE_ATTACHMENT_BUCKET } from "../services/attachment-service";
 
 /**
@@ -88,7 +89,7 @@ export function createPublicAttachmentUploader(databaseUrl = runtimeEnv().DATABA
    */
   const recordDiscard = async (requisitionId: string, candidate: PublicAttachmentCandidate, reason: PublicAttachmentDiscardReason) => {
     const detail = { requisitionId, reason, sizeBytes: candidate.bytes.byteLength };
-    console.warn(JSON.stringify({ event: "adjunto_portal_descartado", itemId: candidate.itemId, ...detail }));
+    logServerEvent("warn", "adjunto_portal_descartado", { itemId: candidate.itemId, ...detail });
     try {
       await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values ('requisicion_item', ${candidate.itemId}, 'ADJUNTO_PORTAL_DESCARTADO', 'web', null, now(), ${asJsonb(sql, detail)})`;
     } catch {
