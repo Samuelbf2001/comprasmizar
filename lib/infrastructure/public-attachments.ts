@@ -60,22 +60,41 @@ export interface PublicAttachmentUploader {
   saveAll(requisitionId: string, candidates: readonly PublicAttachmentCandidate[]): Promise<void>;
 }
 
-/** Sniff + validación de tamaño/nombre/extensión. `null` = archivo inválido, se descarta. */
-function safeAttachment(candidate: PublicAttachmentCandidate): { name: string; mimeType: string; type: "foto" | "soporte" } | null {
-  if (candidate.bytes.byteLength < 1 || candidate.bytes.byteLength > MAX_PUBLIC_ATTACHMENT_BYTES) return null;
+/** Por qué se descartó un archivo. Viaja a `auditoria` y al log; nunca el nombre ni el contenido. */
+export type PublicAttachmentDiscardReason = "tamano" | "tipo_no_admitido" | "nombre_invalido" | "extension_no_coincide" | "almacenamiento" | "error_inesperado";
+
+/** Sniff + validación de tamaño/nombre/extensión. Un `reason` = archivo inválido, se descarta. */
+function safeAttachment(candidate: PublicAttachmentCandidate): { name: string; mimeType: string; type: "foto" | "soporte" } | { reason: PublicAttachmentDiscardReason } {
+  if (candidate.bytes.byteLength < 1 || candidate.bytes.byteLength > MAX_PUBLIC_ATTACHMENT_BYTES) return { reason: "tamano" };
   const signature = sniffAttachmentMimeOrPlainText(candidate.bytes);
-  if (!signature || !ATTACHMENT_MIME_TYPES.has(signature.mimeType)) return null;
+  if (!signature || !ATTACHMENT_MIME_TYPES.has(signature.mimeType)) return { reason: "tipo_no_admitido" };
   const type = IMAGE_MIME_TYPES.has(signature.mimeType) ? "foto" : "soporte";
   let name: string;
-  try { name = sanitizeAttachmentName(candidate.name || `${type}.${signature.extension}`); } catch { return null; }
+  try { name = sanitizeAttachmentName(candidate.name || `${type}.${signature.extension}`); } catch { return { reason: "nombre_invalido" }; }
   const extension = name.slice(name.lastIndexOf(".") + 1);
-  if (!expectedAttachmentExtensions(signature.mimeType).includes(extension)) return null;
+  if (!expectedAttachmentExtensions(signature.mimeType).includes(extension)) return { reason: "extension_no_coincide" };
   return { name, mimeType: signature.mimeType, type };
 }
 
 export function createPublicAttachmentUploader(databaseUrl = runtimeEnv().DATABASE_URL): PublicAttachmentUploader {
   const sql = sharedPostgres(databaseUrl);
   const storage = createLocalBucketStorage(PRIVATE_ATTACHMENT_BUCKET);
+  /**
+   * El descarte sigue sin reventar la radicación, pero ya no es mudo: queda en `auditoria`
+   * (`ADJUNTO_PORTAL_DESCARTADO`, ligado al ítem) y como advertencia en el log del contenedor, que es
+   * lo que ve el monitoreo. Antes, un PDF corrupto desaparecía sin que nadie lo supiera: el solicitante
+   * creía haberlo enviado y quien revisa no tenía cómo saber que faltaba. Ni el nombre ni los bytes del
+   * archivo salen de aquí (pueden llevar datos personales).
+   */
+  const recordDiscard = async (requisitionId: string, candidate: PublicAttachmentCandidate, reason: PublicAttachmentDiscardReason) => {
+    const detail = { requisitionId, reason, sizeBytes: candidate.bytes.byteLength };
+    console.warn(JSON.stringify({ event: "adjunto_portal_descartado", itemId: candidate.itemId, ...detail }));
+    try {
+      await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values ('requisicion_item', ${candidate.itemId}, 'ADJUNTO_PORTAL_DESCARTADO', 'web', null, now(), ${asJsonb(sql, detail)})`;
+    } catch {
+      // Si ni siquiera la auditoría entra, queda la línea del log.
+    }
+  };
   return {
     async saveAll(requisitionId, candidates) {
       // Máximo 1 por ítem: si por lo que sea llegara más de un archivo para el mismo `itemId`, solo se
@@ -87,17 +106,19 @@ export function createPublicAttachmentUploader(databaseUrl = runtimeEnv().DATABA
         if (seenItems.has(candidate.itemId)) continue;
         seenItems.add(candidate.itemId);
         const safe = safeAttachment(candidate);
-        if (!safe) continue; // archivo inválido: se descarta, nunca revienta la radicación
+        // Archivo inválido: se descarta (y se registra), nunca revienta la radicación.
+        if ("reason" in safe) { await recordDiscard(requisitionId, candidate, safe.reason); continue; }
         try {
           const adjuntoId = randomUUID();
           const path = `${PUBLIC_ATTACHMENT_PATH_PREFIX}/${candidate.itemId}/${adjuntoId}/${safe.name}`;
           const checksum = createHash("sha256").update(candidate.bytes).digest("hex");
-          try { await storage.upload(path, candidate.bytes, safe.mimeType); } catch { continue; }
+          try { await storage.upload(path, candidate.bytes, safe.mimeType); } catch { await recordDiscard(requisitionId, candidate, "almacenamiento"); continue; }
           await sql`insert into adjuntos (id, entidad, entidad_id, storage_bucket, url_storage, tipo, nombre_original, mime_type, tamano_bytes, subido_por, checksum_sha256, fecha) values (${adjuntoId}, 'requisicion_item', ${candidate.itemId}, ${PRIVATE_ATTACHMENT_BUCKET}, ${path}, ${safe.type}, ${safe.name}, ${safe.mimeType}, ${candidate.bytes.byteLength}, null, ${checksum}, now())`;
           await sql`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json) values ('requisicion_item', ${candidate.itemId}, 'ADJUNTO_PORTAL_DISPONIBLE', 'web', null, now(), ${asJsonb(sql, { requisitionId, sizeBytes: candidate.bytes.byteLength, mimeType: safe.mimeType })})`;
           saved += 1;
         } catch {
           // Nunca deja que un archivo reviente la radicación (que ya existe): se salta y sigue con los demás.
+          await recordDiscard(requisitionId, candidate, "error_inesperado");
         }
       }
     },

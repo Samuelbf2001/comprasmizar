@@ -193,6 +193,25 @@ describe("soporte opcional por artículo del portal público — camino real de 
     expect(hoisted.inserts.some((entry) => entry.sql.includes("insert into adjuntos"))).toBe(false);
   });
 
+  it("el descarte ya no es mudo: queda en auditoría y en el log, con el motivo (aquí, texto con nombre .png) y sin el nombre del archivo", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { dependencies } = fakeServiceDependencies();
+      hoisted.setDependencies(dependencies);
+      await POST(multipartRequest(basePayload(), { foto_0: { name: "factura-juan-perez.png", type: "image/png", bytes: NOT_AN_IMAGE } }));
+      const audit = hoisted.inserts.find((entry) => entry.sql.includes("'ADJUNTO_PORTAL_DESCARTADO'"));
+      expect(audit).toBeDefined();
+      expect(JSON.stringify(audit!.values)).toContain("extension_no_coincide");
+      expect(JSON.stringify(audit!.values)).not.toContain("juan-perez");
+      const logged = warn.mock.calls.map((call) => String(call[0])).find((line) => line.includes("adjunto_portal_descartado"));
+      expect(logged).toBeDefined();
+      expect(logged).toContain("extension_no_coincide");
+      expect(logged).not.toContain("juan-perez");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("una foto que excede el tope de 10 MB se descarta sin romper la radicación", async () => {
     const { dependencies, requisitionMap } = fakeServiceDependencies();
     hoisted.setDependencies(dependencies);

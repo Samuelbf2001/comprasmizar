@@ -2,6 +2,7 @@ import { dispatchPendingNotifications, createPostgresNotificationDispatchStore }
 import { sendKapsoTemplate } from "../../../../lib/infrastructure/kapso";
 import { isApprovalFlowConfigured, sendApprovalFlow, sendApprovalTemplate } from "../../../../lib/infrastructure/approval-flow-sender";
 import { safeEqual } from "../../../../lib/security/crypto";
+import { reportServerError } from "../../../../lib/observability/report-error";
 
 export const runtime = "nodejs";
 const noStore = { "Cache-Control": "no-store" };
@@ -66,7 +67,8 @@ export async function POST(request: Request): Promise<Response> {
       } : {}),
     });
     return Response.json({ ok: true, ...outcome }, { status: 200, headers: noStore });
-  } catch {
+  } catch (error) {
+    reportServerError(error, { where: "dispatch-notifications", status: 500 });
     return Response.json({ error: "dispatch_failed" }, { status: 500, headers: noStore });
   }
 }

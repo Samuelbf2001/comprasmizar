@@ -3,6 +3,7 @@ import { DomainError, type Actor, type PaymentMethod, type PaymentStatus } from 
 import { requireServerActor } from "../infrastructure/auth";
 import type { ListQuery } from "../services/list-query";
 import { PAYMENT_METHOD_VALUES, PAYMENT_STATUS_VALUES } from "./schemas";
+import { reportServerError } from "../observability/report-error";
 
 const noStore = { "Cache-Control": "no-store" };
 class RequestValidationError extends Error { constructor(readonly issues: z.core.$ZodIssue[]) { super("INVALID_INPUT"); } }
@@ -145,6 +146,11 @@ export function apiError(error: unknown, serverTiming?: string): Response {
   const code = error instanceof Error ? error.message : "";
   if (code === "UNAUTHENTICATED") return Response.json({ error: "unauthenticated" }, { status: 401, headers });
   if (["ACCOUNT_INACTIVE", "AUTHZ_LOOKUP_FAILED", "ROLE_REQUIRED"].includes(code)) return Response.json({ error: "forbidden" }, { status: 403, headers });
-  if (code === "APP_ORIGIN_NOT_CONFIGURED" || error instanceof z.ZodError) return Response.json({ error: "service_unavailable" }, { status: 503, headers });
+  // A partir de aquí son averías, no respuestas previstas: se registran (ver lib/observability/report-error.ts).
+  if (code === "APP_ORIGIN_NOT_CONFIGURED" || error instanceof z.ZodError) {
+    reportServerError(error, { where: "api", status: 503 });
+    return Response.json({ error: "service_unavailable" }, { status: 503, headers });
+  }
+  reportServerError(error, { where: "api", status: 500 });
   return Response.json({ error: "internal_error" }, { status: 500, headers });
 }

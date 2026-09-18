@@ -2,6 +2,7 @@ import { PLAIN_TEXT_MIME_TYPE, sniffAttachmentMimeOrPlainText } from "../../../.
 import { readObject, verifyStorageToken, writeObject } from "../../../../lib/infrastructure/local-storage";
 import { ATTACHMENT_MIME_TYPES, MAX_PRIVATE_ATTACHMENT_BYTES, PRIVATE_ATTACHMENT_BUCKET } from "../../../../lib/services/attachment-service";
 import { MAX_SUPPLIER_DOCUMENT_BYTES, SUPPLIER_DOCUMENT_BUCKET } from "../../../../lib/services/supplier-service";
+import { reportServerError } from "../../../../lib/observability/report-error";
 
 export const runtime = "nodejs";
 
@@ -64,6 +65,7 @@ export async function PUT(request: Request): Promise<Response> {
     // Reintentar la misma subida (doble clic, reintento del navegador) no debe sobrescribir un
     // soporte ya auditado: se responde 409 y el flujo de confirmación sigue siendo válido.
     if (error instanceof Error && error.message === "STORAGE_OBJECT_EXISTS") return new Response("El objeto ya existe", { status: 409, headers: { "Cache-Control": "no-store" } });
+    reportServerError(error, { where: "storage-upload", status: 500 });
     return new Response("No se pudo guardar el archivo", { status: 500, headers: { "Cache-Control": "no-store" } });
   }
   return new Response(null, { status: 201, headers: { "Cache-Control": "no-store" } });
