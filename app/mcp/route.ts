@@ -6,6 +6,7 @@ import { createPostgresDependencies, sharedPostgres } from "../../lib/infrastruc
 import { createSupplierServiceDependencies } from "../../lib/infrastructure/supplier-repositories";
 import { CatalogService, ProcurementService, SupplierService, type CatalogCostCenter } from "../../lib/services";
 import { mcpRateLimiter } from "../../lib/security/rate-limit";
+import { clientIpFrom } from "../../lib/security/client-ip";
 import { buildExpensesReport } from "../api/reports/expenses-report";
 import { createMcpServer, type McpServices } from "./server";
 
@@ -27,7 +28,7 @@ function productionServices(): McpServices {
 
 async function handle(request: Request): Promise<Response> {
   if (!isMcpConfigured()) return Response.json({ error: "service_unavailable" }, { status: 503 });
-  const clientIp = request.headers.get("x-real-ip") ?? "direct";
+  const clientIp = clientIpFrom(request.headers);
   if (!mcpRateLimiter.consume(clientIp)) return Response.json({ error: "rate_limited" }, { status: 429 });
   const actor = await verifyMcpApiKey(request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null, mcpEnv().MCP_KEY_PEPPER, lookupMcpActor);
   if (!actor) return Response.json({ error: "unauthorized" }, { status: 401 });

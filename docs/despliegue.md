@@ -45,6 +45,7 @@ Distinción crítica de Next.js. Las `NEXT_PUBLIC_*` se **incrustan en el bundle
 | `KAPSO_PHONE_NUMBER_ID` | `1221974497672719` (línea MIZAR) |
 | `KAPSO_EMBED_URL` | URL del inbox embebido (embed `fab3fa49…`, alcance: solo línea MIZAR, orígenes: compras.grupomizar.com.co y localhost). **Con el dominio provisional `comprasmizar.sixteam.pro` este embed NO carga**: sus orígenes permitidos están atados al dominio definitivo; hay que crear otro embed con el origen nuevo (o esperar al dominio definitivo). Credencial portadora: tratar como secreto; para rotarla, DELETE del embed y crear otro |
 | `NOTIFICATION_DISPATCH_SECRET` | ≥32 caracteres. Candado del endpoint interno que envía las notificaciones pendientes; el cron del VPS lo pasa en `x-dispatch-secret`. Sin él, el endpoint responde 503 |
+| `HEARTBEAT_DISPATCH_URL` | Opcional. URL del latido (healthchecks.io o Better Stack) que `ops/dispatch-notifications.sh` llama en cada vuelta buena y con `/fail` en cada vuelta mala. La lee el guion desde `.env.production`, no la aplicación. Si el cron deja de correr, ningún aviso de WhatsApp sale, y el latido que falta es lo que lo delata |
 | `SEND_FLOW_SECRET` | ≥32 caracteres. Candado de los endpoints que reenvían un WhatsApp Flow a mano (`/api/internal/send-flow` y `/api/internal/send-approval-flow`). Propio y distinto del anterior: rotar uno no debe obligar a rotar el otro |
 
 **WhatsApp Flows** (ver [integrations/whatsapp-flow/README.md](../integrations/whatsapp-flow/README.md)). Sin estas variables el canal simplemente no se intenta y las notificaciones salen como aviso de texto, así que se pueden cargar después sin romper nada:
@@ -228,8 +229,8 @@ Los scripts de operación localizan el contenedor con `docker compose exec` desd
 
 Dos cosas dejan de estar garantizadas al quitar Caddy. Los demás encabezados de seguridad (CSP, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-Content-Type-Options`) los pone Next.js en [next.config.ts](../next.config.ts) y siguen intactos.
 
-1. **`Strict-Transport-Security` (HSTS)** lo añadía solo Caddy. Configurarlo en EasyPanel, o añadirlo a `next.config.ts`.
-2. **La sobrescritura de `X-Real-IP`, que es de seguridad, no cosmética.** El limitador de intentos de login, el del formulario público ([app/api/public/requisitions/route.ts](../app/api/public/requisitions/route.ts)) y el del MCP ([app/mcp/route.ts](../app/mcp/route.ts)) confían en ese encabezado. El código lo dice explícitamente: *"Caddy must overwrite X-Real-IP; never parse a client-supplied X-Forwarded-For chain here"*. Si el proxy de EasyPanel **no** lo sobrescribe, un atacante manda su propio `X-Real-IP` y se salta esos tres límites rotando el valor. **Hay que comprobarlo con la prueba del paso 6.4, no darlo por hecho.**
+1. **`Strict-Transport-Security` (HSTS)** lo añadía solo Caddy. **Resuelto el 18-sep-2026:** lo pone `next.config.ts`. Hasta esa fecha producción servía sin HSTS.
+2. **La IP del cliente para los limitadores, que es de seguridad, no cosmética.** Se suponía que el proxy sobrescribía `X-Real-IP`. Caddy sí lo hace; **el Traefik de EasyPanel no**: el 18-sep-2026 se comprobó contra producción que, rotando una `X-Real-IP` falsa, el limitador del portal dejaba de frenar. Con eso la contraseña del portal podía adivinarse sin techo, y cada intento cuesta un bcrypt en un VPS compartido. **Resuelto** con [lib/security/client-ip.ts](../lib/security/client-ip.ts): los limitadores de login, portal y MCP toman la ÚLTIMA entrada de `X-Forwarded-For`, la que añade el proxy, y ya no leen ninguna cabecera que escriba el cliente. El supuesto es un único proxy delante y sin CDN; si se pone Cloudflare, hay que revisarlo. Se comprueba con el paso 6.4.
 
 ## 5. Webhook de Kapso
 
@@ -248,11 +249,14 @@ Ninguno de estos pasos requiere datos reales de Mizar:
 1. `GET /api/health` responde configurado (no `unconfigured`).
 2. `GET /` sin sesión redirige a `/login` (fallo cerrado de Auth).
 3. La base no es alcanzable desde fuera: `nc -z <ip-del-vps> 5432` debe fallar. El servicio `db` no publica puerto a propósito; si responde, revisa que nadie le haya añadido un `ports:`.
-4. **El proxy sobrescribe `X-Real-IP`** (ver §3). Comprobación directa, mandando una IP falsa desde fuera:
+4. **Una IP falsa no estrena cupo en los limitadores** (ver §4). `POST /api/public/access` responde `{ok:false}` con 200 tanto si la contraseña es mala como si el limitador frena, así que lo que delata al limitador es el **tiempo**: una petición limitada no paga el bcrypt y llega unos 200 ms antes. Primero se agota el cupo real y después se prueba con cabeceras falsas:
    ```bash
-   curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Real-IP: 1.2.3.4' https://comprasmizar.sixteam.pro/api/health
+   U=https://comprasmizar.sixteam.pro/api/public/access
+   H=(-H 'content-type: application/json' -H 'Origin: https://comprasmizar.sixteam.pro')
+   for i in $(seq 1 23); do curl -s -o /dev/null -w '%{time_starttransfer} ' -X POST $U "${H[@]}" -d '{"code":"x"}'; done; echo
+   for i in $(seq 1 6); do curl -s -o /dev/null -w '%{time_starttransfer} ' -X POST $U "${H[@]}" -H "X-Real-IP: 10.9.8.$i" -H "X-Forwarded-For: 10.9.8.$i" -d '{"code":"x"}'; done; echo
    ```
-   Repetir el formulario público con `X-Real-IP` distinto en cada intento: si el limitador **nunca** responde 429, el encabezado del cliente está llegando crudo a la aplicación y los tres límites de tasa son evadibles. En ese caso hay que forzar la sobrescritura en el proxy de EasyPanel antes de exponer el sitio.
+   Lo correcto es que la segunda tanda salga **rápida**, como las últimas de la primera: sigue limitada. Si sale lenta (~0,5 s, igual que las primeras de la primera tanda), alguna cabecera del cliente está moviendo la clave del limitador. Así se detectó el fallo el 18-sep-2026.
 5. El arnés SQL pasa contra la base desplegada (revierte sin dejar datos).
 6. Login con un usuario real de `auth.users` vinculado en `public.usuarios`. Si los datos vienen del volcado de Supabase, la contraseña de siempre funciona sin cambios (ver [migración](migracion-autoalojado.md)).
 7. Subir un adjunto y volver a descargarlo: prueba de punta a punta del almacenamiento propio.

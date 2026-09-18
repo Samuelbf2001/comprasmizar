@@ -7,6 +7,7 @@ import { createPostgresDependencies } from "../../../../lib/infrastructure/postg
 import { createPublicAttachmentUploader, type PublicAttachmentCandidate } from "../../../../lib/infrastructure/public-attachments";
 import { isPublicConfigured } from "../../../../lib/security/env";
 import { publicFormRateLimiter, publicWorkAggregateRateLimiter, publicWorkRateLimiter } from "../../../../lib/security/rate-limit";
+import { clientIpFrom } from "../../../../lib/security/client-ip";
 
 export const runtime = "nodejs";
 const publicItemSchema = z.object({
@@ -135,8 +136,8 @@ const MAX_PUBLIC_MULTIPART_BYTES = 60 * 1024 * 1024;
 const PHOTO_FIELD_RE = /^foto_(\d+)$/;
 
 export async function POST(request: Request) {
-  // Caddy must overwrite X-Real-IP; never parse a client-supplied X-Forwarded-For chain here.
-  if (!isPublicConfigured()) return unavailable(); const ip = request.headers.get("x-real-ip") ?? "direct"; if (!publicFormRateLimiter.consume(ip)) return neutral();
+  // La IP la pone el proxy, no el cliente: ver lib/security/client-ip.ts.
+  if (!isPublicConfigured()) return unavailable(); const ip = clientIpFrom(request.headers); if (!publicFormRateLimiter.consume(ip)) return neutral();
   // Portal público con soporte opcional por artículo: la MISMA petición que radica trae, además del
   // JSON de siempre, un `multipart/form-data` con un campo `payload` (idéntico contrato JSON) y hasta
   // una `foto_<índice>` por artículo. El camino JSON puro (sin archivos) es EXACTAMENTE el de siempre —

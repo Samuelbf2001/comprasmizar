@@ -4,6 +4,7 @@ import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { SESSION_COOKIE, destroySession, sessionCookieOptions, setPassword, signIn, verifySession } from '../lib/infrastructure/local-auth';
 import { loginAggregateRateLimiter, loginRateLimiter } from '../lib/security/rate-limit';
+import { clientIpFrom } from '../lib/security/client-ip';
 
 export type AuthActionState = { error?: string; success?: string };
 
@@ -15,10 +16,9 @@ function safeNext(value: FormDataEntryValue | null) { const next = String(value 
  * `AuthActionState` — así que components/auth/auth-form.tsx sigue igual.
  */
 
-/** Primera IP de `x-forwarded-for` (la que puso Caddy). Solo alimenta el limitador de intentos. */
+/** Solo alimenta el limitador de intentos. La PRIMERA entrada de `x-forwarded-for` la escribe el cliente; ver lib/security/client-ip.ts. */
 async function clientIp(): Promise<string> {
-  const forwarded = (await headers()).get('x-forwarded-for') ?? '';
-  return forwarded.split(',')[0]?.trim() || 'desconocida';
+  return clientIpFrom(await headers());
 }
 
 export async function signInAction(_previous: AuthActionState, formData: FormData): Promise<AuthActionState> {

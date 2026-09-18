@@ -1,6 +1,7 @@
 import { verificarCodigoPublico } from "../../../../lib/infrastructure/public-access";
 import { isPublicConfigured } from "../../../../lib/security/env";
 import { publicFormRateLimiter } from "../../../../lib/security/rate-limit";
+import { clientIpFrom } from "../../../../lib/security/client-ip";
 
 export const runtime = "nodejs";
 
@@ -41,7 +42,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   if (!isPublicConfigured()) return Response.json({ error: "service_unavailable" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   const denegado = Response.json({ ok: false }, { headers: { "Cache-Control": "no-store" } });
-  const ip = request.headers.get("x-real-ip") ?? "direct";
+  const ip = clientIpFrom(request.headers);
   if (!publicFormRateLimiter.consume(ip)) return denegado;
   let code = "";
   try {
