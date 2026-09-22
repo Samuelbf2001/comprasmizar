@@ -7,7 +7,7 @@
 # para saltárselo. Debe ejecutarse antes de dar el sistema por productivo y luego cada trimestre.
 #
 # Uso:  ops/restore-verify.sh                 -> toma el respaldo más reciente de Drive
-#       ops/restore-verify.sh mizar-2026....enc  -> uno concreto, por nombre
+#       ops/restore-verify.sh mizar-2026....dump[.enc]  -> uno concreto, por nombre
 set -euo pipefail
 
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/mizar}"
@@ -17,9 +17,11 @@ DB_USER="${POSTGRES_USER:-mizar}"
 VERIFY_DB="verificacion_restore_$(date -u +%H%M%S)"
 WANTED="${1:-}"
 
-for variable in GDRIVE_FOLDER_ID BACKUP_PASSPHRASE; do
+for variable in GDRIVE_FOLDER_ID; do
   if [ -z "${!variable:-}" ]; then echo "Falta la variable $variable" >&2; exit 2; fi
 done
+# BACKUP_PASSPHRASE solo hace falta si el respaldo elegido está cifrado (.enc); se comprueba abajo,
+# cuando ya se sabe cuál es.
 
 cd "$COMPOSE_DIR"
 psql_admin() { docker compose exec -T db psql -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 "$@"; }
@@ -35,7 +37,11 @@ trap cleanup EXIT
 echo "-> buscando respaldo en Drive"
 listing="$(node "$REPO_DIR/ops/gdrive.mjs" listar)"
 if [ -n "$WANTED" ]; then line="$(echo "$listing" | grep -F "$WANTED" | head -1)"
-else line="$(echo "$listing" | grep -F 'mizar-' | grep -F '.dump.enc' | head -1)"; fi
+else
+  # Acepta el volcado cifrado (.dump.enc) y el que se sube sin cifrar (.dump). El listado viene del
+  # más nuevo al más viejo, así que el primero que encaje es el último respaldo.
+  line="$(echo "$listing" | awk '$(NF-1) ~ /^mizar-.*\.dump(\.enc)?$/ { print; exit }')"
+fi
 [ -n "$line" ] || { echo "No se encontró ningún respaldo que restaurar." >&2; exit 1; }
 
 name="$(echo "$line" | awk '{print $(NF-1)}')"
@@ -46,7 +52,7 @@ node "$REPO_DIR/ops/gdrive.mjs" bajar "$file_id" "$WORK_DIR/$name"
 
 # El checksum acompaña a cada respaldo con el mismo sello de tiempo. Si falta, se avisa pero no se
 # aborta: verificar el descifrado con GCM ya detecta corrupción, esto es la comprobación temprana.
-stamp="$(echo "$name" | sed -E 's/^mizar-(.*)\.dump\.enc$/\1/')"
+stamp="$(echo "$name" | sed -E 's/^mizar-(.*)\.dump(\.enc)?$/\1/')"
 sha_line="$(echo "$listing" | grep -F "mizar-$stamp.sha256" | head -1 || true)"
 if [ -n "$sha_line" ]; then
   node "$REPO_DIR/ops/gdrive.mjs" bajar "$(echo "$sha_line" | awk '{print $NF}')" "$WORK_DIR/checksums"
@@ -56,8 +62,17 @@ else
   echo "-- aviso: no se encontró el .sha256 de este respaldo"
 fi
 
-echo "-> descifrando"
-node "$REPO_DIR/ops/backup-crypto.mjs" descifrar "$WORK_DIR/$name" "$WORK_DIR/restaurar.dump"
+case "$name" in
+  *.enc)
+    [ -n "${BACKUP_PASSPHRASE:-}" ] || { echo "Este respaldo está cifrado y falta BACKUP_PASSPHRASE." >&2; exit 2; }
+    echo "-> descifrando"
+    node "$REPO_DIR/ops/backup-crypto.mjs" descifrar "$WORK_DIR/$name" "$WORK_DIR/restaurar.dump"
+    ;;
+  *)
+    echo "-> respaldo sin cifrar, no hay que descifrar"
+    mv "$WORK_DIR/$name" "$WORK_DIR/restaurar.dump"
+    ;;
+esac
 
 echo "-> restaurando en la base desechable $VERIFY_DB"
 psql_admin -c "create database \"$VERIFY_DB\";" > /dev/null

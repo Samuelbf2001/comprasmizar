@@ -7,8 +7,10 @@
 //
 // Antes de correrlo, en https://console.cloud.google.com:
 //   1. Crear un proyecto y habilitar la "Google Drive API".
-//   2. Pantalla de consentimiento OAuth: tipo Externo, y añadir tu propia cuenta como usuario de
-//      prueba (basta: la app nunca sale de tu cuenta y no necesita verificación de Google).
+//   2. Pantalla de consentimiento OAuth: **Interno** si la cuenta es de Google Workspace. Con una
+//      cuenta Gmail corriente: Externo y PUBLICAR la app («En producción»; `drive.file` no exige
+//      verificación). NO la dejes Externa en modo «Prueba»: esos tokens caducan a los 7 días y el
+//      respaldo dejaría de funcionar sin avisar.
 //   3. Credenciales -> Crear credenciales -> ID de cliente de OAuth -> tipo **App de escritorio**.
 //      El tipo importa: es el único que admite el redirect a localhost que usa este guion. El flujo
 //      "OOB" que antes se usaba para servidores sin navegador está retirado desde 2022.

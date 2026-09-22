@@ -44,9 +44,13 @@ Dos consecuencias que conviene tener presentes:
 ## Antes de empezar
 
 - Acceso SSH al VPS y `docker compose` funcionando.
-- Una cuenta de Google para los respaldos (una normal sirve; no hace falta Workspace).
-- Decidir y guardar **fuera del VPS** la `BACKUP_PASSPHRASE`. Si se pierde con el servidor, los
-  respaldos cifrados no sirven para nada.
+- Una cuenta de Google para los respaldos. Con Workspace (como sixteam.pro) la pantalla de
+  consentimiento se crea **Interna**; con una cuenta Gmail corriente hay que **publicar** la app
+  («En producción»), porque una app Externa en modo «Prueba» emite tokens que caducan a los 7 días y
+  el respaldo se rompería en silencio.
+- Decidir si se cifra. Con cifrado, guardar **fuera del VPS** la `BACKUP_PASSPHRASE`: si se pierde
+  con el servidor, los respaldos cifrados no sirven para nada. Sin cifrado (`BACKUP_ENCRYPT=no`, el
+  estado actual desde el 18-sep-2026) el Drive de destino debe ser privado y no compartirse.
 
 ## Paso 1 — Recuperar los datos de Supabase
 
@@ -174,15 +178,16 @@ MAILTO=ernesto@sixteam.pro
 0 8 * * * cd /opt/mizar && set -a && . /opt/mizar/.env.backup && set +a && ops/backup-daily.sh >> /var/log/mizar-backup.log 2>&1
 ```
 
-03:00 hora Colombia = 08:00 UTC. `/opt/mizar/.env.backup` (permisos 600) lleva `BACKUP_PASSPHRASE`,
-`GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN`, `GDRIVE_FOLDER_ID` y, opcional
+03:00 hora Colombia = 08:00 UTC. `/opt/mizar/.env.backup` (permisos 600) lleva `BACKUP_PASSPHRASE`
+(o `BACKUP_ENCRYPT=no`), `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN`,
+`GDRIVE_FOLDER_ID` y, opcional
 pero recomendado, `HEARTBEAT_BACKUP_URL`: la URL de un latido de healthchecks.io o de Better Stack.
 El guion la llama al terminar bien y le añade `/fail` si falla. Si un día el cron ni siquiera arranca,
 el monitor avisa porque el latido no llega. `MAILTO` solo avisa cuando hay salida, y un cron que no
 corre no produce ninguna.
 
-Cada noche sube dos objetos cifrados —la base y los archivos— más su `.sha256`, purga lo que pase de
-35 días y limpia las sesiones vencidas.
+Cada noche sube dos objetos —la base y los archivos, cifrados salvo `BACKUP_ENCRYPT=no`— más su
+`.sha256`, purga lo que pase de 35 días y limpia las sesiones vencidas.
 
 ## Paso 5b — Enrutar el dominio (VPS con EasyPanel)
 

@@ -1,6 +1,6 @@
 # Plataforma de Mizar
 
-Monolito modular para requisiciones, aprobaciones, órdenes y gastos de obra. La aplicación sigue el alcance de [PRD.md](./PRD.md). Desde el 10 de septiembre de 2026 todo es autoalojado: Next.js, Postgres, autenticación y almacenamiento corren en el VPS Hostinger, con respaldo diario cifrado a Google Drive. Ver [docs/migracion-autoalojado.md](./docs/migracion-autoalojado.md).
+Monolito modular para requisiciones, aprobaciones, órdenes y gastos de obra. La aplicación sigue el alcance de [PRD.md](./PRD.md). Desde el 10 de septiembre de 2026 todo es autoalojado: Next.js, Postgres, autenticación y almacenamiento corren en el VPS Hostinger, con respaldo diario a Google Drive. Ver [docs/migracion-autoalojado.md](./docs/migracion-autoalojado.md).
 
 ## Arranque local
 

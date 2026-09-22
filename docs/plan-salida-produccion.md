@@ -53,10 +53,11 @@ Ninguno de los tres es grande. El orden de trabajo está en la §6.
 ## 2. Bloqueantes: sin esto no se sale
 
 ### B1. Respaldos que funcionen y una restauración probada
-- [ ] Ernesto hace el consentimiento OAuth de Google Drive (`ops/gdrive-authorize.mjs`, necesita su navegador) → se guarda `GDRIVE_FOLDER_ID` en `/opt/mizar/.env.backup`.
-- [ ] Instalar el cron de `ops/backup-daily.sh` (03:00 Colombia = `0 8 * * *` UTC), correrlo una vez a mano y comprobar que se suben los tres archivos (`.dump.enc`, `soportes-*.tar.enc`, sha256).
-- [ ] Correr `ops/restore-verify.sh` y **anotar la fecha** en `docs/runbook-operacion.md`. Un respaldo que nunca se restauró no cuenta como respaldo.
-- [ ] Confirmar que `BACKUP_PASSPHRASE` está en el gestor de secretos, **fuera** del VPS.
+- [x] **Hecho el 18-sep-2026.** Consentimiento OAuth de Google Drive con Ernesto@sixteam.pro: proyecto de Google Cloud `respaldos-mizar` (organización sixteam.pro), Drive API habilitada, pantalla de consentimiento **Interna** (no Externa: en modo prueba el token caduca a los 7 días), cliente «App de escritorio». Carpeta «Respaldos Mizar» creada por la API; las cuatro variables `GDRIVE_*` están en `/opt/mizar/.env.backup` (modo 600).
+- [x] **Hecho el 18-sep-2026.** Cron `0 8 * * *` (03:00 Colombia) instalado en el crontab de root. Primer respaldo a mano: subió `mizar-*.dump.enc` (315 KB), `soportes-*.tar.enc` (371 KB) y `mizar-*.sha256`, y se escribió `/var/backups/mizar/ultimo-exito`.
+- [x] **Decisión de Ernesto, 18-sep-2026: respaldos SIN cifrar por ahora** (`BACKUP_ENCRYPT=no`). La frase solo vivía en el VPS y perderla con el servidor era perder los datos; el destino es su Drive privado. Consecuencia: los volcados (hashes de contraseñas, teléfonos, adjuntos) quedan legibles para quien entre a esa cuenta de Google; la carpeta no se comparte. El primer respaldo cifrado sigue en Drive y se purga solo a los 35 días.
+- [x] **Hecho el 18-sep-2026.** `ops/restore-verify.sh` bajó el respaldo en claro de Drive, verificó el checksum y lo restauró en base desechable (17 migraciones, 7 usuarios, 17 obras). Fecha anotada en `docs/runbook-operacion.md`. Falta desempaquetar el `.tar` de soportes en un ensayo (el guion solo restaura la base).
+- [x] ~~Confirmar que `BACKUP_PASSPHRASE` está fuera del VPS~~ — ya no aplica mientras no se cifre.
 - [ ] Alerta si `ultimo-exito` tiene más de 48 h (ver M1).
 - [ ] **Decisión:** qué significa «entregar los backups al cliente». Un volcado cifrado no le sirve a Mizar. Propuesta: una exportación mensual legible (Excel + adjuntos en carpetas por requisición) en una carpeta compartida con ellos.
 
