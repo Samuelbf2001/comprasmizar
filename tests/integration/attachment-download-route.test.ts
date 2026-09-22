@@ -8,10 +8,13 @@ import type { SupplierRepository, SupplierServiceDependencies, SupplierTransacti
 // diseño, ver el comentario de `createLocalBucketStorage` ahí mismo. El defecto vivía en el LLAMADOR:
 // las dos rutas de descarga hacían `Response.redirect(url, 302)` con esa URL relativa, y el estándar
 // exige una absoluta — eso lanza TypeError y `apiError()` lo traduce en 500 para CUALQUIER adjunto y
-// CUALQUIER rol (comprobantes de pago, fotos del portal, documentos de proveedor). Esta prueba corre
-// el `createLocalBucketStorage` REAL (sin mock) contra las dos rutas de descarga y confirma que el 302
-// sale con un Location ABSOLUTO, resuelto contra `request.url` — el mismo criterio que sigue funcionando
-// detrás de un proxy que conserva el Host original (EasyPanel/VPS, ver AGENTS.md del encargo).
+// CUALQUIER rol (comprobantes de pago, fotos del portal, documentos de proveedor).
+//
+// El primer arreglo (16-sep) resolvía la URL contra `request.url`, y en producción falló de otra forma:
+// detrás de Traefik, `request.url` es la dirección INTERNA del contenedor (https://0.0.0.0:3000/…), así
+// que el navegador acababa redirigido a un sitio inalcanzable (verificado el 21-sep-2026). Ahora el 302
+// lleva el Location RELATIVO que da el almacenamiento y el navegador lo resuelve contra la URL pública.
+// Esta prueba corre el `createLocalBucketStorage` REAL (sin mock) con la request tal como llega en el VPS.
 process.env.DATABASE_URL = "postgres://u:p@localhost:5432/db";
 process.env.STORAGE_ROOT = "/tmp/mizar-test-storage-h1";
 process.env.STORAGE_SIGNING_SECRET = "s".repeat(32);
@@ -66,28 +69,31 @@ vi.mock("../../lib/infrastructure/supplier-repositories", async () => {
 const { GET: downloadAttachment } = await import("../../app/api/attachments/[entity]/[entityId]/[attachmentId]/download/route");
 const { GET: downloadSupplierDocument } = await import("../../app/api/suppliers/[id]/documents/[documentId]/download/route");
 
-describe("H1: la descarga de adjuntos responde 302 con Location ABSOLUTA, no relativa", () => {
-  it("comprobante de un pago de orden (pago_orden): 302 con Location absoluta", async () => {
+describe("H1: la descarga de adjuntos responde 302 con Location RELATIVO, nunca la dirección interna del contenedor", () => {
+  // Así llega la petición al contenedor en el VPS: Next ve su propia dirección de escucha, no el dominio.
+  const internal = "https://0.0.0.0:3000";
+
+  it("comprobante de un pago de orden (pago_orden): 302 hacia /api/storage/object", async () => {
     const response = await downloadAttachment(
-      new Request(`http://localhost/api/attachments/pago_orden/${pagoOrdenId}/${comprobanteId}/download`),
+      new Request(`${internal}/api/attachments/pago_orden/${pagoOrdenId}/${comprobanteId}/download`),
       { params: Promise.resolve({ entity: "pago_orden", entityId: pagoOrdenId, attachmentId: comprobanteId }) },
     );
     expect(response.status).toBe(302);
     const location = response.headers.get("location");
-    expect(location).toMatch(/^http:\/\/localhost\/api\/storage\/object\?token=/);
-    // Antes del arreglo, `new URL(url)` sobre la URL relativa que devuelve local-storage.ts lanzaba
-    // TypeError ("Invalid URL") en `Response.redirect`, y la ruta respondía 500 en vez de esto.
-    expect(() => new URL(location as string)).not.toThrow();
+    expect(location?.startsWith("/api/storage/object?token=")).toBe(true);
+    expect(location).not.toContain("0.0.0.0");
+    // El navegador lo resuelve contra la URL pública que pidió.
+    expect(new URL(location as string, "https://comprasmizar.sixteam.pro/x").origin).toBe("https://comprasmizar.sixteam.pro");
   });
 
-  it("documento de un proveedor: 302 con Location absoluta", async () => {
+  it("documento de un proveedor: 302 hacia /api/storage/object", async () => {
     const response = await downloadSupplierDocument(
-      new Request(`http://localhost/api/suppliers/${supplierId}/documents/${documentId}/download`),
+      new Request(`${internal}/api/suppliers/${supplierId}/documents/${documentId}/download`),
       { params: Promise.resolve({ id: supplierId, documentId }) },
     );
     expect(response.status).toBe(302);
     const location = response.headers.get("location");
-    expect(location).toMatch(/^http:\/\/localhost\/api\/storage\/object\?token=/);
-    expect(() => new URL(location as string)).not.toThrow();
+    expect(location?.startsWith("/api/storage/object?token=")).toBe(true);
+    expect(location).not.toContain("0.0.0.0");
   });
 });
