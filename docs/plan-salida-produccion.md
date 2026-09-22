@@ -7,7 +7,9 @@
 
 ## 0. Veredicto
 
-**Hoy no está lista para operación real.** El producto está completo para el alcance acordado; lo que falta es de **operación**, no de funcionalidades:
+**Actualización 21-sep:** respaldos en marcha desde el 18-sep y `main` desplegado el 21-sep (B1 y B3 casi cerrados). Faltan los datos del día cero (B4), el UAT (B5) y la cuenta de monitoreo.
+
+**Al 18-sep no estaba lista para operación real.** El producto está completo para el alcance acordado; lo que falta es de **operación**, no de funcionalidades:
 
 1. **No hay respaldos.** Ningún cron los ejecuta. Si el VPS se pierde hoy, se pierde todo. Además es un compromiso que se le hizo al cliente el 11-sep.
 2. **Producción va 5 días atrás** (`f9a7e00`, 13-sep): toda la adenda de pagos, los permisos editables y los 13 arreglos del QA siguen solo en `main` local. En producción **sigue vivo el error 500 al descargar cualquier adjunto**.
@@ -69,14 +71,16 @@ Ninguno de los tres es grande. El orden de trabajo está en la §6.
 - [ ] Rotar la contraseña del portal público (circuló en texto plano) y las credenciales que se compartieron por chat (clave de Kapso, EasyPanel, secretos internos).
 - [ ] Desactivar las 7 cuentas `*.demo@mizar.test` en cuanto existan los usuarios reales. Admin Sixteam queda como cuenta nominal de Ernesto o Samuel.
 
-### B3. Desplegar `main` actual (una sola build, fuera de horario)
-- [ ] Decidir qué pasa con el trabajo sin commitear: o se termina, se prueba y se commitea, o se aparta en una rama. **No se despliega un árbol sucio.**
-- [ ] Hacer QA contra el backend real (`scripts/dev-db.ts` + `NEXT_PUBLIC_DEMO_MODE=false`), que es obligatorio en este repo, y después `git push` → CI en verde.
-- [ ] Seguir la receta de `docs/despliegue.md` §2: `sync-arbol.sh --simulacro` primero (el refactor es grande) → build con los 3 build-args → **volcado manual previo** → migraciones → `up` → `docker network connect easypanel mizar-app-1`.
-- [ ] Después del despliegue: `/api/health` con `commit` igual al SHA y `origin:true`; POST sin sesión que responda 401 y nunca 503; cabecera HSTS presente; **descargar un comprobante y un documento de proveedor** (riesgo 1 del ESTADO).
-- [x] Publicar en Meta los Flows de pago y de captura v4 (18-sep, `validation_errors: []`).
-- [ ] En el despliegue: `WHATSAPP_FLOW_ID=2180911365805386` y `WHATSAPP_FLOW_PAGO_ID=4695777257373991` en `.env.production`.
-- [ ] Comprobar que «Mensajes de WhatsApp» carga el inbox con el dominio actual. Si no carga, crear un embed nuevo con el origen `comprasmizar.sixteam.pro`.
+### B3. Desplegar `main` actual — **HECHO el 21-sep-2026, 19:05–19:13 (Colombia)**
+- [x] El trabajo de UI sin commitear (estados de carga, errores amigables) **no entró**: se desplegó el árbol de `origin/main`. Antes se commitearon (`c5d257c`) los cambios de los guiones de respaldo del 18-sep, que ya corrían en el VPS con el mismo hash, para que el despliegue no los pisara.
+- [x] CI de GitHub en verde para `421ae17` (calidad, E2E demo, contenedor). No se hizo el QA manual contra `scripts/dev-db.ts`: lo sustituyen las pruebas de humo contra producción de abajo y el UAT.
+- [x] Receta de `docs/despliegue.md` §2: volcado previo (`/var/backups/mizar/pre-c5d257c-20260922-000537.dump`) y copia de `.env.production`; simulacro de `sync-arbol` (solo borró `public-photos` y `cash-service` con sus pruebas); build (2 min); 7 migraciones aplicadas; `up` + `network connect`.
+- [x] Verificado: `/api/health` con `commit` = SHA y `origin:true`; HSTS presente; POST sin sesión → 401; raíz sin sesión → 307 a `/login`; una `X-Real-IP` o `X-Forwarded-For` falsa **ya no** abre cupo nuevo en el limitador (paso 6.4).
+- [x] **Descarga de adjuntos: la prueba encontró que SEGUÍA ROTA.** El arreglo del 16-sep resolvía el `Location` contra `request.url`, que detrás de Traefik es `https://0.0.0.0:3000`: el navegador acababa en una dirección inalcanzable. Se corrigió con un `Location` relativo (`d32ce56`), se redesplegó (sin migraciones) y se verificó con una sesión de administrador de 10 minutos, borrada al terminar: los dos documentos de proveedor bajan con 200, son PDF reales y salen como descarga forzada.
+- [x] Flows en producción: `WHATSAPP_FLOW_ID=2180911365805386` (captura v4) y `WHATSAPP_FLOW_PAGO_ID=4695777257373991` (pago), sin `_MODE=draft`.
+- [x] El despachador de avisos quedó corriendo con el guion nuevo (con latido), cada minuto con 200.
+- [ ] Comprobar que «Mensajes de WhatsApp» carga el inbox con el dominio actual (necesita un navegador con sesión: va en el UAT, §4 E5). Si no carga, crear un embed nuevo con el origen `comprasmizar.sixteam.pro`.
+- [ ] Recorrer en navegador los casos ⚠ de la §4 (UAT).
 
 ### B4. Datos del «día cero»
 - [x] **Decidido (Ernesto, 18-sep): se recrea la base.** No hay ninguna requisición real; todo fueron simulaciones. Los consecutivos arrancan en 0001, como se prometió el 11-sep, y la `auditoria`, que es inmutable, no arrastra la demo.
