@@ -570,6 +570,33 @@ describe("ProcurementService", () => {
     // Una vez declinada, es un estado terminal: no admite volver a decline ni ninguna otra transición.
     await expect(service.decline(r.id, "otra vez", reviewer)).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
   });
+  // Ensayo 2026-09-23: declinar una recién llegada (`enviada`) respondía «No se puede pasar de enviada a
+  // declinada» y solo funcionaba después de tocar algo que la pasara a revisión. PRD §5.2/RF-304: Daniel
+  // declina desde su bandeja lo que no procede. La acción entra a revisión y declina en la misma
+  // transacción, con los dos eventos en la trazabilidad.
+  it("declina una requisición recién llegada (enviada) sin pasos previos, dejando entrada_revision + declinada", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    expect(r.status).toBe("enviada");
+    const declined = await service.decline(r.id, "No procede: ya se compró", reviewer);
+    expect(declined).toMatchObject({ status: "declinada", declineReason: "No procede: ya se compró" });
+    const eventos = deps.audits.filter((a) => a.entityId === r.id).map((a) => a.event);
+    expect(eventos.slice(-2)).toEqual(["entrada_revision", "declinada"]);
+    expect(deps.audits.find((a) => a.event === "declinada")?.data).toMatchObject({ from: "en_revision", to: "declinada", comment: "No procede: ya se compró" });
+    expect(deps.notificationData.map((n) => n.template)).toContain("requisicion_declinada");
+  });
+  it("sin motivo no declina una enviada ni la deja a medias en revisión", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await service.create({ type: "compra", societyId: "soc", workId: "work", requiredDate: "2026-08-30", channel: "web", items }, requester);
+    await expect(service.decline(r.id, "  ", reviewer)).rejects.toMatchObject({ code: "COMMENT_REQUIRED" });
+    expect((await service.getRequisition(r.id, reviewer)).status).toBe("enviada");
+    expect(deps.audits.map((a) => a.event)).not.toContain("entrada_revision");
+  });
+  it("declina también una devuelta, pasando por retomada_revision", async () => {
+    const deps = fakeDeps(), service = new ProcurementService(deps), r = await reviewed(service);
+    await service.returnForCorrection(r.id, "Falta la cotización", approver);
+    const declined = await service.decline(r.id, "Ya no se necesita", reviewer);
+    expect(declined.status).toBe("declinada");
+    expect(deps.audits.filter((a) => a.entityId === r.id).map((a) => a.event).slice(-2)).toEqual(["retomada_revision", "declinada"]);
+  });
   it("generates a single OP with one expense end-to-end on the payment-order success path", async () => {
     // RF-501/502: groupOrderItems(..., "pago") nunca se ejecutaba por su camino de éxito en toda la suite.
     // Un solo proveedor final evita MULTI_SUPPLIER_PAYMENT y ejercita approve()+generateOrders() completo para type:"pago".

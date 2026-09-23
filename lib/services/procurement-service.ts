@@ -380,8 +380,30 @@ export class ProcurementService {
    * salida para una requisición atascada sigue siendo `reassignApprover`, no declinarla por la espalda.
    *
    * O sea: la transición es legal para el APROBADOR; la acción del revisor conserva su propio límite.
+   *
+   * DECLINAR LO RECIÉN LLEGADO (ensayo 2026-09-23, PRD §5.2/RF-304): Daniel declina desde su bandeja lo
+   * que no procede, sin tener que tocarlo antes. Desde `enviada` (y desde `devuelta`) la tabla de
+   * transiciones solo deja ir a `en_revision`, así que declinar respondía «No se puede pasar de enviada
+   * a declinada» hasta que el autoguardado pasaba la requisición a revisión. En vez de abrir
+   * `enviada -> declinada` (dominio + trigger de la base, una migración para un atajo), la acción hace
+   * lo que el revisor habría hecho a mano: entra a revisión y declina, en la MISMA transacción. Quedan
+   * los dos eventos (`entrada_revision`/`retomada_revision` y `declinada`) con su actor, y dos UPDATE
+   * separados, que es lo que el trigger `validar_transicion_requisicion` valida uno por uno. El motivo
+   * se exige ANTES de mover nada: sin él no debe quedar ni la entrada a revisión.
    */
-  async decline(id: string, reason: string, context: RequestContext): Promise<Requisition> { const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context)); return this.transaction(`requisition:${id}`, async (tx) => { const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada"); if (requisition.status === "en_aprobacion") throw new DomainError("INVALID_TRANSITION", "La requisición ya está en aprobación: la decide su aprobador o se reasigna"); await this.transition(requisition, "declinada", actor, "declinada", reason.trim(), this.origin(context), tx.audit); requisition.declineReason = reason.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_declinada", tx); return requisition; }); }
+  async decline(id: string, reason: string, context: RequestContext): Promise<Requisition> {
+    const actor = this.actor(context); assertPermission(actor, "requisition:review", this.authOrigin(context));
+    if (!reason.trim()) throw new DomainError("COMMENT_REQUIRED", "Se requiere comentario para declinada");
+    return this.transaction(`requisition:${id}`, async (tx) => {
+      const requisition = await tx.requisitions.get(id); if (!requisition) throw new DomainError("NOT_FOUND", "Requisición no encontrada");
+      if (requisition.status === "en_aprobacion") throw new DomainError("INVALID_TRANSITION", "La requisición ya está en aprobación: la decide su aprobador o se reasigna");
+      if (requisition.status === "enviada" || requisition.status === "devuelta") {
+        await this.transition(requisition, "en_revision", actor, requisition.status === "enviada" ? "entrada_revision" : "retomada_revision", undefined, this.origin(context), tx.audit);
+        await tx.requisitions.save(requisition);
+      }
+      await this.transition(requisition, "declinada", actor, "declinada", reason.trim(), this.origin(context), tx.audit); requisition.declineReason = reason.trim(); await tx.requisitions.save(requisition); await this.notifyRequester(requisition, "requisicion_declinada", tx); return requisition;
+    });
+  }
   // "sendForApproval" ya NO exige proveedor final por ítem (decisión de la reunión: aprobar y designar
   // proveedor son roles distintos). Sí exige obra: gastos.obra_id es NOT NULL y sin obra generateOrders
   // reventaría al registrar el gasto. Las líneas declinadas no cuentan como "vigentes" (approvedLines).
