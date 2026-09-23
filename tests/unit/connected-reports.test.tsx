@@ -234,3 +234,56 @@ describe("RF-707: comprometido vs pagado (órdenes)", () => {
     expect(screen.getByText("REQ-2026-0001")).toBeInTheDocument();
   });
 });
+
+// Hallazgos del ensayo 2026-09-22 — estas pruebas fallan contra 8da7ecf.
+describe("Reporte operativo: el total es el valor vigente y cada requisición muestra su estado de pago", () => {
+  const devuelta = {
+    id: "req-4", consecutive: "REQ-2026-0004", date: "2026-09-10T00:00:00.000Z",
+    workId: "work-1", tagId: "tag-1", costCenterId: "cc-1", approverIds: ["juliana"], status: "devuelta",
+    supplierIds: [], base: 6_400_000, iva: 1_216_000, total: 7_616_000, items: [],
+  } as ReportBundle["rows"][number];
+  const declinada = { ...devuelta, id: "req-5", consecutive: "REQ-2026-0005", status: "declinada", base: 1_000, iva: 190, total: 1_190 } as ReportBundle["rows"][number];
+
+  it("hallazgo 1: una requisición devuelta (REQ-2026-0004, $7.616.000) ni una declinada suman al total; se listan tachadas y se explican aparte", () => {
+    render(<ConnectedReports data={{ rows: [...rows, devuelta, declinada], catalogs }} role="Contabilidad" />);
+    // 119.000 + 59.500 + 35.700 de las vigentes; nada de la devuelta ni de la declinada.
+    expect(screen.getByTestId("report-total")).toHaveTextContent(money(214_200));
+    expect(screen.getByTestId("report-excluded")).toHaveTextContent(`1 devuelta por ${money(7_616_000)}`);
+    expect(screen.getByTestId("report-excluded")).toHaveTextContent(`1 declinada por ${money(1_190)}`);
+    expect(screen.getByText("REQ-2026-0004")).toBeInTheDocument();
+    expect(screen.getByLabelText(`${money(7_616_000)}, no suma al total`)).toBeInTheDocument();
+  });
+
+  it("hallazgo 1: el compilado mensual por centro de costo usa la misma regla (Σ subtotales = total general)", () => {
+    render(<ConnectedReports data={{ rows: [...rows, devuelta], catalogs }} role="Contabilidad" />);
+    fireEvent.change(screen.getByLabelText("Mes"), { target: { value: "2026-09" } });
+    const compilado = screen.getByTestId("report-costcenter-subtotals");
+    // Administrativo en septiembre: REQ-0003 (35.700) cuenta; REQ-0004 (devuelta) no.
+    expect(within(compilado).getByText("Subtotal Administrativo").closest("tr")).toHaveTextContent(money(35_700));
+    expect(within(compilado).getByText("Total general").closest("tr")).toHaveTextContent(money(95_200));
+  });
+
+  it("sin devueltas ni declinadas no aparece la nota de excluidas", () => {
+    render(<ConnectedReports data={{ rows, catalogs }} role="Contabilidad" />);
+    expect(screen.queryByTestId("report-excluded")).toBeNull();
+    expect(screen.getByTestId("report-total")).toHaveTextContent(money(214_200));
+  });
+
+  it("hallazgo 2: columna 'Estado de pago' por requisición, con 'Sin orden' cuando no tiene órdenes", async () => {
+    render(<ConnectedReports data={{ rows: [...rows, devuelta], catalogs }} role="Contabilidad" />);
+    expect(screen.getByRole("columnheader", { name: "Estado de pago" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("REQ-2026-0001").closest("tr")).toHaveTextContent("Pago parcial"));
+    expect(screen.getByText("REQ-2026-0002").closest("tr")).toHaveTextContent("Pagada");
+    expect(screen.getByText("REQ-2026-0003").closest("tr")).toHaveTextContent("Sin pagar");
+    expect(screen.getByText("REQ-2026-0004").closest("tr")).toHaveTextContent("Sin orden");
+  });
+
+  it("hallazgo 2: el enlace del Excel lleva también los filtros del bloque de órdenes", async () => {
+    render(<ConnectedReports data={{ rows, catalogs }} role="Contabilidad" />);
+    await waitFor(() => expect(screen.getByTestId("report-orders-count")).toHaveTextContent("3"));
+    fireEvent.change(screen.getByLabelText("Medio de pago"), { target: { value: "efectivo" } });
+    fireEvent.change(screen.getByLabelText("Estado de pago"), { target: { value: "parcial" } });
+    expect(exportHref()).toContain("paymentMethod=efectivo");
+    expect(exportHref()).toContain("paymentStatus=parcial");
+  });
+});

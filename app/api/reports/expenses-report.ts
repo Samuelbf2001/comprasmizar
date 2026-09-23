@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { assertPermission, type Actor, type Expense } from "../../../lib/domain";
+import { assertPermission, distributeExpenses, prorate, type Actor, type Expense } from "../../../lib/domain";
 import { sharedPostgres } from "../../../lib/infrastructure/postgres-repositories";
 import { buildPartnersExpensePdf, buildProvisionalHelisaXlsx, type ReportExpense } from "../../../lib/reports";
 import { ProcurementService, ReportService, type ServiceDependencies } from "../../../lib/services";
@@ -56,17 +56,27 @@ export async function buildExpensesReport(dependencies: ServiceDependencies, act
   // Un gasto SIN obra (centro de costo administrativo/personal/empresa: `workId` vacío) no puede
   // resolverse por obra → el filtro por sociedad lo conserva por su empresa facturada.
   const inSociety = (expense: Expense) => !workIdsForSociety || workIdsForSociety.has(expense.workId) || (!expense.workId && expense.billedCompanyId === filters.societyId);
-  const expenses = visible.filter((expense) =>
+  // RF-305 (hallazgo del ensayo 2026-09-22): un gasto repartido entra al reporte como una fila por obra
+  // (`distributeExpenses`), ANTES de filtrar por obra/sociedad — así cada obra/socio ve solo su parte y el
+  // total del archivo sigue siendo el de los gastos, sin duplicar.
+  const expenseById = new Map(visible.map((expense) => [expense.id, expense]));
+  const expenses = distributeExpenses(visible).filter((expense) =>
     (!filters.period || expense.period === filters.period) &&
     (!filters.workId || expense.workId === filters.workId) &&
     inSociety(expense));
   const mapped: ReportExpense[] = expenses.map((expense) => {
     const order = expense.origin === "requisicion" ? orderById.get(expense.referenceId) : undefined;
+    // Un movimiento de caja menor histórico nació pagado en el acto.
+    const paidTotal = expense.origin === "caja_menor" ? expense.portionOf?.expenseTotal ?? expense.total : order?.paidAmount;
+    // Lo pagado de la orden se prorratea con el mismo reparto que el gasto (Σ porciones === pagado).
+    const full = expenseById.get(expense.id);
+    const paid = paidTotal !== undefined && expense.portionOf && full?.shares
+      ? prorate(paidTotal, full.shares.map((share) => share.amount), full.total)[expense.portionOf.index]
+      : paidTotal;
     return {
       orderDate: expense.orderDate, date: expense.date, work: expense.workId || "—", tag: expense.tagId, supplier: expense.supplierId, origin: expense.origin,
       base: expense.base, iva: expense.iva, total: expense.total, billedCompany: expense.billedCompanyId,
-      // Un movimiento de caja menor histórico nació pagado en el acto.
-      paymentStatus: expense.origin === "caja_menor" ? "pagada" : order?.paymentStatus, paid: expense.origin === "caja_menor" ? expense.total : order?.paidAmount,
+      paymentStatus: expense.origin === "caja_menor" ? "pagada" : order?.paymentStatus, paid,
     };
   });
   if (filters.format === "pdf") {

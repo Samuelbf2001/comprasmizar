@@ -382,6 +382,61 @@ export function validateShares(total: Money, shares: readonly ExpenseShare[]): v
   if (new Set(shares.map((share) => share.expenseId)).size !== 1 || new Set(shares.map((share) => share.workId)).size !== shares.length) throw new DomainError("INVALID_SHARE", "Cada reparto debe usar un gasto y obras únicas");
   if (shares.reduce((sum, share) => sum + share.amount, 0) !== total) throw new DomainError("UNBALANCED_SHARE", "El reparto debe cuadrar al peso");
 }
+/**
+ * Reparte `value` en proporción a `weights` (que suman `total`), en pesos enteros y cuadrando al peso:
+ * cada parte se redondea y la ÚLTIMA se lleva el residuo, así Σ partes === value siempre.
+ */
+export function prorate(value: Money, weights: readonly Money[], total: Money): Money[] {
+  let assigned = 0;
+  return weights.map((weight, index) => {
+    if (index === weights.length - 1) return value - assigned;
+    const part = total === 0 ? 0 : Math.round((value * weight) / total);
+    assigned += part;
+    return part;
+  });
+}
+/** Lo mínimo que necesita `distributeExpenses`: vale para `Expense` y para la fila del cliente (sin base/IVA). */
+export interface DistributableExpense { workId: string; total: Money; base?: Money; iva?: Money; shares?: readonly { workId: string; amount: Money }[] }
+/** Marca de una porción: de qué total sale y cuántas porciones tiene su gasto. */
+export interface ExpensePortionOf { expenseTotal: Money; index: number; count: number }
+/**
+ * RF-305 (hallazgo del ensayo 2026-09-22: "Repartir" guardaba en `gastos_reparto` y nadie lo leía).
+ * ÚNICA regla, del lado de TypeScript, de cómo cuenta un gasto repartido: una porción por obra, con
+ * `workId` = la obra del reparto y `total` = su valor; base e IVA se prorratean (`prorate`) y el IVA es el
+ * complemento, para que base + IVA === total en cada porción. Un gasto sin reparto pasa tal cual. Σ de
+ * las porciones === total del gasto: agrupar por obra NO duplica el total general. La vista SQL
+ * `gasto_distribucion` (202609120001) aplica la misma regla del lado de la base, y es la que usan los
+ * agregados del dashboard. Un reparto que no cuadra (no debería existir: lo impide el disparador
+ * diferido `gastos_reparto_cuadra`) se ignora y el gasto se cuenta entero en su obra: antes perder el
+ * reparto que perder o inventar plata.
+ */
+export function distributeExpenses<T extends DistributableExpense>(expenses: readonly T[]): Array<T & { portionOf?: ExpensePortionOf }> {
+  const result: Array<T & { portionOf?: ExpensePortionOf }> = [];
+  for (const expense of expenses) {
+    const shares = expense.shares ?? [];
+    if (!shares.length || shares.reduce((sum, share) => sum + share.amount, 0) !== expense.total) { result.push(expense); continue; }
+    const amounts = shares.map((share) => share.amount);
+    const bases = expense.base === undefined ? undefined : prorate(expense.base, amounts, expense.total);
+    shares.forEach((share, index) => {
+      const portion: T & { portionOf?: ExpensePortionOf } = { ...expense, workId: share.workId, total: share.amount, shares: undefined, portionOf: { expenseTotal: expense.total, index, count: shares.length } };
+      if (bases) { portion.base = bases[index]; portion.iva = share.amount - bases[index]; }
+      result.push(portion);
+    });
+  }
+  return result;
+}
+/**
+ * Reporte operativo (RF-1301, hallazgo del ensayo 2026-09-22: sumaba REQ-2026-0004 "devuelta" por
+ * $7.616.000 sin que hubiera generado orden ni gasto). REGLA: el total del reporte es el valor VIGENTE
+ * solicitado — enviada, en revisión, en aprobación y aprobada. No suman:
+ * - `devuelta`: volvió a corrección (PRD §5.2); su valor puede cambiar y no genera orden mientras no se
+ *   reenvíe. Al reenviarla pasa a `en_revision` y vuelve a sumar sola.
+ * - `declinada`: terminal (PRD §5.2), nunca genera orden ni gasto.
+ * Las filas siguen listándose con su estado (trazabilidad); solo quedan fuera de totales y subtotales.
+ * Pantalla y Excel usan esta misma función.
+ */
+export const REQUISITION_STATUSES_OUT_OF_TOTAL: readonly RequisitionStatus[] = ["devuelta", "declinada"];
+export function requisitionCountsInTotal(status: string): boolean { return !(REQUISITION_STATUSES_OUT_OF_TOTAL as readonly string[]).includes(status); }
 export function orderTypeFor(requisitionType: "compra" | "pago"): OrderType { return requisitionType === "compra" ? "OC" : "OP"; }
 /**
  * Solicitud de pago (encargo feat/solicitud-de-pago): el modelo es una requisición con UNA sola
@@ -492,8 +547,9 @@ function amountByKey(rows: Iterable<readonly [string, Money]>): DashboardAmountB
  * algún día quiere una serie de "comprometido por obra", debe ser otra función con su propio nombre, no
  * sumada aquí en silencio.
  */
-/** RF-706/RF-1103: gasto agrupado por obra, mayor a menor, para el gráfico ejecutivo correspondiente. Solo gastos pagados (con `date`); ver nota GRAVE 3 arriba. */
-export function groupExpenseByWork(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.filter((expense) => expense.date !== undefined).map((expense) => [expense.workId, expense.total] as const)); }
+/** RF-706/RF-1103: gasto agrupado por obra, mayor a menor, para el gráfico ejecutivo correspondiente. Solo gastos pagados (con `date`); ver nota GRAVE 3 arriba.
+ *  Un gasto repartido (RF-305) cuenta en cada obra por su porción (`distributeExpenses`). */
+export function groupExpenseByWork(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(distributeExpenses(expenses).filter((expense) => expense.date !== undefined).map((expense) => [expense.workId, expense.total] as const)); }
 /** RF-706/RF-1103: gasto agrupado por etiqueta; clave "" representa gastos sin etiqueta asignada. Solo gastos pagados (con `date`); ver nota GRAVE 3 arriba. */
 export function groupExpenseByTag(expenses: readonly Expense[]): DashboardAmountByKey[] { return amountByKey(expenses.filter((expense) => expense.date !== undefined).map((expense) => [expense.tagId ?? "", expense.total] as const)); }
 /** Centros de costo (UI, reunión 2026-09-12): gasto agrupado por centro de costo, mismo criterio que

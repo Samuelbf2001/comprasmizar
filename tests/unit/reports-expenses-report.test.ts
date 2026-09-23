@@ -53,3 +53,28 @@ describe("buildExpensesReport — RF-707 y gasto sin obra (N4)", () => {
     expect(works).toEqual([workA, "—"]);
   });
 });
+
+// Hallazgo del ensayo 2026-09-22 (RF-305): el reporte de gastos (Excel/PDF de socios) seguía mostrando el
+// 100 % del gasto en la obra original después de repartirlo. Falla contra 8da7ecf.
+describe("buildExpensesReport — un gasto repartido entre obras sale por obra, sin duplicar", () => {
+  const workB = "22222222-2222-4222-8222-222222222222";
+  // $119 (base 100 + IVA 19) de ord-1, con 50 pagados, repartido 70 obra A + 49 obra B.
+  const repartido: Expense = { ...expenseWithWork, shares: [{ expenseId: "e1", workId: workA, amount: 70 }, { expenseId: "e1", workId: workB, amount: 49 }] };
+
+  it("una fila por obra del reparto, con base/IVA/pagado prorrateados y los totales del gasto intactos", async () => {
+    const file = await buildExpensesReport(deps([repartido]), accountant, expensesReportFiltersSchema.parse({}));
+    expect(file.rows).toBe(2);
+    const sheet = await sheetOf(file.bytes);
+    expect(sheet.getRow(3).values).toEqual(expect.arrayContaining([workA, "parcial", 59, 11, 70, 29]));
+    expect(sheet.getRow(4).values).toEqual(expect.arrayContaining([workB, "parcial", 41, 8, 49, 21]));
+    expect(sheet.getRow(5).values).toEqual(expect.arrayContaining(["TOTAL", 119, 50]));
+  });
+
+  it("filtrar por la otra obra trae solo su parte (antes no traía nada)", async () => {
+    const file = await buildExpensesReport(deps([repartido]), accountant, expensesReportFiltersSchema.parse({ workId: workB }));
+    expect(file.rows).toBe(1);
+    const sheet = await sheetOf(file.bytes);
+    expect(sheet.getRow(3).values).toEqual(expect.arrayContaining([workB, 49, 21]));
+    expect(sheet.getRow(4).values).toEqual(expect.arrayContaining(["TOTAL", 49, 21]));
+  });
+});

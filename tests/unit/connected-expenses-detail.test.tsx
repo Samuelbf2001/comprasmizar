@@ -189,6 +189,59 @@ describe("RF-305: interfaz de gastos compartidos entre obras", () => {
   });
 });
 
+// Hallazgo del ensayo 2026-09-22: tras repartir y recargar, el libro seguía con el 100 % en la obra
+// original porque el reparto guardado no se aplicaba al leer. Estas pruebas fallan contra 8da7ecf.
+describe("RF-305: el libro de gastos APLICA el reparto guardado", () => {
+  // Gasto de OC-2026-0008 ($267.750) repartido $150.000 Obra Norte + $117.750 Obra Sur, más otro gasto entero.
+  const rows = [
+    {
+      id: "exp-oc8", workId: "work-1", origin: "requisicion", referenceId: "oc-8", tagId: "tag-1", orderDate: "2026-09-20", date: "2026-09-22", total: 267750, period: "2026-09",
+      shares: [{ workId: "work-1", amount: 150000 }, { workId: "work-2", amount: 117750 }],
+    },
+    { id: "exp-2", workId: "work-1", origin: "requisicion", referenceId: "oc-9", tagId: "tag-2", orderDate: "2026-09-21", date: "2026-09-22", total: 10000, period: "2026-09" },
+  ];
+  const expenseData = { expenses: rows, catalogs, pettyCash: [], pettyAttachments: {} };
+
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("muestra una fila por obra del reparto, subtotales por obra con su parte y el total general sin duplicar", () => {
+    mockCashClose();
+    render(<ConnectedExpenses data={expenseData} role="Revisor" refresh={vi.fn()} />);
+    openExpenseLedger();
+    expect(screen.getAllByTestId("expense-row")).toHaveLength(3);
+    const notes = screen.getAllByTestId("expense-portion-note");
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toHaveTextContent(`Parte 1 de 2 de un gasto repartido por ${money(267750)}`);
+    expect(notes[1]).toHaveTextContent(`Parte 2 de 2 de un gasto repartido por ${money(267750)}`);
+    const workRows = screen.getAllByTestId("expense-subtotal-work");
+    const findWorkRow = (label: string) => workRows.find((row) => within(row).queryByText(label)) as HTMLElement;
+    expect(within(findWorkRow("Subtotal Obra Norte")).getByText(money(160000))).toBeInTheDocument();
+    expect(within(findWorkRow("Subtotal Obra Sur")).getByText(money(117750))).toBeInTheDocument();
+    expect(within(screen.getByTestId("expense-grand-total")).getByText(money(277750))).toBeInTheDocument();
+  });
+
+  it("el filtro por obra muestra solo la porción de esa obra", () => {
+    mockCashClose();
+    render(<ConnectedExpenses data={expenseData} role="Revisor" refresh={vi.fn()} />);
+    openExpenseLedger();
+    fireEvent.change(screen.getByLabelText("Filtrar por obra"), { target: { value: "work-2" } });
+    expect(screen.getAllByTestId("expense-row")).toHaveLength(1);
+    expect(within(screen.getByTestId("expense-grand-total")).getByText(money(117750))).toBeInTheDocument();
+  });
+
+  it("volver a repartir abre el gasto ENTERO con el reparto vigente precargado (no la porción)", () => {
+    mockCashClose();
+    render(<ConnectedExpenses data={expenseData} role="Revisor" refresh={vi.fn()} />);
+    openExpenseLedger();
+    fireEvent.click(screen.getAllByTestId("expense-share-trigger")[1]);
+    const form = screen.getByTestId("expense-share-form");
+    expect(form).toHaveTextContent(money(267750));
+    const amounts = (within(form).getAllByRole("spinbutton") as HTMLInputElement[]).map((input) => input.value);
+    expect(amounts).toEqual(["150000", "117750"]);
+    expect(within(form).getByRole("button", { name: "Confirmar reparto" })).toBeEnabled();
+  });
+});
+
 describe("RF-708 / A10: la pantalla /gastos es el cierre de caja sobre pagos en efectivo", () => {
   const expenseData = { expenses: [], catalogs: { ...catalogs, costCenters: [{ id: "cc-1", name: "Administración" }] }, pettyCash: [], pettyAttachments: {} };
   const cashRows: CashCloseReport["rows"] = [

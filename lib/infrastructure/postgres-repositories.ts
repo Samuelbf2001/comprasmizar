@@ -117,7 +117,13 @@ function order(row: DbRow): Order {
 // caja_id/concepto/medio_pago/registrado_por/cierre_id (2026-09-12, 202609120003): copiados por
 // sincronizar_gasto_caja_menor solo en origen 'caja_menor' — NULL en origen 'requisicion'.
 // obra_id NULL (RF-008, 202609150004: gasto bajo un centro no-obra) viaja como "" — ver Expense.workId.
-function expense(row: DbRow): Expense { return { id: String(row.id), workId: row.obra_id ? String(row.obra_id) : "", origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7), costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined, billedCompanyId: row.empresa_facturada_id ? String(row.empresa_facturada_id) : undefined, cashBoxId: row.caja_id ? String(row.caja_id) : undefined, concept: row.concepto ? String(row.concepto) : undefined, paymentMethod: row.medio_pago ? (row.medio_pago as Expense["paymentMethod"]) : undefined, registeredBy: row.registrado_por ? String(row.registrado_por) : undefined, closeId: row.cierre_id ? String(row.cierre_id) : undefined }; }
+// `reparto` (RF-305): json_agg de `gastos_reparto` que trae `expenseSelectColumns()`; ausente o vacío =
+// gasto sin repartir (`shares` undefined, nunca `[]`).
+function expenseShares(row: DbRow): Expense["shares"] {
+  if (!Array.isArray(row.reparto) || !row.reparto.length) return undefined;
+  return (row.reparto as DbRow[]).map((share) => ({ expenseId: String(row.id), workId: String(share.workId), amount: asNumber(share.amount) }));
+}
+function expense(row: DbRow): Expense { return { shares: expenseShares(row), id: String(row.id), workId: row.obra_id ? String(row.obra_id) : "", origin: row.origen as Expense["origin"], referenceId: String(row.referencia_id), tagId: row.etiqueta_id ? String(row.etiqueta_id) : undefined, supplierId: row.proveedor_id ? String(row.proveedor_id) : undefined, orderDate: asIsoDate(row.fecha_orden) as string, date: asIsoDate(row.fecha), base: asNumber(row.valor_base), iva: asNumber(row.iva), total: asNumber(row.valor_total), period: asIsoDate(row.periodo)?.slice(0, 7), costCenterId: row.centro_costo_id ? String(row.centro_costo_id) : undefined, billedCompanyId: row.empresa_facturada_id ? String(row.empresa_facturada_id) : undefined, cashBoxId: row.caja_id ? String(row.caja_id) : undefined, concept: row.concepto ? String(row.concepto) : undefined, paymentMethod: row.medio_pago ? (row.medio_pago as Expense["paymentMethod"]) : undefined, registeredBy: row.registrado_por ? String(row.registrado_por) : undefined, closeId: row.cierre_id ? String(row.cierre_id) : undefined }; }
 /** Ingresos (2026-09-12, migración 202609120003): tabla APARTE de gastos, nunca negativa. */
 function income(row: DbRow): Income {
   return {
@@ -492,9 +498,14 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     await this.sql`delete from gastos_reparto where gasto_id in (select id from gastos where origen=${origin} and referencia_id=${referenceId})`;
     await this.sql`delete from gastos where origen=${origin} and referencia_id=${referenceId}`;
   }
-  async getExpense(id: string): Promise<Expense | null> { const rows = await this.sql<DbRow[]>`select * from gastos where id=${id}`; return rows[0] ? expense(rows[0]) : null; }
+  // RF-305 (hallazgo del ensayo 2026-09-22): TODA lectura de gastos trae su reparto (`reparto`, json_agg
+  // de `gastos_reparto`) para que `distributeExpenses` lo aplique; antes se guardaba y nadie lo leía.
+  private expenseSelectColumns() {
+    return this.sql`g.*, (select json_agg(json_build_object('workId', gr.obra_id, 'amount', gr.valor) order by gr.valor desc, gr.obra_id) from gastos_reparto gr where gr.gasto_id = g.id) as reparto`;
+  }
+  async getExpense(id: string): Promise<Expense | null> { const rows = await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g where g.id=${id}`; return rows[0] ? expense(rows[0]) : null; }
   async saveShares(shares: ExpenseShare[]): Promise<void> { if (!shares.length) return; await this.sql`delete from gastos_reparto where gasto_id=${shares[0].expenseId}`; for (const share of shares) await this.sql`insert into gastos_reparto (gasto_id, obra_id, valor) values (${share.expenseId}, ${share.workId}, ${share.amount})`; }
-  async listExpenses(): Promise<Expense[]> { return (await this.sql<DbRow[]>`select * from gastos`).map(expense); }
+  async listExpenses(): Promise<Expense[]> { return (await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g`).map(expense); }
   // H3: `query` opcional y aditivo — mismo contrato que listVisibleRequisitions/listVisibleOrders.
   // `status` de ListQuery NO aplica a gastos (no hay columna de estado en `gastos`): se ignora a
   // propósito en vez de fallar, ver el comentario de ListQuery en lib/services/list-query.ts.
@@ -507,12 +518,14 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // negocio real, y excluye a los no pagados de forma correcta (no accidental).
   async listVisibleExpenses(actor: Actor, query?: ListQuery): Promise<Expense[] | Page<Expense>> {
     if (!query) {
-      const rows = isElevated(actor) ? await this.sql<DbRow[]>`select * from gastos` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where public.es_aprobador_de(r.id, ${actor.id})` : await this.sql<DbRow[]>`select g.* from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where r.solicitante_id=${actor.id}`;
+      const rows = isElevated(actor) ? await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g` : actor.roles.includes("aprobador") ? await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where public.es_aprobador_de(r.id, ${actor.id})` : await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g join ordenes o on o.id=g.referencia_id join requisiciones r on r.id=o.requisicion_id where r.solicitante_id=${actor.id}`;
       return rows.map(expense);
     }
     const limit = pageLimit(query.limit);
     const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and public.es_aprobador_de(r.id, ${actor.id})` : this.sql`and r.solicitante_id = ${actor.id}`;
-    const workFilter = query.workId ? this.sql`and g.obra_id = ${query.workId}` : this.sql``;
+    // RF-305: por obra = el gasto TOCA esa obra, entero o por una porción de su reparto — la vista
+    // `gasto_distribucion` ya resuelve ambas ramas; quien lo consuma parte el gasto con `distributeExpenses`.
+    const workFilter = query.workId ? this.sql`and exists (select 1 from gasto_distribucion gd where gd.gasto_id = g.id and gd.obra_id = ${query.workId})` : this.sql``;
     // Centros de costo (2026-09-12): filtro aditivo, mismo patrón que workFilter — `costCenterId`
     // compara contra la INSTANTÁNEA copiada en el gasto (gastos.centro_costo_id), no contra la obra.
     const costCenterFilter = query.costCenterId ? this.sql`and g.centro_costo_id = ${query.costCenterId}` : this.sql``;
@@ -525,12 +538,12 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const toFilter = query.to ? this.sql`and g.fecha < (${query.to}::date + 1)` : this.sql``;
     const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
     const cursorFilter = cursor ? this.sql`and (g.fecha_orden, g.id) < (${cursor.at}::date, ${cursor.id}::uuid)` : this.sql``;
-    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} ${workFilter} ${costCenterFilter} ${billedCompanyFilter} ${cashBoxFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by g.fecha_orden desc, g.id desc limit ${limit + 1}`;
+    const rows = await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} ${workFilter} ${costCenterFilter} ${billedCompanyFilter} ${cashBoxFilter} ${fromFilter} ${toFilter} ${cursorFilter} order by g.fecha_orden desc, g.id desc limit ${limit + 1}`;
     const hasMore = rows.length > limit, pageRows = hasMore ? rows.slice(0, limit) : rows, last = pageRows.at(-1);
     const nextCursor = hasMore && last ? encodeCursor(asIsoDate(last.fecha_orden) as string, String(last.id)) : null;
     return { rows: pageRows.map(expense), nextCursor };
   }
-  async listByReference(referenceId: string): Promise<Expense[]> { return (await this.sql<DbRow[]>`select g.* from gastos g where g.referencia_id=${referenceId} or exists (select 1 from ordenes o where o.id=g.referencia_id and o.requisicion_id=${referenceId})`).map(expense); }
+  async listByReference(referenceId: string): Promise<Expense[]> { return (await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g where g.referencia_id=${referenceId} or exists (select 1 from ordenes o where o.id=g.referencia_id and o.requisicion_id=${referenceId})`).map(expense); }
   // Reunión agosto 2026: pagos parciales de una orden. `save` es INSERT puro (la tabla no lleva
   // `updated_at`, ver 202609120002_pagos_orden.sql — un pago no se edita); el trigger
   // `validar_pago_no_excede_orden` de esa misma migración es quien de verdad impide sobre-pasar el
@@ -572,7 +585,10 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
     const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and public.es_aprobador_de(r.id, ${actor.id})` : this.sql`and r.solicitante_id = ${actor.id}`;
     const periodStart = `${period}-01`;
     const totalsRows = await this.sql<{ period_expense: string; in_process_value: string }[]>`select coalesce(sum(g.valor_total) filter (where g.periodo = ${periodStart}::date), 0) as period_expense, coalesce(sum(g.valor_total) filter (where g.fecha is null), 0) as in_process_value from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility}`;
-    const byWorkRows = await this.sql<{ key: string | null; total: string }[]>`select g.obra_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.obra_id order by total desc`;
+    // RF-305: por obra sale de `gasto_distribucion` (gasto entero o una fila por porción del reparto) —
+    // misma regla que `distributeExpenses`/`groupExpenseByWork`; la visibilidad se sigue resolviendo sobre
+    // el gasto padre `g`. Σ de las porciones = valor_total: el total general no se duplica.
+    const byWorkRows = await this.sql<{ key: string | null; total: string }[]>`select gd.obra_id as key, sum(gd.valor) as total from gasto_distribucion gd join gastos g on g.id=gd.gasto_id left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by gd.obra_id order by total desc`;
     const byTagRows = await this.sql<{ key: string | null; total: string }[]>`select g.etiqueta_id as key, sum(g.valor_total) as total from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where g.fecha is not null ${visibility} group by g.etiqueta_id order by total desc`;
     // order by periodo desc limit 6, invertido en JS: mismo resultado final que groupExpenseByPeriod
     // (que ordena cronológico ascendente y se queda con los últimos `monthsBack`).
@@ -595,7 +611,7 @@ export class PostgresPorts implements AuditRepository, ConsecutiveRepository, Ca
   // Nombrado "listExpensesRecentlyUpdated" para no chocar con el de órdenes — ver esa nota.
   async listExpensesRecentlyUpdated(actor: Actor, limit: number): Promise<Expense[]> {
     const visibility = isElevated(actor) ? this.sql`` : actor.roles.includes("aprobador") ? this.sql`and public.es_aprobador_de(r.id, ${actor.id})` : this.sql`and r.solicitante_id = ${actor.id}`;
-    const rows = await this.sql<DbRow[]>`select g.* from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} order by coalesce(g.fecha, g.fecha_orden) desc, g.id desc limit ${limit}`;
+    const rows = await this.sql<DbRow[]>`select ${this.expenseSelectColumns()} from gastos g left join ordenes o on o.id=g.referencia_id left join requisiciones r on r.id=o.requisicion_id where true ${visibility} order by coalesce(g.fecha, g.fecha_orden) desc, g.id desc limit ${limit}`;
     return rows.map(expense);
   }
   // caja_id/medio_pago/iva (2026-09-12, 202609120003): registerPettyCash es también el camino del

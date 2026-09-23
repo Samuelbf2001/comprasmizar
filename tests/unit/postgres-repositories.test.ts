@@ -66,6 +66,9 @@ function pgError({ code, constraint_name, message }: { code: string; constraint_
   return error;
 }
 
+/** RF-305: toda lectura de gastos trae su reparto (`reparto`, json_agg de gastos_reparto) — ver expenseSelectColumns(). */
+const SELECT_GASTOS = /^select g\.\*, \(select json_agg[\s\S]*? as reparto from gastos g/i;
+
 const baseItem = (id: string) => ({ id, itemId: "item-1", description: undefined, quantity: 1, unit: "unidad", possibleSupplier: undefined, productLink: undefined, finalSupplierId: undefined, unitBase: 1000, unitIva: 190 });
 const baseRequisition = (overrides: Partial<Parameters<PostgresPorts["saveRequisition"]>[0]> = {}) => ({
   id: "req-1", consecutive: "REQ-2026-0001", type: "compra" as const, societyId: "soc-1", workId: "work-1", requesterId: "user-1",
@@ -423,9 +426,9 @@ describe("PostgresPorts — pagos parciales de orden (Order.paidAmount, saveOrde
   // RF-008 (N4): gastos.obra_id NULL viaja como workId "" (Expense.workId sigue siendo string por el
   // reporte, fuera de la ola 1) y nunca se persiste "" — saveExpense escribe NULL.
   it("un gasto sin obra se lee con workId \"\", se escribe con obra_id NULL y agrupa bajo \"\" en el dashboard", async () => {
-    const sql = fakeSql((call) => (/^select \* from gastos where id=/i.test(call.text)
+    const sql = fakeSql((call) => (/^select g\.\*, \(select json_agg[\s\S]* as reparto from gastos g where g\.id=/i.test(call.text)
       ? [{ id: "g1", obra_id: null, origen: "requisicion", referencia_id: "o1", fecha_orden: "2026-09-15", valor_base: "250000", iva: "0", valor_total: "250000", centro_costo_id: "cc-admin", empresa_facturada_id: "proim" }]
-      : /select g\.obra_id as key/i.test(call.text) ? [{ key: null, total: "250000" }, { key: "obra-1", total: "1000" }]
+      : /select gd\.obra_id as key/i.test(call.text) ? [{ key: null, total: "250000" }, { key: "obra-1", total: "1000" }]
       : /^select coalesce\(sum\(g\.valor_total\)/i.test(call.text) ? [{ period_expense: "0", in_process_value: "0" }]
       : []));
     const ports = new PostgresPorts(sql);
@@ -765,36 +768,37 @@ describe("PostgresPorts.listVisibleOrders con query — filtros, join a requisic
 
 describe("PostgresPorts.listVisibleExpenses con query — filtros y paginación por fecha_orden, no por fecha (H3)", () => {
   it("aplica el filtro de obra y de rango de fechas sobre g.fecha (fecha de PAGO), ignora status (gastos no tiene estado)", async () => {
-    const sql = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    const sql = fakeSql((call) => (SELECT_GASTOS.test(call.text) ? [] : []));
     // "status" no existe en ListQuery para gastos en la práctica (las rutas no lo ofrecen), pero si
     // llegara igual el adaptador no debe reventar: se ignora en vez de fallar.
     await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { workId: "work-1", from: "2026-09-01", to: "2026-09-05", status: ["ignorar-me"] });
-    const select = sql.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
-    expect(select.text).toMatch(/g\.obra_id = \?/);
+    const select = sql.calls.find((call) => SELECT_GASTOS.test(call.text))!;
+    // RF-305: por obra = el gasto toca la obra entero o por una porción de su reparto (vista gasto_distribucion).
+    expect(select.text).toMatch(/exists \(select 1 from gasto_distribucion gd where gd\.gasto_id = g\.id and gd\.obra_id = \?\)/);
     expect(select.text).toMatch(/g\.fecha >= \?::date/);
     expect(select.text).toMatch(/g\.fecha < \(\?::date \+ 1\)/);
     expect(select.text).not.toMatch(/estado/);
   });
 
   it("pagina por fecha_orden (NOT NULL), no por fecha (nullable mientras no se paga)", async () => {
-    const sql = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    const sql = fakeSql((call) => (SELECT_GASTOS.test(call.text) ? [] : []));
     await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
-    const select = sql.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
+    const select = sql.calls.find((call) => SELECT_GASTOS.test(call.text))!;
     expect(select.text).toMatch(/order by g\.fecha_orden desc, g\.id desc/);
   });
 
   // Centros de costo (2026-09-12): filtro aditivo, mismo patrón que workId — solo aparece en el SELECT
   // cuando la query lo trae, y compara contra la columna del GASTO (instantánea), no contra la obra.
   it("aplica el filtro de centro de costo (g.centro_costo_id) cuando la query lo trae, y lo omite cuando no", async () => {
-    const sql = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    const sql = fakeSql((call) => (SELECT_GASTOS.test(call.text) ? [] : []));
     await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { costCenterId: "centro-1" });
-    const select = sql.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
+    const select = sql.calls.find((call) => SELECT_GASTOS.test(call.text))!;
     expect(select.text).toMatch(/g\.centro_costo_id = \?/);
     expect(select.values).toContain("centro-1");
 
-    const sinFiltro = fakeSql((call) => (/^select g\.\* from gastos/i.test(call.text) ? [] : []));
+    const sinFiltro = fakeSql((call) => (SELECT_GASTOS.test(call.text) ? [] : []));
     await new PostgresPorts(sinFiltro).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
-    const selectSinFiltro = sinFiltro.calls.find((call) => /^select g\.\* from gastos/i.test(call.text))!;
+    const selectSinFiltro = sinFiltro.calls.find((call) => SELECT_GASTOS.test(call.text))!;
     expect(selectSinFiltro.text).not.toMatch(/centro_costo_id/);
   });
 
@@ -803,7 +807,7 @@ describe("PostgresPorts.listVisibleExpenses con query — filtros y paginación 
   // el "YYYY-MM" que comparan el filtro por periodo de la pantalla de gastos y calculateDashboard.
   it("mapea `periodo` (Date de la BD) a 'YYYY-MM' y deja undefined cuando el gasto no está pagado", async () => {
     const row = { id: "g1", obra_id: "work-1", origen: "requisicion", referencia_id: "o1", fecha_orden: new Date(Date.UTC(2026, 8, 3)), fecha: new Date(Date.UTC(2026, 8, 5)), periodo: new Date(Date.UTC(2026, 8, 1)), valor_base: "100", iva: "19", valor_total: "119" };
-    const sql = fakeSql((call) => (/^select \* from gastos/i.test(call.text) ? [row, { ...row, id: "g2", fecha: null, periodo: null }] : []));
+    const sql = fakeSql((call) => (SELECT_GASTOS.test(call.text) ? [row, { ...row, id: "g2", fecha: null, periodo: null }] : []));
     const [paid, unpaid] = await new PostgresPorts(sql).listVisibleExpenses({ id: "daniel", roles: ["revisor"] }) as Array<{ period?: string; date?: string }>;
     expect(paid.period).toBe("2026-09");
     expect(paid.date).toBe("2026-09-05");
@@ -919,5 +923,48 @@ describe("visibilidad del aprobador: una sola definición", () => {
     // si se olvidará una, es cuál. Esta prueba es barata y habría señalado las dos que se escaparon.
     const fuente = readFileSync(resolve(process.cwd(), "lib/infrastructure/postgres-repositories.ts"), "utf8");
     expect(fuente).not.toMatch(/r\.aprobador_id\s*=\s*\$\{actor\.id\}/);
+  });
+});
+
+// Hallazgo del ensayo 2026-09-22 (RF-305): "Repartir" respondía éxito y guardaba en `gastos_reparto`,
+// pero NINGUNA lectura de gastos lo consultaba — el libro, los subtotales y los reportes seguían con el
+// 100 % en la obra original. Estas pruebas fallan contra 8da7ecf.
+describe("PostgresPorts — el reparto de un gasto entre obras se LEE (RF-305)", () => {
+  const gasto = { id: "g1", obra_id: "obra-a", origen: "requisicion", referencia_id: "o1", fecha_orden: "2026-09-20", fecha: "2026-09-22", periodo: "2026-09-01", valor_base: "225000", iva: "42750", valor_total: "267750" };
+
+  it("toda lectura de gastos (getExpense, listExpenses, listVisibleExpenses, listByReference, recientes) trae el reparto", async () => {
+    const sql = fakeSql(() => []);
+    const ports = new PostgresPorts(sql);
+    await ports.getExpense("g1");
+    await ports.listExpenses();
+    await ports.listVisibleExpenses({ id: "daniel", roles: ["revisor"] });
+    await ports.listVisibleExpenses({ id: "juliana", roles: ["aprobador"] });
+    await ports.listVisibleExpenses({ id: "sol", roles: ["solicitante"] });
+    await ports.listVisibleExpenses({ id: "daniel", roles: ["revisor"] }, { limit: 10 });
+    await ports.listByReference("req-1");
+    await ports.listExpensesRecentlyUpdated({ id: "daniel", roles: ["revisor"] }, 5);
+    const selects = sql.calls.filter((call) => /^select/i.test(call.text) && /from gastos g/i.test(call.text));
+    expect(selects).toHaveLength(8);
+    for (const call of selects) expect(call.text).toMatch(/json_agg\(json_build_object\('workId', gr\.obra_id, 'amount', gr\.valor\)[\s\S]*from gastos_reparto gr where gr\.gasto_id = g\.id\) as reparto/);
+  });
+
+  it("el mapeador expone el reparto como Expense.shares (montos numéricos) y lo deja undefined sin reparto", async () => {
+    const sql = fakeSql((call) => (SELECT_GASTOS.test(call.text)
+      ? [{ ...gasto, reparto: [{ workId: "obra-a", amount: 150000 }, { workId: "obra-b", amount: "117750" }] }, { ...gasto, id: "g2", reparto: null }]
+      : []));
+    const [repartido, entero] = await new PostgresPorts(sql).listExpenses();
+    expect(repartido.shares).toEqual([{ expenseId: "g1", workId: "obra-a", amount: 150000 }, { expenseId: "g1", workId: "obra-b", amount: 117750 }]);
+    expect(repartido.workId).toBe("obra-a");
+    expect(repartido.total).toBe(267750);
+    expect(entero.shares).toBeUndefined();
+  });
+
+  it("el gasto por obra del dashboard sale de gasto_distribucion (una fila por porción), con la visibilidad sobre el gasto padre", async () => {
+    const sql = fakeSql(() => []);
+    await new PostgresPorts(sql).dashboardAggregates({ id: "juliana", roles: ["aprobador"] }, "2026-09");
+    const byWork = sql.calls.find((call) => /obra_id as key/i.test(call.text))!;
+    expect(byWork.text).toMatch(/select gd\.obra_id as key, sum\(gd\.valor\) as total from gasto_distribucion gd join gastos g on g\.id=gd\.gasto_id/);
+    expect(byWork.text).toMatch(/public\.es_aprobador_de\(r\.id, \?\)/);
+    expect(byWork.text).toMatch(/group by gd\.obra_id/);
   });
 });
