@@ -66,7 +66,18 @@ function useAutosave({
   const [status, setStatus] = useState<AutosaveStatus>("idle");
   const [savedAt, setSavedAt] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const lastSavedRef = useRef<string | null>(null);
+  // Ensayo 2026-09-23: abrir el detalle disparaba un POST de acciones sin que nadie editara nada (y en
+  // una `enviada` además la pasaba a revisión; en `en_aprobacion`, `decide_items` convertía los
+  // "pendiente" en "aprobado"). Venía de dos sitios: cualquier `blur` dentro del panel intentaba
+  // guardar, y en desarrollo el doble efecto de React StrictMode se saltaba la guarda de "primer
+  // render" y programaba el guardado. Con `lastSavedRef` en null, ese primer intento siempre "tenía
+  // cambios". Ahora la línea base es lo que había en pantalla al montar (= lo que dio el servidor):
+  // solo se guarda si el usuario cambió algo respecto de eso.
+  const [baseline] = useState(() => {
+    const body = buildBody();
+    return body ? JSON.stringify(body) : null;
+  });
+  const lastSavedRef = useRef<string | null>(baseline);
   const inFlightRef = useRef(false);
   const pendingRef = useRef(false);
   const dirtyRef = useRef(false);

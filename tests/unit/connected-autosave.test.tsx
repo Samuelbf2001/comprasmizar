@@ -6,7 +6,8 @@
 // JSON idéntico al último guardado con éxito, y no autoguarda mientras falte la etiqueta o alguna
 // línea tenga un valor a medio teclear.
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectedRequisitionDetail } from "../../components/screens/connected";
 
@@ -118,6 +119,64 @@ describe("autoguardado de la revisión", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(accionesEnviadas(fetchMock)).toHaveLength(0);
     expect(screen.getByText(/Corrige la cantidad, el precio o el descuento/)).toBeInTheDocument();
+  });
+
+  // Ensayo 2026-09-23: abrir el detalle disparaba solo un POST de acciones (y un aviso de error) sin
+  // que nadie editara nada. Solo se guarda por acción del usuario.
+  it("abrir el detalle y pasar el foco por los campos SIN cambiar nada no guarda", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(respuestaOk());
+    render(<ConnectedRequisitionDetail data={baseData()} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    const paymentInput = screen.getByLabelText("Forma de pago");
+    fireEvent.focus(paymentInput);
+    fireEvent.blur(paymentInput);
+    fireEvent.blur(screen.getByRole("combobox", { name: "Etiqueta" }));
+    fireEvent.blur(screen.getByLabelText("Observaciones"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("una requisición recién llegada (enviada) no pasa a revisión solo por abrirla", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(respuestaOk());
+    render(<ConnectedRequisitionDetail data={baseData({ status: "enviada" })} role="Revisor" go={vi.fn()} refresh={vi.fn()} />);
+    fireEvent.blur(screen.getByLabelText("Forma de pago"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(accionesEnviadas(fetchMock)).toHaveLength(0);
+
+    // Al editar, sí: start_review y luego review, como siempre.
+    const paymentInput = screen.getByLabelText("Forma de pago");
+    fireEvent.change(paymentInput, { target: { value: "Contado" } });
+    fireEvent.blur(paymentInput);
+    await waitFor(() => expect(accionesEnviadas(fetchMock)).toHaveLength(2));
+    expect(accionesEnviadas(fetchMock).map((body) => body.action)).toEqual(["start_review", "review"]);
+  });
+
+  it("con React StrictMode (doble efecto en desarrollo) tampoco se programa un guardado al montar", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(respuestaOk());
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(
+      <StrictMode>
+        <ConnectedRequisitionDetail data={baseData()} role="Revisor" go={vi.fn()} refresh={vi.fn()} />
+      </StrictMode>,
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("el aprobador que abre su requisición en aprobación no decide nada por pasar el foco", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(respuestaOk());
+    render(
+      <ConnectedRequisitionDetail
+        data={baseData({ status: "en_aprobacion", items: [{ id: "item-1", description: "Arena", quantity: 1, unit: "saco", unitBase: 1000, status: "pendiente" }] })}
+        role="Aprobador"
+        go={vi.fn()}
+        refresh={vi.fn()}
+      />,
+    );
+    const cantidad = within(screen.getByTestId("approval-decisions")).getByLabelText("Cantidad aprobada");
+    fireEvent.focus(cantidad);
+    fireEvent.blur(cantidad);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(accionesEnviadas(fetchMock)).toHaveLength(0);
   });
 
   // Cabecera (fecha requerida/observaciones): campos inline, sin toggle "Editar cabecera", que se
