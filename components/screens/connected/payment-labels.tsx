@@ -1,4 +1,5 @@
 import type { PaymentMethod, PaymentStatus } from "../../../lib/domain";
+import { MEDIO_PAGO_LABELS, PAYMENT_STATUS_LABELS } from "../../../lib/reports/payment-labels";
 
 /**
  * Adenda de pagos (docs/TASKS-pagos-y-caja.md, A1): la caja menor ES el medio `efectivo` del enum
@@ -6,25 +7,14 @@ import type { PaymentMethod, PaymentStatus } from "../../../lib/domain";
  * para que las superficies de la ola 2 (órdenes, cierre de caja, reportes) importen de aquí sin tocar
  * ese archivo compartido. `paymentMethodLabel` de shared.tsx sigue diciendo "Efectivo" para lo que ya
  * lo usa (gastos directos de caja, ingresos); las pantallas de pagos de orden usan ESTE mapa.
+ * Los textos viven en lib/reports/payment-labels.ts (sin JSX) para que el Excel diga exactamente lo mismo.
  */
-export const MEDIO_PAGO_LABELS: Record<PaymentMethod, string> = {
-  efectivo: "Caja (efectivo)",
-  transferencia: "Transferencia",
-  cheque: "Cheque",
-  tarjeta: "Tarjeta",
-  otro: "Otro",
-};
+export { MEDIO_PAGO_LABELS, PAYMENT_STATUS_LABELS };
 export const MEDIO_PAGO_OPTIONS: readonly { value: PaymentMethod; label: string }[] = (Object.keys(MEDIO_PAGO_LABELS) as PaymentMethod[]).map((value) => ({ value, label: MEDIO_PAGO_LABELS[value] }));
 export function medioPagoLabel(method: string): string {
   return (MEDIO_PAGO_LABELS as Record<string, string>)[method] ?? method;
 }
 
-/** RF-508: `estado_pago` derivado (pendiente / parcial / pagada), nunca editable a mano. */
-export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
-  pendiente: "Sin pagar",
-  parcial: "Pago parcial",
-  pagada: "Pagada",
-};
 const PAYMENT_STATUS_TONE: Record<PaymentStatus, string> = { pendiente: "muted", parcial: "warning", pagada: "success" };
 export function paymentStatusLabel(status: string): string {
   return (PAYMENT_STATUS_LABELS as Record<string, string>)[status] ?? status;

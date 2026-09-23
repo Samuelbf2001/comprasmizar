@@ -1,10 +1,14 @@
 import ExcelJS from "exceljs";
 import type { ReportExpense } from "./types";
-// Import de solo TIPOS (se borra en compilación, cero acoplamiento en runtime): lib/reports no depende
-// de lib/services para nada ejecutable, solo reutiliza sus formas de datos en vez de duplicarlas — el
-// mismo problema que "el predicado a mano copiado trece veces" (ver postgres-repositories.ts), aplicado
-// a un tipo en vez de a una consulta.
-import type { ReportCatalogNames, ReportRow } from "../services/report-service";
+// Reutiliza las formas de datos de lib/services en vez de duplicarlas — el mismo problema que "el
+// predicado a mano copiado trece veces" (ver postgres-repositories.ts), aplicado a un tipo en vez de a
+// una consulta. De lib/services solo importa funciones PURAS de report-service.ts (ver abajo).
+import type { CommittedVsPaidGroup, OrderReportRow, ReportCatalogNames, ReportRow } from "../services/report-service";
+// Estos sí son de runtime, pero PUROS (sin I/O ni permisos): son exactamente los cálculos que usa la
+// pantalla de Reportes, para que el Excel no tenga una copia propia de ninguna regla.
+import { groupCommittedVsPaid, requisitionPaymentStatuses, summarizeCommittedVsPaid } from "../services/report-service";
+import { REQUISITION_STATUSES_OUT_OF_TOTAL, requisitionCountsInTotal } from "../domain/rules";
+import { MEDIO_PAGO_LABELS, PAYMENT_STATUS_LABELS } from "./payment-labels";
 
 /**
  * Provisional export V0.1: column mapping must be confirmed by Helisa/accounting before production
@@ -42,23 +46,49 @@ const namesJoined = (map: ReadonlyMap<string, string>, ids: readonly string[]): 
  * compartir un mismo centro. Sin `grouped`, filas planas + un total general (un export ad-hoc sin mes no
  * tiene un "periodo" que compilar).
  */
-export async function buildRequisitionReportXlsx(rows: readonly ReportRow[], names: ReportCatalogNames, options: { grouped?: boolean } = {}) {
+export interface RequisitionReportXlsxOptions {
+  grouped?: boolean;
+  /**
+   * RF-707 (hallazgo del ensayo 2026-09-22: el Excel no traía lo que sí muestra la pantalla). `all` =
+   * todas las órdenes comprometidas visibles (de ahí sale el "Estado de pago" de cada requisición, igual
+   * que en pantalla); `filtered` = las que pasan los filtros del bloque (`filterOrderReportRows`), de
+   * donde sale la hoja "Comprometido vs pagado". Ausente = sin columna ni hoja (llamadores viejos).
+   */
+  orders?: { all: readonly OrderReportRow[]; filtered: readonly OrderReportRow[] };
+}
+/** Suma de base/IVA/total solo de las filas que cuentan (`requisitionCountsInTotal`). */
+function sumCounted(rows: readonly ReportRow[]): { base: number; iva: number; total: number } {
+  return rows.reduce((sum, row) => (requisitionCountsInTotal(row.status) ? { base: sum.base + row.base, iva: sum.iva + row.iva, total: sum.total + row.total } : sum), { base: 0, iva: 0, total: 0 });
+}
+export async function buildRequisitionReportXlsx(rows: readonly ReportRow[], names: ReportCatalogNames, options: RequisitionReportXlsxOptions = {}) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Plataforma Mizar";
   const summary = workbook.addWorksheet("Reporte");
+  const paymentByRequisition = options.orders ? requisitionPaymentStatuses(options.orders.all) : undefined;
+  const paymentLabel = (id: string) => { const status = paymentByRequisition?.get(id); return status ? PAYMENT_STATUS_LABELS[status] : "Sin orden"; };
   // RF-707: "Empresa facturada" (a quién viene el soporte) junto al centro de costo; "Empresa" sigue
-  // siendo la sociedad de la requisición.
-  const headers = ["Consecutivo", "Fecha", "Empresa", "Obra", "Centro de costo", "Empresa facturada", "Etiqueta", "Aprobador(es)", "Estado", "Proveedor(es)", "Base COP", "IVA COP", "Total COP"];
+  // siendo la sociedad de la requisición. "Estado de pago" (de sus órdenes) y "Suma al total" (devueltas
+  // y declinadas no suman, ver `requisitionCountsInTotal`) — mismas cifras que la pantalla.
+  const headers = ["Consecutivo", "Fecha", "Empresa", "Obra", "Centro de costo", "Empresa facturada", "Etiqueta", "Aprobador(es)", "Estado", ...(paymentByRequisition ? ["Estado de pago"] : []), "Suma al total", "Proveedor(es)", "Base COP", "IVA COP", "Total COP"];
+  // Columnas de texto antes de Base/IVA/Total: los subtotales y el total general se alinean con ellas.
+  const leading = headers.length - 3;
+  const amountsRow = (label: string, labelIndex: number, amounts: { base: number; iva: number; total: number }) => {
+    const cells: Array<string | number> = Array.from({ length: leading }, () => "");
+    cells[labelIndex] = label;
+    return summary.addRow([...cells, amounts.base, amounts.iva, amounts.total]);
+  };
   summary.addRow(headers);
   summary.getRow(1).font = { bold: true };
   const writeRow = (row: ReportRow) =>
     summary.addRow([
       row.consecutive, row.date ? row.date.slice(0, 10) : "", nameOf(names.societies, row.societyId), nameOf(names.works, row.workId),
       nameOf(names.costCenters, row.costCenterId), nameOf(names.societies, row.billedCompanyId), nameOf(names.tags, row.tagId), namesJoined(names.users, row.approverIds), row.status,
+      ...(paymentByRequisition ? [paymentLabel(row.id)] : []), requisitionCountsInTotal(row.status) ? "Sí" : "No",
       namesJoined(names.suppliers, row.supplierIds), row.base, row.iva, row.total,
     ]);
-  const grandTotal = { base: 0, iva: 0, total: 0 };
-  for (const row of rows) { grandTotal.base += row.base; grandTotal.iva += row.iva; grandTotal.total += row.total; }
+  // Hallazgo del ensayo 2026-09-22: totales y subtotales con la MISMA regla que la pantalla — las
+  // devueltas y declinadas se listan pero no suman (antes el TOTAL GENERAL las sumaba).
+  const grandTotal = sumCounted(rows);
   if (options.grouped) {
     // Agrupado por CENTRO DE COSTO (2026-09-12: ya es una entidad propia, no "centro ≈ obra" como
     // antes de esa fecha) — la obra queda como columna propia dentro de cada fila (arriba), así que su
@@ -69,16 +99,52 @@ export async function buildRequisitionReportXlsx(rows: readonly ReportRow[], nam
     const groups = [...byCostCenter.entries()].sort((a, b) => nameOf(names.costCenters, a[0]).localeCompare(nameOf(names.costCenters, b[0]), "es"));
     for (const [costCenterId, groupRows] of groups) {
       for (const row of groupRows) writeRow(row);
-      const subtotal = groupRows.reduce((sum, row) => ({ base: sum.base + row.base, iva: sum.iva + row.iva, total: sum.total + row.total }), { base: 0, iva: 0, total: 0 });
-      const subtotalRow = summary.addRow(["", "", "", "", `Subtotal ${nameOf(names.costCenters, costCenterId)}`, "", "", "", "", "", subtotal.base, subtotal.iva, subtotal.total]);
-      subtotalRow.font = { bold: true };
+      amountsRow(`Subtotal ${nameOf(names.costCenters, costCenterId)}`, 4, sumCounted(groupRows)).font = { bold: true };
     }
   } else {
     for (const row of rows) writeRow(row);
   }
-  const totalRow = summary.addRow(["", "", "", "", "", "", "", "", "", "TOTAL GENERAL", grandTotal.base, grandTotal.iva, grandTotal.total]);
-  totalRow.font = { bold: true };
+  amountsRow("TOTAL GENERAL", leading - 1, grandTotal).font = { bold: true };
+  const excluded = rows.filter((row) => !requisitionCountsInTotal(row.status));
+  if (excluded.length) {
+    const excludedTotals = excluded.reduce((sum, row) => ({ base: sum.base + row.base, iva: sum.iva + row.iva, total: sum.total + row.total }), { base: 0, iva: 0, total: 0 });
+    amountsRow(`No suman al total (${REQUISITION_STATUSES_OUT_OF_TOTAL.join(" y ")}): ${excluded.length}`, leading - 1, excludedTotals).font = { italic: true };
+  }
   summary.columns.forEach((column) => { column.width = 20; });
+
+  if (options.orders) {
+    // RF-707: el mismo bloque "Comprometido vs pagado" de la pantalla, con los mismos cálculos
+    // (lib/services/report-service.ts) sobre las mismas órdenes filtradas.
+    const orders = options.orders.filtered;
+    const sheet = workbook.addWorksheet("Comprometido vs pagado");
+    const totals = summarizeCommittedVsPaid(orders);
+    sheet.addRow(["Comprometido vs pagado"]).font = { bold: true };
+    sheet.addRow(["Órdenes generadas (lo comprometido) frente a sus pagos vigentes; los pagos anulados no cuentan."]);
+    sheet.addRow([]);
+    sheet.addRow(["Comprometido COP", totals.committed]);
+    sheet.addRow(["Pagado COP", totals.paid]);
+    sheet.addRow(["Saldo por pagar COP", totals.balance]);
+    sheet.addRow(["Órdenes", totals.orders]);
+    const groupTable = (title: string, groups: CommittedVsPaidGroup[], labelOf: (key: string) => string) => {
+      sheet.addRow([]);
+      sheet.addRow([title, "Órdenes", "Comprometido COP", "Pagado COP", "Saldo COP"]).font = { bold: true };
+      for (const group of groups) sheet.addRow([labelOf(group.key), group.orders, group.committed, group.paid, group.committed - group.paid]);
+    };
+    const costCenterLabel = (key: string) => (key ? nameOf(names.costCenters, key) : "Sin centro de costo");
+    groupTable("Centro de costo", groupCommittedVsPaid(orders, (row) => row.costCenterId).sort((a, b) => costCenterLabel(a.key).localeCompare(costCenterLabel(b.key), "es")), costCenterLabel);
+    groupTable("Periodo (mes de la orden)", groupCommittedVsPaid(orders, (row) => row.period).sort((a, b) => b.key.localeCompare(a.key)), (key) => key || "Sin fecha");
+    sheet.addRow([]);
+    sheet.addRow(["Orden", "Requisición", "Fecha orden", "Centro de costo", "Empresa facturada", "Proveedor", "Medio(s) de pago", "Estado de pago", "Comprometido COP", "Pagado COP", "Saldo COP"]).font = { bold: true };
+    for (const order of orders) {
+      sheet.addRow([
+        order.consecutive, order.requisitionConsecutive ?? "—", order.generatedAt ? order.generatedAt.slice(0, 10) : "", costCenterLabel(order.costCenterId ?? ""),
+        nameOf(names.societies, order.billedCompanyId), nameOf(names.suppliers, order.supplierId),
+        order.paymentMethods.length ? order.paymentMethods.map((method) => MEDIO_PAGO_LABELS[method] ?? method).join(", ") : "—",
+        PAYMENT_STATUS_LABELS[order.paymentStatus] ?? order.paymentStatus, order.total, order.paidAmount, order.total - order.paidAmount,
+      ]);
+    }
+    sheet.columns.forEach((column) => { column.width = 20; });
+  }
 
   const itemsSheet = workbook.addWorksheet("Ítems");
   itemsSheet.addRow(["Consecutivo", "Descripción", "Cantidad", "Unidad", "Estado", "Base COP", "IVA COP", "Total COP"]);

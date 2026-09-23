@@ -6,7 +6,8 @@ import { requireServerActor } from "../../../../lib/infrastructure/auth";
 import { createPostgresDependencies, postgresReportCatalogSource } from "../../../../lib/infrastructure/postgres-repositories";
 import { buildRequisitionReportXlsx } from "../../../../lib/reports";
 import { ReportService } from "../../../../lib/services";
-import { reportFiltersSchema } from "../report-query";
+import { filterOrderReportRows } from "../../../../lib/services/report-service";
+import { reportExportFiltersSchema } from "../report-query";
 
 export const runtime = "nodejs";
 
@@ -29,21 +30,26 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const actor = await requireServerActor();
     const url = new URL(request.url);
-    const parsed = reportFiltersSchema.safeParse(Object.fromEntries(url.searchParams));
+    const parsed = reportExportFiltersSchema.safeParse(Object.fromEntries(url.searchParams));
     if (!parsed.success) throw new DomainError("INVALID_INPUT", parsed.error.issues[0]?.message ?? "Parámetros de reporte inválidos");
-    const filters = parsed.data;
+    const { paymentMethod, paymentStatus, ...filters } = parsed.data;
     const dependencies = createPostgresDependencies();
     const reportService = new ReportService(dependencies);
     reportService.assertCanExport(actor);
-    const [rows, names] = await Promise.all([
+    // RF-707 (hallazgo del ensayo 2026-09-22): el Excel trae también el "Estado de pago" y el bloque
+    // "Comprometido vs pagado". Las órdenes se piden SIN filtros y se filtran con `filterOrderReportRows`,
+    // exactamente como hace la pantalla con GET /api/reports/orders — mismas cifras, misma regla.
+    const [rows, names, allOrders] = await Promise.all([
       reportService.listReport(filters, { actor }),
       postgresReportCatalogSource().load(),
+      reportService.listOrderReport({}, { actor }),
     ]);
+    const filteredOrders = filterOrderReportRows(allOrders, { workId: filters.workId, period: filters.period, costCenterId: filters.costCenterId, billedCompanyId: filters.billedCompanyId, paymentMethod, paymentStatus });
     // RF-1301 punto 3 ("compilado mensual"): agrupado por obra solo cuando el filtro trae un mes —
     // Daniel: "el compilado debe ir por obra/centro de costo"; un export ad-hoc sin mes se queda plano.
-    const bytes = (await buildRequisitionReportXlsx(rows, names, { grouped: Boolean(filters.period) })) as unknown as Uint8Array;
+    const bytes = (await buildRequisitionReportXlsx(rows, names, { grouped: Boolean(filters.period), orders: { all: allOrders, filtered: filteredOrders } })) as unknown as Uint8Array;
     const filename = `reporte-requisiciones${filters.period ? `-${filters.period}` : ""}.xlsx`;
-    await dependencies.audit.append({ entity: "reporte", entityId: randomUUID(), event: "reporte_requisiciones_descargado", actorId: actor.id, at: new Date(), origin: "web", data: { rows: rows.length, ...filters } });
+    await dependencies.audit.append({ entity: "reporte", entityId: randomUUID(), event: "reporte_requisiciones_descargado", actorId: actor.id, at: new Date(), origin: "web", data: { rows: rows.length, ...parsed.data } });
     return new Response(Buffer.from(bytes), { headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Content-Disposition": `attachment; filename=${filename}`, "Cache-Control": "no-store" } });
   } catch (error) {
     return apiError(error);

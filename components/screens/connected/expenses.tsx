@@ -21,6 +21,7 @@ import {
 import type { Role } from "../../../lib/demo-data";
 import type { CashCloseReport } from "../../../lib/services/report-service";
 import { apiRequest, friendlyErrorText } from "../../../lib/http/friendly-error";
+import { distributeExpenses } from "../../../lib/domain/rules";
 import { SectionTitle, Tone } from "../screen-primitives";
 import {
   formatIsoDate,
@@ -138,8 +139,12 @@ export function ConnectedExpenses({
     [periodFilter, setPeriodFilter] = useState("");
   // Reunión 2026-09: "la fecha del gasto es la del pago" — un gasto sin `date` es un compromiso (orden
   // generada, aún sin pagar), no un gasto de ningún mes todavía. Se separa ANTES de filtrar por periodo.
-  const paidRows = rows.filter((row) => row.date !== undefined);
-  const unpaidRows = rows.filter((row) => row.date === undefined);
+  // RF-305 (hallazgo del ensayo 2026-09-22): un gasto repartido entre obras se ve como una porción por
+  // obra — así el filtro por obra, los subtotales y el total general reflejan el reparto sin duplicarlo.
+  // Repartir/re-repartir sigue operando sobre el gasto ENTERO (`rows`), nunca sobre una porción.
+  const portions = distributeExpenses(rows);
+  const paidRows = portions.filter((row) => row.date !== undefined);
+  const unpaidRows = portions.filter((row) => row.date === undefined);
   const filteredRows = paidRows.filter(
     (row) =>
       (!expenseWorkFilter || row.workId === expenseWorkFilter) &&
@@ -180,7 +185,12 @@ export function ConnectedExpenses({
   const shareExpense = shareExpenseId ? rows.find((row) => row.id === shareExpenseId) : undefined;
   const openShareForm = (row: ExpenseRow) => {
     setShareExpenseId(row.id);
-    setShareLines([newShareLine(row.workId, String(row.total)), newShareLine()]);
+    // Si ya estaba repartido, se abre con el reparto vigente para corregirlo, no desde cero.
+    setShareLines(
+      row.shares?.length
+        ? row.shares.map((share) => newShareLine(share.workId, String(share.amount)))
+        : [newShareLine(row.workId, String(row.total)), newShareLine()],
+    );
     setShareFeedback("");
     setShareSuccess("");
   };
@@ -485,10 +495,20 @@ export function ConnectedExpenses({
                       </thead>
                       <tbody>
                         {filteredRows.map((row) => (
-                          <tr key={row.id}>
+                          <tr key={`${row.id}:${row.workId}`} data-testid="expense-row">
                             <td>{row.orderDate}</td>
                             <td>{row.date}</td>
-                            <td>{data.catalogs.works.find((work) => work.id === row.workId)?.name ?? row.workId}</td>
+                            <td>
+                              {data.catalogs.works.find((work) => work.id === row.workId)?.name ?? row.workId}
+                              {row.portionOf && (
+                                <>
+                                  <br />
+                                  <small className="muted-copy" data-testid="expense-portion-note">
+                                    Parte {row.portionOf.index + 1} de {row.portionOf.count} de un gasto repartido por {money.format(row.portionOf.expenseTotal)}
+                                  </small>
+                                </>
+                              )}
+                            </td>
                             <td>{costCenters.find((costCenter) => costCenter.id === row.costCenterId)?.name ?? "—"}</td>
                             <td>{originLabel(row.origin)}</td>
                             <td>{row.period}</td>
@@ -499,8 +519,8 @@ export function ConnectedExpenses({
                                   className="text-link"
                                   type="button"
                                   data-testid="expense-share-trigger"
-                                  aria-label={`Repartir gasto de la orden del ${row.orderDate} por ${money.format(row.total)}`}
-                                  onClick={() => openShareForm(row)}
+                                  aria-label={`Repartir gasto de la orden del ${row.orderDate} por ${money.format(row.portionOf?.expenseTotal ?? row.total)}`}
+                                  onClick={() => openShareForm(rows.find((expense) => expense.id === row.id) ?? row)}
                                 >
                                   Repartir <ArrowRight aria-hidden="true" size={13} />
                                 </button>
@@ -539,7 +559,7 @@ export function ConnectedExpenses({
                       </thead>
                       <tbody>
                         {filteredUnpaidRows.map((row) => (
-                          <tr key={row.id}>
+                          <tr key={`${row.id}:${row.workId}`}>
                             <td>{row.orderDate}</td>
                             <td>{data.catalogs.works.find((work) => work.id === row.workId)?.name ?? row.workId}</td>
                             <td>{originLabel(row.origin)}</td>

@@ -170,6 +170,54 @@ function toOrderReportRow(order: Order): OrderReportRow {
 /** Una orden `no_necesario` dejó de ser un compromiso (su gasto se anuló): no entra en "comprometido". */
 const COMMITTED_ORDER_STATUSES = ["generada", "cumplida", "no_cumplida"] as const;
 
+// ── Comprometido vs pagado (RF-707): cálculos PUROS compartidos por la pantalla de Reportes
+// (components/screens/connected/reports.tsx) y su Excel (lib/reports/xlsx.ts). Antes vivían solo en la
+// pantalla y el Excel no traía el bloque (hallazgo del ensayo 2026-09-22); ahora hay una sola copia. Todos
+// parten de `OrderReportRow`, cuyo `paymentStatus` ya viene derivado — aquí no se vuelve a decidir la regla.
+
+/** Filtros del bloque "Comprometido vs pagado", tal como los aplica la pantalla (cadena vacía = sin filtro). */
+export interface CommittedVsPaidFilters { workId?: string; period?: string; costCenterId?: string; billedCompanyId?: string; paymentMethod?: string; paymentStatus?: string }
+export function filterOrderReportRows(rows: readonly OrderReportRow[], filters: CommittedVsPaidFilters): OrderReportRow[] {
+  return rows.filter((row) =>
+    (!filters.workId || row.workId === filters.workId) &&
+    (!filters.period || row.period === filters.period) &&
+    (!filters.costCenterId || row.costCenterId === filters.costCenterId) &&
+    (!filters.billedCompanyId || row.billedCompanyId === filters.billedCompanyId) &&
+    (!filters.paymentMethod || row.paymentMethods.includes(filters.paymentMethod as PaymentMethod)) &&
+    (!filters.paymentStatus || row.paymentStatus === filters.paymentStatus));
+}
+export type CommittedVsPaidGroup = { key: string; orders: number; committed: number; paid: number };
+/** Suma comprometido (total de la orden) y pagado (pagos vigentes) por la clave que devuelva `keyOf`;
+ *  clave vacía = "sin centro de costo"/"sin periodo". Orden de aparición: quien pinta decide cómo ordenar. */
+export function groupCommittedVsPaid(rows: readonly OrderReportRow[], keyOf: (row: OrderReportRow) => string | undefined): CommittedVsPaidGroup[] {
+  const groups = new Map<string, CommittedVsPaidGroup>();
+  for (const row of rows) {
+    const key = keyOf(row) ?? "";
+    const group = groups.get(key) ?? { key, orders: 0, committed: 0, paid: 0 };
+    group.orders += 1;
+    group.committed += row.total;
+    group.paid += row.paidAmount;
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+/** Totales del bloque: comprometido, pagado y saldo por pagar (= comprometido − pagado). */
+export function summarizeCommittedVsPaid(rows: readonly OrderReportRow[]): { orders: number; committed: Money; paid: Money; balance: Money } {
+  const committed = rows.reduce((sum, row) => sum + row.total, 0), paid = rows.reduce((sum, row) => sum + row.paidAmount, 0);
+  return { orders: rows.length, committed, paid, balance: committed - paid };
+}
+/**
+ * "Estado de pago" de cada REQUISICIÓN a partir del estado YA derivado de sus órdenes comprometidas (no
+ * se recalcula con montos: la regla vive en `paymentStatus` de dominio y en el SQL de órdenes, ver
+ * ESTADO-Y-PENDIENTES §5 riesgo 3). Todas "pagada" → pagada; todas "pendiente" → pendiente; cualquier
+ * mezcla → parcial. Una requisición sin órdenes no aparece en el mapa (se muestra "Sin orden").
+ */
+export function requisitionPaymentStatuses(rows: readonly OrderReportRow[]): Map<string, PaymentStatus> {
+  const byRequisition = new Map<string, Set<PaymentStatus>>();
+  for (const row of rows) byRequisition.set(row.requisitionId, (byRequisition.get(row.requisitionId) ?? new Set()).add(row.paymentStatus));
+  return new Map([...byRequisition.entries()].map(([id, statuses]) => [id, statuses.size === 1 ? [...statuses][0] : "parcial"]));
+}
+
 /**
  * RF-1301: índice de nombres para RESOLVER los ids crudos del reporte a texto legible — solo lo necesita
  * la exportación a Excel (un archivo no tiene forma de "resolver en cliente" como sí hace la pantalla vía

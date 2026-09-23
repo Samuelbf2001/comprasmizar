@@ -6,7 +6,7 @@
 // orders.tsx, expenses.tsx, data.ts y screen.tsx puedan importarlo.
 import type { Role } from "../../../lib/demo-data";
 import type { PaymentMethod, PaymentStatus, Role as DomainRole } from "../../../lib/domain";
-import { resolveActorPermissions, resolveRolePermissions, WILDCARD_PERMISSION } from "../../../lib/domain/rules";
+import { requisitionCountsInTotal, resolveActorPermissions, resolveRolePermissions, WILDCARD_PERMISSION } from "../../../lib/domain/rules";
 import { uploadSignedAttachment, type AttachmentMetadata } from "../attachment-upload";
 import type { RouteKind } from "../skeletons";
 import type { FriendlyError } from "../../../lib/http/friendly-error";
@@ -217,6 +217,9 @@ export type ExpenseRow = {
   concept?: string;
   paymentMethod?: OrderPaymentMethod;
   closeId?: string;
+  // RF-305: reparto guardado entre obras (Expense.shares); ausente = el gasto va entero a `workId`. La
+  // pantalla lo aplica con `distributeExpenses` (lib/domain/rules.ts), nunca con una suma propia.
+  shares?: Array<{ workId: string; amount: number }>;
 };
 export type AttachmentRow = {
   id: string;
@@ -702,6 +705,10 @@ export function groupReportRowsByCostCenter(
     (catalogs.costCenters ?? []).find((costCenter) => costCenter.id === id)?.name ?? "—";
   const workName = (id: string) =>
     catalogs.works.find((work) => work.id === id)?.name ?? "—";
+  // Subtotales con la MISMA regla que el total del reporte: devueltas y declinadas se cuentan como filas
+  // pero no suman (`requisitionCountsInTotal`) — así Σ subtotales === total general.
+  const subtotalOf = (groupRows: ReportRow[]) =>
+    groupRows.reduce((sum, row) => sum + (requisitionCountsInTotal(row.status) ? row.total : 0), 0);
   const order: string[] = [];
   const byCostCenter = new Map<string, ReportRow[]>();
   for (const row of rows) {
@@ -720,7 +727,7 @@ export function groupReportRowsByCostCenter(
     return workOrder
       .map((workId) => {
         const workRows = byWork.get(workId) as ReportRow[];
-        return { workId, workName: workId ? workName(workId) : "Sin obra", subtotal: workRows.reduce((sum, row) => sum + row.total, 0), rows: workRows };
+        return { workId, workName: workId ? workName(workId) : "Sin obra", subtotal: subtotalOf(workRows), rows: workRows };
       })
       .sort((a, b) => a.workName.localeCompare(b.workName, "es"));
   };
@@ -730,7 +737,7 @@ export function groupReportRowsByCostCenter(
       return {
         costCenterId,
         costCenterName: costCenterId ? costCenterName(costCenterId) : "Sin centro de costo",
-        subtotal: groupRows.reduce((sum, row) => sum + row.total, 0),
+        subtotal: subtotalOf(groupRows),
         works: groupByWork(groupRows),
         rows: groupRows,
       };

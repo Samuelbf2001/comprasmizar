@@ -29,6 +29,16 @@ export const reportFiltersSchema = z
   .strict();
 export type ReportQueryFilters = z.infer<typeof reportFiltersSchema>;
 
+/**
+ * `GET /api/reports/export`: los filtros del reporte MÁS los dos propios del bloque "Comprometido vs
+ * pagado" de la pantalla (medio y estado de pago), para que la hoja de ese bloque en el Excel salga con
+ * las mismas cifras que se ven. Solo aplican a las órdenes, nunca a las filas de requisiciones.
+ */
+export const reportExportFiltersSchema = reportFiltersSchema.extend({
+  paymentMethod: z.enum(PAYMENT_METHOD_VALUES, "Medio de pago inválido").optional(),
+  paymentStatus: z.enum(PAYMENT_STATUS_VALUES, "Estado de pago inválido").optional(),
+}).strict();
+
 /** RF-707: filtros de `GET /api/reports/orders` (comprometido vs pagado). Sin aprobador ni etiqueta. */
 export const orderReportFiltersSchema = z
   .object({

@@ -201,7 +201,13 @@ export interface CashPayment extends OrderPayment { orderConsecutive: string; or
  * pasar a `workId?: string` es el parche pendiente del coordinador. Nunca se persiste "": el adaptador
  * escribe NULL.
  */
-export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; billedCompanyId?: string; cashBoxId?: string; concept?: string; paymentMethod?: PaymentMethod; registeredBy?: string; closeId?: string; }
+/**
+ * `shares` (RF-305, hallazgo del ensayo 2026-09-22): el reparto guardado en `gastos_reparto`, tal cual.
+ * Ausente = el gasto va entero a `workId`. Presente, el gasto NO se reescribe: sigue siendo uno solo con
+ * su total, y quien agrupe o filtre por obra debe pasar antes por `distributeExpenses`
+ * (lib/domain/rules.ts), que lo parte en una porción por obra — así el total general no se duplica.
+ */
+export interface Expense { id: string; workId: string; origin: "requisicion" | "caja_menor"; referenceId: string; tagId?: string; supplierId?: string; orderDate: string; date?: string; base: Money; iva: Money; total: Money; period?: string; costCenterId?: string; billedCompanyId?: string; cashBoxId?: string; concept?: string; paymentMethod?: PaymentMethod; registeredBy?: string; closeId?: string; shares?: ExpenseShare[]; }
 export interface ExpenseShare { expenseId: string; workId: string; amount: Money; }
 /**
  * `cashBoxId`/`paymentMethod`/`iva` (migración 202609120003): la caja menor ya no es exclusiva de la

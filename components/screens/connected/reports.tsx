@@ -10,10 +10,18 @@
 import { Fragment, useEffect, useState } from "react";
 import { ArrowDownToLine, Inbox, SearchX } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
-import type { OrderReportRow } from "../../../lib/services/report-service";
+import { requisitionCountsInTotal } from "../../../lib/domain/rules";
+import {
+  filterOrderReportRows,
+  groupCommittedVsPaid,
+  requisitionPaymentStatuses,
+  summarizeCommittedVsPaid,
+  type CommittedVsPaidGroup,
+  type OrderReportRow,
+} from "../../../lib/services/report-service";
 import { apiRequest, friendlyErrorText } from "../../../lib/http/friendly-error";
 import { SectionTitle, Tone } from "../screen-primitives";
-import { MEDIO_PAGO_OPTIONS, PAYMENT_STATUS_LABELS } from "./payment-labels";
+import { MEDIO_PAGO_OPTIONS, PAYMENT_STATUS_LABELS, paymentStatusLabel } from "./payment-labels";
 import {
   emptyCatalogs,
   estadoLabel,
@@ -34,21 +42,9 @@ function namesFor(ids: string[], options: { id: string; name: string }[]): strin
   return ids.map((id) => options.find((option) => option.id === id)?.name ?? "—").join(", ");
 }
 
-export type CommittedVsPaidGroup = { key: string; orders: number; committed: number; paid: number };
-/** Suma comprometido (total de la orden) y pagado (pagos vigentes) por la clave que devuelva `keyOf`;
- *  clave vacía = "sin centro de costo"/"sin periodo". Orden de aparición: quien pinta decide cómo ordenar. */
-export function groupCommittedVsPaid(rows: readonly OrderReportRow[], keyOf: (row: OrderReportRow) => string | undefined): CommittedVsPaidGroup[] {
-  const groups = new Map<string, CommittedVsPaidGroup>();
-  for (const row of rows) {
-    const key = keyOf(row) ?? "";
-    const group = groups.get(key) ?? { key, orders: 0, committed: 0, paid: 0 };
-    group.orders += 1;
-    group.committed += row.total;
-    group.paid += row.paidAmount;
-    groups.set(key, group);
-  }
-  return [...groups.values()];
-}
+// Los cálculos de "Comprometido vs pagado" viven en lib/services/report-service.ts (una sola copia, la
+// misma que usa el Excel); se reexportan para quien ya los importaba desde aquí.
+export { groupCommittedVsPaid, type CommittedVsPaidGroup };
 
 export function ConnectedReports({
   data,
@@ -95,7 +91,16 @@ export function ConnectedReports({
       (!billedCompanyFilter || row.billedCompanyId === billedCompanyFilter) &&
       (!isApprover || !approvedByMeOnly || row.status === "aprobada"),
   );
-  const total = filteredRows.reduce((sum, row) => sum + row.total, 0);
+  // Hallazgo del ensayo 2026-09-22: el total es el valor VIGENTE solicitado — devueltas y declinadas se
+  // listan con su estado pero no suman (regla única: `requisitionCountsInTotal`, lib/domain/rules.ts).
+  const total = filteredRows.reduce((sum, row) => sum + (requisitionCountsInTotal(row.status) ? row.total : 0), 0);
+  const excludedRows = filteredRows.filter((row) => !requisitionCountsInTotal(row.status));
+  const excludedSummary = (["devuelta", "declinada"] as const)
+    .map((status) => {
+      const statusRows = excludedRows.filter((row) => row.status === status);
+      return { status, count: statusRows.length, total: statusRows.reduce((sum, row) => sum + row.total, 0) };
+    })
+    .filter((entry) => entry.count > 0);
   // "Compilado mensual" (RF-1301 punto 3, Daniel: "el compilado debe ir por obra/centro de costo"): el
   // resumen por centro de costo (con la obra como subnivel) solo tiene sentido cuando hay un mes
   // elegido — sin periodo, "compilar" no significa nada todavía.
@@ -122,17 +127,23 @@ export function ConnectedReports({
       active = false;
     };
   }, []);
-  const filteredOrders = (orderRows ?? []).filter(
-    (row) =>
-      (!workFilter || row.workId === workFilter) &&
-      (!period || row.period === period) &&
-      (!costCenterFilter || row.costCenterId === costCenterFilter) &&
-      (!billedCompanyFilter || row.billedCompanyId === billedCompanyFilter) &&
-      (!paymentMethodFilter || row.paymentMethods.includes(paymentMethodFilter as OrderReportRow["paymentMethods"][number])) &&
-      (!paymentStatusFilter || row.paymentStatus === paymentStatusFilter),
-  );
-  const committed = filteredOrders.reduce((sum, row) => sum + row.total, 0);
-  const paid = filteredOrders.reduce((sum, row) => sum + row.paidAmount, 0);
+  const filteredOrders = filterOrderReportRows(orderRows ?? [], {
+    workId: workFilter,
+    period,
+    costCenterId: costCenterFilter,
+    billedCompanyId: billedCompanyFilter,
+    paymentMethod: paymentMethodFilter,
+    paymentStatus: paymentStatusFilter,
+  });
+  const { committed, paid, balance } = summarizeCommittedVsPaid(filteredOrders);
+  // Estado de pago por requisición: sobre TODAS sus órdenes comprometidas (no solo las filtradas por
+  // medio/estado de pago), igual que la columna del Excel.
+  const paymentStatusByRequisition = requisitionPaymentStatuses(orderRows ?? []);
+  const requisitionPaymentLabel = (id: string) => {
+    if (orderRows === null) return "—";
+    const status = paymentStatusByRequisition.get(id);
+    return status ? paymentStatusLabel(status) : "Sin orden";
+  };
   const costCenterName = (id: string) => (id ? (costCenters.find((costCenter) => costCenter.id === id)?.name ?? "—") : "Sin centro de costo");
   const byCostCenter = groupCommittedVsPaid(filteredOrders, (row) => row.costCenterId)
     .sort((a, b) => costCenterName(a.key).localeCompare(costCenterName(b.key), "es"));
@@ -158,6 +169,9 @@ export function ConnectedReports({
   if (costCenterFilter) exportParams.set("costCenterId", costCenterFilter);
   if (billedCompanyFilter) exportParams.set("billedCompanyId", billedCompanyFilter);
   if (period) exportParams.set("period", period);
+  // El bloque "Comprometido vs pagado" del Excel usa también los filtros propios de ese bloque.
+  if (paymentMethodFilter) exportParams.set("paymentMethod", paymentMethodFilter);
+  if (paymentStatusFilter) exportParams.set("paymentStatus", paymentStatusFilter);
   const exportHref = `/api/reports/export${exportParams.size ? `?${exportParams.toString()}` : ""}`;
 
   const balanceRow = (group: CommittedVsPaidGroup, label: string) => (
@@ -251,8 +265,19 @@ export function ConnectedReports({
         <section className="panel">
           <div className="panel-head">
             <div>
-              <h2>{money.format(total)}</h2>
-              <p className="panel-sub">Total de las requisiciones visibles para tu rol con estos filtros.</p>
+              <h2 data-testid="report-total">{money.format(total)}</h2>
+              <p className="panel-sub">
+                Valor vigente de las requisiciones visibles para tu rol con estos filtros (enviadas, en revisión, en aprobación y aprobadas).
+              </p>
+              {excludedSummary.length > 0 && (
+                <p className="panel-sub" data-testid="report-excluded">
+                  No suman al total:{" "}
+                  {excludedSummary
+                    .map((entry) => `${entry.count} ${entry.status === "devuelta" ? (entry.count === 1 ? "devuelta" : "devueltas") : entry.count === 1 ? "declinada" : "declinadas"} por ${money.format(entry.total)}`)
+                    .join(" y ")}
+                  . Siguen en la tabla con su estado.
+                </p>
+              )}
             </div>
             <Tone tone="muted">{filteredRows.length} requisiciones</Tone>
           </div>
@@ -284,6 +309,7 @@ export function ConnectedReports({
                     <th>Etiqueta</th>
                     <th>Aprobador(es)</th>
                     <th>Estado</th>
+                    <th>Estado de pago</th>
                     <th>Total</th>
                   </tr>
                 </thead>
@@ -300,7 +326,14 @@ export function ConnectedReports({
                       <td>
                         <Tone tone="muted">{estadoLabel(row.status)}</Tone>
                       </td>
-                      <td>{money.format(row.total)}</td>
+                      <td>{requisitionPaymentLabel(row.id)}</td>
+                      <td>
+                        {requisitionCountsInTotal(row.status) ? (
+                          money.format(row.total)
+                        ) : (
+                          <s title="No suma al total" aria-label={`${money.format(row.total)}, no suma al total`}>{money.format(row.total)}</s>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -402,7 +435,7 @@ export function ConnectedReports({
               </div>
               <div>
                 <span>Saldo por pagar</span>
-                <b data-testid="report-balance">{money.format(committed - paid)}</b>
+                <b data-testid="report-balance">{money.format(balance)}</b>
               </div>
               <div>
                 <span>Órdenes</span>

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ExcelJS from "exceljs";
-import type { Requisition } from "../../lib/domain";
+import type { Order, Requisition } from "../../lib/domain";
 import type { Page } from "../../lib/services";
 
 /**
@@ -11,6 +11,7 @@ import type { Page } from "../../lib/services";
 const mocks = vi.hoisted(() => ({
   actor: { id: "actor-1", roles: ["contabilidad"] as string[] },
   rows: [] as Requisition[],
+  orders: [] as Order[],
   appendCalls: [] as Array<Record<string, unknown>>,
 }));
 
@@ -21,6 +22,9 @@ vi.mock("../../lib/infrastructure/postgres-repositories", () => ({
   createPostgresDependencies: () => ({
     requisitions: {
       listVisibleTo: async (): Promise<Page<Requisition>> => ({ rows: mocks.rows, nextCursor: null }),
+    },
+    orders: {
+      listVisibleTo: async (): Promise<Page<Order>> => ({ rows: mocks.orders, nextCursor: null }),
     },
     audit: { append: async (event: Record<string, unknown>) => { mocks.appendCalls.push(event); } },
   }),
@@ -71,6 +75,7 @@ describe("GET /api/reports/export — RF-1301", () => {
   beforeEach(() => {
     mocks.actor = { id: "actor-1", roles: ["contabilidad"] };
     mocks.rows = [requisition()];
+    mocks.orders = [];
     mocks.appendCalls = [];
   });
 
@@ -142,5 +147,89 @@ describe("GET /api/reports/export — RF-1301", () => {
     mocks.actor = { id: "juliana", roles: ["aprobador"] };
     const response = await GET(requestFor("?period=2026-09"));
     expect(response.status).toBe(200);
+  });
+});
+
+// Hallazgos del ensayo 2026-09-22 — estas pruebas fallan contra 8da7ecf.
+describe("GET /api/reports/export — mismas cifras que la pantalla (hallazgos 1 y 2)", () => {
+  // Orden de 119.000 (una línea de 100.000 + IVA 19.000) con un pago vigente de 40.000.
+  const order = (overrides: Partial<Order> = {}): Order => ({
+    id: "ord-1", consecutive: "OC-2026-0001", type: "OC", requisitionId: "req-1", requisitionConsecutive: "REQ-2026-0001", supplierId: "prov-1", itemIds: ["item-1"],
+    status: "generada", adminStatus: "pendiente", generatedAt: "2026-09-12T00:00:00.000Z", workId: "work-1", costCenterId: "cc-1", billedCompanyId: "soc-2",
+    lines: [item({ finalSupplierId: "prov-1" })], paidAmount: 40_000, paymentStatus: "parcial", paymentMethods: ["efectivo"], ...overrides,
+  });
+  const texts = (sheet: ExcelJS.Worksheet) => sheet.getSheetValues().flat().filter((value): value is string => typeof value === "string");
+  /** Primera fila de la hoja que contiene `label` en alguna celda. */
+  const rowWith = (sheet: ExcelJS.Worksheet, label: string) => {
+    let found: unknown[] | undefined;
+    sheet.eachRow((row) => { if (!found && (row.values as unknown[]).includes(label)) found = row.values as unknown[]; });
+    return found;
+  };
+
+  beforeEach(() => {
+    mocks.actor = { id: "actor-1", roles: ["contabilidad"] };
+    mocks.appendCalls = [];
+    mocks.rows = [
+      requisition({ id: "req-1", consecutive: "REQ-2026-0001" }),
+      requisition({ id: "req-4", consecutive: "REQ-2026-0004", status: "devuelta" }),
+      requisition({ id: "req-5", consecutive: "REQ-2026-0005", status: "declinada" }),
+    ];
+    mocks.orders = [order()];
+  });
+
+  it("hallazgo 1: el TOTAL GENERAL no suma devueltas ni declinadas; se listan con 'Suma al total = No' y un renglón aparte", async () => {
+    const workbook = await loadWorkbookFromResponse(await GET(requestFor()));
+    const summary = workbook.getWorksheet("Reporte")!;
+    expect(summary.getRow(1).values).toEqual(expect.arrayContaining(["Estado", "Estado de pago", "Suma al total"]));
+    expect(rowWith(summary, "REQ-2026-0004")).toEqual(expect.arrayContaining(["devuelta", "No"]));
+    expect(rowWith(summary, "REQ-2026-0001")).toEqual(expect.arrayContaining(["aprobada", "Sí"]));
+    // Cada requisición vale 119.000: el total general es solo el de la aprobada.
+    expect((rowWith(summary, "TOTAL GENERAL") ?? []).slice(-3)).toEqual([100_000, 19_000, 119_000]);
+    expect((rowWith(summary, "No suman al total (devuelta y declinada): 2") ?? []).slice(-3)).toEqual([200_000, 38_000, 238_000]);
+  });
+
+  it("hallazgo 1: en el compilado mensual, el subtotal por centro de costo tampoco suma la devuelta", async () => {
+    const workbook = await loadWorkbookFromResponse(await GET(requestFor("?period=2026-09")));
+    const subtotal = rowWith(workbook.getWorksheet("Reporte")!, "Subtotal Administrativo") ?? [];
+    expect(subtotal.slice(-3)).toEqual([100_000, 19_000, 119_000]);
+  });
+
+  it("hallazgo 2: columna 'Estado de pago' por requisición (de sus órdenes) y 'Sin orden' cuando no tiene", async () => {
+    const workbook = await loadWorkbookFromResponse(await GET(requestFor()));
+    const summary = workbook.getWorksheet("Reporte")!;
+    expect(rowWith(summary, "REQ-2026-0001")).toEqual(expect.arrayContaining(["Pago parcial"]));
+    expect(rowWith(summary, "REQ-2026-0004")).toEqual(expect.arrayContaining(["Sin orden"]));
+  });
+
+  it("hallazgo 2: hoja 'Comprometido vs pagado' con comprometido, pagado, saldo y el desglose por centro, periodo y orden", async () => {
+    mocks.orders = [order(), order({ id: "ord-2", consecutive: "OC-2026-0002", costCenterId: "cc-2", paidAmount: 119_000, paymentStatus: "pagada", paymentMethods: ["transferencia"], generatedAt: "2026-08-20T00:00:00.000Z" })];
+    const workbook = await loadWorkbookFromResponse(await GET(requestFor()));
+    const sheet = workbook.getWorksheet("Comprometido vs pagado")!;
+    expect(sheet).toBeDefined();
+    expect(rowWith(sheet, "Comprometido COP")).toEqual(expect.arrayContaining([238_000]));
+    expect(rowWith(sheet, "Pagado COP")).toEqual(expect.arrayContaining([159_000]));
+    expect(rowWith(sheet, "Saldo por pagar COP")).toEqual(expect.arrayContaining([79_000]));
+    expect(rowWith(sheet, "Administrativo")).toEqual(expect.arrayContaining([1, 119_000, 40_000, 79_000]));
+    expect(rowWith(sheet, "2026-08")).toEqual(expect.arrayContaining([1, 119_000, 119_000, 0]));
+    expect(rowWith(sheet, "OC-2026-0001")).toEqual(expect.arrayContaining(["REQ-2026-0001", "Caja (efectivo)", "Pago parcial", 119_000, 40_000, 79_000]));
+    expect(texts(sheet)).toContain("Pagada");
+  });
+
+  it("hallazgo 2: los filtros propios del bloque (estado y medio de pago) viajan al Excel y filtran solo la hoja de órdenes", async () => {
+    mocks.orders = [order(), order({ id: "ord-2", consecutive: "OC-2026-0002", requisitionId: "req-9", paidAmount: 119_000, paymentStatus: "pagada", paymentMethods: ["transferencia"] })];
+    const response = await GET(requestFor("?paymentStatus=pagada&paymentMethod=transferencia"));
+    expect(response.status).toBe(200);
+    const workbook = await loadWorkbookFromResponse(response);
+    const sheet = workbook.getWorksheet("Comprometido vs pagado")!;
+    expect(rowWith(sheet, "Comprometido COP")).toEqual(expect.arrayContaining([119_000]));
+    expect(rowWith(sheet, "OC-2026-0001")).toBeUndefined();
+    // Las filas de requisiciones no se filtran por pago, y su estado de pago sale de TODAS sus órdenes.
+    expect(rowWith(workbook.getWorksheet("Reporte")!, "REQ-2026-0001")).toEqual(expect.arrayContaining(["Pago parcial"]));
+    expect(mocks.appendCalls[0]).toMatchObject({ data: { paymentStatus: "pagada", paymentMethod: "transferencia" } });
+  });
+
+  it("rechaza un estado de pago inválido con 422", async () => {
+    const response = await GET(requestFor("?paymentStatus=cobrada"));
+    expect(response.status).toBe(422);
   });
 });
