@@ -660,10 +660,17 @@ export function ConnectedRequisitionDetail({
   // agrupados por proveedor final; los que faltan quedan aparte para anticipar SUPPLIER_REQUIRED.
   const approvedForOrders = requisition.items.filter((item) => item.status !== "declinado");
   const missingSupplierItems = approvedForOrders.filter((item) => !item.finalSupplierId);
+  // Hallazgo del ensayo 2026-09-23 (REQ-2026-0047): el agrupado solo miraba el proveedor YA
+  // guardado, así que con un único ítem sin proveedor elegir uno en el `<select>` dejaba el botón en
+  // "Generar órdenes (0)" y `handleGenerateOrders` salía en silencio por "no hay grupos" — sin
+  // petición ni mensaje. El proveedor efectivo de un ítem es el guardado o, si falta, el elegido
+  // aquí: es exactamente lo que `assign_suppliers` va a guardar justo antes de `generate_orders`.
+  const effectiveSupplierId = (item: RequisitionItem) => item.finalSupplierId || assignSupplierChoice[item.id] || "";
   const orderSupplierGroupsMap = new Map<string, RequisitionItem[]>();
   for (const item of approvedForOrders) {
-    if (!item.finalSupplierId) continue;
-    orderSupplierGroupsMap.set(item.finalSupplierId, [...(orderSupplierGroupsMap.get(item.finalSupplierId) ?? []), item]);
+    const supplierId = effectiveSupplierId(item);
+    if (!supplierId) continue;
+    orderSupplierGroupsMap.set(supplierId, [...(orderSupplierGroupsMap.get(supplierId) ?? []), item]);
   }
   const orderSupplierGroups = [...orderSupplierGroupsMap.entries()];
   // GRAVE 4: "—" en vez del UUID crudo cuando el proveedor no aparece en ninguna de las dos fuentes.
