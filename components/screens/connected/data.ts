@@ -98,6 +98,20 @@ export async function loadMoreRequisitions(
   return (await readJson(requisitionsPageUrl(pathname, cursor))) as RequisitionsPage;
 }
 
+// Ensayo 2026-09-23 (PRD: "declinada es terminal, consultable en su propio filtro"): en /revision el
+// filtro de estado ofrece también los estados terminales (aprobada/declinada). No se suman a la página
+// de la bandeja —con el tiempo empujarían fuera de las primeras 100 filas lo que Daniel tiene que
+// atender—: se piden aparte, con su propio cursor, solo cuando alguien elige ese estado. El servidor
+// ya los devuelve a quien revisa (misma visibilidad de `listVisibleRequisitions`).
+export async function loadRequisitionsByStatus(
+  status: string,
+  cursor?: string,
+): Promise<RequisitionsPage> {
+  const params = new URLSearchParams({ limit: String(REQUISITIONS_PAGE_LIMIT), status });
+  if (cursor) params.set("cursor", cursor);
+  return (await readJson(`/api/requisitions?${params.toString()}`)) as RequisitionsPage;
+}
+
 // DECISIÓN DE ERNESTO (2026-09-17): la interfaz decide por PERMISO EFECTIVO, no por nombre de rol.
 // Los permisos llegan en el bootstrap de catálogos (ver GET app/api/catalogs/route.ts) y de ahí SUBEN
 // al nivel del bundle, que es lo que recibe cada pantalla.

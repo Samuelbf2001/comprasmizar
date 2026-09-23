@@ -388,6 +388,10 @@ describe("bloque Generar órdenes agrupa por proveedor", () => {
     items: [],
     features: {},
   };
+  const accionesDe = (fetchMock: { mock: { calls: unknown[][] } }) =>
+    fetchMock.mock.calls
+      .filter(([url]) => String(url) === "/api/requisitions/req-1/actions")
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
 
   it("muestra un grupo por proveedor y advierte de los ítems sin proveedor asignado", () => {
     render(
@@ -509,6 +513,55 @@ describe("bloque Generar órdenes agrupa por proveedor", () => {
       .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
     expect(cuerpos[0]).toEqual({ action: "assign_suppliers", assignments: [{ itemId: "item-3", supplierId: "supplier-1" }] });
     expect(cuerpos[1]).toEqual({ action: "generate_orders" });
+  });
+
+  // Ensayo 2026-09-23 (REQ-2026-0047, aprobada con «Aprobar yo mismo» y su ÚNICO ítem sin proveedor):
+  // el select cambiaba, pero el botón seguía en "Generar órdenes (0)" y pulsarlo no mandaba nada,
+  // porque el conteo solo miraba el proveedor ya guardado. Con todas las filas del bloque sin
+  // proveedor guardado, el caso de arriba (hay otro ítem ya completo) no lo detectaba.
+  it("con el ÚNICO ítem sin proveedor, elegirlo en el select habilita la generación y manda assign_suppliers + generate_orders", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(
+      <ConnectedRequisitionDetail
+        role="Revisor"
+        go={vi.fn()}
+        refresh={vi.fn()}
+        data={{
+          requisition: {
+            id: "req-1",
+            consecutive: "RQ-001",
+            type: "compra",
+            channel: "interno",
+            societyId: "soc-1",
+            workId: "work-1",
+            status: "aprobada",
+            items: [
+              { id: "item-3", description: "Guantes", quantity: 2, unit: "par", unitBase: 15000, status: "pendiente" },
+            ],
+          },
+          catalogs,
+          orders: [],
+          expenses: [],
+          history: [],
+          attachments: [],
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Generar órdenes \(0\)/ })).toBeInTheDocument();
+    const select = within(screen.getByTestId("missing-supplier-warning")).getByRole("combobox");
+    fireEvent.change(select, { target: { value: "supplier-2" } });
+    // El conteo y la vista previa ya cuentan el proveedor recién elegido.
+    const button = screen.getByRole("button", { name: /Generar órdenes \(1\)/ });
+    expect(button).toBeEnabled();
+    expect(screen.getByText(/Ferretería Dos/, { selector: "b" })).toBeInTheDocument();
+    fireEvent.click(button);
+    fireEvent.click(await screen.findByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(accionesDe(fetchMock)).toHaveLength(2));
+    expect(accionesDe(fetchMock)[0]).toEqual({ action: "assign_suppliers", assignments: [{ itemId: "item-3", supplierId: "supplier-2" }] });
+    expect(accionesDe(fetchMock)[1]).toEqual({ action: "generate_orders" });
   });
 
   it("habilita la primaria y dispara solo generate_orders cuando todos los ítems ya tienen proveedor", async () => {

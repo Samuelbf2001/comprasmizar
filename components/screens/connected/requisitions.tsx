@@ -22,7 +22,11 @@ import {
   type RequisitionRow,
   type RequisitionsBundle,
 } from "./shared";
-import { loadMoreRequisitions, mutate, setCachedRoute } from "./data";
+import { loadMoreRequisitions, loadRequisitionsByStatus, mutate, setCachedRoute } from "./data";
+
+/** Estados terminales que /revision ofrece en su filtro de estado (se piden aparte, ver
+ *  `loadRequisitionsByStatus`): la bandeja muestra lo que hay que atender, y estos son consulta. */
+const REVISION_ARCHIVE_STATUSES = ["aprobada", "declinada"];
 
 // «Aprobar desde la lista» (reunión 11-sep-2026, patrón Precoro pedido por Ernesto tras la
 // reunión de presentación): antes había que abrir CADA requisición en "Mis aprobaciones" solo para
@@ -308,13 +312,44 @@ export function ConnectedRequisitions({
     [tagFilter, setTagFilter] = useState(""),
     [dateFrom, setDateFrom] = useState(""),
     [dateTo, setDateTo] = useState("");
+  // Consulta de terminales en /revision (aprobada/declinada): filas traídas del servidor con su
+  // propio cursor, solo mientras ese estado está elegido en el filtro.
+  const [archive, setArchive] = useState<{ status: string; rows: RequisitionRow[]; nextCursor: string | null } | null>(null),
+    [archiveLoading, setArchiveLoading] = useState(false),
+    [archiveError, setArchiveError] = useState("");
+  const archiveStatus = isRevision && REVISION_ARCHIVE_STATUSES.includes(statusFilter) ? statusFilter : null;
+  const loadArchive = async (status: string, cursor?: string) => {
+    setArchiveLoading(true);
+    setArchiveError("");
+    if (!cursor) setArchive({ status, rows: [], nextCursor: null });
+    try {
+      const page = await loadRequisitionsByStatus(status, cursor);
+      const pageRows = Array.isArray(page?.rows) ? page.rows : [];
+      setArchive((current) => ({
+        status,
+        rows: cursor && current?.status === status ? [...current.rows, ...pageRows] : pageRows,
+        nextCursor: page?.nextCursor ?? null,
+      }));
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : "No fue posible cargar las requisiciones.");
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+  const changeStatusFilter = (value: string) => {
+    setStatusFilter(value);
+    if (isRevision && REVISION_ARCHIVE_STATUSES.includes(value)) void loadArchive(value);
+  };
+  // Filas sobre las que actúan los filtros de cliente: las de la bandeja, o las del estado terminal
+  // elegido (que ya vienen filtradas por estado desde el servidor).
+  const baseRows = archiveStatus ? (archive?.status === archiveStatus ? archive.rows : []) : rows;
   const statusOptions = Array.from(
-    new Set(rows.map((row) => row.status)),
+    new Set([...rows.map((row) => row.status), ...(isRevision ? REVISION_ARCHIVE_STATUSES : [])]),
   ).sort();
   const channelOptions = Array.from(
-    new Set(rows.map((row) => row.channel)),
+    new Set(baseRows.map((row) => row.channel)),
   ).sort();
-  const filteredRows = rows.filter((row) => {
+  const filteredRows = baseRows.filter((row) => {
     if (workFilter && row.workId !== workFilter) return false;
     if (statusFilter && row.status !== statusFilter) return false;
     if (channelFilter && row.channel !== channelFilter) return false;
@@ -328,6 +363,7 @@ export function ConnectedRequisitions({
   const clearFilters = () => {
     setWorkFilter("");
     setStatusFilter("");
+    setArchive(null);
     setChannelFilter("");
     setTagFilter("");
     setDateFrom("");
@@ -521,7 +557,9 @@ export function ConnectedRequisitions({
         // antes decía "La API aplica alcance por actor antes de devolver cada fila".
         description="Solo ves las requisiciones que corresponden a tu rol."
       />
-      {rows.length > 0 && (
+      {/* En /revision el filtro se muestra aunque la bandeja esté vacía: es la única puerta a las
+          aprobadas y declinadas. */}
+      {(rows.length > 0 || isRevision) && (
         <div className="filter-bar">
           <label className="field">
             <span>Obra</span>
@@ -541,9 +579,10 @@ export function ConnectedRequisitions({
             <span>Estado</span>
             <select
               value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
+              onChange={(event) => changeStatusFilter(event.target.value)}
             >
-              <option value="">Todos</option>
+              {/* En /revision "todos" son los que están por atender; los terminales van aparte. */}
+              <option value="">{isRevision ? "Por atender" : "Todos"}</option>
               {statusOptions.map((status) => (
                 <option key={status} value={status}>
                   {estadoLabel(status)}
@@ -677,11 +716,19 @@ export function ConnectedRequisitions({
           </div>
           <Tone tone="muted">Orden cronológico</Tone>
         </div>
-        {rows.length === 0 ? (
+        {archiveStatus && archiveLoading && baseRows.length === 0 ? (
+          <p className="muted-copy" role="status">Cargando…</p>
+        ) : archiveStatus && archiveError && baseRows.length === 0 ? (
+          <p className="field-error" role="alert">{archiveError}</p>
+        ) : baseRows.length === 0 ? (
           <div className="empty-state">
             <span className="empty-icon"><Inbox aria-hidden="true" size={21} /></span>
             <h3>Sin requisiciones en esta vista</h3>
-            <p>No hay requisiciones que correspondan a tu rol en esta bandeja.</p>
+            <p>
+              {archiveStatus
+                ? `No hay requisiciones en estado «${estadoLabel(archiveStatus)}».`
+                : "No hay requisiciones que correspondan a tu rol en esta bandeja."}
+            </p>
           </div>
         ) : filteredRows.length === 0 ? (
           <div className="empty-state">
@@ -701,15 +748,32 @@ export function ConnectedRequisitions({
             rows={filteredRows}
             catalogs={catalogs}
             go={go}
-            markActive={isRevision}
+            markActive={isRevision && !archiveStatus}
             approverActions={approverActions}
             canOpenSupplier={canOpenSupplier}
           />
         )}
+        {archiveStatus && archive?.status === archiveStatus && archive.nextCursor && (
+          <div className="button-row">
+            <button
+              className="button button-secondary"
+              type="button"
+              disabled={archiveLoading}
+              onClick={() => void loadArchive(archiveStatus, archive.nextCursor ?? undefined)}
+            >
+              {archiveLoading ? "Cargando…" : "Cargar más"}
+            </button>
+            {archiveError && (
+              <p className="field-error" role="alert">
+                {archiveError}
+              </p>
+            )}
+          </div>
+        )}
         {/* H3 (docs/plan-rendimiento.md): "Cargar más" pide la página siguiente con el mismo
             filtro de servidor (mismo status por bandeja) y ANEXA — no reemplaza — las filas ya
             visibles, incluidas las que los filtros de cliente de arriba ocultan en este momento. */}
-        {nextCursor && (
+        {nextCursor && !archiveStatus && (
           <div className="button-row">
             <button
               className="button button-secondary"

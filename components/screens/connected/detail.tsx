@@ -18,6 +18,7 @@ import { ActionMenu, SectionTitle, Tone, useConfirmDialog } from "../screen-prim
 import { AttachmentPicker } from "../attachment-upload";
 import { SupplierQuickCreate, type QuickSupplier } from "../supplier-quick-create";
 import { friendlyErrorText } from "../../../lib/http/friendly-error";
+import { useDetailCrumb } from "../../layout/breadcrumb-context";
 import {
   emptyCatalogs,
   estadoLabel,
@@ -66,7 +67,18 @@ function useAutosave({
   const [status, setStatus] = useState<AutosaveStatus>("idle");
   const [savedAt, setSavedAt] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const lastSavedRef = useRef<string | null>(null);
+  // Ensayo 2026-09-23: abrir el detalle disparaba un POST de acciones sin que nadie editara nada (y en
+  // una `enviada` además la pasaba a revisión; en `en_aprobacion`, `decide_items` convertía los
+  // "pendiente" en "aprobado"). Venía de dos sitios: cualquier `blur` dentro del panel intentaba
+  // guardar, y en desarrollo el doble efecto de React StrictMode se saltaba la guarda de "primer
+  // render" y programaba el guardado. Con `lastSavedRef` en null, ese primer intento siempre "tenía
+  // cambios". Ahora la línea base es lo que había en pantalla al montar (= lo que dio el servidor):
+  // solo se guarda si el usuario cambió algo respecto de eso.
+  const [baseline] = useState(() => {
+    const body = buildBody();
+    return body ? JSON.stringify(body) : null;
+  });
+  const lastSavedRef = useRef<string | null>(baseline);
   const inFlightRef = useRef(false);
   const pendingRef = useRef(false);
   const dirtyRef = useRef(false);
@@ -295,6 +307,8 @@ export function ConnectedRequisitionDetail({
     // es `INVALID_TRANSITION` en el servidor.
     startReviewDone = useRef(requisition.status !== "enviada");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  // CAT-08: la migaja de la barra superior muestra el consecutivo, no el UUID de la URL.
+  useDetailCrumb(requisition?.consecutive);
   // RF-308 (A9): `role` es la lente de sesión (auth-guard elige UN rol por prioridad, y al maestro
   // revisor+aprobador le toca «Revisor»), no el conjunto de roles: se leen los del visor que manda el
   // servidor. Sin ese dato no se ofrece nada que dependa de ellos.
@@ -660,10 +674,17 @@ export function ConnectedRequisitionDetail({
   // agrupados por proveedor final; los que faltan quedan aparte para anticipar SUPPLIER_REQUIRED.
   const approvedForOrders = requisition.items.filter((item) => item.status !== "declinado");
   const missingSupplierItems = approvedForOrders.filter((item) => !item.finalSupplierId);
+  // Hallazgo del ensayo 2026-09-23 (REQ-2026-0047): el agrupado solo miraba el proveedor YA
+  // guardado, así que con un único ítem sin proveedor elegir uno en el `<select>` dejaba el botón en
+  // "Generar órdenes (0)" y `handleGenerateOrders` salía en silencio por "no hay grupos" — sin
+  // petición ni mensaje. El proveedor efectivo de un ítem es el guardado o, si falta, el elegido
+  // aquí: es exactamente lo que `assign_suppliers` va a guardar justo antes de `generate_orders`.
+  const effectiveSupplierId = (item: RequisitionItem) => item.finalSupplierId || assignSupplierChoice[item.id] || "";
   const orderSupplierGroupsMap = new Map<string, RequisitionItem[]>();
   for (const item of approvedForOrders) {
-    if (!item.finalSupplierId) continue;
-    orderSupplierGroupsMap.set(item.finalSupplierId, [...(orderSupplierGroupsMap.get(item.finalSupplierId) ?? []), item]);
+    const supplierId = effectiveSupplierId(item);
+    if (!supplierId) continue;
+    orderSupplierGroupsMap.set(supplierId, [...(orderSupplierGroupsMap.get(supplierId) ?? []), item]);
   }
   const orderSupplierGroups = [...orderSupplierGroupsMap.entries()];
   // GRAVE 4: "—" en vez del UUID crudo cuando el proveedor no aparece en ninguna de las dos fuentes.
