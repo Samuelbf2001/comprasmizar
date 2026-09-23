@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ConnectedRequisitions,
@@ -133,6 +133,42 @@ describe("RF-302: filtros en la bandeja de revisión", () => {
     fireEvent.click(screen.getByRole("button", { name: "Limpiar filtros" }));
     expect(screen.getByText("RQ-001")).toBeInTheDocument();
     expect(screen.getByText("RQ-002")).toBeInTheDocument();
+  });
+
+  // Ensayo 2026-09-23: el filtro de estado de /revision solo ofrecía Todos/Devuelta/En revisión/
+  // Enviada; las declinadas solo se veían desde "Mis requisiciones" del solicitante. PRD: "declinada
+  // es terminal, consultable en su propio filtro".
+  it("ofrece Aprobada y Declinada, y al elegir Declinada las pide al servidor con su propio filtro", async () => {
+    const declinada = { id: "req-7", consecutive: "RQ-007", type: "compra" as const, channel: "web", status: "declinada", declineReason: "No procede", items: [] };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ rows: [declinada], nextCursor: null }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    try {
+      render(<ConnectedRequisitions data={{ rows, catalogs }} pathname="/revision" go={vi.fn()} role="Revisor" />);
+      const estado = screen.getByLabelText("Estado");
+      const opciones = within(estado).getAllByRole("option").map((option) => option.textContent);
+      expect(opciones).toEqual(expect.arrayContaining(["Aprobada", "Declinada"]));
+
+      fireEvent.change(estado, { target: { value: "declinada" } });
+      expect(await screen.findByText("RQ-007")).toBeInTheDocument();
+      // Las activas no se mezclan con la consulta de declinadas.
+      expect(screen.queryByText("RQ-001")).toBeNull();
+      const url = new URL(String(fetchMock.mock.calls[0]?.[0]), "http://localhost");
+      expect(url.pathname).toBe("/api/requisitions");
+      expect(url.searchParams.get("status")).toBe("declinada");
+
+      // Volver a "Por atender" devuelve la bandeja de siempre.
+      fireEvent.change(estado, { target: { value: "" } });
+      expect(screen.getByText("RQ-001")).toBeInTheDocument();
+      expect(screen.queryByText("RQ-007")).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("con la bandeja vacía, el filtro sigue disponible para consultar las declinadas", () => {
+    render(<ConnectedRequisitions data={{ rows: [], catalogs }} pathname="/revision" go={vi.fn()} role="Revisor" />);
+    expect(within(screen.getByLabelText("Estado")).getByRole("option", { name: "Declinada" })).toBeInTheDocument();
   });
 });
 
