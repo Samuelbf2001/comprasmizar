@@ -69,6 +69,15 @@ export function describeApiError(status: number, body?: unknown): FriendlyError 
         solution: "Pide al aprobador asignado que la gestione, o solicita reasignación a un administrador de Mizar.",
         status,
       };
+    // `assertSameOrigin` (lib/http/api.ts): el navegador mandó un Origin distinto al configurado. No
+    // es cosa del rol — decirle "pide que revisen tu rol" mandaba a buscar el problema donde no está.
+    if (code === "origin_forbidden")
+      return {
+        title: "No pudimos verificar la solicitud",
+        message: "No pudimos verificar el origen de la solicitud.",
+        solution: "Recarga la página; si sigue pasando, avísale a soporte: es un problema de configuración, no de tu rol.",
+        status,
+      };
     return {
       title: "No tienes permiso para esto",
       message: "Tu rol o el estado de tu cuenta no permiten esta acción.",

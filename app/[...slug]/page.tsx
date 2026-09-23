@@ -12,5 +12,5 @@ export default async function CatchAllPage({ params }: { params: Promise<{ slug:
   }
   const auth = await getAuthSnapshot();
   if (!auth.authenticated && !auth.demoMode) redirect(`/login?next=${encodeURIComponent(requestedPath)}${loginErrorParam(auth.reason)}`);
-  return <MizarApp initialRole={auth.role} demoMode={auth.demoMode} actorName={auth.displayName} />;
+  return <MizarApp initialRole={auth.role} demoMode={auth.demoMode} actorName={auth.displayName} viewerId={auth.viewerId} />;
 }

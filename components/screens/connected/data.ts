@@ -262,19 +262,23 @@ async function routeBundle(pathname: string, role: Role, kind: RouteKind | undef
 const CATALOGS_TTL_MS = 5 * 60_000;
 let catalogsCache: { data: unknown; fetchedAt: number } | null = null;
 let catalogsInFlight: Promise<unknown> | null = null;
+// Se incrementa cada vez que las cachés se vacían por cambio de visor (ver `vincularCachesAlVisor`):
+// una respuesta que salió con la sesión ANTERIOR y llega después no puede volver a sembrar la caché.
+let cacheGeneration = 0;
 
 function getCatalogs(): Promise<unknown> {
   if (catalogsCache && Date.now() - catalogsCache.fetchedAt < CATALOGS_TTL_MS) {
     return Promise.resolve(catalogsCache.data);
   }
   if (catalogsInFlight) return catalogsInFlight;
-  const request = readJson("/api/catalogs")
+  const generation = cacheGeneration;
+  const request: Promise<unknown> = readJson("/api/catalogs")
     .then((data) => {
-      catalogsCache = { data, fetchedAt: Date.now() };
+      if (generation === cacheGeneration) catalogsCache = { data, fetchedAt: Date.now() };
       return data;
     })
     .finally(() => {
-      catalogsInFlight = null;
+      if (catalogsInFlight === request) catalogsInFlight = null;
     });
   catalogsInFlight = request;
   return request;
@@ -441,6 +445,67 @@ export function invalidateCatalogs(): void {
   catalogsCache = null;
   catalogsInFlight = null;
   clearRouteCacheByKind(["catalogs"]);
+}
+
+/**
+ * HALLAZGO DE PERMISOS (ensayo del 23-sep-2026): las tres cachés de cliente —catálogos (que traen
+ * `viewerPermissions`), rutas en memoria y su respaldo en sessionStorage— viven a nivel de módulo o
+ * de pestaña, y cerrar sesión e iniciar con OTRA cuenta en la misma pestaña NO recarga la página (la
+ * redirección de la acción de servidor es una navegación suave). Resultado: durante los 5 minutos del
+ * TTL, Contabilidad veía «Registrar pago»/«Anular» y un aprobador «Reasignar aprobador», porque la
+ * interfaz leía los permisos de quien había entrado antes (el servidor sí los rechazaba). Y el
+ * respaldo de sessionStorage podía pintar, tras una recarga, la bandeja del usuario anterior.
+ *
+ * El servidor pinta la página con el id de quien mira (ver `getAuthSnapshot` en app/auth-guard.ts);
+ * `MizarApp` llama a esto en cada render, ANTES de que las pantallas lean las cachés. Si el visor es
+ * otro, se vacía todo. Si es el mismo, no hace nada: el respaldo de sessionStorage (H6) sigue
+ * sirviendo tras una recarga, que es para lo que existe.
+ */
+const CACHE_OWNER_KEY = "mizar-route-cache-owner:v1";
+let cacheOwner: string | undefined;
+
+function vaciarCachesDeCliente(): void {
+  cacheGeneration++;
+  catalogsCache = null;
+  catalogsInFlight = null;
+  routeCache.clear();
+  try {
+    window.sessionStorage.removeItem(SESSION_CACHE_KEY);
+  } catch {
+    // Sin sessionStorage no hay respaldo que vaciar.
+  }
+}
+
+export function vincularCachesAlVisor(viewerId: string | undefined): void {
+  if (typeof window === "undefined" || !viewerId || cacheOwner === viewerId) return;
+  let storedOwner: string | null = null;
+  try {
+    storedOwner = window.sessionStorage.getItem(CACHE_OWNER_KEY);
+  } catch {
+    storedOwner = null;
+  }
+  // Primera vez en esta carga de página (`cacheOwner` vacío): lo que haya en sessionStorage solo se
+  // conserva si lo dejó ESTE mismo visor. Un respaldo sin dueño (anterior a este cambio) también se
+  // descarta: no hay forma de saber de quién era.
+  if ((cacheOwner ?? storedOwner) !== viewerId) vaciarCachesDeCliente();
+  cacheOwner = viewerId;
+  try {
+    window.sessionStorage.setItem(CACHE_OWNER_KEY, viewerId);
+  } catch {
+    // Sin persistencia, el dueño en memoria basta para esta carga de página.
+  }
+}
+
+/** Al cerrar sesión: nada de lo que vio esta cuenta debe quedar en la pestaña para la siguiente. */
+export function olvidarCachesDelVisor(): void {
+  if (typeof window === "undefined") return;
+  vaciarCachesDeCliente();
+  cacheOwner = undefined;
+  try {
+    window.sessionStorage.removeItem(CACHE_OWNER_KEY);
+  } catch {
+    // Ídem.
+  }
 }
 
 function isGenerateOrdersAction(body: unknown): boolean {

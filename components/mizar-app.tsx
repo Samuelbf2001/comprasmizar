@@ -24,7 +24,7 @@ import { SectionTitle } from "./screens/screen-primitives";
 // evita inventar un esqueleto nuevo solo para este caso (ver aprendizaje "pantallas sin
 // esqueleto equivalente" del encargo).
 import { ConnectedScreen } from "./screens/connected/screen";
-import { isConnectedReadRoute } from "./screens/connected/data";
+import { isConnectedReadRoute, vincularCachesAlVisor } from "./screens/connected/data";
 
 // ssr: false en las pantallas con controles (2026-09-11, e2e suppliers): con SSR, el HTML de la
 // pantalla llega ANTES que su chunk diferido, y un clic sobre un botón de ese HTML mientras el
@@ -217,12 +217,19 @@ export default function MizarApp({
   demoMode = false,
   actorName,
   publicConfigured = false,
+  viewerId,
 }: {
   initialRole?: Role;
   demoMode?: boolean;
   actorName?: string;
   publicConfigured?: boolean;
+  /** Id de quien mira (lo pone el servidor); ver `vincularCachesAlVisor`. */
+  viewerId?: string;
 }) {
+  // Antes de que cualquier pantalla lea las cachés de cliente en su primer render: si la cuenta
+  // cambió en esta pestaña (cerrar sesión y entrar con otra no recarga la página), se vacían y nadie
+  // hereda los permisos ni los datos de quien entró antes. Idempotente y sin efecto en el servidor.
+  if (!demoMode) vincularCachesAlVisor(viewerId);
   const pathname = usePathname() || "/";
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
