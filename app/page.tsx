@@ -7,5 +7,5 @@ export default async function Page() {
   if (!auth.authenticated && !auth.demoMode) {
     redirect(`/login?next=${encodeURIComponent('/')}${loginErrorParam(auth.reason)}`);
   }
-  return <MizarApp initialRole={auth.role} demoMode={auth.demoMode} actorName={auth.displayName} />;
+  return <MizarApp initialRole={auth.role} demoMode={auth.demoMode} actorName={auth.displayName} viewerId={auth.viewerId} />;
 }

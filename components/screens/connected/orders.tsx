@@ -776,11 +776,16 @@ export function ConnectedOrders({
                     </div>
                   ) : order.adminStatus === "contabilizada" && canPay ? (
                     <div className="order-status-actions">
-                      {pendingBalance > 0 ? (
+                      {/* "Pagar saldo" REGISTRA un pago (POST /payments, exige payment:register) y
+                          después cierra la orden (order:pay). Con solo uno de los dos permisos el
+                          botón abría un diálogo que el servidor rechazaba al guardar. */}
+                      {pendingBalance > 0 && canRegisterPayment ? (
                         <>
                           <button className="button button-secondary" type="button" onClick={() => openPaymentDialog({ step: "form", orderId: order.id, mode: "saldo" })}>Pagar saldo</button>
                           <p className="supplier-muted">Quedan {money.format(pendingBalance)} por pagar. Al registrar ese pago, la orden pasará a &ldquo;Pagada&rdquo; en contabilidad.</p>
                         </>
+                      ) : pendingBalance > 0 ? (
+                        <p className="supplier-muted">Quedan {money.format(pendingBalance)} por pagar. {sinPermiso("puede registrar pagos de esta orden")}</p>
                       ) : (
                         <>
                           <button className="button button-secondary" type="button" onClick={() => void setAdminStatus(order.id, "pagada", order.consecutive)}>Marcar pagada</button>

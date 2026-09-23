@@ -27,6 +27,9 @@ import { useEffect, useRef, useState } from "react";
 import { DemoNotice } from "../ui/demo-notice";
 import { navigation, type Role } from "../../lib/demo-data";
 import { logout } from "../../app/auth-actions";
+// Cerrar sesión vacía las cachés de cliente ANTES de salir: la siguiente cuenta que entre en esta
+// pestaña no hereda permisos ni datos (ver `vincularCachesAlVisor` en connected/data.ts).
+import { olvidarCachesDelVisor } from "../screens/connected/data";
 
 const roleNames: Record<Role, string> = {
   Solicitante: "Juliana Rojas",
@@ -316,7 +319,7 @@ export function AppShell({
               {demoMode ? "Modo demo · sin persistencia" : "Sesión protegida"}
             </span>
           </div>
-          <form action={logout}>
+          <form action={logout} onSubmit={olvidarCachesDelVisor}>
             <button className="logout-button" type="submit">
               <LogOut aria-hidden="true" size={15} /> Cerrar sesión
             </button>
@@ -403,7 +406,7 @@ export function AppShell({
                   >
                     <span>Mi perfil</span>
                   </button>
-                  <form action={logout} role="none">
+                  <form action={logout} onSubmit={olvidarCachesDelVisor} role="none">
                     <button
                       type="submit"
                       role="menuitem"

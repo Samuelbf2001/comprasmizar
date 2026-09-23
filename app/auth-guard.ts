@@ -12,7 +12,10 @@ const priority: Array<{ key: string; role: Role }> = [
   { key: 'solicitante', role: 'Solicitante' },
 ];
 
-export type AuthSnapshot = { authenticated: boolean; demoMode: boolean; role: Role; displayName: string; email?: string; reason?: 'unauthenticated' | 'inactive' | 'role' | 'config' };
+// `viewerId`: id de quien mira, para que el cliente descarte sus cachés si la cuenta cambió en la
+// misma pestaña (ver `vincularCachesAlVisor` en components/screens/connected/data.ts). No es un
+// secreto: es el propio id del usuario, el mismo que ya viaja como `viewerId` en el detalle.
+export type AuthSnapshot = { authenticated: boolean; demoMode: boolean; role: Role; displayName: string; email?: string; viewerId?: string; reason?: 'unauthenticated' | 'inactive' | 'role' | 'config' };
 
 export function isDemoMode() { return demoModeEnabled(); }
 
@@ -52,7 +55,7 @@ export async function getAuthSnapshot(): Promise<AuthSnapshot> {
     const roleKeys = new Set<string>(actor.roles);
     const selected = priority.find((item) => roleKeys.has(item.key));
     if (!selected) return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'role' };
-    return { authenticated: true, demoMode: false, role: selected.role, displayName: actor.displayName, email: actor.email };
+    return { authenticated: true, demoMode: false, role: selected.role, displayName: actor.displayName, email: actor.email, viewerId: actor.id };
   } catch (error) {
     const code = error instanceof Error ? error.message : '';
     if (code === 'UNAUTHENTICATED') return { authenticated: false, demoMode: false, role: 'Solicitante', displayName: 'Usuario', reason: 'unauthenticated' };
