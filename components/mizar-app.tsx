@@ -1,11 +1,12 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useSyncExternalStore } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
 import { Inbox, TriangleAlert } from "lucide-react";
 import { navigation, type Role } from "../lib/demo-data";
 import { AppShell, roleAllowed } from "./layout/app-shell";
+import { DetailCrumbContext, detailCrumbLabel } from "./layout/breadcrumb-context";
 import { SectionTitle } from "./screens/screen-primitives";
 // Fase 2 (rendimiento, docs/plan-rendimiento.md, hallazgo H4): antes este archivo importaba
 // TODAS las pantallas (demo y conectadas) de forma estática, así que cualquier rol en
@@ -271,6 +272,13 @@ export default function MizarApp({
     setSidebarOpen(false);
     router.push(path as never);
   };
+  // Nombre visible que declara el detalle de requisición (su consecutivo), ligado a la ruta en que se
+  // declaró: al navegar, un nombre viejo nunca se pinta sobre otra URL. Ver breadcrumb-context.tsx.
+  const [detailCrumb, setDetailCrumb] = useState<{ pathname: string; label: string } | null>(null);
+  const reportDetailCrumb = useCallback(
+    (label: string | null) => setDetailCrumb(label ? { pathname, label } : null),
+    [pathname],
+  );
   if (pathname === "/requisiciones/publica")
     return (
       <PublicRequestScreen
@@ -315,8 +323,13 @@ export default function MizarApp({
         ? navMatch.label
         : (navMatch.genericLabel ?? navMatch.label)
       : isRequisitionDetail
-        ? decodeURIComponent(pathname.split("/")[2] || "") ||
-          (detailParent?.label ?? "Requisición")
+        ? // CAT-08: nunca el UUID de la URL — el consecutivo que declara el detalle, o mientras carga
+          // el nombre de la bandeja padre.
+          detailCrumbLabel(
+            decodeURIComponent(pathname.split("/")[2] || ""),
+            detailCrumb?.pathname === pathname ? detailCrumb.label : null,
+            detailParent?.label ?? "Requisición",
+          )
         : pathname.startsWith("/configuracion")
           ? "Configuración"
           : pathname.startsWith("/ayuda")
@@ -374,20 +387,22 @@ export default function MizarApp({
     content = <Placeholder title="Centro de ayuda" eyebrow="Ayuda" />;
   else content = <DashboardScreen go={go} />;
   return (
-    <AppShell
-      currentHref={currentHref}
-      currentLabel={currentLabel}
-      pathname={pathname}
-      onNavigate={go}
-      sidebarOpen={sidebarOpen}
-      setSidebarOpen={setSidebarOpen}
-      role={role}
-      realRole={realRole}
-      setRole={changeRole}
-      demoMode={demoMode}
-      actorName={actorName}
-    >
-      {content}
-    </AppShell>
+    <DetailCrumbContext.Provider value={reportDetailCrumb}>
+      <AppShell
+        currentHref={currentHref}
+        currentLabel={currentLabel}
+        pathname={pathname}
+        onNavigate={go}
+        sidebarOpen={sidebarOpen}
+        setSidebarOpen={setSidebarOpen}
+        role={role}
+        realRole={realRole}
+        setRole={changeRole}
+        demoMode={demoMode}
+        actorName={actorName}
+      >
+        {content}
+      </AppShell>
+    </DetailCrumbContext.Provider>
   );
 }

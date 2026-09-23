@@ -18,6 +18,7 @@ import { ActionMenu, SectionTitle, Tone, useConfirmDialog } from "../screen-prim
 import { AttachmentPicker } from "../attachment-upload";
 import { SupplierQuickCreate, type QuickSupplier } from "../supplier-quick-create";
 import { friendlyErrorText } from "../../../lib/http/friendly-error";
+import { useDetailCrumb } from "../../layout/breadcrumb-context";
 import {
   emptyCatalogs,
   estadoLabel,
@@ -306,6 +307,8 @@ export function ConnectedRequisitionDetail({
     // es `INVALID_TRANSITION` en el servidor.
     startReviewDone = useRef(requisition.status !== "enviada");
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
+  // CAT-08: la migaja de la barra superior muestra el consecutivo, no el UUID de la URL.
+  useDetailCrumb(requisition?.consecutive);
   // RF-308 (A9): `role` es la lente de sesión (auth-guard elige UN rol por prioridad, y al maestro
   // revisor+aprobador le toca «Revisor»), no el conjunto de roles: se leen los del visor que manda el
   // servidor. Sin ese dato no se ofrece nada que dependa de ellos.
