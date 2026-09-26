@@ -89,7 +89,9 @@ export function GET() {
     // (reunión 2026-08-31), y Fase 1 ya marcó ese módulo como obsoleto sin borrar la fila.
     const modules = await sql<Array<{ name: string; enabled: boolean }>>`select nombre as name, activo as enabled from modulos where nombre in ('catalogos_admin_mizar')`;
     const features = Object.fromEntries(modules.map((module) => [module.name, module.enabled]));
-    const canReadSuppliers = hasPermission(actor, "order:read") || hasPermission(actor, "supplier:manage") || actor.roles.includes("admin_sixteam") || (actor.roles.includes("admin_mizar") && features.catalogos_admin_mizar === true);
+    // 25-sep-2026: solo por permiso. Los dos casos que antes iban por nombre de rol ya estaban cubiertos:
+    // admin_sixteam tiene "*" y admin_mizar tiene "supplier:manage" por defecto desde H11.
+    const canReadSuppliers = hasPermission(actor, "order:read") || hasPermission(actor, "supplier:manage");
     // "sociedad_id as societyId" es el bloqueo exacto que hoy impide a la UI filtrar obras por empresa
     // (reunión 2026-08-31: el solicitante elige empresa, la obra la asigna el revisor filtrada por ella).
     // "societies" se añade al bootstrap por la misma razón: sin la lista, no hay qué ofrecer para elegir.

@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { Inbox, TriangleAlert } from "lucide-react";
 import { navigation, type Role } from "../lib/demo-data";
 import { AppShell, roleAllowed } from "./layout/app-shell";
+import { allowedRoutes, usePermisosDelMenu } from "./layout/nav-permissions";
 import { DetailCrumbContext, detailCrumbLabel } from "./layout/breadcrumb-context";
 import { SectionTitle } from "./screens/screen-primitives";
 // Fase 2 (rendimiento, docs/plan-rendimiento.md, hallazgo H4): antes este archivo importaba
@@ -60,6 +61,12 @@ const SuppliersScreen = dynamic(
 // connected/data.ts para una única ruta de administración.
 const SettingsScreen = dynamic(
   () => import("./screens/settings").then((mod) => mod.SettingsScreen),
+  { ssr: false, loading: () => null },
+);
+// ADM-08 / RF-1003 (25-sep-2026): Historial de cambios. Mismo patrón que SettingsScreen: pantalla de
+// administración con sus propias llamadas (GET /api/audit), cargada en su propio chunk.
+const AuditLogScreen = dynamic(
+  () => import("./screens/audit-log").then((mod) => mod.AuditLogScreen),
   { ssr: false, loading: () => null },
 );
 const DemoRequisitionScreen = dynamic(
@@ -286,6 +293,7 @@ export default function MizarApp({
     (label: string | null) => setDetailCrumb(label ? { pathname, label } : null),
     [pathname],
   );
+  const puede = usePermisosDelMenu(role, realRole, demoMode);
   if (pathname === "/requisiciones/publica")
     return (
       <PublicRequestScreen
@@ -299,7 +307,9 @@ export default function MizarApp({
   // que el navegador nunca envía al servidor — un redirect de servidor los perdería y mataría
   // todos los enlaces móviles ya repartidos.
   if (pathname === "/requisiciones/publica-movil") return <PublicRequestRedirect />;
-  const allowed = roleAllowed[role];
+  // 25-sep-2026: Configuración, Catálogos e Historial de cambios se abren por PERMISO efectivo (el
+  // mismo que manda el servidor), no por el nombre del rol — ver nav-permissions.ts.
+  const allowed = allowedRoutes(roleAllowed[role], puede);
   // Ítem de navegación cuyo href es prefijo (por segmentos) del pathname; gana el más largo.
   const navMatch = navigation.reduce<(typeof navigation)[number] | undefined>(
     (best, item) => {
@@ -347,10 +357,7 @@ export default function MizarApp({
   const routeKey = pathname.startsWith("/configuracion")
     ? "/configuracion"
     : accessHref;
-  const routeIsAllowed =
-    role === "Administrador Sixteam"
-      ? pathname.startsWith("/configuracion") || allowed.includes(accessHref)
-      : allowed.includes(routeKey);
+  const routeIsAllowed = allowed.includes(routeKey);
   let content: React.ReactNode;
   if (!routeIsAllowed)
     content = <AccessDenied go={go} role={role} demoMode={demoMode} />;
@@ -364,7 +371,9 @@ export default function MizarApp({
   // el propio comentario de SettingsScreen sobre por qué no vale la pena una versión de demo
   // completa para una pantalla puramente administrativa).
   else if (!demoMode && pathname.startsWith("/configuracion"))
-    content = <SettingsScreen role={role} go={go} />;
+    content = <SettingsScreen role={role} go={go} puede={puede} />;
+  else if (!demoMode && pathname.startsWith("/auditoria"))
+    content = <AuditLogScreen />;
   else if (!demoMode) content = <IntegrationGate role={role} />;
   else if (pathname === "/" || pathname === "/inicio")
     content = <DashboardScreen go={go} />;
@@ -390,6 +399,8 @@ export default function MizarApp({
     content = (
       <Placeholder title="Configuración" eyebrow="Administración Sixteam" />
     );
+  else if (pathname.startsWith("/auditoria"))
+    content = <Placeholder title="Historial de cambios" eyebrow="Administración" />;
   else if (pathname.startsWith("/ayuda"))
     content = <Placeholder title="Centro de ayuda" eyebrow="Ayuda" />;
   else content = <DashboardScreen go={go} />;
@@ -407,6 +418,7 @@ export default function MizarApp({
         setRole={changeRole}
         demoMode={demoMode}
         actorName={actorName}
+        puede={puede}
       >
         {content}
       </AppShell>

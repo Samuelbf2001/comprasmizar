@@ -1557,3 +1557,32 @@ h2,h3,.panel-head h2,.approval-item h3,.detail-header h2,.pantalla-empty h1{lett
   .decision-toggle{width:100%}
   .decision-toggle button{flex:1;justify-content:center;min-height:44px}
 }
+
+/* =========================================================================
+   Historial de cambios (ADM-08 / RF-1003, 25-sep-2026)
+   -------------------------------------------------------------------------
+   Tabla de solo lectura. "Qué pasó" es una frase y puede ser larga: rompe
+   línea con un ancho de lectura razonable en vez de estirar la tabla. El
+   detalle (antes/después) va en una fila plana sobre --surface, sin tarjeta
+   anidada, y el antes se atenúa para que el ojo caiga en el valor nuevo.
+   ========================================================================= */
+.audit-filters{align-items:flex-end}
+.audit-filters .field{flex:1 1 150px;max-width:220px}
+.audit-filters .audit-clear{flex:none}
+.audit-table .audit-when b{font-variant-numeric:tabular-nums;color:var(--ink)}
+.audit-table .audit-when .table-sub{font-variant-numeric:tabular-nums}
+.audit-table .audit-action{white-space:normal;min-width:220px;max-width:46ch;line-height:1.4;color:var(--ink)}
+.audit-table tr.is-expanded td{border-bottom-color:transparent}
+.audit-toggle{height:34px;padding:0 var(--space-3);font-size:var(--text-3xs)}
+.audit-toggle:active{transform:scale(.97);transition:transform 100ms ease-out}
+.audit-detail-row td{background:var(--surface);white-space:normal;padding:var(--space-3) var(--space-5) var(--space-4)}
+.audit-detail{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--space-3) var(--space-6);margin:0}
+.audit-detail-item dt{font-size:var(--text-3xs);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:700;margin-bottom:2px}
+.audit-detail-item dd{margin:0;font-size:var(--text-xs);color:var(--ink);line-height:1.45;font-variant-numeric:tabular-nums}
+.audit-before{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--line-strong)}
+.audit-arrow{color:var(--muted);margin:0 var(--space-2)}
+.audit-more{display:flex;flex-direction:column;align-items:center;gap:var(--space-2);padding:var(--space-4)}
+@media(max-width:530px){
+  .audit-filters .field{max-width:none;flex-basis:100%}
+  .audit-toggle{min-height:44px}
+}

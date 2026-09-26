@@ -139,6 +139,24 @@ export async function setPassword(userId: string, password: string, keepToken?: 
   invalidateActorCache(userId);
 }
 
+/**
+ * Restablecimiento ADMINISTRADO (POST /api/usuarios/:id/clave): lo mismo que `setPassword` sin
+ * `keepToken` (cierra todas las sesiones de la cuenta), pero el rastro dice QUIÉN lo hizo. Con
+ * `setPassword` el evento quedaba como CLAVE_CAMBIADA a nombre de la propia cuenta intervenida, y el
+ * historial de cambios contaba «Juan cambió su contraseña» cuando la había restablecido Daniel.
+ * `entidad_id` es la cuenta afectada y `usuario_id` quien la restableció; ni la clave ni su hash viajan.
+ */
+export async function resetPasswordAsAdmin(userId: string, password: string, adminId: string, databaseUrl = runtimeEnv().DATABASE_URL): Promise<void> {
+  const sql = sharedPostgres(databaseUrl);
+  await sql.begin(async (tx) => {
+    await tx`update auth.users set encrypted_password = extensions.crypt(${password}, extensions.gen_salt('bf', 12)), updated_at = now() where id = ${userId}`;
+    await tx`delete from public.sesiones where usuario_id = ${userId}`;
+    await tx`insert into auditoria (entidad, entidad_id, evento, origen, usuario_id, fecha, datos_json)
+             values ('sesion', ${userId}, 'CLAVE_RESTABLECIDA', 'web', ${adminId}, now(), ${asJsonb(tx as unknown as ReturnType<typeof sharedPostgres>, { otrasSesionesCerradas: true })})`;
+  });
+  invalidateActorCache(userId);
+}
+
 /** Purga de sesiones vencidas. La invoca el mismo cron del respaldo diario (ops/backup-daily.sh). */
 export async function purgeExpiredSessions(databaseUrl = runtimeEnv().DATABASE_URL): Promise<number> {
   const rows = await sharedPostgres(databaseUrl)<{ id: string }[]>`

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEvent } from "../../lib/domain";
-import { CatalogService, canManageCatalog, type CatalogKind, type CatalogRecord, type CatalogSupplier, type ServiceDependencies } from "../../lib/services";
+import { CatalogService, assertCanResetPassword, canManageCatalog, type CatalogKind, type CatalogRecord, type CatalogSupplier, type ServiceDependencies } from "../../lib/services";
 
 const reviewer = { id: "daniel", roles: ["revisor"] as const };
 const mizarAdmin = { id: "mizar", roles: ["admin_mizar"] as const };
@@ -40,10 +40,13 @@ function deps(options: { feature?: boolean; transactionFeature?: boolean; eligib
 }
 
 describe("CatalogService", () => {
-  it("does not expose the management view to operational or requester roles", () => { expect(canManageCatalog({ id: "sol", roles: ["solicitante"] }, "suppliers", true)).toBe(false); expect(canManageCatalog({ id: "approver", roles: ["aprobador"] }, "works", true)).toBe(false); expect(canManageCatalog(mizarAdmin, "items", true)).toBe(false); expect(canManageCatalog(mizarAdmin, "suppliers", false)).toBe(false); });
+  it("does not expose the management view to operational or requester roles", () => { expect(canManageCatalog({ id: "sol", roles: ["solicitante"] }, "suppliers", true)).toBe(false); expect(canManageCatalog({ id: "approver", roles: ["aprobador"] }, "works", true)).toBe(false); expect(canManageCatalog(mizarAdmin, "items", true)).toBe(false); expect(canManageCatalog(mizarAdmin, "works", false)).toBe(false); expect(canManageCatalog(mizarAdmin, "users", true)).toBe(false); expect(canManageCatalog({ id: "contab", roles: ["contabilidad"] }, "users", true)).toBe(false); });
+  // 25-sep-2026: proveedores se decide por "supplier:manage", que admin_mizar tiene desde H11 (ya podía
+  // administrarlos en /proveedores): la pestaña de Catálogos deja de pedirle además el módulo.
+  it("proveedores en Catálogos siguen el permiso supplier:manage, sin el módulo de autoservicio", () => { expect(canManageCatalog(mizarAdmin, "suppliers", false)).toBe(true); expect(canManageCatalog({ id: "approver", roles: ["aprobador"] }, "suppliers", true)).toBe(false); });
   it("honors the strongest role and rechecks Mizar feature in the write transaction", async () => { const service = deps({ feature: true, transactionFeature: false }).service; await expect(service.create("works", { name: "Bloqueada", societyId: "soc", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FEATURE_DISABLED" }); const dualSix = { id: "dual-six", roles: ["admin_mizar", "admin_sixteam"] as const }, dualReviewer = { id: "dual-reviewer", roles: ["admin_mizar", "revisor"] as const }; const disabled = deps(); await expect(disabled.service.create("works", { name: "Permitida Sixteam", societyId: "soc", active: true }, dualSix)).resolves.toMatchObject({ name: "Permitida Sixteam" }); await expect(disabled.service.create("items", { name: "Permitido Daniel", unit: "und", active: true }, dualReviewer)).resolves.toMatchObject({ name: "Permitido Daniel" }); await expect(disabled.service.create("suppliers", { name: "Permitido proveedor", active: true }, dualReviewer)).resolves.toMatchObject({ name: "Permitido proveedor" }); });
   it("keeps item master ownership with reviewer/Sixteam even after Mizar self-service", async () => { const enabled = deps({ feature: true }); await expect(enabled.service.create("items", { name: "Cemento", unit: "bulto", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FORBIDDEN" }); await expect(enabled.service.create("items", { name: "Cemento", unit: "bulto", active: true }, reviewer)).resolves.toMatchObject({ name: "Cemento", active: true }); await expect(enabled.service.create("items", { name: "Arena", unit: "m3", active: true }, sixteam)).resolves.toMatchObject({ name: "Arena" }); });
-  it("permits only gated Mizar self-service and prevents reasonable supplier duplicates", async () => { const disabled = deps(); await expect(disabled.service.create("works", { name: "Obra Norte", societyId: "soc-1", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FEATURE_DISABLED" }); const enabled = deps({ feature: true }); await expect(enabled.service.create("works", { name: "Obra Norte", societyId: "soc-1", active: true }, mizarAdmin)).resolves.toMatchObject({ name: "Obra Norte" }); await enabled.service.create("suppliers", { name: "Arenera Mizar", nit: "900-123", active: true }, mizarAdmin); await expect(enabled.service.create("suppliers", { name: "Arenera Mizar", phone: "+573001234567", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "CONFLICT" }); await expect(enabled.service.create("works", { name: "No permitido", societyId: "soc-2", active: true }, reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" }); });
+  it("permits only gated Mizar self-service and prevents reasonable supplier duplicates", async () => { const disabled = deps(); await expect(disabled.service.create("works", { name: "Obra Norte", societyId: "soc-1", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FEATURE_DISABLED" }); const enabled = deps({ feature: true }); await expect(enabled.service.create("works", { name: "Obra Norte", societyId: "soc-1", active: true }, mizarAdmin)).resolves.toMatchObject({ name: "Obra Norte" }); await enabled.service.create("suppliers", { name: "Arenera Mizar", nit: "900-123", active: true }, mizarAdmin); await expect(enabled.service.create("suppliers", { name: "Arenera Mizar", phone: "+573001234567", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "CONFLICT" }); await expect(enabled.service.create("works", { name: "Obra de Daniel", societyId: "soc-2", active: true }, reviewer)).resolves.toMatchObject({ name: "Obra de Daniel" }); await expect(enabled.service.create("works", { name: "No permitido", societyId: "soc-2", active: true }, { id: "contab", roles: ["contabilidad"] })).rejects.toMatchObject({ code: "FORBIDDEN" }); });
   // N4 (202609150005): el chequeo previo de duplicados sigue el alcance del índice parcial — nombre solo
   // entre empresas; entre personas manda la identificación.
   it("catálogo de proveedores: dos personas homónimas con cédulas distintas conviven; dos NIT con la misma razón social o la misma cédula siguen chocando", async () => {
@@ -59,14 +62,17 @@ describe("CatalogService", () => {
   it("deactivates reversibly and audits redacted before/after inside the UoW", async () => { const fixture = deps(), supplier = await fixture.service.create("suppliers", { name: "Proveedor Seguro", nit: "900123", phone: "+573001234567", email: "contacto@example.test", active: true }, reviewer); const patched = await fixture.service.patch("suppliers", supplier.id, { active: false }, reviewer); expect(patched).toMatchObject({ active: false }); expect(fixture.audits.at(-1)).toMatchObject({ event: "actualizada", data: { before: { nitConfigured: true, contactConfigured: true, active: true }, after: { active: false } } }); expect(JSON.stringify(fixture.audits)).not.toContain("300123"); expect(JSON.stringify(fixture.audits)).not.toContain("example.test"); const failing = deps({ failAudit: true }); await expect(failing.service.create("suppliers", { name: "Debe revertirse", active: true }, reviewer)).rejects.toThrow("audit failed"); expect(failing.records.size).toBe(0); });
   it("clears optional data durably and permits clearing an approver only while inactive", async () => { const fixture = deps(), supplier = await fixture.service.create("suppliers", { name: "Proveedor editable", nit: "900123", phone: "+573001234567", email: "contacto@example.test", address: "Calle 1", active: true }, reviewer); await fixture.service.patch("suppliers", supplier.id, { nit: null, phone: null, email: null, address: null }, reviewer); const reloadedSupplier = fixture.records.get(`suppliers:${supplier.id}`) as Extract<CatalogRecord, { nit?: string | null }>; expect(reloadedSupplier).toMatchObject({ nit: null, phone: null, email: null, address: null }); const item = await fixture.service.create("items", { name: "Ítem editable", unit: "und", specification: "detalle", category: "obra", active: true }, reviewer); await fixture.service.patch("items", item.id, { specification: null, category: null }, reviewer); expect(fixture.records.get(`items:${item.id}`)).toMatchObject({ specification: null, category: null }); const tag = await fixture.service.create("tags", { name: "Tag editable", approverId: "eligible", active: true }, sixteam); await expect(fixture.service.patch("tags", tag.id, { approverId: null }, sixteam)).rejects.toMatchObject({ code: "INVALID_INPUT" }); await expect(fixture.service.patch("tags", tag.id, { approverId: null, active: false }, sixteam)).resolves.toMatchObject({ approverId: null, active: false }); });
 
-  // RF-002: sociedades — solo admin_sixteam y admin_mizar, sin depender del autoservicio de catálogos.
-  it("permite administrar sociedades a admin_sixteam y admin_mizar, y bloquea a los demás roles", async () => {
+  // RF-002: sociedades — "society:manage" (admin_sixteam, admin_mizar y, desde el 25-sep-2026, revisor),
+  // sin depender del autoservicio de catálogos.
+  it("permite administrar sociedades a admin_sixteam, admin_mizar y revisor, y bloquea a los demás roles", async () => {
     expect(canManageCatalog(mizarAdmin, "societies", false)).toBe(true);
     expect(canManageCatalog(sixteam, "societies", false)).toBe(true);
-    expect(canManageCatalog(reviewer, "societies", true)).toBe(false);
+    expect(canManageCatalog(reviewer, "societies", false)).toBe(true);
+    expect(canManageCatalog({ id: "approver", roles: ["aprobador"] }, "societies", true)).toBe(false);
     const disabledFeature = deps({ feature: false });
     await expect(disabledFeature.service.create("societies", { name: "Sociedad Norte", nit: "900-1", active: true }, mizarAdmin)).resolves.toMatchObject({ name: "Sociedad Norte" });
-    await expect(disabledFeature.service.create("societies", { name: "Otra", active: true }, reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(disabledFeature.service.create("societies", { name: "Otra", active: true }, reviewer)).resolves.toMatchObject({ name: "Otra" });
+    await expect(disabledFeature.service.create("societies", { name: "Tercera", active: true }, { id: "contab", roles: ["contabilidad"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(disabledFeature.service.create("societies", { name: "Otra", active: true }, { id: "solicitante", roles: ["solicitante"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
   it("traduce el choque de nombre/NIT de sociedades a un conflicto claro", async () => { const race = deps({ uniqueViolation: true }); await expect(race.service.create("societies", { name: "Sociedad duplicada", active: true }, sixteam)).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringMatching(/sociedad/i) }); });
@@ -134,14 +140,15 @@ describe("CatalogService", () => {
   // mismo andamiaje de catálogos que el resto, pero con permisos calcados de las RLS de la tabla
   // (lectura: revisor o admin_sixteam o admin_mizar+feature; escritura: admin_sixteam o admin_mizar+feature).
   describe("HUECO 1: pestaña de solicitantes autorizados (WhatsApp)", () => {
-    it("bloquea la escritura a revisor y aprobador aunque puedan operar compras, y respeta el autoservicio de Mizar", async () => {
-      expect(canManageCatalog(reviewer, "requesters", true)).toBe(false);
+    it("revisor administra la lista (25-sep-2026), aprobador no, y admin_mizar sigue sujeto al autoservicio", async () => {
+      expect(canManageCatalog(reviewer, "requesters", false)).toBe(true);
       expect(canManageCatalog({ id: "approver", roles: ["aprobador"] }, "requesters", true)).toBe(false);
       expect(canManageCatalog(mizarAdmin, "requesters", false)).toBe(false);
       expect(canManageCatalog(mizarAdmin, "requesters", true)).toBe(true);
       expect(canManageCatalog(sixteam, "requesters", false)).toBe(true);
       const disabledFeature = deps({ feature: false });
-      await expect(disabledFeature.service.create("requesters", { name: "Maestro de obra", phone: "+573001112233", active: true }, reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(disabledFeature.service.create("requesters", { name: "Maestro de obra", phone: "+573001112233", active: true }, reviewer)).resolves.toMatchObject({ name: "Maestro de obra" });
+      await expect(disabledFeature.service.create("requesters", { name: "Otro maestro", phone: "+573001112244", active: true }, { id: "approver", roles: ["aprobador"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(disabledFeature.service.create("requesters", { name: "Maestro de obra", phone: "+573001112233", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FEATURE_DISABLED" });
       const enabledFeature = deps({ feature: true });
       await expect(enabledFeature.service.create("requesters", { name: "Maestro de obra", phone: "+573001112233", active: true }, mizarAdmin)).resolves.toMatchObject({ name: "Maestro de obra", active: true });
@@ -176,7 +183,8 @@ describe("CatalogService", () => {
       expect(canManageCatalog(sixteam, "costCenters", false)).toBe(true);
       expect(canManageCatalog(mizarAdmin, "costCenters", false)).toBe(false);
       expect(canManageCatalog(mizarAdmin, "costCenters", true)).toBe(true);
-      expect(canManageCatalog(reviewer, "costCenters", true)).toBe(false);
+      // 25-sep-2026: el revisor los administra por "catalog:manage", sin depender del módulo.
+      expect(canManageCatalog(reviewer, "costCenters", false)).toBe(true);
       const disabledFeature = deps({ feature: false });
       await expect(disabledFeature.service.create("costCenters", { name: "Administración", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FEATURE_DISABLED" });
       const enabledFeature = deps({ feature: true });
@@ -204,5 +212,82 @@ describe("CatalogService", () => {
       expect(fixture.audits.at(-1)).toMatchObject({ event: "creada", data: { after: { name: "Administración", code: "CC-99", societyId: "soc-1", active: true } } });
       void created;
     });
+  });
+});
+
+// DECISIÓN DEL CLIENTE (Ernesto, 25-sep-2026): «Daniel puede hacer todo». Daniel (revisor + aprobador)
+// administra usuarios y roles; los candados que se mantienen (coordinador) son dos: las cuentas y el rol
+// de Administrador Sixteam solo los toca otro Administrador Sixteam, y nadie se deja sin acceso a sí mismo.
+describe("Usuarios: Daniel administra, con los candados de Administrador Sixteam y de uno mismo", () => {
+  const daniel = { id: "daniel", roles: ["revisor", "aprobador"] as const };
+  const sixteamUser = { password: "clave-inicial-123", name: "Samuel", email: "samuel@sixteam.test", roles: ["admin_sixteam"] as const, active: true };
+  it("el revisor da de alta, edita roles, desactiva y reactiva usuarios comunes", async () => {
+    const fixture = deps();
+    const user = await fixture.service.create("users", { password: "clave-inicial-123", name: "Juliana", email: "juliana@mizar.test", roles: ["aprobador"], active: true }, daniel);
+    await expect(fixture.service.patch("users", user.id, { roles: ["aprobador", "contabilidad"] }, daniel)).resolves.toMatchObject({ roles: ["aprobador", "contabilidad"] });
+    await expect(fixture.service.patch("users", user.id, { active: false }, daniel)).resolves.toMatchObject({ active: false });
+    await expect(fixture.service.patch("users", user.id, { active: true }, daniel)).resolves.toMatchObject({ active: true });
+    // También puede dar el rol de Administrador Mizar: el candado es solo para Administrador Sixteam.
+    await expect(fixture.service.patch("users", user.id, { roles: ["admin_mizar"] }, daniel)).resolves.toMatchObject({ roles: ["admin_mizar"] });
+    expect(fixture.audits.filter((event) => event.entity === "users")).toHaveLength(5);
+  });
+  it("rechaza el escalamiento: crear, asignar, editar, quitar o desactivar Administrador Sixteam", async () => {
+    const fixture = deps();
+    await expect(fixture.service.create("users", sixteamUser, daniel)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(fixture.service.create("users", { ...sixteamUser, email: "doble@mizar.test", roles: ["revisor", "admin_sixteam"] }, daniel)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const comun = await fixture.service.create("users", { password: "clave-inicial-123", name: "Común", email: "comun@mizar.test", roles: ["solicitante"], active: true }, daniel);
+    await expect(fixture.service.patch("users", comun.id, { roles: ["solicitante", "admin_sixteam"] }, daniel)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // Ni reemplazando todos los roles por ese.
+    await expect(fixture.service.patch("users", comun.id, { roles: ["admin_sixteam"] }, daniel)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const samuel = await fixture.service.create("users", sixteamUser, sixteam);
+    for (const cambio of [{ active: false }, { phone: "+573001112233" }, { name: "Otro nombre" }, { roles: ["revisor"] as const }]) {
+      await expect(fixture.service.patch("users", samuel.id, cambio, daniel)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
+    expect(fixture.records.get(`users:${samuel.id}`)).toMatchObject({ active: true, roles: ["admin_sixteam"] });
+    // Un Administrador Sixteam sí puede.
+    await expect(fixture.service.patch("users", samuel.id, { phone: "+573001112233" }, sixteam)).resolves.toMatchObject({ phone: "+573001112233" });
+    // admin_mizar sigue sin administrar usuarios (solo los consulta), ni siquiera los comunes.
+    await expect(fixture.service.patch("users", comun.id, { active: false }, mizarAdmin)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("nadie se desactiva ni se deja sin roles a sí mismo; quitarse un rol sí se puede si queda otro", async () => {
+    const fixture = deps();
+    const yo = await fixture.service.create("users", { password: "clave-inicial-123", name: "Daniel", email: "daniel@mizar.test", roles: ["revisor", "aprobador"], active: true }, sixteam);
+    const mismo = { id: yo.id, roles: ["revisor", "aprobador"] as const };
+    await expect(fixture.service.patch("users", yo.id, { active: false }, mismo)).rejects.toMatchObject({ code: "SELF_LOCKOUT" });
+    await expect(fixture.service.patch("users", yo.id, { roles: [] }, mismo)).rejects.toMatchObject({ code: "SELF_LOCKOUT" });
+    await expect(fixture.service.patch("users", yo.id, { roles: ["revisor"] }, mismo)).resolves.toMatchObject({ roles: ["revisor"] });
+    const samuel = await fixture.service.create("users", { ...sixteamUser, email: "s2@sixteam.test" }, sixteam);
+    await expect(fixture.service.patch("users", samuel.id, { active: false }, { id: samuel.id, roles: ["admin_sixteam"] })).rejects.toMatchObject({ code: "SELF_LOCKOUT" });
+  });
+  it("restablecer contraseña: user:reset_password, y la de un Administrador Sixteam solo la restablece otro", () => {
+    expect(() => assertCanResetPassword(daniel, { roles: ["aprobador"] })).not.toThrow();
+    expect(() => assertCanResetPassword(mizarAdmin, { roles: ["revisor"] })).not.toThrow();
+    expect(() => assertCanResetPassword(daniel, { roles: ["admin_sixteam"] })).toThrow(expect.objectContaining({ code: "FORBIDDEN" }));
+    expect(() => assertCanResetPassword(mizarAdmin, { roles: ["admin_sixteam", "revisor"] })).toThrow(expect.objectContaining({ code: "FORBIDDEN" }));
+    expect(() => assertCanResetPassword(sixteam, { roles: ["admin_sixteam"] })).not.toThrow();
+    expect(() => assertCanResetPassword({ id: "contab", roles: ["contabilidad"] }, { roles: ["solicitante"] })).toThrow(expect.objectContaining({ code: "FORBIDDEN" }));
+    expect(() => assertCanResetPassword(daniel, null)).toThrow(expect.objectContaining({ code: "NOT_FOUND" }));
+  });
+});
+
+describe("Catálogos por permiso y el módulo catalogos_admin_mizar", () => {
+  it("el revisor administra obras, etiquetas (con su aprobador), empresas, cajas y centros sin depender del módulo", async () => {
+    const fixture = deps({ feature: false });
+    await expect(fixture.service.create("works", { name: "Obra Daniel", societyId: "soc-1", active: true }, reviewer)).resolves.toMatchObject({ name: "Obra Daniel" });
+    const tag = await fixture.service.create("tags", { name: "Materiales", approverId: "nelson", active: true }, reviewer);
+    await fixture.service.patch("tags", tag.id, { approverId: "juliana" }, reviewer);
+    // El historial necesita el id del aprobador para contar «de Nelson a Juliana».
+    expect(fixture.audits.at(-1)).toMatchObject({ entity: "tags", data: { before: { approverId: "nelson" }, after: { approverId: "juliana" } } });
+    await expect(fixture.service.create("cashBoxes", { name: "Caja obra", type: "caja_menor", active: true }, reviewer)).resolves.toMatchObject({ name: "Caja obra" });
+  });
+  it("con el módulo apagado bloquea a quien tiene el permiso SOLO por admin_mizar, no a quien lo trae por otro rol", async () => {
+    const off = deps({ feature: false });
+    await expect(off.service.create("works", { name: "Solo Mizar", societyId: "soc-1", active: true }, mizarAdmin)).rejects.toMatchObject({ code: "FEATURE_DISABLED" });
+    await expect(off.service.create("works", { name: "Mizar y revisor", societyId: "soc-1", active: true }, { id: "dual", roles: ["admin_mizar", "revisor"] })).resolves.toMatchObject({ name: "Mizar y revisor" });
+    // Si Configuración le quitó catalog:manage al revisor, ese rol ya no lo trae: vuelve a mandar el módulo.
+    const sinCatalogo = { id: "dual", roles: ["admin_mizar", "revisor"] as const, permissions: ["catalog:manage", "requisition:review"], rolePermissions: { admin_mizar: ["catalog:manage"], revisor: ["requisition:review"] } };
+    await expect(off.service.create("works", { name: "Otra", societyId: "soc-1", active: true }, sinCatalogo)).rejects.toMatchObject({ code: "FEATURE_DISABLED" });
+    expect(canManageCatalog(sinCatalogo, "works", false)).toBe(false);
+    expect(canManageCatalog(sinCatalogo, "works", true)).toBe(true);
   });
 });

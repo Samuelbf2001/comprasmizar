@@ -54,7 +54,7 @@ function SkeletonPiece({
 // Único texto que un lector de pantalla anuncia mientras carga: cada pieza visual del
 // esqueleto lleva aria-hidden, así que sin esto la carga sería invisible para lectores
 // de pantalla (regla dura del encargo, no es solo adorno).
-function LoadingStatus({ label }: { label: string }) {
+export function LoadingStatus({ label }: { label: string }) {
   return (
     <span className="sr-only" role="status">
       {label}
@@ -104,7 +104,7 @@ function SkeletonTableRows({
 
 // Cabecera de tabla REAL (los mismos <th> que la pantalla final) con filas fantasma
 // debajo: así ni una columna se corre cuando llegan los datos.
-function TableSkeleton({
+export function TableSkeleton({
   headers,
   rows = 6,
 }: {

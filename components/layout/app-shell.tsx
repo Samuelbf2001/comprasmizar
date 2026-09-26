@@ -11,6 +11,7 @@ import {
   Eye,
   FileCheck2,
   HelpCircle,
+  History,
   Inbox,
   LayoutDashboard,
   LogOut,
@@ -30,6 +31,7 @@ import { logout } from "../../app/auth-actions";
 // Cerrar sesión vacía las cachés de cliente ANTES de salir: la siguiente cuenta que entre en esta
 // pestaña no hereda permisos ni datos (ver `vincularCachesAlVisor` en connected/data.ts).
 import { olvidarCachesDelVisor } from "../screens/connected/data";
+import { allowedRoutes, type Puede } from "./nav-permissions";
 
 const roleNames: Record<Role, string> = {
   Solicitante: "Juliana Rojas",
@@ -83,8 +85,8 @@ export const roleAllowed: Record<Role, string[]> = {
     "/reportes",
     "/mensajes",
     // RF-1401: Configuración no vive en `navigation` (es un ítem aparte, ver nav-secondary más
-    // abajo) — sin este href explícito, mizar-app.tsx negaría el acceso a este rol aunque el botón
-    // ya se muestre para él.
+    // abajo). Desde el 25-sep-2026 la decide el PERMISO (PERMISSION_ROUTES en nav-permissions.ts);
+    // este href queda como respaldo cuando no hay permisos que consultar (modo demostración).
     "/configuracion",
     "/ayuda",
   ],
@@ -102,6 +104,7 @@ const navIcons = {
   Truck,
   MessageSquare,
   BarChart3,
+  History,
 } as Record<string, typeof LayoutDashboard>;
 
 export function AppShell({
@@ -117,6 +120,7 @@ export function AppShell({
   setRole,
   demoMode,
   actorName,
+  puede,
 }: {
   children: React.ReactNode;
   currentHref: string;
@@ -130,8 +134,10 @@ export function AppShell({
   setRole: (role: Role) => void;
   demoMode: boolean;
   actorName?: string;
+  /** Permisos efectivos de quien mira (ver usePermisosDelMenu). Sin él, el menú de siempre por rol. */
+  puede?: Puede;
 }) {
-  const allowed = roleAllowed[role];
+  const allowed = puede ? allowedRoutes(roleAllowed[role], puede) : roleAllowed[role];
   const isAllowed = (href: string) => allowed.includes(href);
   const identity = demoMode
     ? roleNames[role]
@@ -291,7 +297,7 @@ export function AppShell({
         </nav>
         <div className="nav-divider" />
         <nav className="nav-secondary">
-          {(role === "Administrador Sixteam" || role === "Administrador Mizar") && (
+          {isAllowed("/configuracion") && (
             <button
               className={
                 pathname.startsWith("/configuracion") ? "is-active" : ""
