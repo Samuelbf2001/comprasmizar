@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{padding-block:env(safe-area-inset-top,0px) env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Guía de pruebas Mizar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+:root{
+  --bg:#F0F3F8; --surface:#FFFFFF; --surface-2:#E6ECF5; --ink:#0F1B30; --ink-2:#465671; --line:#CBD5E4;
+  --accent:#0A2342; --on-accent:#FFFFFF; --focus:#1D5FE0;
+  --ok:#14663B; --ok-bg:#DAF2E4; --ok-solid:#14663B; --on-ok:#FFFFFF;
+  --bad:#A91D28; --bad-bg:#FBE0E2; --bad-solid:#A91D28; --on-bad:#FFFFFF;
+  --doubt:#7A5000; --doubt-bg:#FFEFC7; --doubt-solid:#F2B01E; --on-doubt:#2A1B00;
+  --sans:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0B1322; --surface:#141F35; --surface-2:#1C2A46; --ink:#EAF0FB; --ink-2:#A6B5CE; --line:#2A3B5A;
+    --accent:#9DBEFF; --on-accent:#0B1322; --focus:#7FB0FF;
+    --ok:#5CD592; --ok-bg:#12352A; --ok-solid:#3DBA79; --on-ok:#04150C;
+    --bad:#FF8C95; --bad-bg:#43191F; --bad-solid:#FF7E88; --on-bad:#2A0609;
+    --doubt:#F3C55E; --doubt-bg:#3B2E10; --doubt-solid:#F3C55E; --on-doubt:#2A1B00;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0B1322; --surface:#141F35; --surface-2:#1C2A46; --ink:#EAF0FB; --ink-2:#A6B5CE; --line:#2A3B5A;
+  --accent:#9DBEFF; --on-accent:#0B1322; --focus:#7FB0FF;
+  --ok:#5CD592; --ok-bg:#12352A; --ok-solid:#3DBA79; --on-ok:#04150C;
+  --bad:#FF8C95; --bad-bg:#43191F; --bad-solid:#FF7E88; --on-bad:#2A0609;
+  --doubt:#F3C55E; --doubt-bg:#3B2E10; --doubt-solid:#F3C55E; --on-doubt:#2A1B00;
+}
+*{box-sizing:border-box}
+html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.5;-webkit-text-size-adjust:100%}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px;border-radius:6px}
+.wrap{max-width:720px;margin:0 auto;padding-inline:16px}
+h1,h2,h3,p{margin:0}
+h2,h3{text-wrap:balance}
+code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);padding:1px 5px;border-radius:5px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* barra superior */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--bg);border-bottom:1px solid var(--line)}
+.top .wrap{display:grid;gap:10px;padding-block:10px 0}
+.row1{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{font-weight:700;font-size:18px;color:var(--accent);letter-spacing:.01em}
+.timer{display:flex;align-items:center;gap:6px}
+.tchip{display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 14px;border-radius:999px;border:1.5px solid var(--line);background:var(--surface);font-family:var(--mono);font-size:15px}
+.tchip[data-run="1"]{border-color:var(--accent)}
+.tchip[data-mode="break"]{background:var(--doubt-bg);border-color:var(--doubt-solid);color:var(--doubt)}
+.tsel{min-height:40px;border-radius:999px;border:1.5px solid var(--line);background:var(--surface);padding:0 10px}
+.prog{display:grid;gap:4px}
+.prog-line{display:flex;justify-content:space-between;font-size:14px;color:var(--ink-2)}
+.bar{height:10px;border-radius:999px;background:var(--surface-2);overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.bar .b-ok{background:var(--ok-solid)}
+.bar .b-bad{background:var(--bad-solid)}
+.bar .b-doubt{background:var(--doubt-solid)}
+.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+.tab{flex:1 1 auto;min-height:46px;padding:0 6px;background:none;border:0;border-bottom:3px solid transparent;color:var(--ink-2);font-weight:700;font-size:15px;white-space:nowrap}
+.tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+
+main{padding-block:18px 190px}
+.stack{display:grid;gap:16px}
+
+/* tarjetas */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px}
+.card.tint{background:var(--surface-2);border-color:transparent}
+.meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+.id{font-family:var(--mono);font-size:15px;font-weight:500;color:var(--accent);background:var(--surface-2);padding:3px 9px;border-radius:8px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:14px;padding:2px 10px;border-radius:999px;background:var(--surface-2);color:var(--ink-2);font-weight:700}
+.chip.a{background:var(--accent);color:var(--on-accent)}
+.chip.warn{background:var(--doubt-bg);color:var(--doubt)}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}
+.chip.bad{background:var(--bad-bg);color:var(--bad)}
+.chip.doubt{background:var(--doubt-bg);color:var(--doubt)}
+.lbl{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-2);font-weight:700;margin-bottom:6px}
+.do{font-size:21px;line-height:1.4;font-weight:700;display:grid;gap:8px;margin-bottom:18px;max-width:62ch}
+.do .sub{display:flex;gap:10px}
+.do .sub::before{content:"›";color:var(--accent);flex:none}
+.expect{background:var(--surface-2);border-radius:10px;padding:14px 16px;font-size:17px;max-width:62ch}
+.next{margin-top:16px;font-size:14px;color:var(--ink-2)}
+.next b{color:var(--ink)}
+h2.title{font-size:22px;line-height:1.25;margin-bottom:6px}
+
+/* botones */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:52px;padding:0 20px;border-radius:12px;border:2px solid var(--line);background:var(--surface);font-weight:700;font-size:17px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.ok{background:var(--ok-solid);border-color:var(--ok-solid);color:var(--on-ok)}
+.btn.bad{background:var(--bad-solid);border-color:var(--bad-solid);color:var(--on-bad)}
+.btn.doubt{background:var(--doubt-solid);border-color:var(--doubt-solid);color:var(--on-doubt)}
+.btn.ghost{border-color:transparent;background:none;color:var(--accent);min-height:44px;padding:0 10px}
+.btn.small{min-height:40px;font-size:15px;padding:0 14px;border-radius:10px}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.btn kbd{font-family:var(--mono);font-size:12px;opacity:.75;border:1px solid currentColor;border-radius:4px;padding:0 4px}
+.actions{position:fixed;left:0;right:0;bottom:0;z-index:15;background:var(--surface);border-top:1px solid var(--line);padding:12px 0 calc(12px + env(safe-area-inset-bottom,0px))}
+.actions .wrap{display:grid;gap:8px}
+.actions .three{display:grid;grid-template-columns:1fr 1fr 1.25fr;gap:10px}
+.actions .two{display:flex;justify-content:space-between}
+@media (max-width:420px){.btn{padding:0 10px;font-size:16px}.btn kbd{display:none}}
+
+/* formularios */
+.field{display:grid;gap:6px;margin-top:14px}
+.field label{font-weight:700;font-size:15px}
+textarea,input[type=text]{width:100%;border:2px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--surface);min-height:48px}
+textarea{min-height:84px;resize:vertical}
+.sevs{display:flex;flex-wrap:wrap;gap:8px}
+.sev{min-height:44px;padding:0 14px;border-radius:10px;border:2px solid var(--line);background:var(--surface);font-weight:700;font-size:15px}
+.sev[aria-pressed="true"]{background:var(--bad-solid);border-color:var(--bad-solid);color:var(--on-bad)}
+.sev small{display:block;font-weight:400;font-size:12px}
+
+/* alcance */
+.scope{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+.scope p{font-size:15px;color:var(--ink-2)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.tog{min-height:44px;padding:0 14px;border-radius:999px;border:2px solid var(--line);background:var(--surface);font-weight:700;font-size:15px}
+.tog[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+
+/* listas */
+.list{display:grid;gap:8px}
+.item{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-height:56px}
+.item .t{font-size:15px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.dot{width:18px;height:18px;border-radius:50%;border:2px solid var(--line);display:grid;place-items:center;flex:none}
+.dot.ok{background:var(--ok-solid);border-color:var(--ok-solid)}
+.dot.bad{background:var(--bad-solid);border-color:var(--bad-solid)}
+.dot.doubt{background:var(--doubt-solid);border-color:var(--doubt-solid)}
+.mod-head{display:grid;grid-template-columns:1fr auto;gap:6px 12px;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-height:60px}
+.mod-head .bar{grid-column:1/-1;height:8px}
+.mod-head b{font-size:17px}
+.mod-head span{font-size:14px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.mod-body{display:grid;gap:8px;padding:8px 0 4px 10px}
+.steps{display:flex;gap:6px;margin:10px 0 16px}
+.steps i{flex:1;height:8px;border-radius:999px;background:var(--surface-2)}
+.steps i.on{background:var(--ok-solid)}
+.steps i.cur{background:var(--accent)}
+.done-step{display:flex;gap:10px;align-items:baseline;font-size:15px;color:var(--ink-2);padding:6px 0}
+.done-step svg{flex:none;color:var(--ok);translate:0 3px}
+.done-step.dim{opacity:.7}
+
+.big{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.big .n{font-size:38px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.big .card{padding:16px}
+.big .k{font-size:14px;color:var(--ink-2);margin-top:4px}
+.big .ok .n{color:var(--ok)} .big .bad .n{color:var(--bad)} .big .doubt .n{color:var(--doubt)}
+.verdict{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.verdict b{font-size:20px}
+.rep{width:100%;min-height:180px;font-family:var(--mono);font-size:13px}
+.check{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-height:56px}
+.check .box{width:24px;height:24px;border:2px solid var(--ink-2);border-radius:7px;flex:none;display:grid;place-items:center;margin-top:1px}
+.check[aria-checked="true"] .box{background:var(--ok-solid);border-color:var(--ok-solid);color:var(--on-ok)}
+.check[aria-checked="true"] .lab{color:var(--ink-2);text-decoration:line-through}
+.check .note{font-size:14px;color:var(--ink-2)}
+.banner{border-radius:14px;padding:16px 18px;background:var(--doubt-bg);color:var(--ink);border:2px solid var(--doubt-solid);display:grid;gap:12px}
+.banner.info{background:var(--surface);border-color:var(--line)}
+.banner b{font-size:18px}
+.banner .btns{display:flex;flex-wrap:wrap;gap:8px}
+.toast{position:fixed;left:50%;translate:-50% 0;bottom:calc(150px + env(safe-area-inset-bottom,0px));z-index:30;background:var(--accent);color:var(--on-accent);padding:10px 18px;border-radius:999px;font-weight:700;font-size:15px;max-width:calc(100% - 32px);text-align:center}
+.muted{color:var(--ink-2);font-size:15px}
+.ro{font-size:14px;color:var(--doubt);background:var(--doubt-bg);padding:8px 12px;border-radius:10px}
+@media (prefers-reduced-motion:no-preference){.bar i{transition:width .3s ease}}
+@media (min-width:640px){.big{grid-template-columns:repeat(4,1fr)}}
+</style>
+
+<div class="top">
+  <div class="wrap">
+    <div class="row1">
+      <span class="brand">Pruebas Mizar</span>
+      <div class="timer">
+        <select id="tsel" class="tsel" aria-label="Duración del bloque">
+          <option value="10">10 min</option><option value="15">15 min</option><option value="25">25 min</option>
+        </select>
+        <button id="tchip" class="tchip" type="button" aria-label="Iniciar o pausar el bloque de tiempo"></button>
+      </div>
+    </div>
+    <div class="prog" id="prog"></div>
+    <div class="tabs" role="tablist" id="tabs"></div>
+  </div>
+</div>
+<main class="wrap" id="view" tabindex="-1"></main>
+<div id="actions"></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script id="data" type="application/json">{"fecha":"21 de septiembre de 2026","rondas":[{"n":"0. Ensayo","quien":"Sixteam (Ernesto/Samuel)","donde":"Local con backend real (\u003ccode>scripts/dev-db.ts\u003c/code> + \u003ccode>NEXT_PUBLIC_DEMO_MODE=false\u003c/code>)","que":"Todos los casos técnicos (§5.16–5.19) y un pase de cada recorrido E2E. Todo lo que falle aquí no se le muestra a Mizar.","dur":"3–4 h"},{"n":"1. Sesión operativa","quien":"Daniel, Nelson, Juliana, Claudia + un maestro de obra","donde":"Producción tras el despliegue B3, celulares reales + PC","que":"E2E-1 a E2E-4, E2E-6, E2E-9, E2E-10 y los módulos §5.1–5.6, 5.12 y 5.13","dur":"~2 h"},{"n":"2. Sesión financiera","quien":"Daniel, Luis Miguel (contador)","donde":"Producción","que":"E2E-2, E2E-5, E2E-8, E2E-11 (paridad) y §5.7–5.11","dur":"~1,5 h"},{"n":"3. Sesión de administración","quien":"Ernesto o Samuel","donde":"Producción","que":"§5.14–5.19","dur":"~1 h"},{"n":"4. Re-prueba","quien":"Quien reportó cada falla","donde":"Producción","que":"Lo arreglado + todos los casos prioridad \u003cstrong>A\u003c/strong> (regresión)","dur":"~1 h"},{"n":"Humo","quien":"Sixteam","donde":"Producción","que":"Lista de la §6, tras \u003cstrong>cada\u003c/strong> despliegue","dur":"20 min"}],"reglas":["\u003cstrong>Prefijo \u003ccode>PRUEBA-\u003c/code>\u003c/strong> en todo texto libre (concepto, ítem propuesto, nombre de proveedor, observaciones), para reconocerlo y depurarlo.","\u003cstrong>Solo teléfonos del equipo de pruebas.\u003c/strong> Cada notificación de estado sale por WhatsApp de verdad: nada de números de maestros de obra reales hasta el día cero.","\u003cstrong>Cada caso termina en \u003ccode>OK\u003c/code>, \u003ccode>FALLA\u003c/code>, \u003ccode>DUDA\u003c/code> o \u003ccode>N/A\u003c/code>\u003c/strong>, con captura (y URL) cuando no es \u003ccode>OK\u003c/code>. \u003ccode>DUDA\u003c/code> = el sistema hizo algo razonable pero no es lo que se esperaba: se convierte en decisión, no en falla.","\u003cstrong>⚠ = nunca se ha recorrido en un navegador contra el backend real.\u003c/strong> Es donde más probable es que aparezca algo.","Una persona ejecuta, otra anota. Nadie prueba su propio rol con la cuenta de otro.","Si algo falla, no se «arregla» a mano en la base: se anota y se sigue."],"prep":[{"id":"P1","t":"\u003cstrong>Un usuario por rol:\u003c/strong> Solicitante, Revisor (Daniel, también aprobador = usuario maestro), Aprobador ×3 (Nelson, Claudia, Juliana), Contabilidad (Luis Miguel), Admin Mizar, Admin Sixteam","nota":"Con correo real del equipo de pruebas, no \u003ccode>*.demo@mizar.test\u003c/code>"},{"id":"P2","t":"\u003cstrong>Catálogos mínimos:\u003c/strong> 2 obras (una compartiendo centro de costo con otra), 4 centros de costo (uno de cada tipo: obra, administrativo, personal, empresa), 2 empresas facturadas (PROIM y otra), 3 etiquetas (materiales → Nelson, nómina → Claudia, general → Juliana)","nota":"Sin \u003ccode>seed.sql\u003c/code> de demo"},{"id":"P3","t":"\u003cstrong>Proveedores:\u003c/strong> A y B con NIT y datos bancarios, C sin RUT, y una persona natural con cédula. Ítems: ≥ 10 en el catálogo, 3 «frecuentes» |","nota":""},{"id":"P4","t":"\u003cstrong>Teléfonos autorizados\u003c/strong> (\u003ccode>solicitantes_autorizados\u003c/code>) de 2 celulares del equipo, uno por obra distinta; un tercer número \u003cstrong>no\u003c/strong> autorizado","nota":"Sin esto el Flow rechaza todo"},{"id":"P5","t":"\u003cstrong>Dos celulares:\u003c/strong> un Android y un iPhone, con WhatsApp y datos móviles; uno de ellos también en el Wi-Fi de la oficina |","nota":""},{"id":"P6","t":"\u003cstrong>Archivos de prueba:\u003c/strong> JPG 1 MB (foto real de cámara), PNG, PDF 2 MB, XLSX, DOCX, CSV; \u003cstrong>negativos:\u003c/strong> un \u003ccode>.txt\u003c/code> renombrado a \u003ccode>.pdf\u003c/code>, un \u003ccode>.exe\u003c/code> renombrado a \u003ccode>.jpg\u003c/code>, un PDF de 11 MB, un JPG de 9,5 MB |","nota":""},{"id":"P7","t":"\u003cstrong>Contraseña del portal\u003c/strong> conocida, enlace y número de WhatsApp","nota":"La contraseña \u003cstrong>nueva\u003c/strong>, no la que circuló"},{"id":"P8","t":"\u003cstrong>Flows publicados y variables cargadas:\u003c/strong> \u003ccode>WHATSAPP_FLOW_ID=2180911365805386\u003c/code>, \u003ccode>WHATSAPP_FLOW_PAGO_ID=4695777257373991\u003c/code>","nota":"Plan de salida B3"},{"id":"P9","t":"\u003cstrong>Un mes real de \u003ccode>GASTOS EN OBRAS.xlsx\u003c/code>\u003c/strong> (Contabilidad) para la paridad","nota":"Bloqueante de PRD §15"},{"id":"P10","t":"Plantilla de registro de resultados (§7) abierta y compartida |","nota":""}],"e2e":[{"id":"E2E-1","title":"Compra multi-proveedor","ref":"PRD §11.2.1","pri":"A","warn":false,"roles":["Maestro de obra (celular, portal)","Daniel","Nelson","Luis Miguel","Reportes"],"steps":[{"role":"Maestro de obra (celular, portal)","h":"contraseña → empresa → 3 ítems (uno con foto de cámara, uno propuesto que no está en el catálogo) → enviar. Recibe el acuse por WhatsApp"},{"role":"Daniel","h":"ve la solicitud en Revisión con canal «público»; normaliza el ítem propuesto sin duplicar; etiqueta «materiales»; proveedor final A para dos ítems y B para uno; base, IVA y descuento; centro de costo (el de la obra viene por defecto); envía a aprobación"},{"role":"Nelson","h":"el aviso le llega por WhatsApp; en la plataforma aprueba dos ítems y \u003cstrong>declina uno con motivo\u003c/strong>"},{"role":"Daniel","h":"«Generar órdenes» → \u003cstrong>una OC por proveedor\u003c/strong> con solo los ítems aprobados; descarga los PDF; marca una \u003cstrong>cumplida\u003c/strong> y otra \u003cstrong>no cumplida\u003c/strong>"},{"role":"Luis Miguel","h":"contabiliza ambas"},{"role":"Reportes","h":"el gasto aparece en la obra con \u003cstrong>subtotal por etiqueta\u003c/strong>; el Excel se descarga"}],"esperado":"nadie re-digitó nada; la no cumplida sigue en pendientes; lo declinado no suma; los totales del Excel = suma a mano de la cotización aprobada."},{"id":"E2E-2","title":"Pago / cuenta de cobro","ref":"PRD §11.2.2 + adenda","pri":"A","warn":false,"roles":["Maestro (portal, «Solicitud de pago»)","Daniel","Claudia","Luis Miguel"],"steps":[{"role":"Maestro (portal, «Solicitud de pago»)","h":"beneficiario con cédula \u003cstrong>nueva\u003c/strong>, empresa, monto, concepto, soporte en \u003cstrong>PDF\u003c/strong>"},{"role":"Daniel","h":"aparece con beneficiario \u003cstrong>pendiente de completar\u003c/strong> → «Completar ficha»; asigna centro de costo y empresa facturada; \u003cstrong>edita el monto\u003c/strong> (se ve «Valor original»); etiqueta nómina"},{"role":"Claudia","h":"aprueba (web o WhatsApp)"},{"role":"Daniel","h":"«Generar órdenes» → \u003cstrong>OP-AAAA-NNNN\u003c/strong> con PDF; registra un pago \u003cstrong>parcial\u003c/strong> (transferencia, referencia) + comprobante"},{"role":"Luis Miguel","h":"contabiliza con saldo pendiente"},{"role":"Daniel","h":"«Pagar saldo» → orden \u003cstrong>Pagada\u003c/strong>"}],"esperado":"OP separada de OC (rótulo y consecutivo), estado de pago pendiente → parcial → pagada, gasto en el centro de costo con la empresa facturada, historial completo."},{"id":"E2E-3","title":"Devolución","ref":"PRD §11.2.3","pri":"A","warn":false,"roles":[],"steps":[{"role":"","h":"Nelson \u003cstrong>devuelve con comentario\u003c/strong> (sin comentario no debe dejar)"},{"role":"","h":"La requisición vuelve a Daniel con el motivo"},{"role":"","h":"Daniel corrige"},{"role":"","h":"Reenvía"},{"role":"","h":"Nelson aprueba"}],"esperado":"sin requisición duplicada, historial con las 5 transiciones (usuario, fecha/hora, comentario), el solicitante recibió el aviso «devuelta»."},{"id":"E2E-4","title":"Declinación","ref":"PRD §11.2.4","pri":"A","warn":false,"roles":[],"steps":[{"role":"","h":"Daniel declina con motivo"},{"role":"","h":"Desaparece de activas"},{"role":"","h":"Aparece en el filtro \u003cstrong>declinadas\u003c/strong> con su motivo"},{"role":"","h":"\u003cstrong>cero\u003c/strong> órdenes y \u003cstrong>cero\u003c/strong> gasto"},{"role":"","h":"El solicitante recibe el aviso"}],"esperado":""},{"id":"E2E-5","title":"Caja menor del viernes (adenda §4.3)","ref":"","pri":"A","warn":false,"roles":[],"steps":[{"role":"","h":"\u003cstrong>Daniel\u003c/strong> radica una compra pequeña (o pago) para sí mismo"},{"role":"","h":"\u003cstrong>«Aprobar yo mismo»\u003c/strong> ⚠ → el historial muestra dos eventos (enviada a aprobación, aprobada), ambos de Daniel"},{"role":"","h":"Genera la orden; registra el pago con medio \u003cstrong>Caja (efectivo)\u003c/strong>, referencia y comprobante"},{"role":"","h":"Repite con un segundo gasto por \u003cstrong>transferencia\u003c/strong> (no debe entrar al cierre)"},{"role":"","h":"\u003cstrong>Cierre de caja\u003c/strong> con el rango de la semana: total pagado por caja, n.º de pagos, «con comprobante x de y»; descarga el Excel"}],"esperado":"el cierre muestra solo los pagos de caja vigentes; cuadra contra los recibos físicos."},{"id":"E2E-6","title":"Compra completa por WhatsApp (RF-902)","ref":"","pri":"A","warn":false,"roles":[],"steps":[{"role":"","h":"Celular autorizado: «hola»"},{"role":"","h":"Menú"},{"role":"","h":"\u003cstrong>«Montar requisición»\u003c/strong>"},{"role":"","h":"Flow v4 (tipo y obra/empresa, un artículo por pantalla ×3, foto de cámara y de galería, detalles, resumen con nombre de empresa)"},{"role":"","h":"Enviar"},{"role":"","h":"Aparece en Revisión con canal \u003cstrong>WhatsApp\u003c/strong> y el solicitante identificado por su número"},{"role":"","h":"Daniel revisa"},{"role":"","h":"Aprobador aprueba \u003cstrong>desde WhatsApp\u003c/strong>"},{"role":"","h":"Orden"}],"esperado":""},{"id":"E2E-7","title":"Solicitud de pago por WhatsApp","ref":"","pri":"A","warn":false,"roles":[],"steps":[{"role":"","h":"«Solicitar un pago»"},{"role":"","h":"Flow de 3 pantallas (identificación, empresa + monto solo dígitos + concepto, resumen)"},{"role":"","h":"Llega como OP con beneficiario enlazado o \u003cstrong>pendiente\u003c/strong>"},{"role":"","h":"Daniel completa la ficha"},{"role":"","h":"Sigue E2E-2"}],"esperado":""},{"id":"E2E-8","title":"Error de digitación en un pago","ref":"","pri":"M","warn":false,"roles":[],"steps":[{"role":"","h":"Daniel registra un pago con el valor equivocado"},{"role":"","h":"\u003cstrong>Anular\u003c/strong> con motivo (el botón no debe dejar sin motivo)"},{"role":"","h":"Queda \u003cstrong>tachado\u003c/strong> con quién, cuándo y por qué"},{"role":"","h":"El estado de pago retrocede (y si la orden estaba «pagada» vuelve a «contabilizada»)"},{"role":"","h":"Registra el correcto"},{"role":"","h":"El cierre de caja \u003cstrong>excluye\u003c/strong> el anulado"}],"esperado":""},{"id":"E2E-9","title":"Daniel aprueba por encima de un aprobador","ref":"","pri":"A","warn":true,"roles":[],"steps":[{"role":"","h":"La etiqueta apunta a Juliana"},{"role":"","h":"Daniel (usuario maestro) aprueba antes que ella"},{"role":"","h":"No se bloquea"},{"role":"","h":"El historial dice \u003cstrong>a quién se saltó\u003c/strong>"},{"role":"","h":"La requisición deja de aparecer en la bandeja de Juliana"}],"esperado":""},{"id":"E2E-10","title":"Autonomía del cliente (sin Sixteam)","ref":"","pri":"A","warn":false,"roles":[],"steps":[{"role":"","h":"Daniel crea un \u003cstrong>centro de costo\u003c/strong>, una \u003cstrong>obra\u003c/strong>, un \u003cstrong>ítem\u003c/strong> y un \u003cstrong>proveedor con documentos\u003c/strong>"},{"role":"","h":"Edita los \u003cstrong>teléfonos autorizados\u003c/strong>"},{"role":"","h":"El Administrador cambia el \u003cstrong>aprobador de una etiqueta\u003c/strong>"},{"role":"","h":"Una requisición nueva con esa etiqueta se enruta al aprobador nuevo, sin desarrollo"},{"role":"","h":"El Administrador ajusta un \u003cstrong>permiso\u003c/strong> en la matriz y el efecto se ve en pantalla"}],"esperado":""},{"id":"E2E-11","title":"Mes completo y paridad contable","ref":"","pri":"A","warn":false,"roles":[],"steps":[{"role":"","h":"Cargar un mes real de \u003ccode>GASTOS EN OBRAS.xlsx\u003c/code> en la plataforma (por la vía normal: requisiciones y pagos) y cuadrar \u003cstrong>al peso\u003c/strong>: total por obra, total general y subtotal por etiqueta contra el Excel de Contabilidad"},{"role":"","h":"Luis Miguel confirma si el Excel exportado sirve para cargar a Helisa (P1)"}],"esperado":""},{"id":"E2E-12","title":"Gasto compartido entre obras (RF-305)","ref":"","pri":"M","warn":false,"roles":[],"steps":[{"role":"","h":"Daniel reparte una compra entre 2 obras con montos manuales"},{"role":"","h":"La suma debe cuadrar (si no, no deja)"},{"role":"","h":"Cada obra muestra su parte en reportes"},{"role":"","h":"El total general no se duplica. ---"}],"esperado":""}],"mods":[{"key":"ACC","title":"Acceso y sesión","cases":[{"id":"ACC-01","role":"Cada rol","a":"Iniciar sesión con usuario y clave correctos","at":"Iniciar sesión con usuario y clave correctos","x":"Llega a Inicio; el menú muestra \u003cstrong>solo\u003c/strong> lo de su rol (Solicitante: Inicio, Nueva, Mis requisiciones; Aprobador: Aprobaciones, Reportes; Contabilidad: Órdenes, Cierre de caja, Proveedores, Reportes; etc.)","pri":"A","warn":false},{"id":"ACC-02","role":"Cualquier rol","a":"Clave equivocada","at":"Clave equivocada","x":"«No pudimos iniciar sesión con esos datos.» — sin decir si el usuario existe","pri":"A","warn":false},{"id":"ACC-03","role":"Cualquier rol","a":"Correo o clave vacíos","at":"Correo o clave vacíos","x":"«Escribe tu correo y contraseña.»","pri":"B","warn":false},{"id":"ACC-04","role":"Técnico","a":"11+ intentos en 1 minuto","at":"11+ intentos en 1 minuto","x":"«Demasiados intentos seguidos. Espera un minuto…»; se libera solo","pri":"M","warn":false},{"id":"ACC-05","role":"Admin","a":"Alta de usuario → clave temporal → el usuario entra","at":"Alta de usuario → clave temporal → el usuario entra","x":"Entra y puede cambiarla en \u003ccode>/cambiar-clave\u003c/code>. \u003cstrong>DUDA de producto:\u003c/strong> el código \u003cstrong>no obliga\u003c/strong> el cambio al primer ingreso (no hay marca de clave temporal), pero el plan de salida B4 lo da por hecho. Anotar si se construye","pri":"A","warn":false},{"id":"ACC-06","role":"Usuario","a":"«¿Olvidaste tu clave?»","at":"«¿Olvidaste tu clave?»","x":"Texto que manda a pedirla a un administrador (no hay correo automático); el administrador asigna una temporal y \u003cstrong>se cierran las sesiones\u003c/strong> de esa cuenta","pri":"A","warn":false},{"id":"ACC-07","role":"Admin","a":"Desactivar un usuario","at":"Desactivar un usuario","x":"«Tu cuenta no tiene acceso vigente. Contacta al administrador.» (mensaje distinto al de clave mala); sus sesiones abiertas dejan de servir","pri":"A","warn":false},{"id":"ACC-08","role":"Cualquier rol","a":"Cerrar sesión; pulsar «atrás»","at":"Cerrar sesión; pulsar «atrás»","x":"Vuelve a login; el botón atrás no muestra datos","pri":"M","warn":false},{"id":"ACC-09","role":"Cualquier rol","a":"Abrir una URL interna sin sesión","at":"Abrir una URL interna sin sesión","x":"Redirige a login y, al entrar, vuelve a esa URL","pri":"M","warn":false},{"id":"ACC-10","role":"Cualquier rol","a":"Dejar la sesión abierta más de 12 h sin uso / más de 7 días","at":"Dejar la sesión abierta más de 12 h sin uso / más de 7 días","x":"Pide iniciar sesión de nuevo, sin error técnico","pri":"B","warn":false}]},{"key":"POR","title":"Portal público (solicitante externo, en el celular)","cases":[{"id":"POR-01","role":"Solicitante externo","a":"Abrir el enlace; contraseña mala, luego buena","at":"Abrir el enlace; contraseña mala, luego buena","x":"«Contraseña incorrecta»; con la buena avanza","pri":"A","warn":false},{"id":"POR-02","role":"Solicitante externo","a":"\u003cstrong>Compra\u003c/strong> por empresa: 3 ítems (1 con foto de cámara), con teléfono → enviar","at":"Compra por empresa: 3 ítems (1 con foto de cámara), con teléfono → enviar","x":"Resumen claro; confirmación «La estamos validando» con consecutivo; \u003cstrong>acuse por WhatsApp\u003c/strong>","pri":"A","warn":false},{"id":"POR-03","role":"Solicitante externo","a":"Enviar \u003cstrong>sin teléfono\u003c/strong> (es opcional)","at":"Enviar sin teléfono (es opcional)","x":"Se radica; el resumen avisa «Sin teléfono (sin aviso por WhatsApp)». No 503 (QA H2)","pri":"A","warn":false},{"id":"POR-04","role":"Solicitante externo","a":"Dejar campos obligatorios vacíos","at":"Dejar campos obligatorios vacíos","x":"Mensajes por campo, sin perder lo ya escrito","pri":"A","warn":false},{"id":"POR-05","role":"Solicitante externo","a":"Ítem del catálogo vs. ítem propuesto","at":"Ítem del catálogo vs. ítem propuesto","x":"El propuesto llega a Daniel como «pendiente de normalización»","pri":"A","warn":false},{"id":"POR-06","role":"Solicitante externo","a":"Subir foto: JPG de cámara, PNG; luego \u003ccode>.exe\u003c/code> renombrado a \u003ccode>.jpg\u003c/code> y JPG de 9,5 MB / PDF de 11 MB","at":"Subir foto: JPG de cámara, PNG; luego .exe renombrado a .jpg y JPG de 9,5 MB / PDF de 11 MB","x":"Válidas se aceptan; la falsa se rechaza (se valida el \u003cstrong>contenido\u003c/strong>); la que excede el tope se rechaza con mensaje claro","pri":"A","warn":false},{"id":"POR-07","role":"Solicitante externo","a":"\u003cstrong>Pago\u003c/strong>, beneficiario con cédula \u003cstrong>nueva\u003c/strong>, soporte \u003cstrong>PDF\u003c/strong> ⚠; repetir con \u003cstrong>Excel\u003c/strong>, con imagen y \u003cstrong>sin\u003c/strong> soporte","at":"Pago, beneficiario con cédula nueva, soporte PDF ⚠; repetir con Excel, con imagen y sin soporte","x":"Los tres tipos llegan y \u003cstrong>se pueden descargar\u003c/strong> desde el detalle; sin soporte también pasa","pri":"A","warn":true},{"id":"POR-08","role":"Solicitante externo","a":"Pago con NIT de un proveedor existente","at":"Pago con NIT de un proveedor existente","x":"Se enlaza al proveedor existente (no crea otro)","pri":"A","warn":false},{"id":"POR-09","role":"Solicitante externo","a":"Pago con el mismo nombre que otro beneficiario pero cédula distinta (homónimo)","at":"Pago con el mismo nombre que otro beneficiario pero cédula distinta (homónimo)","x":"Conviven; con la \u003cstrong>misma\u003c/strong> cédula se detecta","pri":"M","warn":false},{"id":"POR-10","role":"Solicitante externo","a":"Monto con puntos de miles, con 0, negativo, letras; concepto de más de 120 caracteres","at":"Monto con puntos de miles, con 0, negativo, letras; concepto de más de 120 caracteres","x":"Rechazo con motivo por campo; los puntos de miles se tratan bien","pri":"M","warn":false},{"id":"POR-11","role":"Solicitante externo","a":"Doble toque en «Enviar»","at":"Doble toque en «Enviar»","x":"Se crea \u003cstrong>una\u003c/strong> solicitud","pri":"A","warn":false},{"id":"POR-12","role":"Solicitante externo","a":"10+ contraseñas malas seguidas","at":"10+ contraseñas malas seguidas","x":"Bloqueo temporal; se libera","pri":"M","warn":false},{"id":"POR-13","role":"Solicitante externo","a":"Desde el portal, escribir a mano \u003ccode>/revision\u003c/code> o \u003ccode>/ordenes\u003c/code>","at":"Desde el portal, escribir a mano /revision o /ordenes","x":"Login; el portal \u003cstrong>solo puede crear\u003c/strong>","pri":"A","warn":false},{"id":"POR-14","role":"Solicitante externo","a":"Recorrer todo en Android/Chrome e iPhone/Safari a 375 px; en datos móviles \u003cstrong>y\u003c/strong> en el Wi-Fi de la oficina","at":"Recorrer todo en Android/Chrome e iPhone/Safari a 375 px; en datos móviles y en el Wi-Fi de la oficina","x":"Sin scroll horizontal; carga en el Wi-Fi de Claro (si no, capturar el mensaje exacto — plan de salida §7)","pri":"A","warn":false},{"id":"POR-15","role":"Daniel","a":"Ver la solicitud del portal en el detalle","at":"Ver la solicitud del portal en el detalle","x":"Foto/soporte bajo «Adjuntos del solicitante» y \u003cstrong>descargables\u003c/strong> ⚠ (fallaba con 500 en producción)","pri":"A","warn":true}]},{"key":"WA","title":"WhatsApp (entrante)","cases":[{"id":"WA-01","role":"Externo autorizado","a":"Escribir «hola» a la línea","at":"Escribir «hola» a la línea","x":"Menú de \u003cstrong>3 botones\u003c/strong>: «Montar requisición», «Solicitar un pago», «Mis requisiciones»","pri":"A","warn":false},{"id":"WA-02","role":"Solicitante externo","a":"Flow de captura v4 completo con fotos (cámara y galería)","at":"Flow de captura v4 completo con fotos (cámara y galería)","x":"Llega a Revisión con canal \u003cstrong>WhatsApp\u003c/strong>; solicitante identificado por su número; sin datos de solicitante que escribir","pri":"A","warn":false},{"id":"WA-03","role":"Solicitante externo","a":"«Mis requisiciones»","at":"«Mis requisiciones»","x":"Lista con estado de las suyas; sin solicitudes → mensaje amable","pri":"A","warn":false},{"id":"WA-04","role":"Solicitante externo","a":"Flow de pago (3 pantallas)","at":"Flow de pago (3 pantallas)","x":"Llega como OP; beneficiario enlazado o pendiente; el monto solo admite dígitos","pri":"A","warn":false},{"id":"WA-05","role":"Solicitante externo","a":"Número \u003cstrong>no autorizado\u003c/strong> intenta usar el Flow","at":"Número no autorizado intenta usar el Flow","x":"Hoy la persona \u003cstrong>no ve nada\u003c/strong> (riesgo 8 del ESTADO). Registrar qué ve y anotar \u003cstrong>DUDA\u003c/strong>: ¿es aceptable o se le responde algo?","pri":"A","warn":false},{"id":"WA-06","role":"Solicitante externo","a":"Cerrar el Flow a la mitad","at":"Cerrar el Flow a la mitad","x":"No se crea nada","pri":"M","warn":false},{"id":"WA-07","role":"Solicitante externo","a":"Enviar el Flow y reintentar (mala señal)","at":"Enviar el Flow y reintentar (mala señal)","x":"\u003cstrong>No duplica\u003c/strong> (idempotencia por id de mensaje)","pri":"A","warn":false},{"id":"WA-08","role":"Solicitante externo","a":"Ver el Flow en iPhone y Android","at":"Ver el Flow en iPhone y Android","x":"Textos sin cortar (los rótulos ≤ 20 caracteres)","pri":"M","warn":false},{"id":"WA-09","role":"Técnico","a":"Revisar \u003ccode>whatsapp_eventos\u003c/code> tras las pruebas","at":"Revisar whatsapp_eventos tras las pruebas","x":"Toda entrada y salida registrada, incluido el rechazo","pri":"M","warn":false},{"id":"WA-10","role":"Solicitante externo","a":"Escribir texto libre fuera del menú","at":"Escribir texto libre fuera del menú","x":"Responde algo útil o el menú; no queda mudo","pri":"B","warn":false}]},{"key":"REQ","title":"Captura interna y «Mis requisiciones»","cases":[{"id":"REQ-01","role":"Solicitante","a":"\u003cstrong>Nueva requisición\u003c/strong> de compra: obra, fecha requerida, destino, ítems del catálogo (frecuentes primero), cantidad, unidad, proveedor sugerido, enlace, foto","at":"Nueva requisición de compra: obra, fecha requerida, destino, ítems del catálogo (frecuentes primero), cantidad, unidad, proveedor sugerido, enlace, foto","x":"Totales calculados solos; consecutivo \u003ccode>REQ-AAAA-NNNN\u003c/code>","pri":"A","warn":false},{"id":"REQ-02","role":"Solicitante o Daniel","a":"Tipo \u003cstrong>pago\u003c/strong>: fecha del gasto, beneficiario por identificación (cédula o NIT) con alta rápida, soporte opcional","at":"Tipo pago: fecha del gasto, beneficiario por identificación (cédula o NIT) con alta rápida, soporte opcional","x":"Se radica; beneficiario creado marcado pendiente si es nuevo","pri":"A","warn":false},{"id":"REQ-03","role":"Solicitante","a":"Proponer un ítem nuevo","at":"Proponer un ítem nuevo","x":"Queda pendiente de normalización","pri":"A","warn":false},{"id":"REQ-04","role":"Solicitante","a":"Campos obligatorios vacíos, cantidad 0 o negativa","at":"Campos obligatorios vacíos, cantidad 0 o negativa","x":"Mensajes por campo","pri":"A","warn":false},{"id":"REQ-05","role":"Solicitante","a":"\u003cstrong>Mis requisiciones\u003c/strong>","at":"Mis requisiciones","x":"Solo las suyas, con su estado; abrir una muestra el historial","pri":"A","warn":false},{"id":"REQ-06","role":"Solicitante","a":"Una suya fue devuelta / declinada","at":"Una suya fue devuelta / declinada","x":"Se ve el estado y el \u003cstrong>motivo\u003c/strong>","pri":"A","warn":false},{"id":"REQ-07","role":"Solicitante","a":"Cambiar el id en la URL por el de una requisición ajena","at":"Cambiar el id en la URL por el de una requisición ajena","x":"Rechazo, no muestra datos","pri":"A","warn":false},{"id":"REQ-08","role":"Solicitante","a":"Intentar editar una ya enviada","at":"Intentar editar una ya enviada","x":"No se puede (solo Daniel la modifica)","pri":"M","warn":false},{"id":"REQ-09","role":"Solicitante","a":"Adjuntar soporte general + foto por ítem (PDF/JPG/PNG)","at":"Adjuntar soporte general + foto por ítem (PDF/JPG/PNG)","x":"Se ven y se descargan","pri":"A","warn":true},{"id":"REQ-10","role":"Solicitante","a":"Crear desde el celular","at":"Crear desde el celular","x":"Cabecera y formulario sin desbordar (QA lo detectó a 390 px)","pri":"M","warn":false}]},{"key":"REV","title":"Revisión (Daniel)","cases":[{"id":"REV-01","role":"Daniel","a":"Abrir \u003cstrong>Revisión de Daniel\u003c/strong>","at":"Abrir Revisión de Daniel","x":"Ve las de \u003cstrong>todos\u003c/strong> los canales, con indicador de canal, orden cronológico; el contador cuadra","pri":"A","warn":false},{"id":"REV-02","role":"Daniel","a":"Filtros: obra, estado, canal, fecha, etiqueta","at":"Filtros: obra, estado, canal, fecha, etiqueta","x":"Cada filtro reduce la lista correctamente; combinados también","pri":"A","warn":false},{"id":"REV-03","role":"Daniel","a":"Alternar lista y \u003cstrong>Kanban\u003c/strong>","at":"Alternar lista y Kanban","x":"Mismas requisiciones; las columnas corresponden a los estados","pri":"M","warn":false},{"id":"REV-04","role":"Daniel","a":"Iniciar revisión; normalizar un ítem propuesto","at":"Iniciar revisión; normalizar un ítem propuesto","x":"Se vincula a uno del catálogo o se crea \u003cstrong>sin duplicar\u003c/strong>; el catálogo se actualiza para lo futuro","pri":"A","warn":false},{"id":"REV-05","role":"Daniel","a":"Asignar etiqueta","at":"Asignar etiqueta","x":"El aprobador sugerido es el de la etiqueta (materiales → Nelson, nómina → Claudia, resto → Juliana)","pri":"A","warn":false},{"id":"REV-06","role":"Daniel","a":"Proveedor final por ítem distinto del sugerido; \u003cstrong>alta rápida\u003c/strong> de proveedor nuevo sin salir de la pantalla","at":"Proveedor final por ítem distinto del sugerido; alta rápida de proveedor nuevo sin salir de la pantalla","x":"Se conserva todo lo ya digitado","pri":"A","warn":false},{"id":"REV-07","role":"Daniel","a":"Cotización: base, IVA, descuento, total en 3 ítems","at":"Cotización: base, IVA, descuento, total en 3 ítems","x":"Cálculo correcto (verificar a mano, redondeos incluidos)","pri":"A","warn":false},{"id":"REV-08","role":"Daniel","a":"Centro de costo (viene el de la obra) y \u003cstrong>empresa facturada\u003c/strong>","at":"Centro de costo (viene el de la obra) y empresa facturada","x":"Cambiables de forma independiente; la empresa facturada no altera el centro de costo","pri":"A","warn":false},{"id":"REV-09","role":"Daniel","a":"En un pago, \u003cstrong>editar el monto\u003c/strong>","at":"En un pago, editar el monto","x":"Aparece «Valor original»; queda auditado antes/después","pri":"A","warn":false},{"id":"REV-10","role":"Daniel","a":"Guardar parcial, salir, volver","at":"Guardar parcial, salir, volver","x":"Recupera lo guardado","pri":"M","warn":false},{"id":"REV-11","role":"Daniel","a":"Enviar a aprobación con un ítem con cotización 0; luego con un ítem sin proveedor final","at":"Enviar a aprobación con un ítem con cotización 0; luego con un ítem sin proveedor final","x":"Cotización 0: \u003cstrong>bloquea\u003c/strong> con mensaje claro. Sin proveedor: \u003cstrong>se permite\u003c/strong> (decisión 31-ago, confirmada 25-sep); el proveedor se exige al generar la orden","pri":"A","warn":false},{"id":"REV-12","role":"Daniel","a":"\u003cstrong>Declinar\u003c/strong> con y sin motivo","at":"Declinar con y sin motivo","x":"Sin motivo no deja; con motivo pasa a declinada, sale de activas","pri":"A","warn":false},{"id":"REV-13","role":"Daniel","a":"Filtro «declinadas»","at":"Filtro «declinadas»","x":"La encuentra con su motivo; no tiene orden ni gasto","pri":"A","warn":false},{"id":"REV-14","role":"Daniel","a":"Beneficiario \u003cstrong>pendiente de completar\u003c/strong> → «Completar ficha» ⚠","at":"Beneficiario pendiente de completar → «Completar ficha» ⚠","x":"La marca se ve en la bandeja, el detalle y Proveedores (QA H5, corregido: confirmar en navegador); al completar desaparece","pri":"A","warn":true},{"id":"REV-15","role":"Daniel","a":"\u003cstrong>«Aprobar yo mismo»\u003c/strong> ⚠","at":"«Aprobar yo mismo» ⚠","x":"El botón aparece; dos eventos en el historial; si el aprobador asignado es otra persona, mensaje claro (no error técnico)","pri":"A","warn":true},{"id":"REV-16","role":"Daniel","a":"Aprobar por encima del aprobador asignado ⚠","at":"Aprobar por encima del aprobador asignado ⚠","x":"No se bloquea; el historial dice a quién se saltó","pri":"A","warn":true},{"id":"REV-17","role":"Daniel","a":"Reparto por ítem con distinto aprobador + «Aprobar yo mismo»","at":"Reparto por ítem con distinto aprobador + «Aprobar yo mismo»","x":"Rechazo \u003cstrong>antes\u003c/strong> de mover nada, o aviso al otro aprobador; nunca una requisición \u003ccode>en_aprobacion\u003c/code> que nadie sabe que espera (QA H4, corregido: confirmar)","pri":"A","warn":true},{"id":"REV-18","role":"Daniel","a":"Ver adjuntos y cotizaciones; descargarlos","at":"Ver adjuntos y cotizaciones; descargarlos","x":"Descarga correcta ⚠","pri":"A","warn":true},{"id":"REV-19","role":"Daniel","a":"\u003cstrong>Historial de trazabilidad\u003c/strong> de una requisición con varios pasos","at":"Historial de trazabilidad de una requisición con varios pasos","x":"Cada transición: usuario, fecha/hora, comentario, \u003cstrong>origen\u003c/strong> (web, público, WhatsApp)","pri":"A","warn":false},{"id":"REV-20","role":"Daniel","a":"Requisición devuelta reaparece","at":"Requisición devuelta reaparece","x":"Con el motivo del aprobador; se corrige y reenvía sin duplicarse","pri":"A","warn":false}]},{"key":"APR","title":"Aprobación","cases":[{"id":"APR-01","role":"Nelson o Claudia","a":"\u003cstrong>Aprobaciones\u003c/strong>: bandeja personal","at":"Aprobaciones: bandeja personal","x":"Solo ve \u003cstrong>lo suyo\u003c/strong>; probar con dos aprobadores y una requisición de cada uno","pri":"A","warn":false},{"id":"APR-02","role":"Aprobador","a":"Abrir el detalle","at":"Abrir el detalle","x":"Solicitante, obra, ítems, proveedor, valores, soportes, historial","pri":"A","warn":false},{"id":"APR-03","role":"Aprobador","a":"Aprobar todo","at":"Aprobar todo","x":"Pasa a aprobada; genera aviso al solicitante","pri":"A","warn":false},{"id":"APR-04","role":"Aprobador","a":"Aprobar unos ítems y \u003cstrong>declinar otros con motivo\u003c/strong>","at":"Aprobar unos ítems y declinar otros con motivo","x":"«2 aprobados, 1 declinado»; la orden solo lleva los aprobados","pri":"A","warn":false},{"id":"APR-05","role":"Juliana","a":"\u003cstrong>Selección múltiple\u003c/strong> desde la lista, aprobar varios","at":"Selección múltiple desde la lista, aprobar varios","x":"Todos pasan; el resumen dice cuántos","pri":"M","warn":false},{"id":"APR-06","role":"Aprobador","a":"\u003cstrong>Devolver\u003c/strong> sin comentario y con comentario","at":"Devolver sin comentario y con comentario","x":"Sin comentario no deja; con comentario vuelve a Daniel","pri":"A","warn":false},{"id":"APR-07","role":"Aprobador","a":"Buscar botones de generar orden, editar montos, proveedor","at":"Buscar botones de generar orden, editar montos, proveedor","x":"No existen","pri":"A","warn":false},{"id":"APR-08","role":"Aprobador","a":"Le llega el aviso por \u003cstrong>WhatsApp\u003c/strong> (plantilla con botón → Flow de aprobación) → aprueba desde ahí","at":"Le llega el aviso por WhatsApp (plantilla con botón → Flow de aprobación) → aprueba desde ahí","x":"La plataforma lo refleja; historial con origen WhatsApp","pri":"A","warn":false},{"id":"APR-09","role":"Aprobador","a":"Aprobar por WhatsApp y luego intentar por web la misma","at":"Aprobar por WhatsApp y luego intentar por web la misma","x":"Segunda acción rechazada con mensaje claro, sin duplicar","pri":"A","warn":false},{"id":"APR-10","role":"Aprobador","a":"Ítems repartidos entre dos aprobadores","at":"Ítems repartidos entre dos aprobadores","x":"Cada uno ve \u003cstrong>solo sus ítems\u003c/strong> (riesgo colateral que dejó el QA H3)","pri":"A","warn":true},{"id":"APR-11","role":"Aprobador","a":"Aprobación con la ventana de 24 h de WhatsApp vencida","at":"Aprobación con la ventana de 24 h de WhatsApp vencida","x":"Recibe la plantilla (no el Flow directo); el flujo sigue funcionando","pri":"M","warn":false},{"id":"APR-12","role":"Aprobador","a":"Reportes → «lo aprobado por mí» del mes","at":"Reportes → «lo aprobado por mí» del mes","x":"Solo lo suyo; exporta a Excel","pri":"A","warn":false}]},{"key":"ORD","title":"Órdenes de compra y de pago","cases":[{"id":"ORD-01","role":"Daniel","a":"«Generar órdenes» sobre una aprobada con 2 proveedores","at":"«Generar órdenes» sobre una aprobada con 2 proveedores","x":"\u003cstrong>2 OC\u003c/strong>, cada una con su consecutivo \u003ccode>OC-AAAA-NNNN\u003c/code>, proveedor y estado propios","pri":"A","warn":false},{"id":"ORD-02","role":"Daniel","a":"Ídem sobre un pago","at":"Ídem sobre un pago","x":"\u003cstrong>OP\u003c/strong> \u003ccode>OP-AAAA-NNNN\u003c/code>, con rótulo «ORDEN DE PAGO» y beneficiario","pri":"A","warn":false},{"id":"ORD-03","role":"Daniel","a":"Intentar generar dos veces las órdenes de la misma requisición","at":"Intentar generar dos veces las órdenes de la misma requisición","x":"No duplica","pri":"A","warn":false},{"id":"ORD-04","role":"Daniel o Contabilidad","a":"Descargar el \u003cstrong>PDF\u003c/strong> de una OC y de una OP","at":"Descargar el PDF de una OC y de una OP","x":"Contenido correcto (empresa, proveedor/beneficiario, ítems, valores, elaborado/aprobado). Preguntar: ¿este formato le sirve a un proveedor? (logos y membrete: P4 pendiente; qué empresa encabeza la OP: QA H10)","pri":"A","warn":false},{"id":"ORD-05","role":"Daniel","a":"Cumplimiento: \u003cstrong>cumplida / no cumplida / no necesario\u003c/strong>","at":"Cumplimiento: cumplida / no cumplida / no necesario","x":"Cambia y queda auditado; las \u003cstrong>no cumplidas\u003c/strong> siguen en pendientes","pri":"A","warn":false},{"id":"ORD-06","role":"Contabilidad","a":"\u003cstrong>Contabilizar\u003c/strong> una OC y una OP","at":"Contabilizar una OC y una OP","x":"Pasa a contabilizada; el gasto queda en la obra","pri":"A","warn":false},{"id":"ORD-07","role":"Cualquier rol","a":"Generar 3 órdenes seguidas","at":"Generar 3 órdenes seguidas","x":"Consecutivos correlativos, sin saltos ni repetidos","pri":"A","warn":false},{"id":"ORD-08","role":"Daniel","a":"La lista muestra los ejes \u003cstrong>Entrega / Contabilidad / Pago\u003c/strong>","at":"La lista muestra los ejes Entrega / Contabilidad / Pago","x":"Cada uno con su estado; independientes","pri":"M","warn":false},{"id":"ORD-09","role":"Daniel o Contabilidad","a":"Filtros: obra, estado, fecha, proveedor, medio de pago, estado de pago, centro de costo, empresa facturada, fecha de pago","at":"Filtros: obra, estado, fecha, proveedor, medio de pago, estado de pago, centro de costo, empresa facturada, fecha de pago","x":"Cada uno filtra bien; combinados también","pri":"A","warn":false},{"id":"ORD-10","role":"Aprobador","a":"Abrir \u003ccode>/ordenes\u003c/code>","at":"Abrir /ordenes","x":"«Sin acceso con este rol»","pri":"A","warn":false},{"id":"ORD-11","role":"Daniel","a":"Orden \u003ccode>no necesario\u003c/code>","at":"Orden no necesario","x":"No suma a comprometido ni gasto","pri":"M","warn":false}]},{"key":"PAG","title":"Pagos","cases":[{"id":"PAG-01","role":"Daniel","a":"\u003cstrong>Registrar pago\u003c/strong> total por transferencia con referencia","at":"Registrar pago total por transferencia con referencia","x":"Estado de pago \u003cstrong>Pagada\u003c/strong>","pri":"A","warn":false},{"id":"PAG-02","role":"Daniel","a":"Pago \u003cstrong>parcial\u003c/strong> y luego un segundo","at":"Pago parcial y luego un segundo","x":"«Pago parcial» con el saldo correcto en cada paso","pri":"A","warn":false},{"id":"PAG-03","role":"Daniel","a":"Pago mayor al saldo","at":"Pago mayor al saldo","x":"Rechazo con mensaje claro","pri":"A","warn":false},{"id":"PAG-04","role":"Daniel","a":"Valor vacío, 0, negativo, decimal, medio vacío","at":"Valor vacío, 0, negativo, decimal, medio vacío","x":"Mensaje por campo en el diálogo","pri":"A","warn":false},{"id":"PAG-05","role":"Daniel","a":"Comprobante en el segundo paso; descargarlo ⚠","at":"Comprobante en el segundo paso; descargarlo ⚠","x":"Se adjunta y se descarga","pri":"A","warn":true},{"id":"PAG-06","role":"Daniel","a":"\u003cstrong>Anular\u003c/strong> con y sin motivo","at":"Anular con y sin motivo","x":"Sin motivo el botón está deshabilitado; con motivo queda \u003cstrong>tachado\u003c/strong> con quién/cuándo/motivo; el estado retrocede","pri":"A","warn":false},{"id":"PAG-07","role":"Daniel","a":"Anular el pago que cerraba una orden «pagada»","at":"Anular el pago que cerraba una orden «pagada»","x":"Vuelve a «contabilizada» y se borra la fecha de pago del gasto","pri":"A","warn":false},{"id":"PAG-08","role":"Daniel","a":"\u003cstrong>«Pagar saldo»\u003c/strong>","at":"«Pagar saldo»","x":"Diálogo con el saldo prellenado; al guardar la orden queda \u003cstrong>Pagada\u003c/strong>","pri":"A","warn":false},{"id":"PAG-09","role":"Daniel","a":"«Marcar pagada» con saldo pendiente","at":"«Marcar pagada» con saldo pendiente","x":"Rechazo «saldo pendiente»","pri":"A","warn":false},{"id":"PAG-10","role":"Contabilidad","a":"Buscar «Registrar pago» / «Anular» ⚠","at":"Buscar «Registrar pago» / «Anular» ⚠","x":"\u003cstrong>No aparecen\u003c/strong> (decisión de Ernesto 17-sep); ve pagos y comprobantes","pri":"A","warn":true},{"id":"PAG-11","role":"Admin","a":"En Configuración → Permisos por rol, devolverle \u003ccode>payment:register\u003c/code> a Contabilidad ⚠","at":"En Configuración → Permisos por rol, devolverle payment:register a Contabilidad ⚠","x":"Los botones \u003cstrong>aparecen\u003c/strong> para Contabilidad sin redeploy","pri":"A","warn":true},{"id":"PAG-12","role":"Daniel","a":"Medio \u003cstrong>Caja (efectivo)\u003c/strong>","at":"Medio Caja (efectivo)","x":"Aparece así en la lista y en el cierre de caja","pri":"A","warn":false}]},{"key":"CAJ","title":"Cierre de caja","cases":[{"id":"CAJ-01","role":"Daniel","a":"\u003cstrong>Cierre de caja\u003c/strong> con el rango de la semana","at":"Cierre de caja con el rango de la semana","x":"Total pagado por caja, n.º de pagos, «con comprobante x de y»","pri":"A","warn":false},{"id":"CAJ-02","role":"Daniel","a":"Filtrar por centro de costo","at":"Filtrar por centro de costo","x":"Recalcula","pri":"A","warn":false},{"id":"CAJ-03","role":"Daniel","a":"Pagos por transferencia y \u003cstrong>anulados\u003c/strong>","at":"Pagos por transferencia y anulados","x":"No entran al cierre","pri":"A","warn":false},{"id":"CAJ-04","role":"Daniel","a":"Excel del cierre","at":"Excel del cierre","x":"Coincide fila a fila con la pantalla","pri":"A","warn":false},{"id":"CAJ-05","role":"Daniel","a":"Rango invertido / sin pagos","at":"Rango invertido / sin pagos","x":"Mensaje claro / estado vacío, no error","pri":"M","warn":false},{"id":"CAJ-06","role":"Aprobador","a":"Abrir \u003ccode>/gastos\u003c/code>","at":"Abrir /gastos","x":"Rechazo claro (no tiene \u003ccode>expense:read\u003c/code>), no pantalla vacía","pri":"A","warn":false},{"id":"CAJ-07","role":"Daniel","a":"Descargar un comprobante desde el cierre ⚠","at":"Descargar un comprobante desde el cierre ⚠","x":"Descarga correcta","pri":"A","warn":true}]},{"key":"REP","title":"Reportes y contabilidad","cases":[{"id":"REP-01","role":"Contabilidad","a":"Gastos por obra / centro de costo y periodo (corte 1–30)","at":"Gastos por obra / centro de costo y periodo (corte 1–30)","x":"Totales correctos","pri":"A","warn":false},{"id":"REP-02","role":"Contabilidad","a":"\u003cstrong>Subtotal por etiqueta\u003c/strong> dentro de cada obra","at":"Subtotal por etiqueta dentro de cada obra","x":"Suma = total de la obra","pri":"A","warn":false},{"id":"REP-03","role":"Contabilidad","a":"\u003cstrong>Comprometido vs pagado\u003c/strong> por centro de costo y por mes","at":"Comprometido vs pagado por centro de costo y por mes","x":"Comprometido − pagado = pendiente; excluye \u003ccode>no necesario\u003c/code>","pri":"A","warn":false},{"id":"REP-04","role":"Contabilidad","a":"Filtros: obra, centro, sociedad, periodo, aprobador, etiqueta, medio, estado de pago, empresa facturada","at":"Filtros: obra, centro, sociedad, periodo, aprobador, etiqueta, medio, estado de pago, empresa facturada","x":"Cada uno afecta totales y tabla","pri":"A","warn":false},{"id":"REP-05","role":"Contabilidad","a":"\u003cstrong>Excel\u003c/strong> (provisional Helisa)","at":"Excel (provisional Helisa)","x":"Abre en Excel; columnas claras; incluye empresa facturada y estado de pago. Preguntar a Luis Miguel: ¿carga a Helisa sin retrabajo? (P1)","pri":"A","warn":false},{"id":"REP-06","role":"Admin","a":"\u003cstrong>PDF para socios\u003c/strong> por sociedad y periodo","at":"PDF para socios por sociedad y periodo","x":"Se imprime con formato de presentación, sin cortes","pri":"M","warn":false},{"id":"REP-07","role":"Contabilidad","a":"Un gasto de una requisición \u003cstrong>declinada\u003c/strong> o devuelta","at":"Un gasto de una requisición declinada o devuelta","x":"No suma","pri":"A","warn":false},{"id":"REP-08","role":"Contabilidad","a":"Buscar cualquier botón de editar/aprobar/pagar","at":"Buscar cualquier botón de editar/aprobar/pagar","x":"No hay (solo lectura + exportación)","pri":"A","warn":false},{"id":"REP-09","role":"Todos los roles","a":"Reporte de un periodo sin datos","at":"Reporte de un periodo sin datos","x":"Estado vacío, no error ni cifras de demo","pri":"M","warn":false},{"id":"REP-10","role":"Contabilidad","a":"\u003cstrong>Paridad\u003c/strong> (E2E-11)","at":"Paridad (E2E-11)","x":"Cuadra al peso","pri":"A","warn":false},{"id":"REP-11","role":"Contabilidad","a":"Descargar comprobantes y documentos de proveedor ⚠","at":"Descargar comprobantes y documentos de proveedor ⚠","x":"Descarga correcta","pri":"A","warn":true},{"id":"REP-12","role":"Admin Mizar","a":"Ver reportes ejecutivos y gráficos","at":"Ver reportes ejecutivos y gráficos","x":"Gasto por obra/etiqueta/periodo, coherentes con la tabla","pri":"M","warn":false}]},{"key":"PRV","title":"Proveedores","cases":[{"id":"PRV-01","role":"Daniel","a":"Directorio: buscar, filtrar","at":"Directorio: buscar, filtrar","x":"Encuentra por razón social e identificación (con tildes y mayúsculas)","pri":"A","warn":false},{"id":"PRV-02","role":"Daniel","a":"\u003cstrong>Alta\u003c/strong> de proveedor sin RUT","at":"Alta de proveedor sin RUT","x":"Se crea (RUT no obligatorio)","pri":"A","warn":false},{"id":"PRV-03","role":"Daniel","a":"Alta con NIT ya existente","at":"Alta con NIT ya existente","x":"Rechazo o advertencia, no duplica","pri":"A","warn":false},{"id":"PRV-04","role":"Daniel","a":"\u003cstrong>Ficha\u003c/strong>: contacto, datos bancarios, historial de OC/OP","at":"Ficha: contacto, datos bancarios, historial de OC/OP","x":"Historial correcto; datos bancarios \u003cstrong>no\u003c/strong> aparecen en el listado y solo los ve quien gestiona proveedores o Contabilidad","pri":"A","warn":false},{"id":"PRV-05","role":"Daniel","a":"Subir RUT, Cámara de Comercio, certificación bancaria; descargar ⚠","at":"Subir RUT, Cámara de Comercio, certificación bancaria; descargar ⚠","x":"Se guardan y se descargan; archivo inválido rechazado","pri":"A","warn":true},{"id":"PRV-06","role":"Daniel","a":"Desactivar un proveedor","at":"Desactivar un proveedor","x":"No se puede asignar en revisiones nuevas; el historial se conserva","pri":"M","warn":false},{"id":"PRV-07","role":"Daniel","a":"«Completar ficha» de un beneficiario pendiente","at":"«Completar ficha» de un beneficiario pendiente","x":"Desaparece la marca «Pendiente de completar»","pri":"A","warn":false},{"id":"PRV-08","role":"Contabilidad","a":"Abrir Proveedores y una ficha","at":"Abrir Proveedores y una ficha","x":"Solo lectura (ve datos bancarios, no puede editar)","pri":"A","warn":false},{"id":"PRV-09","role":"Admin Mizar","a":"Abrir Proveedores","at":"Abrir Proveedores","x":"Carga (antes daba 403; QA H11)","pri":"M","warn":false},{"id":"PRV-10","role":"Daniel","a":"Revisar la lista real cargada","at":"Revisar la lista real cargada","x":"Sin duplicados; NIT/cédula correctos; nombres con tildes","pri":"A","warn":false}]},{"key":"CAT","title":"Catálogos y datos maestros","cases":[{"id":"CAT-01","role":"Daniel o Admin","a":"Crear, editar, desactivar un \u003cstrong>centro de costo\u003c/strong> de cada tipo","at":"Crear, editar, desactivar un centro de costo de cada tipo","x":"Aparece en revisión y reportes; el inactivo ya no se ofrece","pri":"A","warn":false},{"id":"CAT-02","role":"Daniel o Admin","a":"Crear una \u003cstrong>obra\u003c/strong> (sociedad, centro de costo) y desactivarla","at":"Crear una obra (sociedad, centro de costo) y desactivarla","x":"La inactiva no sale al radicar; el historial no se rompe","pri":"A","warn":false},{"id":"CAT-03","role":"Admin","a":"\u003cstrong>Etiquetas\u003c/strong> con aprobador; cambiar el aprobador","at":"Etiquetas con aprobador; cambiar el aprobador","x":"Las requisiciones \u003cstrong>nuevas\u003c/strong> se enrutan al nuevo; las viejas no cambian","pri":"A","warn":false},{"id":"CAT-04","role":"Daniel","a":"\u003cstrong>Ítems\u003c/strong>: crear, editar, fusionar duplicados","at":"Ítems: crear, editar, fusionar duplicados","x":"Los frecuentes salen primero; editar afecta solo lo futuro","pri":"A","warn":false},{"id":"CAT-05","role":"Admin Mizar","a":"Intentar editar \u003cstrong>ítems\u003c/strong> en modo Básico","at":"Intentar editar ítems en modo Básico","x":"No puede (solo Daniel)","pri":"M","warn":false},{"id":"CAT-06","role":"Daniel o Admin","a":"\u003cstrong>Teléfonos autorizados\u003c/strong>: agregar y quitar","at":"Teléfonos autorizados: agregar y quitar","x":"Un número quitado ya no puede usar el Flow ni el portal","pri":"A","warn":false},{"id":"CAT-07","role":"Admin","a":"Sociedades / empresas facturadas","at":"Sociedades / empresas facturadas","x":"Se ofrecen en la revisión de compra y de pago","pri":"A","warn":false},{"id":"CAT-08","role":"Cualquier rol","a":"Buscar UUID o códigos internos en pantalla","at":"Buscar UUID o códigos internos en pantalla","x":"No aparecen (solo nombres)","pri":"M","warn":false},{"id":"CAT-09","role":"Daniel","a":"Importar/cargar la lista real de proveedores y de centros de costo","at":"Importar/cargar la lista real de proveedores y de centros de costo","x":"Sin duplicados, tipos correctos","pri":"A","warn":false}]},{"key":"NOT","title":"Notificaciones y Mensajes de WhatsApp","cases":[{"id":"NOT-01","role":"Solicitante externo","a":"Radicar con teléfono","at":"Radicar con teléfono","x":"Llega \u003ccode>requisicion_recibida\u003c/code> con el consecutivo","pri":"A","warn":false},{"id":"NOT-02","role":"Solicitante externo","a":"Aprobada / devuelta / declinada","at":"Aprobada / devuelta / declinada","x":"Llega el aviso correspondiente","pri":"A","warn":false},{"id":"NOT-03","role":"Aprobador","a":"Daniel envía a aprobación","at":"Daniel envía a aprobación","x":"Recibe el aviso (Flow o plantilla con botón; el texto simple es el último recurso)","pri":"A","warn":false},{"id":"NOT-04","role":"Técnico","a":"Estado de cada mensaje","at":"Estado de cada mensaje","x":"Llega a \u003cstrong>entregado\u003c/strong> (no solo «enviado»)","pri":"A","warn":false},{"id":"NOT-05","role":"Solicitante externo","a":"Radicar sin teléfono","at":"Radicar sin teléfono","x":"No falla ni bloquea; simplemente no hay aviso","pri":"A","warn":false},{"id":"NOT-06","role":"Daniel","a":"\u003cstrong>Mensajes de WhatsApp\u003c/strong> con el dominio de producción ⚠","at":"Mensajes de WhatsApp con el dominio de producción ⚠","x":"Carga el inbox; solo la línea MIZAR. Si no carga: crear un embed con el origen actual (plan de salida B3)","pri":"A","warn":true},{"id":"NOT-07","role":"Daniel","a":"Contestar una conversación desde el inbox","at":"Contestar una conversación desde el inbox","x":"Sale por la línea MIZAR","pri":"M","warn":false},{"id":"NOT-08","role":"Otros roles","a":"Abrir Mensajes con Solicitante, Aprobador, Contabilidad","at":"Abrir Mensajes con Solicitante, Aprobador, Contabilidad","x":"\u003cstrong>DUDA a decidir:\u003c/strong> el menú se lo muestra a esos roles; ¿deben ver las conversaciones de todos?","pri":"A","warn":false},{"id":"NOT-09","role":"Técnico","a":"La URL del embed","at":"La URL del embed","x":"No aparece en el código de la página ni en el historial del navegador (es credencial portadora)","pri":"A","warn":false},{"id":"NOT-10","role":"Técnico","a":"Cola de notificaciones","at":"Cola de notificaciones","x":"Sin \u003ccode>fallido\u003c/code> acumulados; el despachador corre","pri":"A","warn":false}]},{"key":"DSH","title":"Inicio, dashboard y modo pantalla","cases":[{"id":"DSH-01","role":"Cada rol","a":"\u003cstrong>Inicio\u003c/strong>","at":"Inicio","x":"Métricas propias del rol (en revisión, en aprobación, valor en trámite, gasto del periodo) que \u003cstrong>cuadran con las listas\u003c/strong>","pri":"A","warn":false},{"id":"DSH-02","role":"Cada rol","a":"«Cola de atención» y actividad reciente","at":"«Cola de atención» y actividad reciente","x":"Solo lo que espera algo de esa persona","pri":"A","warn":false},{"id":"DSH-03","role":"Admin","a":"Gráficos ejecutivos","at":"Gráficos ejecutivos","x":"Coinciden con Reportes","pri":"M","warn":false},{"id":"DSH-04","role":"Técnico","a":"Consola del navegador en Inicio con órdenes generadas","at":"Consola del navegador en Inicio con órdenes generadas","x":"Sin errores de React (regresión de QA H7: claves duplicadas)","pri":"M","warn":false},{"id":"DSH-05","role":"Admin","a":"Crear \u003cstrong>sesión de pantalla\u003c/strong>, abrir \u003ccode>/pantalla\u003c/code> en una TV","at":"Crear sesión de pantalla, abrir /pantalla en una TV","x":"Se ve el dashboard, se \u003cstrong>refresca solo\u003c/strong>, sin botones de escritura","pri":"M","warn":false},{"id":"DSH-06","role":"Admin","a":"Revocar la sesión de pantalla","at":"Revocar la sesión de pantalla","x":"La TV deja de mostrar datos","pri":"M","warn":false}]},{"key":"ADM","title":"Administración y configuración","cases":[{"id":"ADM-01","role":"Admin","a":"Alta de usuario con rol","at":"Alta de usuario con rol","x":"Aparece en la lista; entra con su clave","pri":"A","warn":false},{"id":"ADM-02","role":"Admin Mizar","a":"Intentar crear un Admin Sixteam","at":"Intentar crear un Admin Sixteam","x":"Rechazado","pri":"A","warn":false},{"id":"ADM-03","role":"Admin","a":"\u003cstrong>Matriz de permisos\u003c/strong> ⚠: quitar uno, dar otro","at":"Matriz de permisos ⚠: quitar uno, dar otro","x":"El efecto se ve en pantalla (botones, rutas); auditoría con antes/después","pri":"A","warn":true},{"id":"ADM-04","role":"Admin Sixteam","a":"Quitarle \u003ccode>config:manage\u003c/code> a su propio rol","at":"Quitarle config:manage a su propio rol","x":"Imposible","pri":"A","warn":false},{"id":"ADM-05","role":"Admin","a":"Cambiar la \u003cstrong>contraseña del portal\u003c/strong>","at":"Cambiar la contraseña del portal","x":"La anterior deja de servir; la nueva funciona","pri":"A","warn":false},{"id":"ADM-06","role":"Admin Sixteam","a":"\u003cstrong>«Ver como»\u003c/strong> otro rol","at":"«Ver como» otro rol","x":"Solo cambia lo que se pinta; los permisos reales no cambian (no puede hacer lo que no podría)","pri":"A","warn":false},{"id":"ADM-07","role":"Admin","a":"Configuración: estado de WhatsApp, Flows, catálogos","at":"Configuración: estado de WhatsApp, Flows, catálogos","x":"Coherente con lo desplegado","pri":"M","warn":false},{"id":"ADM-08","role":"Admin","a":"Revisar la \u003cstrong>auditoría\u003c/strong> tras varias acciones","at":"Revisar la auditoría tras varias acciones","x":"Cada cambio de catálogo, permiso, usuario y estado: quién, cuándo, qué, origen","pri":"A","warn":false},{"id":"ADM-09","role":"Admin","a":"Restablecer la clave de un usuario","at":"Restablecer la clave de un usuario","x":"Se le cierran las sesiones abiertas","pri":"A","warn":false}]},{"key":"SEG","title":"Seguridad (pruebas en negativo)","cases":[{"id":"SEG-01","role":"Cada rol","a":"Escribir a mano cada ruta que \u003cstrong>no\u003c/strong> tiene en el menú","at":"Escribir a mano cada ruta que no tiene en el menú","x":"Rechazo claro (no pantalla vacía ni error técnico)","pri":"A","warn":false},{"id":"SEG-02","role":"Solicitante","a":"Ver requisición ajena por URL","at":"Ver requisición ajena por URL","x":"Rechazo","pri":"A","warn":false},{"id":"SEG-03","role":"Aprobador","a":"Ver una no asignada por URL","at":"Ver una no asignada por URL","x":"Rechazo","pri":"A","warn":false},{"id":"SEG-04","role":"Técnico","a":"Contabilidad llama a la API para aprobar/pagar/editar","at":"Contabilidad llama a la API para aprobar/pagar/editar","x":"403","pri":"A","warn":false},{"id":"SEG-05","role":"Técnico","a":"Descargar un adjunto sin sesión y con un rol sin permiso","at":"Descargar un adjunto sin sesión y con un rol sin permiso","x":"Bloqueado","pri":"A","warn":false},{"id":"SEG-06","role":"Técnico","a":"Subir \u003ccode>.html\u003c/code>/\u003ccode>.svg\u003c/code> con script y \u003ccode>.exe\u003c/code> disfrazados","at":"Subir .html/.svg con script y .exe disfrazados","x":"Rechazados por contenido; lo permitido se sirve como \u003cstrong>descarga\u003c/strong>, nunca se abre en el navegador","pri":"A","warn":false},{"id":"SEG-07","role":"Técnico","a":"Rotar \u003ccode>X-Real-IP\u003c/code> con muchas contraseñas malas (paso 6.4 de \u003ccode>docs/despliegue.md\u003c/code>)","at":"Rotar X-Real-IP con muchas contraseñas malas (paso 6.4 de docs/despliegue.md)","x":"El limitador \u003cstrong>sigue\u003c/strong> frenando","pri":"A","warn":false},{"id":"SEG-08","role":"Técnico","a":"Cabecera HSTS; \u003ccode>POST\u003c/code> sin sesión","at":"Cabecera HSTS; POST sin sesión","x":"HSTS presente; 401, nunca 503","pri":"A","warn":false},{"id":"SEG-09","role":"Admin","a":"Cédulas y datos bancarios","at":"Cédulas y datos bancarios","x":"No en listados ni en la auditoría","pri":"A","warn":false},{"id":"SEG-10","role":"Técnico","a":"La sesión de pantalla intenta escribir","at":"La sesión de pantalla intenta escribir","x":"Rechazado","pri":"M","warn":false},{"id":"SEG-11","role":"Técnico","a":"Credenciales que circularon (Kapso, EasyPanel, portal, secretos internos)","at":"Credenciales que circularon (Kapso, EasyPanel, portal, secretos internos)","x":"Rotadas (plan de salida B2)","pri":"A","warn":false}]},{"key":"MCP","title":"Servidor MCP (Sixteam)","cases":[{"id":"MCP-01","role":"","a":"Conectar Claude con la llave de un usuario; listar herramientas","at":"Conectar Claude con la llave de un usuario; listar herramientas","x":"Lectura (\u003ccode>estado_embudo\u003c/code>, \u003ccode>consultar_*\u003c/code>, \u003ccode>ficha_proveedor\u003c/code>, \u003ccode>exportar_reporte\u003c/code>) y escritura acotada (\u003ccode>registrar_pago\u003c/code>, \u003ccode>actualizar_estado_orden\u003c/code>, centros de costo)","pri":"A","warn":false},{"id":"MCP-02","role":"","a":"Usar la llave de Contabilidad para registrar un pago","at":"Usar la llave de Contabilidad para registrar un pago","x":"Rechazado (mismos permisos que la web)","pri":"A","warn":false},{"id":"MCP-03","role":"","a":"Buscar cualquier herramienta de \u003cstrong>aprobar, devolver o declinar\u003c/strong>","at":"Buscar cualquier herramienta de aprobar, devolver o declinar","x":"\u003cstrong>No existe\u003c/strong> (RF-1205)","pri":"A","warn":false},{"id":"MCP-04","role":"","a":"Ver la auditoría de lo hecho por MCP","at":"Ver la auditoría de lo hecho por MCP","x":"Origen = mcp, con el usuario de la llave","pri":"A","warn":false},{"id":"MCP-05","role":"","a":"Revocar la llave","at":"Revocar la llave","x":"Deja de funcionar","pri":"M","warn":false}]},{"key":"ROB","title":"Robustez, dispositivos y errores","cases":[{"id":"ROB-01","role":"","a":"Daniel edita una requisición mientras Nelson la aprueba (dos personas, misma requisición)","at":"Daniel edita una requisición mientras Nelson la aprueba (dos personas, misma requisición)","x":"La segunda acción recibe mensaje claro; sin datos corruptos","pri":"A","warn":false},{"id":"ROB-02","role":"","a":"Modo avión a mitad de enviar; volver a conectar","at":"Modo avión a mitad de enviar; volver a conectar","x":"Mensaje amable con «reintentar»; \u003cstrong>no duplica\u003c/strong>","pri":"A","warn":false},{"id":"ROB-03","role":"","a":"Conexión lenta (3G simulado)","at":"Conexión lenta (3G simulado)","x":"Estados de carga visibles, sin pantalla en blanco","pri":"M","warn":false},{"id":"ROB-04","role":"","a":"Doble clic en Guardar / Aprobar / Registrar pago / Generar órdenes","at":"Doble clic en Guardar / Aprobar / Registrar pago / Generar órdenes","x":"Una sola operación","pri":"A","warn":false},{"id":"ROB-05","role":"","a":"Refrescar con F5 y «atrás» en medio de un formulario","at":"Refrescar con F5 y «atrás» en medio de un formulario","x":"Comportamiento sensato, sin errores técnicos","pri":"M","warn":false},{"id":"ROB-06","role":"","a":"Sesión vencida en medio de un formulario","at":"Sesión vencida en medio de un formulario","x":"«Iniciar sesión», no código de error","pri":"M","warn":false},{"id":"ROB-07","role":"","a":"Provocar errores (permiso, red, servidor)","at":"Provocar errores (permiso, red, servidor)","x":"Mensajes en lenguaje llano; \u003cstrong>nunca\u003c/strong> \u003ccode>forbidden\u003c/code>, \u003ccode>internal_error\u003c/code> ni stack","pri":"A","warn":false},{"id":"ROB-08","role":"","a":"Chrome, Edge, Safari iOS, Chrome Android; 375 px, tablet, 1366 px","at":"Chrome, Edge, Safari iOS, Chrome Android; 375 px, tablet, 1366 px","x":"Sin scroll horizontal; todo usable","pri":"A","warn":false},{"id":"ROB-09","role":"","a":"30+ requisiciones y 30+ órdenes en las bandejas","at":"30+ requisiciones y 30+ órdenes en las bandejas","x":"Carga en &lt; 3 s; listas navegables","pri":"M","warn":false},{"id":"ROB-10","role":"","a":"Textos con tildes, ñ, comillas, emojis, mayúsculas en nombres e ítems","at":"Textos con tildes, ñ, comillas, emojis, mayúsculas en nombres e ítems","x":"Se guardan, se buscan y se ven bien","pri":"M","warn":false},{"id":"ROB-11","role":"","a":"Adjunto de 9,9 MB y varios adjuntos a la vez","at":"Adjunto de 9,9 MB y varios adjuntos a la vez","x":"Sube; no se cuelga","pri":"M","warn":false},{"id":"ROB-12","role":"","a":"Leer cada pantalla sin esfuerzo (contraste de grises, tamaño de letra en celular)","at":"Leer cada pantalla sin esfuerzo (contraste de grises, tamaño de letra en celular)","x":"Legible sin acercar","pri":"M","warn":false}]},{"key":"OPS","title":"Operación (técnico Sixteam)","cases":[{"id":"OPS-01","role":"","a":"\u003ccode>/api/health\u003c/code>","at":"/api/health","x":"\u003ccode>ok\u003c/code>, \u003ccode>origin:true\u003c/code>, \u003ccode>commit\u003c/code> = SHA desplegado, 0 WhatsApp fallidos en 24 h","pri":"A","warn":false},{"id":"OPS-02","role":"","a":"Cron de respaldo","at":"Cron de respaldo","x":"Marca \u003ccode>ultimo-exito\u003c/code> de hoy; archivos en Drive","pri":"A","warn":false},{"id":"OPS-03","role":"","a":"\u003cstrong>Restauración\u003c/strong>: bajar el respaldo, restaurar en base desechable \u003cstrong>y desempaquetar el \u003ccode>.tar\u003c/code> de soportes\u003c/strong>","at":"Restauración: bajar el respaldo, restaurar en base desechable y desempaquetar el .tar de soportes","x":"Cuentan las mismas filas; los adjuntos abren (el ensayo del 18-sep solo restauró la base)","pri":"A","warn":false},{"id":"OPS-04","role":"","a":"Apagar la app unos minutos","at":"Apagar la app unos minutos","x":"Better Stack avisa; al volver, se recupera","pri":"A","warn":false},{"id":"OPS-05","role":"","a":"Provocar un 500 controlado","at":"Provocar un 500 controlado","x":"Queda en \u003ccode>docker logs\u003c/code> y en Better Stack","pri":"M","warn":false},{"id":"OPS-06","role":"","a":"Detener el cron de respaldo un día (simulado)","at":"Detener el cron de respaldo un día (simulado)","x":"La ausencia del latido dispara alerta","pri":"M","warn":false},{"id":"OPS-07","role":"","a":"Migraciones aplicadas; variables \u003ccode>WHATSAPP_FLOW_ID\u003c/code> y \u003ccode>WHATSAPP_FLOW_PAGO_ID\u003c/code>","at":"Migraciones aplicadas; variables WHATSAPP_FLOW_ID y WHATSAPP_FLOW_PAGO_ID","x":"Coinciden con P8","pri":"A","warn":false},{"id":"OPS-08","role":"","a":"Descarga de comprobante y de documento de proveedor \u003cstrong>detrás del proxy\u003c/strong> (Traefik) ⚠","at":"Descarga de comprobante y de documento de proveedor detrás del proxy (Traefik) ⚠","x":"Descarga correcta (era el 500 crítico H1)","pri":"A","warn":true},{"id":"OPS-09","role":"","a":"Exportación completa de los datos de Mizar «bajo demanda» (RF-1004)","at":"Exportación completa de los datos de Mizar «bajo demanda» (RF-1004)","x":"Existe una vía documentada y probada. \u003cstrong>DUDA:\u003c/strong> qué significa «entregar los backups» al cliente (plan de salida B1)","pri":"A","warn":false},{"id":"OPS-10","role":"","a":"Ensayo del \u003cstrong>día cero\u003c/strong> en local: base vacía + migraciones + maestros, sin \u003ccode>seed.sql\u003c/code> de demo","at":"Ensayo del día cero en local: base vacía + migraciones + maestros, sin seed.sql de demo","x":"Consecutivos desde 0001; sin usuarios \u003ccode>*.demo@mizar.test\u003c/code> activos","pri":"A","warn":false}]}],"humo":["OPS-01","ACC-01","POR-02","POR-15","REV-01","APR-03","ORD-01","ORD-04","PAG-01","PAG-05","CAJ-01","REP-01","NOT-04","NOT-06","SEG-07","SEG-08"],"decisiones":[{"id":"ACC-05","t":"¿cambio de clave obligatorio?"},{"id":"ORD-04","t":"formato del PDF y qué empresa encabeza la OP"},{"id":"NOT-08","t":"¿quién ve Mensajes?"},{"id":"OPS-09","t":"qué se le entrega a Mizar como «backup»"}]}</script>
+<script>
+(function () {
+  "use strict";
+  var D = JSON.parse(document.getElementById("data").textContent);
+  var KEY = "mizar-pruebas-v1";
+
+  // ---------- estado local (comodidad; lo importante va a la base compartida si existe) ----------
+  function lsGet() { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { return {}; } }
+  function lsSet(o) { try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) { /* sin almacenamiento: la página sigue funcionando */ } }
+  var L = lsGet();
+  var S = {
+    res: L.res || {},
+    ideas: L.ideas || [],
+    name: L.name || "",
+    ui: Object.assign({ tab: "foco", mod: "ALL", onlyA: true, humo: false, focusId: null, stepMode: false, block: 15, e2e: null, showAll: false, intro: true, open: {} }, L.ui || {})
+  };
+  var session = { skipped: [], answered: 0, form: null, hist: [], revealed: {}, scopeOpen: false, break: false };
+  function persist() { lsSet({ res: S.res, ideas: S.ideas, name: S.name, ui: S.ui }); }
+
+  // ---------- base compartida (opcional) ----------
+  var remote = { on: false, ro: false, coll: null, first: true };
+  var wq = {};
+  function queueWrite(id) {
+    if (!remote.on || remote.ro || !S.res[id]) return;
+    var body = JSON.parse(JSON.stringify(S.res[id]));
+    wq[id] = (wq[id] || Promise.resolve()).then(function () { return remote.coll.doc(id).set(body); }).catch(function (e) {
+      if (e && (e.code === "invalid_argument" || e.code === "not_granted" || e.code === "revoked")) { remote.ro = true; render(); }
+    });
+  }
+  function initRemote() {
+    if (!window.claude || !window.claude.use) return;
+    window.claude.use("db").then(function (db) {
+      if (!db) return;
+      remote.coll = db.collection("res");
+      remote.on = true;
+      remote.coll.onSnapshot(function (snap) {
+        var changed = false, seen = {};
+        snap.docs.forEach(function (d) {
+          var v = d.data(); if (!v) return;
+          seen[d.id] = true;
+          if (JSON.stringify(v) !== JSON.stringify(S.res[d.id])) { S.res[d.id] = v; changed = true; }
+        });
+        if (remote.first) { remote.first = false; Object.keys(S.res).forEach(function (id) { if (!seen[id]) queueWrite(id); }); }
+        persist();
+        if (changed) softRender(); else paintHeader();
+      }, function () { remote.on = false; render(); });
+      render();
+    }).catch(function () { /* sin base: se queda en modo local */ });
+  }
+
+  // ---------- datos ----------
+  var CASES = [], BY = {};
+  D.mods.forEach(function (m) { m.cases.forEach(function (c) { c.mod = m.key; c.modTitle = m.title; CASES.push(c); BY[c.id] = c; }); });
+  var E2E = {}; D.e2e.forEach(function (e) { E2E[e.id] = e; });
+  function st(id) { return S.res[id] && S.res[id].s || null; }
+  function setRes(id, patch) {
+    var cur = S.res[id] || {};
+    S.res[id] = Object.assign({}, cur, patch, { by: S.name || cur.by || "", t: Date.now() });
+    persist(); queueWrite(id);
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function $(s, r) { return (r || document).querySelector(s); }
+
+  // ---------- cola de casos ----------
+  function scope() {
+    return CASES.filter(function (c) {
+      if (S.ui.humo) return D.humo.indexOf(c.id) >= 0;
+      if (S.ui.mod !== "ALL" && c.mod !== S.ui.mod) return false;
+      if (S.ui.onlyA && c.pri !== "A") return false;
+      return true;
+    });
+  }
+  function queue() {
+    var p = scope().filter(function (c) { return !st(c.id); });
+    var a = p.filter(function (c) { return session.skipped.indexOf(c.id) < 0; });
+    var b = p.filter(function (c) { return session.skipped.indexOf(c.id) >= 0; });
+    return a.concat(b);
+  }
+  function curCase() {
+    if (S.ui.focusId && BY[S.ui.focusId]) return BY[S.ui.focusId];
+    return queue()[0] || null;
+  }
+
+  // ---------- iconos ----------
+  var I = {
+    ok: '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10.5l4 4 8-9"/></svg>',
+    bad: '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>',
+    doubt: '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M7.5 7.5a2.5 2.5 0 115 0c0 1.7-2.5 2-2.5 3.6M10 14.5v.5"/></svg>',
+    tiny: '<svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10.5l4 4 8-9"/></svg>'
+  };
+  var LAB = { ok: "Bien", bad: "Falla", doubt: "Duda" };
+  var KEYMAP = { ok: "ok", bad: "falla", doubt: "duda" };
+  function sKey(s) { return s === "falla" ? "bad" : s === "duda" ? "doubt" : s === "ok" ? "ok" : ""; }
+  function badge(id) {
+    var s = st(id); if (!s) return "";
+    var k = sKey(s);
+    var sev = s === "falla" && S.res[id].sev ? " · " + ({ critica: "Crítica", alta: "Alta", media: "Media", baja: "Baja" })[S.res[id].sev] : "";
+    return '<span class="chip ' + k + '">' + I[k].replace(/width="20" height="20"/, 'width="14" height="14"') + (s === "ok" ? "Bien" : s === "falla" ? "Falla" : "Duda") + sev + "</span>";
+  }
+  function arrows(h) {
+    var parts = h.split(" → ");
+    if (parts.length === 1) return "<div>" + h + "</div>";
+    return parts.map(function (p) { return '<div class="sub"><span>' + p + "</span></div>"; }).join("");
+  }
+
+  // ---------- encabezado ----------
+  function paintHeader() {
+    var total = CASES.length, ok = 0, bad = 0, doubt = 0;
+    CASES.forEach(function (c) { var s = st(c.id); if (s === "ok") ok++; else if (s === "falla") bad++; else if (s === "duda") doubt++; });
+    var done = ok + bad + doubt;
+    $("#prog").innerHTML =
+      '<div class="prog-line"><span><b>' + done + "</b> de " + total + " casos</span><span>" + Math.round(done / total * 100) + '%</span></div>' +
+      '<div class="bar" role="img" aria-label="' + ok + " bien, " + bad + " con falla, " + doubt + ' con duda"><i class="b-ok" style="width:' + ok / total * 100 + '%"></i><i class="b-bad" style="width:' + bad / total * 100 + '%"></i><i class="b-doubt" style="width:' + doubt / total * 100 + '%"></i></div>';
+    var tabs = [["foco", "Foco"], ["rec", "Recorridos"], ["mod", "Módulos"], ["res", "Resumen"], ["pre", "Antes"]];
+    $("#tabs").innerHTML = tabs.map(function (t) {
+      return '<button class="tab" role="tab" data-act="tab" data-v="' + t[0] + '" aria-selected="' + (S.ui.tab === t[0]) + '">' + t[1] + "</button>";
+    }).join("");
+  }
+
+  // ---------- temporizador ----------
+  var T = { total: S.ui.block * 60, left: S.ui.block * 60, run: false, iv: null, mode: "work", done: false };
+  function fmt(n) { var m = Math.floor(n / 60), s = n % 60; return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s; }
+  function paintTimer() {
+    var c = $("#tchip");
+    c.setAttribute("data-run", T.run ? "1" : "0"); c.setAttribute("data-mode", T.mode);
+    c.textContent = (T.mode === "break" ? "Descanso " : "") + fmt(T.left) + (T.run ? "  ❚❚" : "  ▶");
+    $("#tsel").value = String(S.ui.block); $("#tsel").disabled = T.run;
+  }
+  function tstart(mode, secs) { clearInterval(T.iv); T.mode = mode; T.total = T.left = secs; T.done = false; T.run = true; T.iv = setInterval(tick, 1000); paintTimer(); }
+  function tick() {
+    T.left--;
+    if (T.left <= 0) { clearInterval(T.iv); T.run = false; T.left = 0; T.done = true; render(); }
+    paintTimer();
+  }
+  $("#tchip").addEventListener("click", function () {
+    if (T.done) return;
+    if (T.run) { clearInterval(T.iv); T.run = false; paintTimer(); return; }
+    if (T.left <= 0) T.left = T.total;
+    T.run = true; T.iv = setInterval(tick, 1000); paintTimer();
+  });
+  $("#tsel").addEventListener("change", function (e) { S.ui.block = +e.target.value; persist(); T.mode = "work"; T.total = T.left = S.ui.block * 60; paintTimer(); });
+
+  // ---------- avisos ----------
+  var toastT;
+  function toast(msg) { var t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(function () { t.hidden = true; }, 2600); }
+
+  // ---------- formulario de falla / duda ----------
+  function formHtml(id) {
+    var f = session.form; if (!f || f.id !== id) return "";
+    var bad = f.kind === "falla";
+    var cur = S.res[id] || {};
+    var sevs = [["critica", "Crítica", "bloquea la salida"], ["alta", "Alta", "bloquea la salida"], ["media", "Media", "se arregla luego"], ["baja", "Baja", "cosmético"]];
+    return '<div class="card tint" style="margin-top:16px">' +
+      "<h3 class=\"title\" style=\"font-size:19px\">" + (bad ? "¿Qué tan grave es?" : "¿Qué te hizo dudar?") + "</h3>" +
+      (bad ? '<div class="sevs field">' + sevs.map(function (s) { return '<button type="button" class="sev" data-act="sev" data-v="' + s[0] + '" aria-pressed="' + (f.sev === s[0]) + '">' + s[1] + "<small>" + s[2] + "</small></button>"; }).join("") + "</div>" : "") +
+      '<div class="field"><label for="note">' + (bad ? "¿Qué pasó? (una línea)" : "Anótalo en una línea") + '</label><textarea id="note" maxlength="600">' + esc(f.note != null ? f.note : (cur.n || "")) + "</textarea></div>" +
+      '<div class="btns" style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn ' + (bad ? "bad" : "doubt") + '" data-act="saveform">Guardar</button><button class="btn" data-act="cancelform">Cancelar</button></div></div>';
+  }
+  function openForm(id, kind) { session.form = { id: id, kind: kind, sev: (S.res[id] && S.res[id].sev) || null, note: null }; render(); var n = $("#note"); if (n) n.focus(); }
+  function saveForm() {
+    var f = session.form; if (!f) return;
+    var note = ($("#note") || {}).value || "";
+    if (f.kind === "falla" && !f.sev) { toast("Elige qué tan grave es"); return; }
+    setRes(f.id, { s: f.kind, sev: f.kind === "falla" ? f.sev : "", n: note.trim() });
+    session.form = null;
+    afterAnswer(f.id);
+  }
+  function afterAnswer(id) {
+    session.answered++;
+    var isCase = !!BY[id];
+    if (isCase) { S.ui.focusId = null; session.hist.push(id); }
+    persist();
+    if (session.answered % 5 === 0) toast(session.answered + " hechos en esta sesión. Buen ritmo.");
+    render(true);
+  }
+
+  // ---------- vista: foco ----------
+  function scopeText() {
+    var parts = [];
+    if (S.ui.humo) parts.push("Prueba de humo");
+    else { parts.push(S.ui.mod === "ALL" ? "Todos los módulos" : (D.mods.filter(function (m) { return m.key === S.ui.mod; })[0] || {}).title); parts.push(S.ui.onlyA ? "solo imprescindibles" : "todos los casos"); }
+    return parts.join(" · ");
+  }
+  function scopePanel() {
+    var mods = '<button class="tog" data-act="mod" data-v="ALL" aria-pressed="' + (S.ui.mod === "ALL") + '">Todos</button>' + D.mods.map(function (m) {
+      return '<button class="tog" data-act="mod" data-v="' + m.key + '" aria-pressed="' + (S.ui.mod === m.key) + '">' + esc(m.title) + "</button>";
+    }).join("");
+    return '<div class="card"><div class="stack">' +
+      '<div><p class="lbl">Qué probar</p><div class="chips"><button class="tog" data-act="humo" aria-pressed="' + S.ui.humo + '">Prueba de humo (20 min)</button><button class="tog" data-act="onlyA" aria-pressed="' + S.ui.onlyA + '">Solo imprescindibles</button><button class="tog" data-act="stepmode" aria-pressed="' + S.ui.stepMode + '">Ver «debe pasar» después</button></div></div>' +
+      '<div><p class="lbl">Módulo</p><div class="chips">' + mods + "</div></div>" +
+      '<button class="btn primary" data-act="scopeclose">Listo</button></div></div>';
+  }
+  function introCard() {
+    if (!S.ui.intro) return "";
+    return '<div class="banner info"><b>Así se usa, en 3 pasos</b><div class="do" style="font-size:18px;margin:0"><div class="sub"><span>Haz lo que dice la tarjeta.</span></div><div class="sub"><span>Marca cómo salió: bien, duda o falla.</span></div><div class="sub"><span>La guía te pasa al siguiente y recuerda dónde vas.</span></div></div>' +
+      '<div class="field" style="margin:0"><label for="nm">¿Cómo te llamas? (para saber quién probó qué)</label><input type="text" id="nm" value="' + esc(S.name) + '" autocomplete="name"></div>' +
+      '<div class="btns"><button class="btn primary" data-act="introok">Empezar</button></div>' +
+      (remote.on ? "" : '<p class="muted">Tus resultados se guardan en este navegador.</p>') + "</div>";
+  }
+  function timerBanner() {
+    if (!T.done) return "";
+    if (T.mode === "work") {
+      return '<div class="banner"><b>Bloque completo. Levántate un momento.</b><p>Agua, estirarte, mirar lejos. Tu progreso está guardado.</p><div class="btns"><button class="btn primary" data-act="break">Descansar 3 min</button><button class="btn" data-act="another">Seguir otro bloque</button><button class="btn ghost" data-act="dismisst">Por hoy es todo</button></div></div>';
+    }
+    return '<div class="banner"><b>Descanso terminado.</b><p>Vuelve cuando quieras. La siguiente tarjeta te espera.</p><div class="btns"><button class="btn primary" data-act="another">Empezar bloque</button><button class="btn ghost" data-act="dismisst">Ahora no</button></div></div>';
+  }
+  function renderFoco() {
+    var c = curCase(), q = queue(), out = [];
+    out.push(timerBanner(), introCard());
+    if (remote.ro) out.push('<p class="ro">Solo lectura: tus resultados se guardan solo en este navegador.</p>');
+    out.push('<div class="scope"><p>' + esc(scopeText()) + " · quedan <b>" + q.length + "</b></p><button class=\"btn ghost small\" data-act=\"scopeopen\">Cambiar</button></div>");
+    if (session.scopeOpen) out.push(scopePanel());
+    if (!c) {
+      out.push('<div class="card"><h2 class="title">No queda nada por probar aquí</h2><p class="muted" style="margin:6px 0 14px">Terminaste este grupo. Elige otro o mira el resumen.</p><div class="btns" style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn primary" data-act="scopeopen">Elegir otro grupo</button><button class="btn" data-act="tab" data-v="res">Ver resumen</button></div></div>');
+      return out.join("");
+    }
+    var answered = !!st(c.id);
+    var reveal = !S.ui.stepMode || session.revealed[c.id] || answered;
+    var nxt = q.filter(function (x) { return x.id !== c.id; })[0];
+    out.push('<article class="card" id="card" tabindex="-1"><div class="meta"><span class="id">' + c.id + '</span>' +
+      (c.role ? '<span class="chip">' + esc(c.role) + "</span>" : "") +
+      '<span class="chip ' + (c.pri === "A" ? "a" : "") + '">' + ({ A: "Imprescindible", M: "Importante", B: "Deseable" })[c.pri] + "</span>" +
+      (c.warn ? '<span class="chip warn">⚠ Sin recorrer antes</span>' : "") + (answered ? badge(c.id) : "") + "</div>" +
+      '<p class="lbl">Haz esto</p><div class="do">' + arrows(c.a) + "</div>" +
+      (reveal ? '<p class="lbl">Debe pasar</p><div class="expect">' + c.x + "</div>" :
+        '<button class="btn primary" data-act="reveal" data-v="' + c.id + '">Ya lo hice: ver qué debe pasar</button>') +
+      (answered && S.res[c.id].n ? '<p class="next"><b>Tu nota:</b> ' + esc(S.res[c.id].n) + "</p>" : "") +
+      (nxt ? '<p class="next">Después: <b>' + nxt.id + "</b> · " + esc(nxt.at.slice(0, 70)) + (nxt.at.length > 70 ? "…" : "") + "</p>" : "") +
+      formHtml(c.id) + "</article>");
+    out.push('<details class="card tint"><summary style="font-weight:700;cursor:pointer;min-height:32px">Idea suelta (anótala y sigue)</summary><div class="field"><label class="sr" for="idea">Idea suelta</label><input type="text" id="idea" placeholder="Escribe y pulsa Enter"></div>' +
+      (S.ideas.length ? '<ul class="muted" style="margin:10px 0 0;padding-left:18px">' + S.ideas.slice(-3).map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") + "</ul>" : "") + "</details>");
+    return out.join("");
+  }
+  function actionsFoco() {
+    var c = curCase(); if (!c || session.form) return "";
+    var reveal = !S.ui.stepMode || session.revealed[c.id] || st(c.id);
+    if (!reveal) return "";
+    return '<div class="actions"><div class="wrap"><div class="three">' +
+      '<button class="btn bad" data-act="falla">' + I.bad + 'Falla <kbd>F</kbd></button>' +
+      '<button class="btn doubt" data-act="duda">' + I.doubt + 'Duda <kbd>D</kbd></button>' +
+      '<button class="btn ok" data-act="ok">' + I.ok + 'Bien <kbd>O</kbd></button></div>' +
+      '<div class="two"><button class="btn ghost small" data-act="back"' + (session.hist.length ? "" : " disabled") + '>← Anterior</button><button class="btn ghost small" data-act="skip">Saltar por ahora →</button></div></div></div>';
+  }
+
+  // ---------- vista: recorridos ----------
+  function e2eSteps(id) { var r = S.res[id]; var n = E2E[id].steps.length; var a = (r && r.steps) || []; var out = []; for (var i = 0; i < n; i++) out.push(!!a[i]); return out; }
+  function renderRec() {
+    if (S.ui.e2e) return renderWizard(E2E[S.ui.e2e]);
+    return '<div class="stack"><div><h2 class="title">Recorridos completos</h2><p class="muted">Un proceso de principio a fin. Los firma Daniel.</p></div><div class="list">' +
+      D.e2e.map(function (e) {
+        var s = e2eSteps(e.id), d = s.filter(Boolean).length;
+        return '<button class="item" data-act="e2e" data-v="' + e.id + '"><span class="dot ' + sKey(st(e.id)) + '">' + (st(e.id) === "ok" ? I.tiny : "") + '</span><span><b class="id">' + e.id + "</b> " + esc(e.title) + '<br><span class="muted">' + d + " de " + e.steps.length + " pasos" + (e.warn ? " · ⚠" : "") + '</span></span><span class="chip ' + (e.pri === "A" ? "a" : "") + '">' + e.pri + "</span></button>";
+      }).join("") + "</div></div>";
+  }
+  function renderWizard(e) {
+    var s = e2eSteps(e.id), cur = s.indexOf(false), all = cur === -1, out = [];
+    out.push('<div class="stack"><button class="btn ghost small" data-act="e2eclose" style="justify-self:start">← Recorridos</button>');
+    out.push('<div><div class="meta"><span class="id">' + e.id + '</span><span class="chip ' + (e.pri === "A" ? "a" : "") + '">' + ({ A: "Imprescindible", M: "Importante", B: "Deseable" })[e.pri] + "</span>" + (e.warn ? '<span class="chip warn">⚠ Sin recorrer antes</span>' : "") + badge(e.id) + '</div><h2 class="title">' + esc(e.title) + "</h2>" +
+      (e.roles.length ? '<p class="muted">Participan: ' + e.roles.map(esc).join(", ") + "</p>" : "") +
+      '<div class="steps" aria-label="Pasos">' + s.map(function (d, i) { return '<i class="' + (d ? "on" : i === cur ? "cur" : "") + '"></i>'; }).join("") + "</div></div>");
+    if (timerBanner()) out.push(timerBanner());
+    if (S.ui.showAll) {
+      out.push('<div class="card">' + e.steps.map(function (x, i) {
+        return '<div class="done-step ' + (s[i] ? "" : "dim") + '">' + (s[i] ? I.ok.replace(/width="20" height="20"/, 'width="16" height="16"') : "<span>" + (i + 1) + ".</span>") + "<span>" + (x.role ? "<b>" + esc(x.role) + ":</b> " : "") + x.h + "</span></div>";
+      }).join("") + "</div>");
+    } else {
+      var shown = s.map(function (d, i) { return d ? i : -1; }).filter(function (i) { return i >= 0; }).slice(-2);
+      if (shown.length) out.push('<div class="card tint">' + shown.map(function (i) { return '<div class="done-step">' + I.ok.replace(/width="20" height="20"/, 'width="16" height="16"') + "<span>" + (e.steps[i].role ? "<b>" + esc(e.steps[i].role) + ":</b> " : "") + e.steps[i].h.replace(/ → .*$/, "…") + "</span></div>"; }).join("") + "</div>");
+    }
+    if (!all) {
+      var x = e.steps[cur];
+      out.push('<article class="card" id="card" tabindex="-1"><div class="meta"><span class="chip a">Paso ' + (cur + 1) + " de " + e.steps.length + "</span>" + (x.role ? '<span class="chip">' + esc(x.role) + "</span>" : "") + '</div><div class="do" style="margin-bottom:8px">' + arrows(x.h) + '</div></article>');
+      out.push('<div class="btns" style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn ok" data-act="stepdone" data-v="' + e.id + '" style="flex:1 1 220px">' + I.ok + "Hecho, siguiente</button>" + (cur > 0 ? '<button class="btn" data-act="stepback" data-v="' + e.id + '">← Atrás</button>' : "") + "</div>");
+    } else {
+      out.push('<article class="card" id="card" tabindex="-1"><p class="lbl">Último paso: comprobar</p><h3 class="title" style="font-size:19px">¿Salió como debía?</h3>' + (e.esperado ? '<div class="expect" style="margin:12px 0 16px">' + e.esperado + "</div>" : "") +
+        (session.form && session.form.id === e.id ? formHtml(e.id) :
+          '<div class="btns" style="display:grid;grid-template-columns:1fr 1fr 1.25fr;gap:10px"><button class="btn bad" data-act="e2ef" data-v="' + e.id + '">' + I.bad + 'Falla</button><button class="btn doubt" data-act="e2ed" data-v="' + e.id + '">' + I.doubt + 'Duda</button><button class="btn ok" data-act="e2eok" data-v="' + e.id + '">' + I.ok + "Bien</button></div>") +
+        (st(e.id) ? '<p class="next">Resultado guardado. <button class="btn ghost small" data-act="stepback" data-v="' + e.id + '">Repasar pasos</button></p>' : "") + "</article>");
+    }
+    out.push('<button class="btn ghost small" data-act="showall" style="justify-self:start">' + (S.ui.showAll ? "Ver un paso a la vez" : "Ver todos los pasos") + "</button></div>");
+    return out.join("");
+  }
+
+  // ---------- vista: módulos ----------
+  function renderMod() {
+    return '<div class="stack"><div><h2 class="title">Por módulo</h2><p class="muted">Toca uno para ver sus casos. Toca un caso para probarlo.</p></div>' +
+      D.mods.map(function (m) {
+        var ok = 0, bad = 0, dou = 0;
+        m.cases.forEach(function (c) { var s = st(c.id); if (s === "ok") ok++; else if (s === "falla") bad++; else if (s === "duda") dou++; });
+        var n = m.cases.length, open = !!S.ui.open[m.key];
+        return '<div><button class="mod-head" data-act="modopen" data-v="' + m.key + '" aria-expanded="' + open + '"><b>' + esc(m.title) + "</b><span>" + (ok + bad + dou) + " / " + n + (bad ? " · " + bad + " falla" + (bad > 1 ? "s" : "") : "") + '</span><div class="bar"><i class="b-ok" style="width:' + ok / n * 100 + '%"></i><i class="b-bad" style="width:' + bad / n * 100 + '%"></i><i class="b-doubt" style="width:' + dou / n * 100 + '%"></i></div></button>' +
+          (open ? '<div class="mod-body">' + m.cases.map(function (c) {
+            var s = st(c.id), k = sKey(s);
+            return '<button class="item" data-act="pick" data-v="' + c.id + '"><span class="dot ' + k + '">' + (s === "ok" ? I.tiny : "") + '</span><span class="t"><b class="id" style="font-size:13px">' + c.id + "</b> " + esc(c.at) + '</span><span class="chip ' + (c.pri === "A" ? "a" : "") + '">' + c.pri + "</span></button>";
+          }).join("") + "</div>" : "") + "</div>";
+      }).join("") + "</div>";
+  }
+
+  // ---------- vista: resumen ----------
+  function report() {
+    var lines = ["Pruebas Mizar — resumen", "Quién: " + (S.name || "(sin nombre)"), ""];
+    var f = [], d = [];
+    CASES.forEach(function (c) { var s = st(c.id); if (s === "falla") f.push(c); else if (s === "duda") d.push(c); });
+    lines.push("FALLAS (" + f.length + ")");
+    f.forEach(function (c) { lines.push("- " + c.id + " [" + (S.res[c.id].sev || "sin gravedad") + "] " + c.at + (S.res[c.id].n ? " → " + S.res[c.id].n : "")); });
+    lines.push("", "DUDAS (" + d.length + ")");
+    d.forEach(function (c) { lines.push("- " + c.id + " " + c.at + (S.res[c.id].n ? " → " + S.res[c.id].n : "")); });
+    if (S.ideas.length) { lines.push("", "IDEAS SUELTAS"); S.ideas.forEach(function (i) { lines.push("- " + i); }); }
+    return lines.join("\n");
+  }
+  function renderRes() {
+    var ok = 0, bad = 0, dou = 0, pend = 0, aTot = 0, aOk = 0, hard = 0;
+    CASES.forEach(function (c) {
+      var s = st(c.id); if (s === "ok") ok++; else if (s === "falla") bad++; else if (s === "duda") dou++; else pend++;
+      if (c.pri === "A") { aTot++; if (s === "ok") aOk++; }
+      if (s === "falla" && (S.res[c.id].sev === "critica" || S.res[c.id].sev === "alta")) hard++;
+    });
+    var ready = aOk === aTot && hard === 0;
+    var list = function (s, k) {
+      var rows = CASES.filter(function (c) { return st(c.id) === s; });
+      if (!rows.length) return "";
+      return '<div><p class="lbl">' + (s === "falla" ? "Fallas" : "Dudas") + " (" + rows.length + ')</p><div class="list">' + rows.map(function (c) {
+        return '<button class="item" data-act="pick" data-v="' + c.id + '"><span class="dot ' + k + '"></span><span class="t"><b class="id" style="font-size:13px">' + c.id + "</b> " + esc(c.at) + (S.res[c.id].n ? "<br><i>" + esc(S.res[c.id].n) + "</i>" : "") + '</span><span class="chip ' + k + '">' + (S.res[c.id].sev ? ({ critica: "Crítica", alta: "Alta", media: "Media", baja: "Baja" })[S.res[c.id].sev] : "") + "</span></button>";
+      }).join("") + "</div></div>";
+    };
+    var e2ok = D.e2e.filter(function (e) { return st(e.id) === "ok"; }).length;
+    return '<div class="stack">' +
+      '<div class="card"><div class="verdict"><span class="chip ' + (ready ? "ok" : "doubt") + '" style="font-size:16px;padding:6px 14px">' + (ready ? "Listo para el acta" : "Todavía no") + "</span><b>" + aOk + " de " + aTot + " imprescindibles bien</b></div>" +
+      '<p class="muted" style="margin-top:8px">Para salir: todos los imprescindibles bien, ninguna falla crítica o alta abierta (' + hard + " ahora) y acta firmada.</p></div>" +
+      '<div class="big"><div class="card ok"><div class="n">' + ok + '</div><div class="k">Bien</div></div><div class="card bad"><div class="n">' + bad + '</div><div class="k">Fallas</div></div><div class="card doubt"><div class="n">' + dou + '</div><div class="k">Dudas</div></div><div class="card"><div class="n">' + pend + '</div><div class="k">Por probar</div></div></div>' +
+      '<p class="muted">Recorridos completos bien: <b>' + e2ok + " de " + D.e2e.length + "</b></p>" +
+      list("falla", "bad") + list("duda", "doubt") +
+      (D.decisiones.length ? '<div><p class="lbl">Decisiones que van saliendo</p><div class="card tint">' + D.decisiones.map(function (x) { return '<div class="done-step"><span class="id" style="font-size:13px">' + x.id + "</span><span>" + esc(x.t) + "</span></div>"; }).join("") + "</div></div>" : "") +
+      (S.ideas.length ? '<div><p class="lbl">Ideas sueltas</p><div class="card tint"><ul style="margin:0;padding-left:18px">' + S.ideas.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") + "</ul></div></div>" : "") +
+      '<div><p class="lbl">Para pegar en el registro</p><textarea id="rep" class="rep" readonly>' + esc(report()) + '</textarea><div class="btns" style="margin-top:10px"><button class="btn primary" data-act="copy">Copiar resumen</button></div></div></div>';
+  }
+
+  // ---------- vista: antes de empezar ----------
+  function renderPre() {
+    var done = D.prep.filter(function (p) { return st(p.id) === "ok"; }).length;
+    return '<div class="stack"><div><h2 class="title">Antes de empezar</h2><p class="muted">Con esto listo no te interrumpes a mitad. ' + done + " de " + D.prep.length + " listo.</p></div>" +
+      '<div class="list">' + D.prep.map(function (p) {
+        var on = st(p.id) === "ok";
+        return '<button class="check" role="checkbox" aria-checked="' + on + '" data-act="prep" data-v="' + p.id + '"><span class="box">' + (on ? I.tiny : "") + '</span><span><span class="lab">' + p.t + "</span>" + (p.nota ? '<br><span class="note">' + p.nota + "</span>" : "") + "</span></button>";
+      }).join("") + "</div>" +
+      '<div><p class="lbl">Las rondas</p><div class="list">' + D.rondas.map(function (r) {
+        return '<div class="card"><b>' + esc(r.n) + '</b> <span class="chip">' + esc(r.dur) + '</span><p class="muted" style="margin-top:6px"><b>Quién:</b> ' + r.quien + "</p><p class=\"muted\"><b>Qué:</b> " + r.que + "</p></div>";
+      }).join("") + "</div></div>" +
+      '<div><p class="lbl">Reglas de oro</p><div class="card tint"><div class="do" style="font-size:17px;font-weight:400;margin:0">' + D.reglas.map(function (r) { return '<div class="sub"><span>' + r + "</span></div>"; }).join("") + "</div></div></div>" +
+      '<div class="field"><label for="nm2">Tu nombre</label><input type="text" id="nm2" value="' + esc(S.name) + '" autocomplete="name"></div>' +
+      '<p class="muted">' + esc(D.fecha) + ". " + (remote.on ? (remote.ro ? "Solo lectura." : "Resultados compartidos con quienes abran esta página.") : "Resultados guardados en este navegador.") + "</p></div>";
+  }
+
+  // ---------- render ----------
+  var deferred = false;
+  function render(focusCard) {
+    paintHeader(); paintTimer();
+    var v = $("#view"), a = $("#actions");
+    var html = S.ui.tab === "foco" ? renderFoco() : S.ui.tab === "rec" ? renderRec() : S.ui.tab === "mod" ? renderMod() : S.ui.tab === "res" ? renderRes() : renderPre();
+    v.innerHTML = html;
+    a.innerHTML = S.ui.tab === "foco" ? actionsFoco() : "";
+    if (focusCard) { var c = $("#card"); if (c) { c.focus({ preventScroll: true }); window.scrollTo(0, 0); } }
+  }
+  function softRender() {
+    var el = document.activeElement;
+    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) { deferred = true; return; }
+    render();
+  }
+  document.addEventListener("focusout", function () { if (deferred) { deferred = false; setTimeout(render, 0); } });
+
+  // ---------- eventos ----------
+  document.addEventListener("click", function (ev) {
+    var b = ev.target.closest("[data-act]"); if (!b) return;
+    var act = b.getAttribute("data-act"), v = b.getAttribute("data-v");
+    var c = curCase();
+    switch (act) {
+      case "tab": S.ui.tab = v; persist(); render(); window.scrollTo(0, 0); break;
+      case "ok": if (c) { setRes(c.id, { s: "ok", sev: "", n: "" }); session.form = null; afterAnswer(c.id); } break;
+      case "falla": if (c) openForm(c.id, "falla"); break;
+      case "duda": if (c) openForm(c.id, "duda"); break;
+      case "sev": session.form.sev = v; session.form.note = ($("#note") || {}).value; render(); break;
+      case "saveform": saveForm(); break;
+      case "cancelform": session.form = null; render(); break;
+      case "skip": if (c) { session.skipped.push(c.id); S.ui.focusId = null; render(true); } break;
+      case "back": { var id = session.hist.pop(); if (id) { S.ui.focusId = id; render(true); } break; }
+      case "reveal": session.revealed[v] = true; render(); break;
+      case "scopeopen": session.scopeOpen = true; render(); break;
+      case "scopeclose": session.scopeOpen = false; S.ui.focusId = null; persist(); render(true); break;
+      case "mod": S.ui.mod = v; S.ui.humo = false; S.ui.focusId = null; persist(); render(); break;
+      case "humo": S.ui.humo = !S.ui.humo; S.ui.focusId = null; persist(); render(); break;
+      case "onlyA": S.ui.onlyA = !S.ui.onlyA; S.ui.focusId = null; persist(); render(); break;
+      case "stepmode": S.ui.stepMode = !S.ui.stepMode; persist(); render(); break;
+      case "introok": var nm = $("#nm"); if (nm) S.name = nm.value.trim(); S.ui.intro = false; persist(); render(); break;
+      case "pick": S.ui.focusId = v; S.ui.tab = "foco"; persist(); render(true); break;
+      case "modopen": S.ui.open[v] = !S.ui.open[v]; persist(); render(); break;
+      case "prep": setRes(v, { s: st(v) === "ok" ? "" : "ok" }); render(); break;
+      case "e2e": S.ui.e2e = v; S.ui.showAll = false; persist(); render(true); break;
+      case "e2eclose": S.ui.e2e = null; session.form = null; persist(); render(); break;
+      case "showall": S.ui.showAll = !S.ui.showAll; persist(); render(); break;
+      case "stepdone": { var a = e2eSteps(v); var i = a.indexOf(false); if (i >= 0) { a[i] = true; setRes(v, { steps: a }); if (a.indexOf(false) < 0) toast("Último paso hecho. Ahora comprueba el resultado."); render(true); } break; }
+      case "stepback": { var a2 = e2eSteps(v); var j = a2.lastIndexOf(true); if (j >= 0) { a2[j] = false; setRes(v, { steps: a2 }); render(true); } break; }
+      case "e2eok": setRes(v, { s: "ok", sev: "", n: "" }); toast("Recorrido completo. Bien hecho."); render(); break;
+      case "e2ef": openForm(v, "falla"); break;
+      case "e2ed": openForm(v, "duda"); break;
+      case "copy": { var t = $("#rep"); try { navigator.clipboard.writeText(t.value).then(function () { toast("Copiado"); }, function () { t.select(); toast("Selecciona y copia (Ctrl+C)"); }); } catch (e) { t.select(); toast("Selecciona y copia (Ctrl+C)"); } break; }
+      case "break": tstart("break", 180); render(); break;
+      case "another": T.mode = "work"; tstart("work", S.ui.block * 60); render(); break;
+      case "dismisst": T.done = false; T.mode = "work"; T.left = T.total = S.ui.block * 60; render(); break;
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    var t = e.target && e.target.tagName;
+    if (t === "INPUT" || t === "TEXTAREA" || t === "SELECT" || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (t === "INPUT") return;
+    if (S.ui.tab !== "foco" || session.form) return;
+    var c = curCase(); if (!c) return;
+    var k = e.key.toLowerCase();
+    if (k === "o") { setRes(c.id, { s: "ok", sev: "", n: "" }); afterAnswer(c.id); }
+    else if (k === "f") { e.preventDefault(); openForm(c.id, "falla"); }
+    else if (k === "d") { e.preventDefault(); openForm(c.id, "duda"); }
+    else if (k === "s") { session.skipped.push(c.id); S.ui.focusId = null; render(true); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && e.target && e.target.id === "idea") {
+      var v = e.target.value.trim(); if (v) { S.ideas.push(v); persist(); toast("Anotada. Sigue con lo tuyo."); e.target.value = ""; }
+    }
+  });
+  document.addEventListener("input", function (e) {
+    if (e.target && e.target.id === "nm2") { S.name = e.target.value.trim(); persist(); }
+    if (e.target && e.target.id === "note" && session.form) session.form.note = e.target.value;
+  });
+
+  render();
+  initRemote();
+})();
+</script>
+
+</body>
+</html>

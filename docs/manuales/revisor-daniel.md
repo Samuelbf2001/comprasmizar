@@ -12,7 +12,7 @@ Convertir una solicitud entrante en una compra o pago listo para aprobación, ma
 4. Asigna etiqueta. La etiqueta determina el aprobador en datos, no en una regla personal.
 5. Asigna proveedor final por ítem, independiente del proveedor sugerido por el solicitante.
 6. Registra cotización y desglose base, IVA y total cuando el formato de contabilidad esté confirmado.
-7. Inicia la revisión, guarda etiqueta/ítems/cotización y luego envía a aprobación. El servidor no permite enviar líneas sin proveedor final o con cotización cero. Para declinar, registra el motivo; declinar no elimina.
+7. Inicia la revisión, guarda etiqueta/ítems/cotización y luego envía a aprobación. El servidor no permite enviar líneas con cotización cero. Sí puedes enviar sin proveedor final (aprobar y elegir proveedor son pasos distintos); el proveedor se exige al generar la orden, y puedes elegirlo ahí mismo. Para declinar, registra el motivo; declinar no elimina.
 
 La vista Kanban ayuda a ordenar recibida → revisión → aprobación → aprobada. El historial debe conservar usuario, fecha, transición y comentario.
 
