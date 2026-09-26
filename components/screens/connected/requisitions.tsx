@@ -3,12 +3,13 @@
 // Fase 2 (rendimiento, docs/plan-rendimiento.md, hallazgo H4): RequisitionQueueRows (interno)
 // y ConnectedRequisitions, partidos de components/screens/connected.tsx. Misma lógica,
 // mismos nombres.
-import { useState } from "react";
-import { ArrowRight, Check, Inbox, SearchX, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowRight, Check, Columns3, Inbox, List, SearchX, X } from "lucide-react";
 import type { Role } from "../../../lib/demo-data";
 import { pendingApproverIds, pendingItemsFor, sumLines } from "../../../lib/domain/rules";
 import { SectionTitle, Tone, useConfirmDialog } from "../screen-primitives";
 import {
+  channelLabel,
   emptyCatalogs,
   estadoLabel,
   money,
@@ -27,6 +28,81 @@ import { loadMoreRequisitions, loadRequisitionsByStatus, mutate, setCachedRoute 
 /** Estados terminales que /revision ofrece en su filtro de estado (se piden aparte, ver
  *  `loadRequisitionsByStatus`): la bandeja muestra lo que hay que atender, y estos son consulta. */
 const REVISION_ARCHIVE_STATUSES = ["aprobada", "declinada"];
+
+// Tablero de revisión (RF-306, decisión del cliente 25-sep-2026): "Lista | Tablero" — el mismo
+// selector recordado por persona (localStorage, con try/catch por el mismo motivo que
+// data.ts/readSessionStore: modo privado o cuota agotada nunca debe tumbar la pantalla).
+type RevisionView = "list" | "board";
+const REVISION_VIEW_STORAGE_PREFIX = "mizar-revision-vista:v1";
+
+function readStoredRevisionView(viewerId: string | undefined): RevisionView | null {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return null;
+    const raw = window.localStorage.getItem(`${REVISION_VIEW_STORAGE_PREFIX}:${viewerId ?? "anon"}`);
+    return raw === "list" || raw === "board" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+function writeStoredRevisionView(viewerId: string | undefined, view: RevisionView): void {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    window.localStorage.setItem(`${REVISION_VIEW_STORAGE_PREFIX}:${viewerId ?? "anon"}`, view);
+  } catch {
+    // Modo privado / cuota excedida: la vista elegida no sobrevive a la próxima visita, pero la
+    // pantalla sigue funcionando — igual que el respaldo de rutas en data.ts.
+  }
+}
+
+/** Columnas del tablero, en el orden pedido por el cliente. "en_revision" agrupa también las
+ *  "devuelta" (misma bandeja de Daniel; se distinguen con una marca en la tarjeta, no con una
+ *  columna aparte — así lo pidió el PRD RF-306). */
+const BOARD_COLUMNS: ReadonlyArray<{ key: "enviada" | "en_revision" | "en_aprobacion" | "aprobada"; label: string }> = [
+  { key: "enviada", label: "Enviada" },
+  { key: "en_revision", label: "En revisión" },
+  { key: "en_aprobacion", label: "En aprobación" },
+  { key: "aprobada", label: "Aprobada" },
+];
+
+/** "Obra o empresa" de la tarjeta: la obra si ya se asignó (revisión), o la empresa/sociedad del
+ *  solicitante cuando todavía no hay obra (un pago o una compra recién enviada). Nunca un id crudo. */
+function workOrSocietyLabel(row: RequisitionRow, catalogs: CatalogData): string {
+  if (row.workId) {
+    const work = catalogs.works.find((option) => option.id === row.workId);
+    if (work) return work.name;
+  }
+  if (row.societyId) {
+    const society = catalogs.societies?.find((option) => option.id === row.societyId);
+    if (society) return society.name;
+  }
+  return "Sin asignar";
+}
+
+/** Estado de una de las dos columnas del tablero que NO viajan con la página de pendientes
+ *  (en_aprobacion/aprobada): se piden aparte con `loadRequisitionsByStatus`, con su propio cursor,
+ *  para no mezclarlas con "Cargar más" de lo pendiente (ver comentario de `loadRequisitionsByStatus`
+ *  más arriba) — el mismo criterio que ya usa `archive` para la consulta de terminales del filtro de
+ *  Estado, aplicado ahora a las dos columnas del tablero que un revisor no tiene en su bandeja de
+ *  "por atender". `loadedForData` guarda la referencia del bundle con el que se cargó: si `data`
+ *  cambia (una revalidación tras aprobar/declinar desde la lista), deja de coincidir y se vuelve a
+ *  pedir la próxima vez que el tablero esté activo.
+ */
+type BoardColumnState = {
+  status: string;
+  rows: RequisitionRow[];
+  nextCursor: string | null;
+  loading: boolean;
+  error: string;
+  loadedForData: unknown;
+};
+const emptyBoardColumn = (status: string): BoardColumnState => ({
+  status,
+  rows: [],
+  nextCursor: null,
+  loading: false,
+  error: "",
+  loadedForData: undefined,
+});
 
 // «Aprobar desde la lista» (reunión 11-sep-2026, patrón Precoro pedido por Ernesto tras la
 // reunión de presentación): antes había que abrir CADA requisición en "Mis aprobaciones" solo para
@@ -211,6 +287,93 @@ function RequisitionQueueRows({
   );
 }
 
+/** Una tarjeta del tablero — mismos campos que pidió el cliente (RF-306): consecutivo, obra o
+ *  empresa, solicitante, n.º de ítems, valor estimado, antigüedad y canal; el aprobador solo en la
+ *  columna "En aprobación" (no aplica antes de que exista); la marca "Devuelta" solo en esas filas
+ *  dentro de "En revisión" (el resto de la columna no la necesita: ya dice "En revisión" el
+ *  encabezado). Es un <button> — clic abre el detalle, igual que la fila de la lista. */
+function BoardCard({
+  row,
+  catalogs,
+  go,
+  showApprover,
+}: {
+  row: RequisitionRow;
+  catalogs: CatalogData;
+  go: (path: string) => void;
+  showApprover: boolean;
+}) {
+  const total = sumLines(row.items);
+  const requesterLabel = row.externalRequester?.name ?? resolveUserName(catalogs, row.requesterId, "Solicitante interno");
+  return (
+    <button
+      className="kanban-card"
+      type="button"
+      onClick={() => go(`/requisiciones/${row.id}`)}
+    >
+      <div className="kanban-card-top">
+        <b>{row.consecutive}</b>
+        {row.status === "devuelta" && <Tone tone="danger" dot>Devuelta</Tone>}
+      </div>
+      <strong>{workOrSocietyLabel(row, catalogs)}</strong>
+      <small>{requesterLabel} · {row.items.length} ítem{row.items.length === 1 ? "" : "s"} · {relativeAge(row.updatedAt)}</small>
+      <div className="kanban-foot">
+        <span className="money">{total > 0 ? money.format(total) : "Sin cotizar"}</span>
+        <Tone tone="muted">{channelLabel(row.channel)}</Tone>
+      </div>
+      {showApprover && (
+        <small className="kanban-approver">Aprobador: {resolveUserName(catalogs, row.approverId, "Por asignar")}</small>
+      )}
+    </button>
+  );
+}
+
+/** Una columna del tablero: encabezado (h3, "las columnas tienen encabezado" — accesibilidad
+ *  pedida por el PRD), contador, tarjetas y, si aplica, su propio "Cargar más" — separado a
+ *  propósito del "Cargar más" de lo pendiente (ver BoardColumnState, más arriba). */
+function BoardColumn({
+  columnKey,
+  label,
+  rows,
+  catalogs,
+  go,
+  loading,
+  error,
+  hasMore,
+  onLoadMore,
+}: {
+  columnKey: string;
+  label: string;
+  rows: RequisitionRow[];
+  catalogs: CatalogData;
+  go: (path: string) => void;
+  loading?: boolean;
+  error?: string;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+}) {
+  const headingId = `board-column-${columnKey}`;
+  return (
+    <section className="kanban-column" aria-labelledby={headingId}>
+      <div className="kanban-head">
+        <h3 id={headingId}>{label}</h3>
+        <span>{rows.length}</span>
+      </div>
+      {rows.map((row) => (
+        <BoardCard key={row.id} row={row} catalogs={catalogs} go={go} showApprover={columnKey === "en_aprobacion"} />
+      ))}
+      {!loading && !rows.length && !error && <p className="muted-copy kanban-empty">Sin requisiciones aquí.</p>}
+      {loading && <p className="muted-copy" role="status">Cargando…</p>}
+      {error && <p className="field-error" role="alert">{error}</p>}
+      {onLoadMore && hasMore && (
+        <button className="button button-secondary" type="button" disabled={loading} onClick={onLoadMore}>
+          {loading ? "Cargando…" : "Cargar más"}
+        </button>
+      )}
+    </section>
+  );
+}
+
 export function ConnectedRequisitions({
   data,
   pathname,
@@ -349,9 +512,11 @@ export function ConnectedRequisitions({
   const channelOptions = Array.from(
     new Set(baseRows.map((row) => row.channel)),
   ).sort();
-  const filteredRows = baseRows.filter((row) => {
+  // Tablero (RF-306): obra/canal/etiqueta/fecha son los filtros que el tablero comparte con la
+  // lista — el estado NO (las columnas del tablero SON el estado); se separa en su propia función
+  // para que ambas vistas apliquen exactamente el mismo criterio sin duplicarlo.
+  const matchesCommonFilters = (row: RequisitionRow): boolean => {
     if (workFilter && row.workId !== workFilter) return false;
-    if (statusFilter && row.status !== statusFilter) return false;
     if (channelFilter && row.channel !== channelFilter) return false;
     if (tagFilter && row.tagId !== tagFilter) return false;
     if (dateFrom && !(row.requiredDate && row.requiredDate >= dateFrom))
@@ -359,7 +524,10 @@ export function ConnectedRequisitions({
     if (dateTo && !(row.requiredDate && row.requiredDate <= dateTo))
       return false;
     return true;
-  });
+  };
+  const filteredRows = baseRows.filter(
+    (row) => (!statusFilter || row.status === statusFilter) && matchesCommonFilters(row),
+  );
   const clearFilters = () => {
     setWorkFilter("");
     setStatusFilter("");
@@ -370,10 +538,73 @@ export function ConnectedRequisitions({
     setDateTo("");
   };
 
+  // Tablero de revisión (RF-306): selector recordado por persona (localStorage). Arranca en "list"
+  // en el servidor y en el primer render del cliente (mismo motivo de hidratación que
+  // getPersistedRoute en data.ts: el servidor no puede saber qué eligió este navegador) y adopta lo
+  // guardado DESPUÉS de montar.
+  const [view, setView] = useState<RevisionView>("list");
+  const viewerId = data?.viewerId;
+  useEffect(() => {
+    if (!isRevision) return;
+    const stored = readStoredRevisionView(viewerId);
+    if (stored) setView(stored);
+  }, [isRevision, viewerId]);
+  const changeView = (next: RevisionView) => {
+    setView(next);
+    writeStoredRevisionView(viewerId, next);
+  };
+  // Las dos columnas que NO viajan en la página de pendientes (ver BoardColumnState más arriba):
+  // se piden aparte, solo mientras el tablero está activo, y se reinician cuando `data` cambia
+  // (una revalidación tras aprobar/declinar desde la lista) para no arrastrar cifras viejas.
+  const [boardEnAprobacion, setBoardEnAprobacion] = useState<BoardColumnState>(() => emptyBoardColumn("en_aprobacion"));
+  const [boardAprobada, setBoardAprobada] = useState<BoardColumnState>(() => emptyBoardColumn("aprobada"));
+  const loadBoardColumn = async (
+    column: BoardColumnState,
+    setColumn: (updater: (current: BoardColumnState) => BoardColumnState) => void,
+    cursor?: string,
+  ) => {
+    setColumn((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const page = await loadRequisitionsByStatus(column.status, cursor);
+      const pageRows = Array.isArray(page?.rows) ? page.rows : [];
+      setColumn((current) => ({
+        ...current,
+        rows: cursor ? [...current.rows, ...pageRows] : pageRows,
+        nextCursor: page?.nextCursor ?? null,
+        loading: false,
+        loadedForData: data,
+      }));
+    } catch (error) {
+      setColumn((current) => ({
+        ...current,
+        loading: false,
+        error: error instanceof Error ? error.message : "No fue posible cargar las requisiciones.",
+      }));
+    }
+  };
+  useEffect(() => {
+    if (!isRevision || view !== "board") return;
+    if (boardEnAprobacion.loadedForData !== data && !boardEnAprobacion.loading) void loadBoardColumn(boardEnAprobacion, setBoardEnAprobacion);
+    if (boardAprobada.loadedForData !== data && !boardAprobada.loading) void loadBoardColumn(boardAprobada, setBoardAprobada);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRevision, view, data, boardEnAprobacion.loadedForData, boardEnAprobacion.loading, boardAprobada.loadedForData, boardAprobada.loading]);
+  // Columnas "Enviada"/"En revisión" (con las "devuelta" adentro): mismas filas que ya trae la
+  // página de pendientes (allRows), sin el estado "aprobada" (esa va aparte, ver boardAprobada) y
+  // con los mismos filtros de obra/canal/etiqueta/fecha que la lista.
+  const boardPendingRows = isRevision
+    ? allRows.filter((row) => row.status !== "aprobada" && matchesCommonFilters(row))
+    : [];
+  const boardColumnRows: Record<string, RequisitionRow[]> = {
+    enviada: boardPendingRows.filter((row) => row.status === "enviada"),
+    en_revision: boardPendingRows.filter((row) => row.status === "en_revision" || row.status === "devuelta"),
+    en_aprobacion: boardEnAprobacion.rows.filter(matchesCommonFilters),
+    aprobada: boardAprobada.rows.filter(matchesCommonFilters),
+  };
+
   // «Aprobar desde la lista» — quién mira (lo pone el servidor, ver el comentario de
   // RequisitionsBundle.viewerId en ./shared): sin él no hay forma honesta de calcular "sus ítems",
   // así que las acciones de esta sección quedan apagadas (ver `approverActions`, más abajo).
-  const viewerId = data?.viewerId;
+  // (`viewerId` ya se declaró arriba, junto al tablero — se reutiliza tal cual aquí.)
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -556,6 +787,33 @@ export function ConnectedRequisitions({
         // MENOR (QA 2026-08-31): microcopy para Mizar, no para el equipo de desarrollo —
         // antes decía "La API aplica alcance por actor antes de devolver cada fila".
         description="Solo ves las requisiciones que corresponden a tu rol."
+        // Tablero (RF-306): solo en /revision — grupo de botones con estado presionado
+        // (accesibilidad pedida por el PRD), mismo patrón visual que "Tipo de requisición" en
+        // new-requisition.tsx (.view-switch + aria-pressed).
+        action={
+          isRevision ? (
+            <div className="title-actions">
+              <div role="group" aria-label="Tipo de vista de la bandeja">
+                <button
+                  type="button"
+                  className={`view-switch${view === "list" ? " is-active" : ""}`}
+                  aria-pressed={view === "list"}
+                  onClick={() => changeView("list")}
+                >
+                  <List aria-hidden="true" size={15} /> Lista
+                </button>
+                <button
+                  type="button"
+                  className={`view-switch${view === "board" ? " is-active" : ""}`}
+                  aria-pressed={view === "board"}
+                  onClick={() => changeView("board")}
+                >
+                  <Columns3 aria-hidden="true" size={15} /> Tablero
+                </button>
+              </div>
+            </div>
+          ) : undefined
+        }
       />
       {/* En /revision el filtro se muestra aunque la bandeja esté vacía: es la única puerta a las
           aprobadas y declinadas. */}
@@ -575,21 +833,26 @@ export function ConnectedRequisitions({
               ))}
             </select>
           </label>
-          <label className="field">
-            <span>Estado</span>
-            <select
-              value={statusFilter}
-              onChange={(event) => changeStatusFilter(event.target.value)}
-            >
-              {/* En /revision "todos" son los que están por atender; los terminales van aparte. */}
-              <option value="">{isRevision ? "Por atender" : "Todos"}</option>
-              {statusOptions.map((status) => (
-                <option key={status} value={status}>
-                  {estadoLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
+          {/* El tablero reemplaza este filtro: sus columnas SON el estado — mostrarlo a la vez
+              sería un control que ya no mapea a nada (mizar-ui: "si necesitas una leyenda para
+              explicar un control, el mapeo está mal"). */}
+          {!(isRevision && view === "board") && (
+            <label className="field">
+              <span>Estado</span>
+              <select
+                value={statusFilter}
+                onChange={(event) => changeStatusFilter(event.target.value)}
+              >
+                {/* En /revision "todos" son los que están por atender; los terminales van aparte. */}
+                <option value="">{isRevision ? "Por atender" : "Todos"}</option>
+                {statusOptions.map((status) => (
+                  <option key={status} value={status}>
+                    {estadoLabel(status)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="field">
             <span>Canal</span>
             <select
@@ -640,7 +903,7 @@ export function ConnectedRequisitions({
           toda bandeja — "Generar órdenes" vive en el detalle, pero nada decía que había una
           esperando ese paso exacto que el cliente dijo que echaba en falta. Grupo propio,
           bien visible, con contador, encima de la bandeja normal. */}
-      {isRevision && readyForOrderRows.length > 0 && (
+      {isRevision && view === "list" && readyForOrderRows.length > 0 && (
         <section className="panel connected-ready-panel" data-testid="ready-for-order-panel">
           <div className="panel-head">
             <div>
@@ -671,6 +934,7 @@ export function ConnectedRequisitions({
           </button>
         </div>
       )}
+      {view === "list" && (
       <section className="panel">
         {feedback && (
           <p className="field-error connected-feedback" role="alert">
@@ -791,6 +1055,59 @@ export function ConnectedRequisitions({
           </div>
         )}
       </section>
+      )}
+      {/* Tablero (RF-306): alterna con TODA la vista de lista de arriba (grupo "Listas para
+          generar orden" incluido) — mismos datos/filtros, sin arrastrar y soltar; los cambios de
+          estado se siguen haciendo desde el detalle de cada tarjeta. */}
+      {isRevision && view === "board" && (
+        // Sin envolver en .panel: igual que el tablero de la demo (workflow.tsx), cada columna
+        // ya trae su propia superficie (fondo, borde, radio) — un .panel encima solo añadiría
+        // `overflow:hidden` que recortaría el scroll horizontal propio de .kanban en móvil.
+        <section aria-label="Tablero de revisión">
+          <h2 className="sr-only">Tablero de la bandeja de revisión</h2>
+          <div className="kanban">
+            {BOARD_COLUMNS.map((column) => (
+              <BoardColumn
+                key={column.key}
+                columnKey={column.key}
+                label={column.label}
+                rows={boardColumnRows[column.key]}
+                catalogs={catalogs}
+                go={go}
+                loading={column.key === "en_aprobacion" ? boardEnAprobacion.loading : column.key === "aprobada" ? boardAprobada.loading : undefined}
+                error={column.key === "en_aprobacion" ? boardEnAprobacion.error : column.key === "aprobada" ? boardAprobada.error : undefined}
+                hasMore={column.key === "en_aprobacion" ? Boolean(boardEnAprobacion.nextCursor) : column.key === "aprobada" ? Boolean(boardAprobada.nextCursor) : false}
+                onLoadMore={
+                  column.key === "en_aprobacion"
+                    ? () => void loadBoardColumn(boardEnAprobacion, setBoardEnAprobacion, boardEnAprobacion.nextCursor ?? undefined)
+                    : column.key === "aprobada"
+                      ? () => void loadBoardColumn(boardAprobada, setBoardAprobada, boardAprobada.nextCursor ?? undefined)
+                      : undefined
+                }
+              />
+            ))}
+          </div>
+          {/* Mismo "Cargar más" que ya usa la lista para lo pendiente (enviada/en_revision/
+              devuelta) — comparten cursor y página; ver el comentario de `loadMore` más arriba. */}
+          {nextCursor && (
+            <div className="button-row">
+              <button
+                className="button button-secondary"
+                type="button"
+                disabled={loadingMore}
+                onClick={() => void loadMore()}
+              >
+                {loadingMore ? "Cargando…" : "Cargar más pendientes"}
+              </button>
+              {loadMoreError && (
+                <p className="field-error" role="alert">
+                  {loadMoreError}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+      )}
       {confirmDialog}
     </>
   );
