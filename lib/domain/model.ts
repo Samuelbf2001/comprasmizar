@@ -34,7 +34,13 @@ export type Money = number;
  * infraestructura al autenticar y la cuelga aquí para que el dominio siga siendo puro: `hasPermission`
  * la usa tal cual y nunca consulta la base. Ausente = "usa los defaults de lib/domain/rules.ts".
  */
-export interface Actor { id: string; roles: readonly Role[]; permissions?: readonly string[]; }
+/**
+ * `permissions` es la lista EFECTIVA (unión de sus roles, override de Configuración ya aplicado).
+ * `rolePermissions` es la misma resolución rol por rol; solo la necesita el módulo
+ * `catalogos_admin_mizar`, que apaga lo que un permiso trae ÚNICAMENTE por el rol admin_mizar (ver
+ * `hasGatedPermission` en rules.ts). Ausente = defaults de cada rol.
+ */
+export interface Actor { id: string; roles: readonly Role[]; permissions?: readonly string[]; rolePermissions?: Partial<Record<Role, readonly string[]>>; }
 export interface AuditEvent { entity: string; entityId: string; event: string; actorId?: string; at: Date; data?: Record<string, unknown>; origin?: "web" | "mcp" | "kapso"; }
 export interface ItemLine {
   id: string; itemId?: string; description?: string; quantity: number; unit: string;

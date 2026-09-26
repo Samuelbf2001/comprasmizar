@@ -20,6 +20,8 @@ import { SUPPLIER_IDENTIFICATION_TYPE_OPTIONS, identificationLabel } from "./sup
 // invalidar los catálogos a mano tras cada escritura. Import liviano: data.ts no arrastra
 // recharts ni ninguna pantalla pesada (ver tests/unit/bundle-boundaries.test.ts).
 import { invalidateCatalogs } from "./connected/data";
+import { DOMAIN_ROLE } from "./connected/shared";
+import { resolveRolePermissions } from "../../lib/domain/rules";
 
 type CatalogKind =
   | "works"
@@ -95,6 +97,11 @@ type CatalogData = {
   // Cajas (2026-09-12): mismo patrón que costCenters/costCenterRecords — "cashBoxRecords" es el
   // listado COMPLETO (incluye inactivas) que sirve /api/catalogs/manage para esta pestaña.
   cashBoxRecords?: CatalogRecord[];
+  // 25-sep-2026: decisiones que manda el servidor por permiso (ver app/api/catalogs/manage/route.ts).
+  canManagePublicAccess?: boolean;
+  canManageSixteam?: boolean;
+  /** Id propio de quien mira (no se pinta): no se le ofrece desactivarse a sí mismo. */
+  viewerId?: string;
 };
 type FormValues = Record<string, string | boolean | string[]>;
 
@@ -140,6 +147,20 @@ const COST_CENTER_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "personal", label: "Personal" },
   { value: "empresa", label: "Empresa" },
 ];
+// Nombre de negocio del permiso que abre cada pestaña (mismo texto que la matriz de Configuración,
+// PERMISSION_CATALOG en lib/domain/rules.ts; el mapa pestaña→permiso es CATALOG_KIND_PERMISSION en
+// lib/services/catalog-service.ts).
+const KIND_PERMISSION_LABEL: Record<CatalogKind, string> = {
+  works: "Administrar obras, etiquetas, centros de costo y cajas",
+  tags: "Administrar obras, etiquetas, centros de costo y cajas",
+  costCenters: "Administrar obras, etiquetas, centros de costo y cajas",
+  cashBoxes: "Administrar obras, etiquetas, centros de costo y cajas",
+  items: "Administrar ítems del catálogo",
+  suppliers: "Administrar proveedores",
+  societies: "Administrar empresas",
+  requesters: "Administrar quién pide por WhatsApp",
+  users: "Dar de alta, editar y desactivar usuarios",
+};
 const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "solicitante", label: "Solicitante" },
   { value: "revisor", label: "Revisor" },
@@ -209,60 +230,37 @@ function actionLabel(row: CatalogRecord) {
 function dataFeatureEnabled(data: CatalogData) {
   return data.features?.catalogos_admin_mizar === true;
 }
-function canManageKind(
-  kind: CatalogKind,
-  role: Role,
-  data: CatalogData,
-  featureEnabled = dataFeatureEnabled(data),
-) {
-  const roleAllowed =
-    kind === "items"
-      ? role === "Administrador Sixteam" || role === "Revisor"
-      : kind === "suppliers"
-        ? role === "Administrador Sixteam" ||
-          role === "Revisor" ||
-          (role === "Administrador Mizar" && featureEnabled)
-        : // RF-004: administrar usuarios es exclusivo de Administrador Sixteam, sin depender del
-          // autoservicio de catálogos (igual que sociedades, ver más abajo).
-          kind === "users"
-          ? role === "Administrador Sixteam"
-          : // RF-002: sociedades se comparte entre Sixteam y Mizar de forma incondicional.
-            kind === "societies"
-            ? role === "Administrador Sixteam" || role === "Administrador Mizar"
-            : role === "Administrador Sixteam" ||
-              (role === "Administrador Mizar" && featureEnabled);
-  return data.access && kind in data.access
-    ? data.access[kind] === true
-    : roleAllowed;
+// 25-sep-2026 («Daniel puede hacer todo»): quién administra cada pestaña lo decide el SERVIDOR por
+// permiso (`access`, calculado con la misma `canManageCatalog` que autoriza la escritura). Sin
+// `access` —estado de error inicial con `emptyCatalogs`, o un doble de prueba incompleto— se cierra en
+// falso en vez de adivinar por el nombre del rol, igual que el resto de la autorización de la
+// plataforma. El módulo `catalogos_admin_mizar` ya viene aplicado dentro de `access`.
+function canManageKind(kind: CatalogKind, data: CatalogData) {
+  return data.access?.[kind] === true;
 }
 /**
- * RF-004: a diferencia de los demás catálogos, "users" tiene un nivel de acceso intermedio:
- * Administrador Mizar puede CONSULTAR (nunca escribir) mientras que canManageKind sigue siendo la
- * única puerta para crear/editar/activar. `data.canReadUsers` es la señal autoritativa que calcula el
- * backend (app/api/catalogs/manage/route.ts, `access.users || actor.roles.includes("admin_mizar")`);
- * deliberadamente NO se adivina un valor por rol cuando falta (p. ej. el estado de error inicial de
- * ConnectedScreen con `emptyCatalogs`, o un doble de prueba incompleto): cierra en falso, igual que el
- * resto de la autorización de esta plataforma.
+ * RF-004: a diferencia de los demás catálogos, "users" tiene un nivel de acceso intermedio: con
+ * "Ver usuarios y roles" sin "Dar de alta, editar y desactivar usuarios" (Administrador Mizar por
+ * defecto) se CONSULTA sin escribir; canManageKind sigue siendo la única puerta para crear/editar/
+ * activar. `data.canReadUsers` es la señal autoritativa que calcula el backend
+ * (app/api/catalogs/manage/route.ts); deliberadamente NO se adivina un valor cuando falta (p. ej. el
+ * estado de error inicial de ConnectedScreen con `emptyCatalogs`, o un doble de prueba incompleto):
+ * cierra en falso, igual que el resto de la autorización de esta plataforma.
  */
-function canViewKind(
-  kind: CatalogKind,
-  role: Role,
-  data: CatalogData,
-  featureEnabled = dataFeatureEnabled(data),
-) {
+function canViewKind(kind: CatalogKind, data: CatalogData) {
   if (kind === "users")
     return (
-      canManageKind(kind, role, data, featureEnabled) ||
+      canManageKind(kind, data) ||
       data.canReadUsers === true
     );
   // HUECO 1: mismo patrón intermedio que "users" — Revisor puede CONSULTAR quién puede pedir por
   // WhatsApp (RLS "solicitantes_autorizados_lectura_operativa") aunque no pueda administrar la lista.
   if (kind === "requesters")
     return (
-      canManageKind(kind, role, data, featureEnabled) ||
+      canManageKind(kind, data) ||
       data.canReadRequesters === true
     );
-  return canManageKind(kind, role, data, featureEnabled);
+  return canManageKind(kind, data);
 }
 async function writeCatalog(method: "POST" | "PATCH", body: unknown) {
   const result = await apiRequest<CatalogRecord>("/api/catalogs", {
@@ -390,13 +388,12 @@ export function ConnectedCatalogAdmin({
                   : pathname.startsWith("/catalogos/cajas")
                     ? "cashBoxes"
                     : undefined;
-  const initialFeatureEnabled = dataFeatureEnabled(initialData);
   const firstAllowed = (Object.keys(labels) as CatalogKind[]).find((option) =>
-    canViewKind(option, role, initialData, initialFeatureEnabled),
+    canViewKind(option, initialData),
   );
   const initialKind: CatalogKind =
     (requestedKind &&
-      canViewKind(requestedKind, role, initialData, initialFeatureEnabled) &&
+      canViewKind(requestedKind, initialData) &&
       requestedKind) ||
     firstAllowed ||
     requestedKind ||
@@ -411,8 +408,17 @@ export function ConnectedCatalogAdmin({
   const [success, setSuccess] = useState("");
 
   const featureEnabled = dataFeatureEnabled(data);
-  const canView = canViewKind(kind, role, data, featureEnabled);
-  const canManage = canManageKind(kind, role, data, featureEnabled);
+  const canView = canViewKind(kind, data);
+  const canManage = canManageKind(kind, data);
+  // Contraseña del portal público: la decide el servidor ("public_access:manage"); si el payload no la
+  // trae, los permisos POR DEFECTO del rol pintado (mismo respaldo que `permisosDelVisor`).
+  const canManagePublicAccess =
+    data.canManagePublicAccess ??
+    resolveRolePermissions(DOMAIN_ROLE[role]).some((permiso) => permiso === "public_access:manage" || permiso === "*");
+  // Cuentas de Administrador Sixteam: solo otro Administrador Sixteam las toca (el servidor lo impone).
+  const rowLocked = (row: CatalogRecord) =>
+    kind === "users" && (row.roles ?? []).includes("admin_sixteam") && !canManageSixteam;
+  const canManageSixteam = data.canManageSixteam ?? role === "Administrador Sixteam";
   const rows = useMemo(() => rowsFor(data, kind), [data, kind]);
   const openCreate = () => {
     setEditing(null);
@@ -626,20 +632,12 @@ export function ConnectedCatalogAdmin({
       setSaving(false);
     }
   };
+  // 25-sep-2026: el motivo se dice con el NOMBRE DE NEGOCIO del permiso que falta (el mismo que
+  // aparece en Configuración → Permisos por rol), no con el nombre de un rol.
   const blockedReason =
-    kind === "items"
-      ? "Los ítems solo pueden administrarse con item:manage (Revisor o Administrador Sixteam)."
-      : kind === "users"
-        ? "La administración de usuarios es exclusiva de Administrador Sixteam. Administrador Mizar puede consultarla en modo lectura; el resto de roles no tiene acceso."
-        : kind === "requesters"
-          ? "Solo Administrador Sixteam (o Administrador Mizar con el autoservicio habilitado) puede administrar quién puede pedir por WhatsApp. Revisor puede consultar la lista en modo lectura."
-          : kind === "societies"
-            ? "Las empresas solo pueden administrarse desde Administrador Mizar o Administrador Sixteam."
-            : role === "Administrador Mizar" && !featureEnabled
-              ? "El autoservicio de Administrador Mizar está bloqueado hasta habilitar el módulo catalogos_admin_mizar."
-              : kind === "suppliers"
-                ? "Necesitas supplier:manage para administrar proveedores."
-                : "Necesitas catalog:manage para administrar este catálogo.";
+    role === "Administrador Mizar" && !featureEnabled && ["works", "tags", "costCenters", "cashBoxes", "requesters"].includes(kind)
+      ? "El autoservicio de catálogos de Administrador Mizar está apagado. Pídele a Sixteam que lo active."
+      : `Para esta pestaña necesitas el permiso «${KIND_PERMISSION_LABEL[kind]}». Un administrador puede dártelo en Configuración → Permisos por rol.`;
   return (
     <>
       <SectionTitle
@@ -654,7 +652,7 @@ export function ConnectedCatalogAdmin({
         aria-label="Catálogos administrables"
       >
         {(Object.keys(labels) as CatalogKind[]).map((option) => {
-          const allowed = canViewKind(option, role, data, featureEnabled);
+          const allowed = canViewKind(option, data);
           return (
             <button
               key={option}
@@ -731,9 +729,7 @@ export function ConnectedCatalogAdmin({
           </div>
           {!canManage && (
             <p className="catalog-readonly-note" role="note">
-              {kind === "requesters"
-                ? "Modo lectura: solo Administrador Sixteam (o Administrador Mizar con el autoservicio habilitado) puede administrar quién puede pedir por WhatsApp."
-                : "Modo lectura: la administración de usuarios es exclusiva de Administrador Sixteam."}
+              {`Modo lectura: para hacer cambios aquí necesitas el permiso «${KIND_PERMISSION_LABEL[kind]}».`}
             </p>
           )}
           {feedback && (
@@ -760,6 +756,7 @@ export function ConnectedCatalogAdmin({
               societies={data.societies ?? []}
               approvers={data.approvers ?? []}
               costCenters={data.costCenters ?? []}
+              canAssignSixteam={canManageSixteam}
             />
           ) : null}
           {rows.length === 0 ? (
@@ -954,7 +951,9 @@ export function ConnectedCatalogAdmin({
                         </span>
                       </td>
                       <td className="align-right">
-                        {canManage ? (
+                        {canManage && rowLocked(row) ? (
+                          <span className="table-sub">Solo Administrador Sixteam</span>
+                        ) : canManage ? (
                           <>
                             <button
                               className="icon-button"
@@ -965,7 +964,8 @@ export function ConnectedCatalogAdmin({
                             >
                               <Edit3 aria-hidden="true" size={15} />
                             </button>
-                            <button
+                            {/* Nadie se desactiva a sí mismo (el servidor también lo niega). */}
+                            {!(kind === "users" && row.id === data.viewerId) && <button
                               className="icon-button"
                               type="button"
                               aria-label={`${actionLabel(row)} ${row.name}`}
@@ -977,7 +977,7 @@ export function ConnectedCatalogAdmin({
                               ) : (
                                 <ToggleLeft aria-hidden="true" size={17} />
                               )}
-                            </button>
+                            </button>}
                           </>
                         ) : (
                           <span className="table-sub">Solo lectura</span>
@@ -994,9 +994,7 @@ export function ConnectedCatalogAdmin({
       {/* Acceso público (reunión: "una sola contraseña para todo el mundo") es administración de
           plataforma, no un CatalogKind más — vive fuera de /api/catalogs y del pestañeo de arriba,
           como un panel independiente al mismo nivel (nunca anidado dentro de otro .panel). */}
-      {(role === "Administrador Mizar" || role === "Administrador Sixteam") && (
-        <PublicAccessPanel />
-      )}
+      {canManagePublicAccess && <PublicAccessPanel />}
     </>
   );
 }
@@ -1178,8 +1176,11 @@ function CatalogForm({
   societies,
   approvers,
   costCenters,
+  canAssignSixteam = false,
 }: {
   kind: CatalogKind;
+  /** Solo otro Administrador Sixteam puede asignar (o quitar) el rol Administrador Sixteam. */
+  canAssignSixteam?: boolean;
   values: FormValues;
   editing: boolean;
   approverRequired: boolean;
@@ -1685,11 +1686,13 @@ function CatalogForm({
                 {ROLE_OPTIONS.map((option) => {
                   const selected = rolesFromForm(values);
                   const checked = selected.includes(option.value);
+                  const locked = option.value === "admin_sixteam" && !canAssignSixteam;
                   return (
-                    <label key={option.value} className="checkbox-field">
+                    <label key={option.value} className="checkbox-field" title={locked ? "Solo un Administrador Sixteam puede asignar este rol" : undefined}>
                       <input
                         type="checkbox"
                         checked={checked}
+                        disabled={locked}
                         onChange={(event) =>
                           update(
                             "roles",

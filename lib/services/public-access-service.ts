@@ -1,4 +1,4 @@
-import { DomainError, type Actor } from "../domain";
+import { DomainError, hasPermission, type Actor } from "../domain";
 
 /** Estado expuesto a la UI de administración: nunca el hash, solo si hay contraseña fijada y cuándo. */
 export interface PublicAccessStatus { configured: boolean; updatedAt: string | null; }
@@ -31,9 +31,10 @@ export interface PublicAccessAdminServiceDependencies {
   clock: { now(): Date };
 }
 
-/** RF-P2 (reunión): fijar la contraseña global del portal es administración de plataforma, mismo criterio
- * de acceso que el resto de catálogos administrativos — nunca solicitante/revisor/aprobador/contabilidad. */
-function canManagePublicAccess(actor: Actor): boolean { return actor.roles.includes("admin_mizar") || actor.roles.includes("admin_sixteam"); }
+/** RF-P2 (reunión): fijar la contraseña global del portal es administración de plataforma. Hasta el
+ * 25-sep-2026 se decidía por nombre de rol (admin_mizar/admin_sixteam); ahora es el permiso
+ * `public_access:manage`, que por defecto tienen esos dos y el revisor (Daniel, «puede hacer todo»). */
+function canManagePublicAccess(actor: Actor): boolean { return hasPermission(actor, "public_access:manage"); }
 
 /**
  * Id de la fila singleton de `acceso_publico`. Lo fija un CHECK de la migración

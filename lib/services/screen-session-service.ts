@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { DomainError, type Actor } from "../domain";
+import { DomainError, hasPermission, type Actor } from "../domain";
 import { hmacSha256 } from "../security/crypto";
 
 /**
@@ -15,7 +15,6 @@ export const SCREEN_SESSION_TOKEN_PREFIX = "mizar_pantalla_";
  * último toque. Un dashboard refrescando cada pocos segundos, si no, inundaría `auditoria` (la tabla
  * audita cada UPDATE de `sesiones_pantalla`) sin aportar valor a un administrador. */
 export const SCREEN_SESSION_TOUCH_THROTTLE_MS = 5 * 60 * 1000;
-const ADMIN_ROLES = new Set(["admin_mizar", "admin_sixteam"]);
 
 export interface ScreenSessionRecord {
   id: string; name: string; active: boolean; createdBy: string; createdAt: string; lastUsedAt: string | null; expiresAt: string | null;
@@ -37,7 +36,9 @@ export interface ScreenSessionRepository {
 export interface ScreenSessionAudit { append(event: { entity: string; entityId: string; event: string; actorId?: string; at: Date; origin: "web"; data?: Record<string, unknown> }): Promise<void>; }
 export interface ScreenSessionServiceDependencies { repository: ScreenSessionRepository; audit: ScreenSessionAudit; clock: { now(): Date }; ids: { next(): string }; pepper: string; }
 
-function isAdmin(actor: Actor): boolean { return actor.roles.some((role) => ADMIN_ROLES.has(role)); }
+// 25-sep-2026: de nombre de rol a permiso ("screen:manage"; por defecto admin_mizar y admin_sixteam,
+// los mismos de antes). Editable en Configuración → Permisos por rol.
+function isAdmin(actor: Actor): boolean { return hasPermission(actor, "screen:manage"); }
 function assertAdmin(actor: Actor): void { if (!isAdmin(actor)) throw new DomainError("FORBIDDEN", "Solo un administrador puede gestionar sesiones de pantalla"); }
 function generateRawToken(): string { return `${SCREEN_SESSION_TOKEN_PREFIX}${randomBytes(32).toString("hex")}`; }
 function parseExpiry(value: string | null | undefined): Date | null {

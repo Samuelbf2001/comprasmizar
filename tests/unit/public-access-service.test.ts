@@ -21,11 +21,17 @@ function deps(status: PublicAccessStatus = { configured: false, updatedAt: null 
 }
 
 describe("PublicAccessAdminService — administración de la contraseña global del portal", () => {
-  it("solo admin_mizar/admin_sixteam pueden consultar o fijar la contraseña", async () => {
+  // 25-sep-2026 («Daniel puede hacer todo»): la puerta es el permiso "public_access:manage", que por
+  // defecto tienen admin_mizar, admin_sixteam y revisor. Contabilidad y solicitante siguen fuera, y un
+  // revisor al que Configuración le quitó el permiso también.
+  it("consultan o fijan la contraseña quienes tienen public_access:manage (admin_mizar, admin_sixteam, revisor)", async () => {
     const { service } = deps();
-    await expect(service.getStatus(reviewer)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const accountant: Actor = { id: "contab-1", roles: ["contabilidad"] };
+    await expect(service.getStatus(accountant)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(service.getStatus(requester)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(service.setPassword(reviewer, "contraseña-larga")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.setPassword(accountant, "contraseña-larga")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.getStatus({ ...reviewer, permissions: ["requisition:review"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.getStatus(reviewer)).resolves.toEqual({ configured: false, updatedAt: null });
     await expect(service.getStatus(mizarAdmin)).resolves.toEqual({ configured: false, updatedAt: null });
     await expect(service.getStatus(sixteamAdmin)).resolves.toEqual({ configured: false, updatedAt: null });
   });

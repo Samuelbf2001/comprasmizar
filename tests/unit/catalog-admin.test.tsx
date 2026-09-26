@@ -15,6 +15,7 @@ const societyId = "11111111-1111-4111-8111-111111111111";
 const approverId = "22222222-2222-4222-8222-222222222222";
 const authUserId = "33333333-3333-4333-8333-333333333333";
 
+const FULL_ACCESS = { works: true, tags: true, items: true, suppliers: true, societies: true, users: true, requesters: true, costCenters: true, cashBoxes: true };
 function catalogData(overrides: Record<string, unknown> = {}) {
   return {
     works: [],
@@ -24,7 +25,10 @@ function catalogData(overrides: Record<string, unknown> = {}) {
     features: { catalogos_admin_mizar: true },
     societies: [{ id: societyId, name: "Sociedad Norte" }],
     approvers: [{ id: approverId, name: "Daniel Revisor" }],
-    access: { works: true, tags: true, items: true, suppliers: true },
+    // 25-sep-2026: la pantalla ya no adivina por el nombre del rol; `access` lo manda SIEMPRE el
+    // servidor (app/api/catalogs/manage/route.ts). Por defecto, un administrador con todo; cada prueba
+    // de solo lectura o de bloqueo quita lo suyo.
+    access: FULL_ACCESS,
     ...overrides,
   };
 }
@@ -350,6 +354,7 @@ describe("ConnectedCatalogAdmin", () => {
           pathname="/catalogos/usuarios"
           role="Administrador Mizar"
           initialData={catalogData({
+            access: { ...FULL_ACCESS, users: false },
             canReadUsers: true,
             userRecords: [
               {
@@ -373,7 +378,7 @@ describe("ConnectedCatalogAdmin", () => {
       ).toBeNull();
       expect(screen.getByText("Solo lectura")).toBeInTheDocument();
       expect(screen.getByRole("note")).toHaveTextContent(
-        "administración de usuarios es exclusiva",
+        "Dar de alta, editar y desactivar usuarios",
       );
     });
 
@@ -459,12 +464,15 @@ describe("ConnectedCatalogAdmin", () => {
 
   // HUECO 1 (reunión 2026-08-31, QA): CRUD de solicitantes autorizados por WhatsApp.
   describe("HUECO 1: pestaña de Solicitantes WhatsApp", () => {
-    it("permite consultar en modo lectura a Revisor (sin botón de alta ni acciones)", () => {
+    // Revisor administra la lista desde el 25-sep-2026; esto es un revisor al que Configuración le
+    // quitó «Administrar quién pide por WhatsApp» pero que sigue revisando (lectura).
+    it("permite consultar en modo lectura a quien revisa sin el permiso de administrar la lista", () => {
       render(
         <ConnectedCatalogAdmin
           pathname="/catalogos/solicitantes-whatsapp"
           role="Revisor"
           initialData={catalogData({
+            access: { ...FULL_ACCESS, requesters: false },
             canReadRequesters: true,
             requesters: [
               { id: "req-1", name: "Maestro Pérez", phone: "+573001112233", active: true },
@@ -479,7 +487,7 @@ describe("ConnectedCatalogAdmin", () => {
       ).toBeNull();
       expect(screen.getByText("Solo lectura")).toBeInTheDocument();
       expect(screen.getByRole("note")).toHaveTextContent(
-        "quién puede pedir por WhatsApp",
+        "Administrar quién pide por WhatsApp",
       );
     });
 

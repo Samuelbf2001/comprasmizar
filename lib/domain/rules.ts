@@ -26,7 +26,16 @@ const permissions: Record<Role, readonly string[]> = {
   // "income:register" (cliente, 11-sep-2026, cajas/ingresos/cierres): mismo conjunto de roles que
   // "payment:register" arriba — revisor/contabilidad/admin_sixteam — registrar un ingreso de caja es
   // el mismo tipo de gesto operativo/contable que registrar un pago parcial de orden.
-  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "petty_cash:create", "petty_cash:read", "expense:read", "report:read", "order:read", "order:update", "order:create", "order:pay", "payment:register", "income:register", "dashboard:read"],
+  // DECISIÓN DEL CLIENTE (Ernesto, 25-sep-2026): «Daniel puede hacer todo». Daniel es el usuario
+  // maestro (revisor + aprobador) y el revisor gana por defecto TODA la administración de negocio:
+  // catálogos (obras, etiquetas y su aprobador, centros de costo, cajas), empresas, quién pide por
+  // WhatsApp, usuarios y roles (alta, edición, desactivar, restablecer contraseña), la contraseña del
+  // portal público y el historial de cambios. Límites que se mantienen (decisión del coordinador): la
+  // matriz de permisos y la configuración técnica (`config:manage`) siguen siendo de Administrador
+  // Sixteam, y nadie que no sea Administrador Sixteam toca una cuenta de Administrador Sixteam ni
+  // asigna ese rol (ver `canManageSixteamAccounts`). "screen:manage" (pantallas de oficina) NO entra:
+  // no tiene pantalla todavía y no se pidió; queda a un clic en Configuración → Permisos por rol.
+  revisor: ["requisition:create", "requisition:read", "requisition:review", "item:manage", "supplier:manage", "catalog:manage", "society:manage", "requester:manage", "user:read", "user:manage", "user:reset_password", "public_access:manage", "audit:read", "petty_cash:create", "petty_cash:read", "expense:read", "report:read", "order:read", "order:update", "order:create", "order:pay", "payment:register", "income:register", "dashboard:read"],
   // Juliana (aprobadora) pidió poder ver y descargar "todo lo que aprobé este mes" desde Reportes — hasta
   // hoy el rol no tenía ninguno de los dos permisos. Esto no amplía lo que puede VER: el repositorio
   // sigue acotando su lectura a public.es_aprobador_de(r.id, actor.id) (cabecera o ítem propio), la misma
@@ -47,7 +56,14 @@ const permissions: Record<Role, readonly string[]> = {
   // lo tenía por la puerta de atrás del feature flag "catalogos_admin_mizar" (autoservicio de catálogos
   // en general, apagado por defecto) — «Proveedores» aparecía en su menú pero GET /api/suppliers
   // siempre respondía 403 en una instalación nueva.
-  admin_mizar: ["requisition:create", "catalog:manage", "supplier:manage", "dashboard:read", "expense:read", "report:read", "report:export"],
+  // 25-sep-2026: lo que admin_mizar ya podía hacer POR NOMBRE DE ROL pasa a permisos explícitos, sin
+  // quitarle ni darle nada: empresas ("society:manage", incondicional como antes), consultar usuarios
+  // ("user:read", solo lectura), restablecer contraseñas ("user:reset_password": la ruta
+  // /api/usuarios/:id/clave ya se lo permitía), la contraseña del portal ("public_access:manage") y las
+  // pantallas de oficina ("screen:manage"). "catalog:manage" y "requester:manage" siguen sujetos al
+  // módulo `catalogos_admin_mizar` (ver `hasGatedPermission`). "audit:read" es nuevo: la pantalla de
+  // historial de cambios (ADM-08) la ven admin_mizar y revisor por decisión del coordinador.
+  admin_mizar: ["requisition:create", "catalog:manage", "supplier:manage", "society:manage", "requester:manage", "user:read", "user:reset_password", "public_access:manage", "screen:manage", "audit:read", "dashboard:read", "expense:read", "report:read", "report:export"],
   admin_sixteam: ["*"],
 };
 export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<Role, readonly string[]>> = permissions;
@@ -83,7 +99,15 @@ export const PERMISSION_CATALOG: readonly { key: string; label: string; group: s
   { key: "dashboard:read", label: "Ver el tablero", group: "Reportes" },
   { key: "item:manage", label: "Administrar ítems del catálogo", group: "Catálogos y administración" },
   { key: "supplier:manage", label: "Administrar proveedores", group: "Catálogos y administración" },
-  { key: "catalog:manage", label: "Administrar catálogos", group: "Catálogos y administración" },
+  { key: "catalog:manage", label: "Administrar obras, etiquetas, centros de costo y cajas", group: "Catálogos y administración" },
+  { key: "society:manage", label: "Administrar empresas", group: "Catálogos y administración" },
+  { key: "requester:manage", label: "Administrar quién pide por WhatsApp", group: "Catálogos y administración" },
+  { key: "user:read", label: "Ver usuarios y roles", group: "Usuarios y acceso" },
+  { key: "user:manage", label: "Dar de alta, editar y desactivar usuarios", group: "Usuarios y acceso" },
+  { key: "user:reset_password", label: "Restablecer contraseñas de usuarios", group: "Usuarios y acceso" },
+  { key: "public_access:manage", label: "Cambiar la contraseña del portal público", group: "Usuarios y acceso" },
+  { key: "screen:manage", label: "Administrar pantallas de oficina", group: "Usuarios y acceso" },
+  { key: "audit:read", label: "Ver el historial de cambios", group: "Usuarios y acceso" },
   { key: "config:manage", label: "Configurar la plataforma", group: "Catálogos y administración" },
 ];
 export const ALL_PERMISSIONS: readonly string[] = PERMISSION_CATALOG.map((entry) => entry.key);
@@ -155,6 +179,39 @@ export function hasPermission(subject: PermissionSubject, permission: string, or
 export function assertPermission(subject: PermissionSubject, permission: string, origin: "web" | "mcp" = "web"): void {
   if (!hasPermission(subject, permission, origin)) throw new DomainError("FORBIDDEN", `Permiso denegado: ${permission}`);
 }
+/**
+ * Módulo `catalogos_admin_mizar` (fila de `modulos` con `roles_acceso = {admin_mizar}`, apagado por
+ * defecto desde 202608240001): el autoservicio de catálogos de Administrador Mizar. Antes de pasar a
+ * permisos (25-sep-2026) el servicio lo miraba por nombre de rol; ahora gobierna exactamente lo mismo
+ * con otra forma: con el módulo apagado, ESTOS permisos no cuentan cuando el actor los tiene
+ * únicamente por el rol admin_mizar. Si otro de sus roles también se los da (Daniel como revisor, o
+ * un rol al que Configuración se los asignó), el módulo no le quita nada.
+ */
+export const MIZAR_SELF_SERVICE_MODULE = "catalogos_admin_mizar";
+export const MIZAR_SELF_SERVICE_PERMISSIONS: readonly string[] = ["catalog:manage", "requester:manage"];
+function rolePermissionsOf(actor: Actor, role: Role): readonly string[] {
+  return actor.rolePermissions?.[role] ?? resolveRolePermissions(role);
+}
+/** ¿El actor tiene `permission` SOLO gracias a admin_mizar? (ningún otro de sus roles se lo da). */
+export function permissionOnlyViaMizarAdmin(actor: Actor, permission: string): boolean {
+  if (!actor.roles.includes("admin_mizar")) return false;
+  return !actor.roles.some((role) => role !== "admin_mizar" && (rolePermissionsOf(actor, role).includes(WILDCARD_PERMISSION) || rolePermissionsOf(actor, role).includes(permission)));
+}
+/** `hasPermission` + el módulo de autoservicio de Administrador Mizar. Pura: el llamador lee el módulo. */
+export function hasGatedPermission(actor: Actor, permission: string, mizarSelfService: boolean): boolean {
+  if (!hasPermission(actor, permission)) return false;
+  if (mizarSelfService || !MIZAR_SELF_SERVICE_PERMISSIONS.includes(permission)) return true;
+  return !permissionOnlyViaMizarAdmin(actor, permission);
+}
+/**
+ * LÍMITE QUE SE MANTIENE (coordinador, 25-sep-2026): administrar usuarios deja de ser exclusivo de
+ * Administrador Sixteam, pero las cuentas de Administrador Sixteam siguen siéndolo. Nadie que no sea
+ * Administrador Sixteam puede crear, editar, desactivar, restablecer la clave ni asignar o quitar ese
+ * rol. Va por NOMBRE de rol a propósito: protege a un rol concreto, el único con la matriz de
+ * permisos en la mano, y un permiso editable desde esa misma matriz no serviría de candado.
+ */
+export function canManageSixteamAccounts(actor: Actor): boolean { return actor.roles.includes("admin_sixteam"); }
+export const SIXTEAM_ROLE: Role = "admin_sixteam";
 
 const transitions: Record<RequisitionStatus, readonly RequisitionStatus[]> = {
   // `en_aprobacion -> declinada` es NUEVA (aprobador por ítem, 11-sep-2026): si todos los ítems acaban

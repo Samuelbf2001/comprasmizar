@@ -23,6 +23,10 @@ const FORBIDDEN_SPECIFIERS = [
   "../suppliers",
   "./settings",
   "../settings",
+  // Historial de cambios (25-sep-2026): se carga con next/dynamic, como Configuración.
+  "./screens/audit-log",
+  "./audit-log",
+  "../audit-log",
   "./demo-screens",
   "../demo-screens",
   "./workflow",

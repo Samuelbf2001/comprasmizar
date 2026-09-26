@@ -1,20 +1,59 @@
-import { DomainError, assertPermission, type Actor } from "../domain";
+import { DomainError, MIZAR_SELF_SERVICE_MODULE, MIZAR_SELF_SERVICE_PERMISSIONS, SIXTEAM_ROLE, assertPermission, canManageSixteamAccounts, hasGatedPermission, permissionOnlyViaMizarAdmin, type Actor, type Role } from "../domain";
 import type { CatalogCashBox, CatalogCostCenter, CatalogCreateRecord, CatalogKind, CatalogPatchRecord, CatalogRecord, CatalogRepository, CatalogRequester, CatalogSociety, CatalogSupplier, CatalogTag, CatalogUser, CatalogWork, ServiceDependencies } from "./contracts";
 
 export type CatalogCreateInput = CatalogCreateRecord;
 export type CatalogPatchInput = CatalogPatchRecord;
 
+/**
+ * 25-sep-2026 (decisión del cliente: «Daniel puede hacer todo»): la administración de catálogos deja
+ * de decidirse por NOMBRE de rol y pasa a PERMISO, uno por pestaña. Quién tiene cada uno lo dicen los
+ * defaults de lib/domain/rules.ts (revisor los tiene todos) y, encima, Configuración → Permisos por rol.
+ * `catalog:manage` y `requester:manage` siguen además bajo el módulo `catalogos_admin_mizar` cuando
+ * llegan solo por el rol admin_mizar (`hasGatedPermission`), igual que antes de este cambio. RF-203
+ * sigue en pie: "item:manage" no lo tiene admin_mizar por defecto, ni con el módulo encendido.
+ */
+export const CATALOG_KIND_PERMISSION: Readonly<Record<CatalogKind, string>> = {
+  works: "catalog:manage",
+  tags: "catalog:manage",
+  costCenters: "catalog:manage",
+  cashBoxes: "catalog:manage",
+  items: "item:manage",
+  suppliers: "supplier:manage",
+  societies: "society:manage",
+  requesters: "requester:manage",
+  users: "user:manage",
+};
+
 export function canManageCatalog(actor: Actor, kind: CatalogKind, mizarSelfService: boolean): boolean {
-  if (actor.roles.includes("admin_sixteam")) return true;
-  // RF-004: la administración de usuarios (alta, roles, estado) es exclusiva de admin_sixteam.
-  // admin_mizar solo lee (ver canReadUsers en app/api/catalogs/manage/route.ts).
-  if (kind === "users") return false;
-  // RF-002: sociedades se comparte entre Sixteam y Mizar de forma incondicional, sin depender
-  // del autoservicio de catálogos (a diferencia de obras/etiquetas/ítems/proveedores).
-  if (kind === "societies") return actor.roles.includes("admin_mizar");
-  if (kind === "items") return actor.roles.includes("revisor");
-  if (kind === "suppliers" && actor.roles.includes("revisor")) return true;
-  return actor.roles.includes("admin_mizar") && mizarSelfService;
+  return hasGatedPermission(actor, CATALOG_KIND_PERMISSION[kind], mizarSelfService);
+}
+
+/**
+ * Candados de usuarios que ningún permiso abre (coordinador, 25-sep-2026):
+ * - Una cuenta de Administrador Sixteam, y el propio rol admin_sixteam, solo los toca otro
+ *   Administrador Sixteam: crear, editar, desactivar, asignar o quitar (`canManageSixteamAccounts`).
+ * - Nadie se deja a sí mismo sin acceso: ni desactivarse ni quedarse sin ningún rol (sin rol la sesión
+ *   ya no resuelve: ROLE_REQUIRED). Quitarse UN rol sí se puede mientras le quede otro.
+ */
+export function assertUserChangeAllowed(actor: Actor, change: { id?: string; before?: { roles: readonly Role[] } | null; roles?: readonly Role[]; active?: boolean }): void {
+  const touchesSixteam = Boolean(change.before?.roles.includes(SIXTEAM_ROLE)) || Boolean(change.roles?.includes(SIXTEAM_ROLE));
+  if (touchesSixteam && !canManageSixteamAccounts(actor)) throw new DomainError("FORBIDDEN", "Solo un Administrador Sixteam puede crear, editar o asignar el rol Administrador Sixteam");
+  if (change.id && change.id === actor.id) {
+    if (change.active === false) throw new DomainError("SELF_LOCKOUT", "No puedes desactivar tu propia cuenta: te quedarías sin acceso. Pídeselo a otro administrador.");
+    if (change.roles && change.roles.length === 0) throw new DomainError("SELF_LOCKOUT", "No puedes quitarte todos los roles: te quedarías sin acceso. Pídeselo a otro administrador.");
+  }
+}
+
+/**
+ * Restablecer la contraseña de otra persona (POST /api/usuarios/:id/clave). Antes la ruta lo dejaba a
+ * admin_mizar/admin_sixteam por nombre de rol y SIN mirar a quién: un Administrador Mizar podía
+ * cambiarle la clave a un Administrador Sixteam y entrar con su cuenta. Ahora: permiso
+ * `user:reset_password`, y la cuenta de un Administrador Sixteam solo la restablece otro.
+ */
+export function assertCanResetPassword(actor: Actor, target: { roles: readonly Role[] } | null): void {
+  assertPermission(actor, "user:reset_password");
+  if (!target) throw new DomainError("NOT_FOUND", "El usuario indicado no existe.");
+  if (target.roles.includes(SIXTEAM_ROLE) && !canManageSixteamAccounts(actor)) throw new DomainError("FORBIDDEN", "Solo un Administrador Sixteam puede restablecer la contraseña de otro Administrador Sixteam");
 }
 
 function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
@@ -35,8 +74,12 @@ function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
   // Cajas (2026-09-12): comprobado ANTES que el de "work" de abajo por la MISMA razón que costCenters
   // — "type" es el discriminador (ninguna otra forma de CatalogRecord lo tiene).
   if ("type" in value) { const cashBox = value as CatalogCashBox; return { name: cashBox.name, type: cashBox.type, societyId: cashBox.societyId ?? null, costCenterId: cashBox.costCenterId ?? null, active: cashBox.active }; }
-  if ("societyId" in value) return { name: value.name, societyId: value.societyId, active: value.active };
-  if ("approverId" in value) return { name: value.name, approverAssigned: Boolean(value.approverId), active: value.active };
+  // 25-sep-2026 (historial de cambios): la obra lleva también su centro de costo por defecto y la
+  // etiqueta el ID de su aprobador — un id de usuario no es dato personal (el nombre se resuelve al
+  // mostrar el historial) y sin él «Cambió el aprobador de Materiales de Nelson a Juliana» no se podía
+  // contar. `approverAssigned` se conserva para quien ya leía eventos viejos.
+  if ("societyId" in value) return { name: value.name, societyId: value.societyId, costCenterId: (value as CatalogWork).costCenterId ?? null, active: value.active };
+  if ("approverId" in value) return { name: value.name, approverId: value.approverId ?? null, approverAssigned: Boolean(value.approverId), active: value.active };
   if ("unit" in value) return { name: value.name, unit: value.unit, category: value.category, active: value.active };
   // RF-601: tipo y "si hay identificación", nunca el número (la cédula de una persona es dato personal).
   if ("phone" in value || "email" in value || "address" in value) { const supplier = value as CatalogSupplier; return { name: supplier.name, nitConfigured: Boolean(supplier.nit), identificationType: supplier.identificationType ?? "NIT", identificationConfigured: Boolean(supplier.identification ?? supplier.nit), pendingNormalization: supplier.pendingNormalization ?? false, contactConfigured: Boolean(supplier.phone || supplier.email || supplier.address), active: supplier.active }; }
@@ -47,23 +90,13 @@ function safeSnapshot(value: CatalogRecord): Record<string, unknown> {
 export class CatalogService {
   constructor(private readonly deps: ServiceDependencies) {}
   private async authorize(actor: Actor, kind: CatalogKind, features = this.deps.features): Promise<void> {
-    // RF-203: the item master stays under Daniel/Sixteam even after Mizar catalogue self-service is enabled.
-    if (actor.roles.includes("admin_sixteam")) return;
-    // RF-004: alta, edición, estado y roles de usuarios son exclusivos de admin_sixteam. admin_mizar
-    // puede LEER (ver ruta de administración) pero jamás escribir aquí — ni siquiera para crear otro
-    // admin_sixteam: este bloqueo total es, en sí mismo, la barrera contra escalamiento de privilegios.
-    if (kind === "users") throw new DomainError("FORBIDDEN", "Solo un administrador Sixteam puede administrar usuarios");
-    // RF-002: sociedades se comparte entre Sixteam y Mizar de forma incondicional (no depende del
-    // autoservicio de catálogos, a diferencia del resto de kinds gestionados por esta función).
-    if (kind === "societies") { if (actor.roles.includes("admin_mizar")) return; throw new DomainError("FORBIDDEN", "No puede administrar sociedades"); }
-    const specialized = kind === "items" ? "item:manage" : kind === "suppliers" ? "supplier:manage" : "catalog:manage";
-    if (kind === "items") { assertPermission(actor, specialized); return; }
-    if (kind === "suppliers" && actor.roles.includes("revisor")) return;
-    if (actor.roles.includes("admin_mizar")) {
-      if (!(await features.isEnabled("catalogos_admin_mizar"))) throw new DomainError("FEATURE_DISABLED", "El autoservicio de catálogos aún no está habilitado");
-      return;
+    const permission = CATALOG_KIND_PERMISSION[kind];
+    assertPermission(actor, permission);
+    // El módulo se relee DENTRO de la transacción de escritura (`tx.features`), y solo cuando decide
+    // algo: un permiso sujeto al módulo que el actor tiene únicamente por el rol admin_mizar.
+    if (MIZAR_SELF_SERVICE_PERMISSIONS.includes(permission) && permissionOnlyViaMizarAdmin(actor, permission) && !(await features.isEnabled(MIZAR_SELF_SERVICE_MODULE))) {
+      throw new DomainError("FEATURE_DISABLED", "El autoservicio de catálogos aún no está habilitado");
     }
-    assertPermission(actor, specialized);
   }
   private conflict(error: unknown, kind: CatalogKind): never {
     if (typeof error === "object" && error !== null && "code" in error) {
@@ -101,7 +134,7 @@ export class CatalogService {
     if (await repository.findRequesterDuplicate(value.phone, exceptId)) throw new DomainError("CONFLICT", "Ya existe un solicitante autorizado con ese número de teléfono");
   }
   async create(kind: CatalogKind, value: CatalogCreateInput, actor: Actor): Promise<CatalogRecord> {
-    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.authorize(actor, kind, tx.features); if (kind === "suppliers") await this.supplierConflict(tx.catalogs, value); if (kind === "requesters") await this.requesterConflict(tx.catalogs, value); if (kind === "tags") await this.validateTag(value as CatalogRecord, tx.catalogs); const created = await tx.catalogs.create(kind, value); await this.audit("creada", kind, created.id, actor, undefined, created, tx.audit); return created; }); } catch (error) { this.conflict(error, kind); }
+    try { return await this.deps.transactions.transaction(undefined, async (tx) => { await this.authorize(actor, kind, tx.features); if (kind === "users") assertUserChangeAllowed(actor, { roles: (value as { roles?: readonly Role[] }).roles }); if (kind === "suppliers") await this.supplierConflict(tx.catalogs, value); if (kind === "requesters") await this.requesterConflict(tx.catalogs, value); if (kind === "tags") await this.validateTag(value as CatalogRecord, tx.catalogs); const created = await tx.catalogs.create(kind, value); await this.audit("creada", kind, created.id, actor, undefined, created, tx.audit); return created; }); } catch (error) { this.conflict(error, kind); }
   }
   async patch(kind: CatalogKind, id: string, value: CatalogPatchInput, actor: Actor): Promise<CatalogRecord> {
     try {
@@ -109,6 +142,7 @@ export class CatalogService {
         await this.authorize(actor, kind, tx.features);
         const before = await tx.catalogs.get(kind, id);
         if (!before) throw new DomainError("NOT_FOUND", "Registro de catálogo no encontrado");
+        if (kind === "users") { const change = value as { roles?: readonly Role[]; active?: boolean }; assertUserChangeAllowed(actor, { id, before: before as CatalogUser, roles: change.roles, active: change.active }); }
         const candidate = { ...before, ...value } as CatalogRecord;
         if (kind === "suppliers") await this.supplierConflict(tx.catalogs, candidate, id);
         if (kind === "requesters") await this.requesterConflict(tx.catalogs, candidate, id);

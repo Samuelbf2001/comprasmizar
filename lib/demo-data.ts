@@ -41,6 +41,9 @@ export const navigation: Array<{
   { label: 'Proveedores', href: '/proveedores', icon: 'Truck' },
   { label: 'Mensajes de WhatsApp', href: '/mensajes', icon: 'MessageSquare' },
   { label: 'Reportes', href: '/reportes', icon: 'BarChart3' },
+  // ADM-08 / RF-1003 (25-sep-2026): quién cambió qué y cuándo. La entrada la decide el permiso
+  // "audit:read" (components/layout/nav-permissions.ts), no el rol.
+  { label: 'Historial de cambios', href: '/auditoria', icon: 'History' },
 ];
 
 export const requisitions: Requisition[] = [

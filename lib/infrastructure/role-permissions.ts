@@ -1,5 +1,5 @@
 import { type Sql } from "postgres";
-import { assertValidPermissionOverrides, resolveActorPermissions, type Actor, type RolePermissionOverrides } from "../domain";
+import { assertValidPermissionOverrides, resolveActorPermissions, resolveRolePermissions, type Actor, type RolePermissionOverrides } from "../domain";
 import type { RolePermissionsRepository } from "../services";
 import { runtimeEnv } from "../security/env";
 import { PostgresPorts, sharedPostgres } from "./postgres-repositories";
@@ -57,7 +57,10 @@ export async function loadRolePermissionOverrides(databaseUrl = runtimeEnv().DAT
 export async function withEffectivePermissions<T extends Actor>(actor: T, databaseUrl?: string): Promise<T> {
   let overrides: RolePermissionOverrides = {};
   try { overrides = await loadRolePermissionOverrides(databaseUrl); } catch { overrides = {}; }
-  return { ...actor, permissions: resolveActorPermissions(actor.roles, overrides) };
+  // `rolePermissions` (25-sep-2026): la misma resolución rol por rol, para que el módulo
+  // `catalogos_admin_mizar` sepa si un permiso llega SOLO por admin_mizar (ver `hasGatedPermission`).
+  const rolePermissions = Object.fromEntries(actor.roles.map((role) => [role, resolveRolePermissions(role, overrides)]));
+  return { ...actor, permissions: resolveActorPermissions(actor.roles, overrides), rolePermissions };
 }
 
 export function createRolePermissionsRepository(databaseUrl = runtimeEnv().DATABASE_URL): RolePermissionsRepository {

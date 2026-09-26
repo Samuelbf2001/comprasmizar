@@ -46,19 +46,24 @@ import { normalizeCoPhone } from "../../lib/infrastructure/phone";
 import { SectionTitle, Tone } from "./screen-primitives";
 import { apiRequest, friendlyErrorText } from "../../lib/http/friendly-error";
 import { invalidateCatalogs } from "./connected/data";
+import { DOMAIN_ROLE } from "./connected/shared";
+import { puedeCon } from "../layout/nav-permissions";
+import { resolveRolePermissions } from "../../lib/domain/rules";
 
-// Únicos roles con esta ruta habilitada (ver roleAllowed en components/layout/app-shell.tsx y el
-// gate de mizar-app.tsx). Se repite aquí a propósito: esta pantalla debe negarse a sí misma aunque
-// algún día alguien la monte fuera de esa ruta.
-const ALLOWED_ROLES: Role[] = ["Administrador Sixteam", "Administrador Mizar"];
+// 25-sep-2026 («Daniel puede hacer todo»): la pantalla y cada sección se abren por PERMISO efectivo,
+// no por el nombre del rol. Se comprueba aquí también (además del menú, nav-permissions.ts) a
+// propósito: esta pantalla debe negarse a sí misma aunque algún día alguien la monte fuera de esa ruta.
+// El servidor vuelve a autorizar cada llamada; esto solo decide qué se ofrece.
+const USERS_PERMISSIONS = ["user:read", "user:manage", "user:reset_password"];
+const ENTRY_PERMISSIONS = ["config:manage", "public_access:manage", ...USERS_PERMISSIONS];
 
 type SectionId = "acceso-publico" | "usuarios" | "permisos" | "whatsapp" | "catalogos";
-// «Permisos por rol» (decisión de Ernesto, 2026-09-17) es SOLO de Administrador Sixteam: no aparece
-// siquiera en el índice para Administrador Mizar, que sí ve el resto de la pantalla.
-const SECTIONS: Array<{ id: SectionId; label: string; onlySixteam?: boolean }> = [
-  { id: "acceso-publico", label: "Acceso público" },
-  { id: "usuarios", label: "Usuarios y roles" },
-  { id: "permisos", label: "Permisos por rol", onlySixteam: true },
+// «Permisos por rol» (decisión de Ernesto, 2026-09-17) sigue siendo SOLO de quien tiene
+// "config:manage" (Administrador Sixteam): no aparece siquiera en el índice para los demás.
+const SECTIONS: Array<{ id: SectionId; label: string; anyOf?: string[] }> = [
+  { id: "acceso-publico", label: "Acceso público", anyOf: ["public_access:manage"] },
+  { id: "usuarios", label: "Usuarios y roles", anyOf: USERS_PERMISSIONS },
+  { id: "permisos", label: "Permisos por rol", anyOf: ["config:manage"] },
   { id: "whatsapp", label: "WhatsApp" },
   { id: "catalogos", label: "Catálogos" },
 ];
@@ -66,12 +71,17 @@ const SECTIONS: Array<{ id: SectionId; label: string; onlySixteam?: boolean }> =
 export function SettingsScreen({
   role,
   go,
+  puede: puedeProp,
 }: {
   role: Role;
   go: (path: string) => void;
+  /** Permisos efectivos de quien mira; sin él, los de por defecto del rol que se pinta. */
+  puede?: (permiso: string) => boolean;
 }) {
-  const [activeSection, setActiveSection] = useState<SectionId>("acceso-publico");
-  if (!ALLOWED_ROLES.includes(role)) {
+  const puede = puedeProp ?? puedeCon(resolveRolePermissions(DOMAIN_ROLE[role]));
+  const visibles = SECTIONS.filter((section) => !section.anyOf || section.anyOf.some(puede));
+  const [activeSection, setActiveSection] = useState<SectionId>(visibles[0]?.id ?? "whatsapp");
+  if (!ENTRY_PERMISSIONS.some(puede)) {
     return (
       <div className="state-panel panel access-denied" role="alert">
         <span className="empty-icon">
@@ -79,8 +89,8 @@ export function SettingsScreen({
         </span>
         <h3>Sin acceso con este rol</h3>
         <p>
-          Configuración está disponible solo para <b>Administrador Sixteam</b> y{" "}
-          <b>Administrador Mizar</b>.
+          Configuración está disponible para quien administra usuarios, el portal público o la
+          plataforma. Si deberías tener acceso, pídele a un administrador que revise tus permisos.
         </p>
       </div>
     );
@@ -98,7 +108,7 @@ export function SettingsScreen({
       />
       <div className="panel settings-layout">
         <nav className="settings-nav" aria-label="Secciones de configuración">
-          {SECTIONS.filter((section) => !section.onlySixteam || role === "Administrador Sixteam").map((section) => (
+          {visibles.map((section) => (
             <button
               key={section.id}
               type="button"
@@ -110,11 +120,9 @@ export function SettingsScreen({
           ))}
         </nav>
         <div className="settings-content">
-          <PublicAccessSection />
-          {(role === "Administrador Sixteam" || role === "Administrador Mizar") && (
-            <UsersSection go={go} />
-          )}
-          {role === "Administrador Sixteam" && <PermissionsSection />}
+          {puede("public_access:manage") && <PublicAccessSection />}
+          {USERS_PERMISSIONS.some(puede) && <UsersSection go={go} />}
+          {puede("config:manage") && <PermissionsSection />}
           <WhatsAppSection go={go} />
           <CatalogsSection go={go} />
         </div>
@@ -516,6 +524,11 @@ type ManageResponse = {
   userRecords?: UserRow[];
   canReadUsers?: boolean;
   access?: { users?: boolean };
+  // 25-sep-2026: lo decide el servidor por permiso ("user:reset_password") y por el candado de
+  // cuentas de Administrador Sixteam; `viewerId` es el propio id, para no ofrecer desactivarse.
+  canResetPasswords?: boolean;
+  canManageSixteam?: boolean;
+  viewerId?: string;
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -530,6 +543,9 @@ const ROLE_LABELS: Record<string, string> = {
 function UsersSection({ go }: { go: (path: string) => void }) {
   const [rows, setRows] = useState<UserRow[] | null>(null);
   const [canManage, setCanManage] = useState(false);
+  const [canReset, setCanReset] = useState(false);
+  const [canManageSixteam, setCanManageSixteam] = useState(false);
+  const [viewerId, setViewerId] = useState<string | undefined>(undefined);
   const [loadError, setLoadError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<Record<string, string>>({});
@@ -544,6 +560,9 @@ function UsersSection({ go }: { go: (path: string) => void }) {
       .then((data) => {
         setRows(Array.isArray(data.userRecords) ? data.userRecords : []);
         setCanManage(data.access?.users === true);
+        setCanReset(data.canResetPasswords === true);
+        setCanManageSixteam(data.canManageSixteam === true);
+        setViewerId(data.viewerId);
       })
       .catch((error: unknown) => {
         setLoadError(friendlyErrorText(error, "No fue posible consultar los usuarios."));
@@ -637,13 +656,18 @@ function UsersSection({ go }: { go: (path: string) => void }) {
     }
   };
 
+  // Columna de acciones: quien administra usuarios o restablece contraseñas. Una cuenta de
+  // Administrador Sixteam solo la toca otro Administrador Sixteam (el servidor lo impone igual).
+  const hasActions = canManage || canReset;
+  const rowLocked = (row: UserRow) => row.roles.includes("admin_sixteam") && !canManageSixteam;
+  const colSpan = hasActions ? 5 : 4;
   return (
     <section id="settings-usuarios" className="settings-section">
       <div>
         <h2>Usuarios y roles</h2>
         <p>
           Quién tiene acceso a la plataforma, con qué rol y qué tan reciente está su teléfono.
-          {!canManage && " Consulta de solo lectura para este rol."}
+          {!hasActions && " Consulta de solo lectura con tus permisos."}
         </p>
       </div>
       {loadError ? (
@@ -663,7 +687,7 @@ function UsersSection({ go }: { go: (path: string) => void }) {
                 <th>Roles</th>
                 <th>Teléfono</th>
                 <th>Estado</th>
-                {canManage && <th />}
+                {hasActions && <th />}
               </tr>
             </thead>
             <tbody>
@@ -714,10 +738,11 @@ function UsersSection({ go }: { go: (path: string) => void }) {
                         {row.active ? "Activo" : "Inactivo"}
                       </Tone>
                     </td>
-                    {canManage && (
+                    {hasActions && (
                       <td>
-                        {editingPhoneId !== row.id && (
+                        {editingPhoneId !== row.id && !rowLocked(row) && (
                           <div className="button-row">
+                            {canManage && (
                             <button
                               className="icon-button"
                               type="button"
@@ -730,6 +755,9 @@ function UsersSection({ go }: { go: (path: string) => void }) {
                             >
                               <Pencil aria-hidden="true" size={15} />
                             </button>
+                            )}
+                            {/* Nadie se desactiva a sí mismo (el servidor también lo niega). */}
+                            {canManage && row.id !== viewerId && (
                             <button
                               className="icon-button"
                               type="button"
@@ -743,6 +771,8 @@ function UsersSection({ go }: { go: (path: string) => void }) {
                                 <ToggleLeft aria-hidden="true" size={17} />
                               )}
                             </button>
+                            )}
+                            {canReset && (
                             <button
                               className="icon-button"
                               type="button"
@@ -755,14 +785,16 @@ function UsersSection({ go }: { go: (path: string) => void }) {
                             >
                               <KeyRound aria-hidden="true" size={15} />
                             </button>
+                            )}
                           </div>
                         )}
+                        {rowLocked(row) && <span className="table-sub">Solo Administrador Sixteam</span>}
                       </td>
                     )}
                   </tr>
                   {resetId === row.id && (
                     <tr>
-                      <td colSpan={canManage ? 5 : 4}>
+                      <td colSpan={colSpan}>
                         <form
                           className="settings-inline-edit"
                           onSubmit={(event) => void submitTempPassword(row, event)}
@@ -788,7 +820,7 @@ function UsersSection({ go }: { go: (path: string) => void }) {
                   )}
                   {(rowError[row.id] || rowSuccess[row.id]) && (
                     <tr>
-                      <td colSpan={canManage ? 5 : 4}>
+                      <td colSpan={colSpan}>
                         {rowError[row.id] && (
                           <p className="field-error catalog-feedback" role="alert">
                             {rowError[row.id]}

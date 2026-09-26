@@ -280,6 +280,16 @@ let catalogsInFlight: Promise<unknown> | null = null;
 // una respuesta que salió con la sesión ANTERIOR y llega después no puede volver a sembrar la caché.
 let cacheGeneration = 0;
 
+/**
+ * El menú (25-sep-2026) decide por permiso efectivo, igual que las pantallas: lee los permisos del
+ * MISMO bootstrap de catálogos, con su misma caché y deduplicación. `peekCatalogs` devuelve lo que
+ * ya haya en caché sin pedir nada, para que el menú no parpadee al cambiar de ruta.
+ */
+export function loadCatalogsBootstrap(): Promise<unknown> { return getCatalogs(); }
+export function peekCatalogs(): unknown {
+  return catalogsCache && Date.now() - catalogsCache.fetchedAt < CATALOGS_TTL_MS ? catalogsCache.data : undefined;
+}
+
 function getCatalogs(): Promise<unknown> {
   if (catalogsCache && Date.now() - catalogsCache.fetchedAt < CATALOGS_TTL_MS) {
     return Promise.resolve(catalogsCache.data);

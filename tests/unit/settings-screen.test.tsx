@@ -32,6 +32,9 @@ const manageResponse = (canManage: boolean) =>
       ],
       canReadUsers: true,
       access: { users: canManage },
+      canResetPasswords: canManage,
+      canManageSixteam: canManage,
+      viewerId: "44444444-4444-4444-8444-444444444444",
     }),
     { status: 200 },
   );
@@ -85,7 +88,7 @@ describe("SettingsScreen", () => {
 
   it("niega el acceso a un rol sin permiso y no consulta ningún endpoint", () => {
     const fetchMock = mockFetch(true);
-    render(<SettingsScreen role="Revisor" go={vi.fn()} />);
+    render(<SettingsScreen role="Contabilidad" go={vi.fn()} />);
     expect(screen.getByText("Sin acceso con este rol")).toBeInTheDocument();
     expect(screen.queryByText("Acceso público")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -98,6 +101,49 @@ describe("SettingsScreen", () => {
     // canManage=false (access.users): ni el botón de restablecer contraseña ni el de activar/desactivar.
     expect(screen.queryByRole("button", { name: /Asignar contraseña temporal/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Editar teléfono/i })).toBeNull();
+  });
+
+  // 25-sep-2026 («Daniel puede hacer todo»): el revisor entra por sus permisos por defecto —portal
+  // público y usuarios— pero la matriz de permisos sigue siendo solo de quien tiene config:manage.
+  it("Revisor (Daniel) administra portal y usuarios, sin ver la matriz de permisos", async () => {
+    mockFetch(true);
+    render(<SettingsScreen role="Revisor" go={vi.fn()} />);
+    expect(await screen.findByText("Daniel Hernández")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Acceso público" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Asignar contraseña temporal a Daniel Hernández/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Permisos por rol" })).toBeNull();
+  });
+
+  it("obedece los permisos efectivos y no el nombre del rol", async () => {
+    mockFetch(true);
+    // Un revisor al que Configuración le dejó solo «Ver usuarios y roles».
+    render(<SettingsScreen role="Revisor" go={vi.fn()} puede={(permiso) => permiso === "user:read"} />);
+    expect(await screen.findByText("Daniel Hernández")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Acceso público" })).toBeNull();
+  });
+
+  it("bloquea las cuentas de Administrador Sixteam y no ofrece desactivarse a uno mismo", async () => {
+    const selfId = "44444444-4444-4444-8444-444444444444";
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/public-access") return Promise.resolve(publicAccessResponse());
+      if (url === "/api/health") return Promise.resolve(healthResponse());
+      if (url === "/api/catalogs/manage")
+        return Promise.resolve(new Response(JSON.stringify({
+          userRecords: [
+            { id: selfId, name: "Daniel Hernández", email: "daniel@mizar.local", phone: null, active: true, roles: ["revisor", "aprobador"] },
+            { id: userId, name: "Samuel Sixteam", email: "samuel@sixteam.test", phone: null, active: true, roles: ["admin_sixteam"] },
+          ],
+          canReadUsers: true, access: { users: true }, canResetPasswords: true, canManageSixteam: false, viewerId: selfId,
+        }), { status: 200 }));
+      return Promise.reject(new Error(`fetch no esperado en la prueba: ${url}`));
+    });
+    render(<SettingsScreen role="Revisor" go={vi.fn()} />);
+    await screen.findByText("Samuel Sixteam");
+    expect(screen.queryByRole("button", { name: /Samuel Sixteam/ })).toBeNull();
+    expect(screen.getByText("Solo Administrador Sixteam")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Editar teléfono de Daniel Hernández/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Desactivar a Daniel Hernández/ })).toBeNull();
   });
 
   it("copia el enlace único del portal al portapapeles", async () => {

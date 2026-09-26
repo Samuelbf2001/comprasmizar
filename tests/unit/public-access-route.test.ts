@@ -47,8 +47,9 @@ describe("PATCH/GET /api/public-access — administración de la contraseña glo
     expect(JSON.stringify(body)).not.toMatch(/hash|\$2[aby]\$/i);
   });
 
-  it("PATCH rechaza a un rol sin permiso (revisor) con 403, sin llamar a setPassword", async () => {
-    mocks.actor = { id: "revisor-1", roles: ["revisor"] };
+  // 25-sep-2026: el revisor (Daniel) ya tiene "public_access:manage"; el rol sin permiso es contabilidad.
+  it("PATCH rechaza a un rol sin permiso (contabilidad) con 403, sin llamar a setPassword", async () => {
+    mocks.actor = { id: "contab-1", roles: ["contabilidad"] };
     const response = await PATCH(patchRequest({ code: "contraseña-larga" }));
     expect(response.status).toBe(403);
     expect(mocks.setPassword).not.toHaveBeenCalled();
