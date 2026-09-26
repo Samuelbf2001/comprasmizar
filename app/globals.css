@@ -751,6 +751,15 @@ th:last-child,td:last-child{padding-right:var(--space-6)}
 .kanban-foot .avatar{height:23px;width:23px;font-size:var(--text-3xs)}
 .kanban-foot .money{font-size:var(--text-3xs)}
 .add-kanban{width:100%;display:flex;align-items:center;justify-content:center;gap:var(--space-1);color:var(--muted);font-size:var(--text-3xs);padding:var(--space-3) 0 var(--space-1)}
+/* Tablero de revisión (RF-306): encabezado h3 dentro de .kanban-head, sin tocar su tamaño ya
+   definido arriba (font-size del contenedor se hereda). Fila consecutivo+marca "Devuelta" y
+   "Cargar más" propio de columna (aprobación/aprobada) reutilizan .button ya existente en vez
+   de .add-kanban (ese es un placeholder deshabilitado en la demo, no un botón funcional). */
+.kanban-head h3{font-size:inherit;font-weight:700;margin:0}
+.kanban-card-top{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
+.kanban-approver{margin-top:var(--space-2)}
+.kanban-empty{padding:var(--space-2) 0 0}
+.kanban-column .button-secondary{width:100%;margin-top:var(--space-3)}
 
 /* =========================================================================
    Selector de vista, detalle, línea de tiempo

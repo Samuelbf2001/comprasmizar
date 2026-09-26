@@ -616,6 +616,19 @@ const PAYMENT_METHOD_LABELS: Record<string, string> = {
 export function paymentMethodLabel(method: string): string {
   return PAYMENT_METHOD_LABELS[method] ?? method;
 }
+// Tablero de revisión (RF-306): mismo criterio que ORIGIN_LABELS/PAYMENT_METHOD_LABELS —
+// RequisitionChannel (lib/domain/model.ts) viaja en snake_case/plano; se traduce solo para
+// presentación. El filtro de canal de la bandeja (channelOptions, requisitions.tsx) muestra el
+// valor crudo desde antes de este cambio y se deja igual (no era parte del encargo); las tarjetas
+// del tablero sí lo necesitan legible ("canal: web/público/WhatsApp", PRD RF-306).
+const CHANNEL_LABELS: Record<string, string> = {
+  web: "Web",
+  publico: "Público",
+  whatsapp: "WhatsApp",
+};
+export function channelLabel(channel: string): string {
+  return CHANNEL_LABELS[channel] ?? channel;
+}
 const CASH_BOX_TYPE_LABELS: Record<string, string> = {
   caja_menor: "Caja menor",
   administrativa: "Administrativa",
